@@ -64,7 +64,8 @@ fn is_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\r' | 0x0b | 0x0c)
 }
 
-fn valid_name(name: &[u8]) -> bool {
+/// Whether `name` is a legal attribute name.
+pub fn valid_attribute_name(name: &[u8]) -> bool {
     !name.is_empty()
         && name[0] != b'-'
         && name
@@ -72,7 +73,8 @@ fn valid_name(name: &[u8]) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
-pub(crate) fn unquote(text: &[u8]) -> Option<(Vec<u8>, &[u8])> {
+/// Reads a C-quoted string at the start of `text`; returns it and what follows.
+pub fn unquote(text: &[u8]) -> Option<(Vec<u8>, &[u8])> {
     let mut out = Vec::new();
     let mut i = 1;
     while i < text.len() {
@@ -123,7 +125,7 @@ fn parse_assignments(rest: &[u8]) -> Option<Assignments> {
         } else {
             (token, AttrValue::Set)
         };
-        if !valid_name(name) {
+        if !valid_attribute_name(name) {
             return None;
         }
         out.push((String::from_utf8_lossy(name).into_owned(), value));
@@ -149,7 +151,7 @@ fn parse(text: &[u8], macros_allowed: bool) -> File {
             }
             let end = rest.iter().position(|b| is_space(*b)).unwrap_or(rest.len());
             let (name, attrs) = rest.split_at(end);
-            if !valid_name(name) {
+            if !valid_attribute_name(name) {
                 continue;
             }
             if let Some(attrs) = parse_assignments(attrs) {

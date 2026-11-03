@@ -21,6 +21,7 @@ mod blame_walk;
 mod branches;
 mod bundle;
 mod cat_file;
+mod check_attr;
 mod clean;
 mod clean_menu;
 mod clone;
@@ -133,6 +134,7 @@ pub use bisect::BisectArgs;
 pub use blame::BlameArgs;
 pub use bundle::{BundleArgs, bundle};
 pub use cat_file::CatFileArgs;
+pub use check_attr::CheckAttrArgs;
 pub use clean::CleanArgs;
 pub use clone::{CloneOptions, clone};
 pub use commands::run;
@@ -411,6 +413,26 @@ impl GitHome {
 }
 
 impl GitHome {
+    pub(crate) fn index(&self) -> Option<pyn_git::Index> {
+        self.repo.read_index().ok()
+    }
+
+    /// The repository form of a regular file inside the work tree when a conversion changes it.
+    pub(crate) fn cleaned_file(&self, file: &Path, index: &pyn_git::Index) -> Option<Vec<u8>> {
+        let cwd = std::env::current_dir().ok()?;
+        let path = self.ws.repo_prefix(&cwd, file.to_str()?).ok()?.into_bytes();
+        if self.repo.conversion(&path).ok()?.is_identity() {
+            return None;
+        }
+        let id = index
+            .entries
+            .iter()
+            .find(|e| e.stage == 0 && e.path == path)
+            .map(|e| e.id);
+        let clean = self.repo.read_clean(&path, file, id, false).ok()?;
+        Some(clean.data.into_owned())
+    }
+
     /// The rename detection `<scope>.renames` and `<scope>.renameLimit` turn on, falling back to `diff.*`.
     pub(crate) fn rename_settings(&self, scope: &str) -> crate::rename::Defaults {
         use crate::rename::{Defaults, Mode};

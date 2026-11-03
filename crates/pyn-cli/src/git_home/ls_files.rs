@@ -55,6 +55,9 @@ pub struct LsFilesArgs {
     /// Exit with 1 if a path names no tracked file.
     #[arg(long)]
     error_unmatch: bool,
+    /// Show the line endings of the index and work tree copy, and the text attributes, before each name.
+    #[arg(long)]
+    eol: bool,
     /// End each line with a NUL and do not quote names.
     #[arg(short = 'z')]
     nul: bool,
@@ -85,7 +88,11 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
     };
     let mut out: Vec<u8> = Vec::new();
     let labelled = args.tags || args.valid_bit;
-    let name = |out: &mut Vec<u8>, path: &[u8], tag: char, stage: Option<(u32, String, u8)>| {
+    let name = |out: &mut Vec<u8>,
+                path: &[u8],
+                tag: char,
+                stage: Option<(u32, String, u8)>,
+                entry: Option<&pyn_git::IndexEntry>| {
         if labelled {
             out.extend_from_slice(format!("{tag} ").as_bytes());
         }
@@ -96,6 +103,11 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
         };
         if let Some((mode, id, st)) = stage {
             out.extend_from_slice(format!("{mode:06o} {id} {st}\t").as_bytes());
+        }
+        if args.eol {
+            // git reads the index side by name, so every stage of a conflict shows the first one.
+            let first = entry.and_then(|e| index.entries.iter().find(|x| x.path == e.path));
+            out.extend_from_slice(eol_info(git, path, first).as_bytes());
         }
         if args.nul {
             out.extend_from_slice(&shown);
@@ -110,7 +122,7 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
 
     if args.others {
         for path in untracked(git, &root, &index, &spec, &ignores, &args)? {
-            name(&mut out, &path, '?', None);
+            name(&mut out, &path, '?', None, None);
         }
     }
     let stage_of = |e: &pyn_git::IndexEntry| Some((e.mode, e.id.to_hex(), e.stage));
@@ -146,6 +158,7 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
                 &e.path,
                 tag,
                 show_stage.then(|| stage_of(e)).flatten(),
+                Some(e),
             );
         }
         if args.deleted || args.modified {
@@ -162,7 +175,7 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
             ] {
                 if shown {
                     let stage = show_stage.then(|| stage_of(e)).flatten();
-                    name(&mut out, &e.path, tag, stage);
+                    name(&mut out, &e.path, tag, stage, Some(e));
                 }
             }
         }
@@ -182,6 +195,29 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
         }
     }
     Ok(())
+}
+
+/// The `i/<index> w/<work tree> attr/<attributes>` column of `--eol`.
+fn eol_info(git: &GitHome, path: &[u8], entry: Option<&pyn_git::IndexEntry>) -> String {
+    let bare = path.strip_suffix(b"/").unwrap_or(path);
+    let attr = git
+        .repo
+        .conversion(bare)
+        .map_or("", |c| c.attr_description());
+    let regular = |mode: u32| mode & 0o170000 == 0o100000;
+    let index = entry
+        .filter(|e| regular(e.mode))
+        .and_then(|e| git.repo.blob(&e.id).ok())
+        .map_or("", |b| pyn_gitwork::eol_info(&b));
+    let work = git
+        .repo
+        .git()
+        .work_tree()
+        .map(|root| fs_path(root, bare))
+        .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()))
+        .and_then(|p| std::fs::read(p).ok())
+        .map_or("", |b| pyn_gitwork::eol_info(&b));
+    format!("i/{index:<5} w/{work:<5} attr/{attr:<17}\t")
 }
 
 fn stage_state(root: &Path, e: &pyn_git::IndexEntry, git: &GitHome) -> Result<Option<Kind>> {

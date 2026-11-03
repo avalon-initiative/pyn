@@ -558,6 +558,19 @@ fn work_tree_commit(
             (data, mode)
         }
     };
+    let content = if mode == FileMode::Symlink {
+        content
+    } else {
+        let index_id = tree.get(path).map(|e| e.id);
+        let blob = || index_id.and_then(|id| git.repo.blob(&id).ok());
+        let opts = pyn_gitwork::ToGit {
+            check_roundtrip: false,
+            renormalize: false,
+            index_blob: &blob,
+        };
+        let conv = git.repo.conversion(path)?;
+        conv.to_git(path, &content, &opts)?.data.into_owned()
+    };
     let content = Rc::new(content);
     tree.insert(
         path.to_vec(),

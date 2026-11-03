@@ -139,7 +139,7 @@ The commands named in decision #218.
 | `git diff --raw`, `-z`, `--full-index`, `--abbrev[=<n>]`, `--no-abbrev`, `--src-prefix`, `--dst-prefix`, `--no-prefix`, `-a` (`--text`), `-R`, `--diff-filter=<kinds>`, `-s` (`--no-patch`), `-p` | same | git home: supported | Git's output. `--raw` shows an id of zeros for a work tree file; `-z` ends the records of `--raw`, `--name-only`, `--name-status` and `--numstat` with NUL; `--raw` ids are shortened to seven digits unless `--abbrev=<n>` (at least 4) says otherwise, and `index` lines follow the [abbreviation policy](#log-on-a-git-home); `-R` swaps the sides and the `a/` and `b/` prefixes; `--diff-filter` takes upper case letters to keep and lower case to leave out (`*` and `log` are a usage error); `diff.noprefix` is read (not `diff.mnemonicPrefix`). `-p` joins `--stat`, `--shortstat`, `--numstat`, `--raw` and `--dirstat` (`--patch-with-stat` and `--patch-with-raw` too), a stat then a blank line then the patch; with `--name-only`, `--name-status` or `--check` it is a usage error (`129`), as is `-s` with another format. `-u`, `--binary` and `--irreversible-delete` are a usage error (`129`). |
 | `git diff --word-diff[=plain\|color\|porcelain\|none]`, `--word-diff-regex=<regex>`, `--color-words[=<regex>]` | same | git home: supported | Git's word diff of each run of changed lines; words are runs of non-space characters, or the matches of an extended regular expression (`diff.wordRegex` too; matches never span a line). Output of `--word-diff=color` is colored whatever `color.ui` says. In `diff`, `show`, `log -p` and `stash show`. |
 | `git diff --color[=always\|never\|auto]`, `--no-color`, `--ws-error-highlight=<kinds>` | same | git home: supported | Git's colors for the headers, hunk headers, lines, whitespace errors, `--stat` and `--check`, and for the `commit` line of `show` and `log` (decorations and `--graph` are a usage error with color, `129`). `color.diff`, `color.ui` (`auto` is off when standard output is not a terminal), `color.diff.<slot>` (`meta`, `frag`, `func`, `old`, `new`, `context`, `whitespace`, `commit`), `core.whitespace` and `diff.wsErrorHighlight` are read; `--color-moved` is a usage error (`129`). |
-| `git diff --no-index [<path> <path>]` | same | supported | Compares two files, a file with the same-named file in a directory, or two directories recursively, in or out of a repository; with two existing paths and no repository `--no-index` is implied. Exits `1` when they differ. A path of `/dev/null` is an empty side. File and directory under one name, standard input (`-`), `-C` and `-B` are a usage error (`129`). The output is git's, including the names in `--stat` (`{d1 => d2}/f`) and `--raw` (zero ids for changed files); git 2.43 prefixes the current folder to the names `--summary` lists when run in a subfolder of a repository; pyn does not, as newer git. |
+| `git diff --no-index [<path> <path>]` | same | supported | Compares two files, a file with the same-named file in a directory, or two directories recursively, in or out of a repository; with two existing paths and no repository `--no-index` is implied. Exits `1` when they differ. A path of `/dev/null` is an empty side. File and directory under one name, standard input (`-`), `-C` and `-B` are a usage error (`129`). Files inside the repository's work tree are compared in their converted form, as git does (see [Attributes and line endings](#attributes-and-line-endings)). The output is git's, including the names in `--stat` (`{d1 => d2}/f`) and `--raw` (zero ids for changed files); git 2.43 prefixes the current folder to the names `--summary` lists when run in a subfolder of a repository; pyn does not, as newer git. |
 | `git diff --stat=<width>[,<name-width>[,<count>]]`, `--stat-width`, `--stat-name-width`, `--stat-graph-width`, `--stat-count`, `--compact-summary`, `--dirstat[=<params>]`, `--dirstat-by-file`, `--cumulative` | same | git home: supported | Git's diffstat layout (the terminal width is `COLUMNS`, else 80; `diff.statGraphWidth` is read), `...` for files left out by the count, `(new)`, `(gone)`, `(mode +x)` and the like with `--compact-summary` (which implies `--stat`), and the share of the change per folder for `--dirstat` (`changes`, `lines` and `files` measures, `cumulative`, a cut-off). `--dirstat` by changes counts bytes by git's line chunks: the last chunk of a file with no final newline is counted by git 2.55 and not by 2.43. Also in `show`, `log` and `stash show` (not `log --patch-with-stat`). A `--stat` option does not combine with `--numstat`, `--shortstat`, `--name-only`, `--name-status`, `--check` or `--raw` (usage error, `129`). |
 | `git diff -M[<n>]`, `--find-renames[=<n>]`, `-C[<n>]`, `--find-copies[=<n>]`, `--find-copies-harder`, `-B[<n>][/<m>]`, `--break-rewrites[=<n>][/<m>]`, `--no-renames`, `-l<n>`, `--summary` | same | git home: supported | Rename, copy and rewrite detection and the `--summary` lines, as git does them; also in `show`, `log` and `stash show`. See [Rename and copy detection](#rename-and-copy-detection). `-B` is a usage error (`129`) together with a combined diff, `--no-index`, color, `--word-diff`, whitespace options, `--check` and `--dirstat`. |
 | `git show [<commit>...] [-- <path>...]` | `pyn show [<commit>...] [-- <path>...]` | different | Commit header (`commit`, `Author:`, `Date:`), message, then the commit's diff. The newest commit if none is named. The author line carries the email. On a git home the output is git's, with a merge commit shown as a combined diff (see [Merge commits in `show` and `log`](#merge-commits-in-show-and-log)): it takes several commits, and paths (after `--`, or existing ones) limit each diff. A commit that changes none of the paths still prints its header, as git 2.55 does (git 2.43 and 2.56 leave it out; the tests accept both). A pyn server takes one commit and no paths (usage error, `129`). |
@@ -183,7 +183,7 @@ Commands people reach for that are not in the daily set.
 | `git ls-tree [<rev>] [<path>]` | `pyn ls [<path>]` | different | One folder with each entry's mode, last change and lock. Head only; no revision argument. On a git home `pyn ls` lists `HEAD`'s tree, with no last change, and `pyn ls-tree` is git's command; see [Inspection commands](#inspection-commands). |
 | `git verify-commit [-v] [--raw] <commit>...`, `git verify-tag [-v] [--raw] <tag>...` | same | git home: supported | Check the signature with the configured program and exit `1` when any is missing or not good (see [Signing](#signing)); `verify-tag --format` is not built. They need a git repository. |
 | `git cat-file`, `git show <rev>:<path>` | `pyn get <path>` | different | See `show` above. On a git home `pyn cat-file` is git's command; see [Inspection commands](#inspection-commands). |
-| `git rev-parse`, `git show-ref`, `git shortlog`, `git describe`, `git name-rev` | the same names on a git home | git home only | See [Inspection commands](#inspection-commands). On a pyn server they fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
+| `git rev-parse`, `git show-ref`, `git shortlog`, `git describe`, `git name-rev`, `git check-attr` | the same names on a git home | git home only | See [Inspection commands](#inspection-commands). On a pyn server they fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
 | `git config --list`, `--get <key>`, `<key> <value>` | `pyn config --list`, `--get`, `<key> <value>` | git home: supported | Git's flag forms, on git's own config files, with git's output and exit statuses. See [Config flag forms](#config-flag-forms). |
 | `pyn config list`, `get`, `set`, `init` | the same | pyn only | The subcommands read and write pyn's own settings (`server`, `repo`, `user`), a different store from git config. `--global` and `--local` are accepted where they apply (`set` takes both, the default being `--local`, the workspace or git repository). `pyn config init` prompts for the user settings. |
 | `git config --remove-section`, `--rename-section`, `-e`, `--blob`, `--type`, `--bool`, `--get-regexp`, `--show-origin`, `-z` and value patterns | none | unsupported | Usage error (`129`). |
@@ -956,15 +956,17 @@ whatever the rules say.
 
 ### Attributes and line endings
 
-`pyn-gitwork` has one attributes engine, shared by every command that needs it. It reads the global attributes file
+`pyn-gitwork` has one attributes engine, shared by every command that needs it. It reads the system attributes file
+(`/etc/gitattributes`, skipped when `GIT_ATTR_NOSYSTEM` is set), the global attributes file
 (`core.attributesFile`, else `$XDG_CONFIG_HOME/git/attributes`, else `~/.config/git/attributes`), every `.gitattributes` from the
-work tree root down to the path's folder (a deeper file wins, and a later line wins within a file) and `.git/info/attributes`
+work tree root down to the path's folder (from `HEAD`'s tree in a bare repository; git versions differ on that default, `--source HEAD` is the same everywhere) (a deeper file wins, and a later line wins within a file) and `.git/info/attributes`
 (which wins over all of them). Patterns follow git: a pattern without a slash matches names at any depth below its file,
 others are anchored to it, `**` and character classes work, `core.ignoreCase` folds case, negative (`!`) and folder-only
 (`dir/`) patterns are ignored, and a symbolic link named `.gitattributes` is not read. Attribute states are set, unset
 (`-name`), reset (`!name`) and valued (`name=value`); `[attr]` macros are defined in the top-level `.gitattributes`,
-`info/attributes` and the global file only, and the built-in `binary` macro is `-diff -merge -text`. The system-wide
-attributes file is not read (its place depends on how git was built).
+`info/attributes`, the global file and the system file only, and the built-in `binary` macro is `-diff -merge -text`. The system
+file sits where a distribution's git puts it; a git built with another prefix looks under that prefix, which pyn does not follow.
+`pyn check-attr` and `pyn ls-files --eol` show what the engine decides, see [Inspection commands](#inspection-commands).
 
 Conversion follows git's `convert.c`. `text`, `text=auto`, `eol`, the legacy `crlf`, `core.autocrlf` (`true`, `input`),
 `core.eol` and `core.safecrlf` (`true`, `warn` by default, `false`) decide what `add` stores and what a checkout writes:
@@ -977,16 +979,22 @@ exit `128`; with `warn` it prints `warning: in the working copy of '<path>', ...
 touches it`. Warnings are only printed when something is written to the object store.
 
 These apply to `add`, `commit -a`, `stash`, `status`, `diff`, `ls-files -m`, `add -p`, `rm` and `mv` (through the index
-comparison), and to every command that writes work tree files (`switch`, `checkout`, `restore`, `reset --hard`, `merge`,
+comparison), `blame` (the work tree file, or `--contents`, is converted to the repository form before its lines are compared)
+and `diff --no-index` (a file inside the work tree of the repository you are in is converted by the attributes of its path), and to every command that writes work tree files (`switch`, `checkout`, `restore`, `reset --hard`, `merge`,
 `cherry-pick`, `revert`, `rebase`, `stash apply`, `clone`, `pull`), including conflict files. A `.gitattributes` that a checkout
 brings in applies to the files written after it, and to itself. `status` and `diff` compare the converted work tree file with the
 index, so a repository that relies on conversions shows no phantom changes. `-diff` makes a file binary in `diff` and `diff` forces text.
 
+`pyn convert --home git` keeps a work tree file's stat data in the new index only when its converted form is the committed blob.
+
 Not built: `working-tree-encoding`, `-X renormalize` and `add --renormalize`,
-`export-ignore`/`export-subst`, the `merge` and `whitespace` attributes, `diff=<driver>` and `textconv`, and `.gitattributes` read
-from a tree rather than the work tree (bare repositories, `--source`). `core.autocrlf` and the attributes are not applied to
-`diff --no-index`. Covered by `crates/pyn-cli/tests/git_attributes.rs`, which compares blob ids, work tree bytes and `status`
-and `diff` output with git (#273).
+`export-ignore`/`export-subst`, the `merge` and `whitespace` attributes, `diff=<driver>` and `textconv`, `attr.tree` and
+`GIT_ATTR_SOURCE` (`check-attr --source` takes a tree), and `diff --no-index` outside the work tree of a repository
+applies no conversion (git applies `core.autocrlf` from the global config there). Covered by
+`crates/pyn-cli/tests/git_attributes.rs`, which compares blob ids, work tree bytes and `status`
+and `diff` output with git (#273), and `crates/pyn-cli/tests/git_check_attr.rs` (`check-attr`, `ls-files --eol`, attributes read
+from the index and trees, `blame` and `diff --no-index`). The system attributes file is not covered by a test, as it lives
+outside the test sandbox.
 
 #### Filter drivers
 
@@ -2583,7 +2591,7 @@ What differs, all of it refused or documented rather than silently different:
 | Not built (usage error `129`) | `-M`, `-C`, `--incremental`, `-L :<funcname>`, `--ignore-rev`, `--ignore-revs-file`, `--reverse`, `--show-stats`, `--progress`, `--score-debug`, `--color-lines`, `--color-by-age`, `--minimal`, `--diff-algorithm`, `-S`, abbreviated long options, `<a>...<b>`, the other revision-list options, and `--date=human`, `local`, `format:...` and `auto:...`. |
 | Refused (`128`) | `diff.algorithm` other than `myers`. |
 | Abbreviation length | The [abbreviation policy](#log-on-a-git-home) (`core.abbrev`, else the object-count default), grown until the abbreviation of every blamed commit is unique, plus one for the boundary mark. |
-| Content filters | `textconv` is not applied. The line-ending conversion of the work tree file is not applied to the lines `blame` reads from it. |
+| Content filters | `textconv` is not applied. The work tree file (or `--contents`) is converted to its repository form first, so a file that differs only in line endings the attributes convert is not blamed on the work tree. |
 | Commit encodings | Author names and subjects are printed as stored, without re-encoding from an `encoding` header. |
 | Renames | The single added path is matched as git's rename detection would, but `diff.renameLimit` is not applied. |
 
@@ -2657,7 +2665,7 @@ cannot be written) and the resulting files match git; edits keep every other lin
 
 ### Inspection commands
 
-`rev-parse`, `ls-files`, `ls-tree`, `cat-file`, `show-ref`, `shortlog`, `describe` and `name-rev` print what git prints, byte for
+`rev-parse`, `ls-files`, `ls-tree`, `cat-file`, `show-ref`, `shortlog`, `describe`, `name-rev` and `check-attr` print what git prints, byte for
 byte, with git's exit statuses; `crates/pyn-cli/tests/git_plumbing.rs` compares each with the real git on the same repository
 (SHA-1 and SHA-256, loose and packed objects, from the root and from folders). They read the repository and never write it.
 Options that are not listed here are a usage error (`129`), where git would accept them. Outside a git repository they fail
@@ -2666,7 +2674,8 @@ with `fatal: not a git repository (or any of the parent directories): .git` (`12
 | Command | Supported |
 | --- | --- |
 | `rev-parse` | `<rev>` in any form `log` takes, plus `^{}`, `^{commit}`, `^{tree}`, `^{blob}`, `^{tag}`, `^{object}`, `<tree-ish>:<path>` (also `./` and `../` paths), `:<path>` and `:<n>:<path>` for the index, `^<rev>`, `<a>..<b>`, `<a>...<b>`, `<rev>^@`, `<rev>^!`; `--verify`, `-q`, `--short[=<n>]`, `--abbrev-ref[=strict\|loose]`, `--symbolic`, `--symbolic-full-name`, `--git-dir`, `--absolute-git-dir`, `--git-common-dir`, `--show-toplevel`, `--show-prefix`, `--show-cdup`, `--is-inside-work-tree`, `--is-inside-git-dir`, `--is-bare-repository`, `--is-shallow-repository`, `--show-object-format`, `--all`, `--branches`, `--tags`, `--remotes`. Options act on the revisions after them, as in git; a name that is no revision is printed back and must be a file. |
-| `ls-files` | `-c`, `-d`, `-m`, `-o`, `-s`, `-u`, `-i` with `--exclude-standard`, `-t` and `-v` (the `S` tag marks a skip-worktree entry), `--sparse` (accepted, as pyn has no sparse index), `-z`, `--full-name`, `--error-unmatch`, and pathspecs (see [Pathspecs](#pathspecs)). Paths are relative to the current folder, and only that folder is listed unless a pathspec says otherwise. `-m` lists deleted files too, so `-m -d` lists them twice, as git does. |
+| `ls-files` | `-c`, `-d`, `-m`, `-o`, `-s`, `-u`, `-i` with `--exclude-standard`, `-t` and `-v` (the `S` tag marks a skip-worktree entry), `--sparse` (accepted, as pyn has no sparse index), `-z`, `--full-name`, `--error-unmatch`, `--eol` (`i/<index> w/<work tree> attr/<attributes>` before each name, git's column widths; a conflicted path shows the index side of its first stage, as git does), and pathspecs (see [Pathspecs](#pathspecs)). Paths are relative to the current folder, and only that folder is listed unless a pathspec says otherwise. `-m` lists deleted files too, so `-m -d` lists them twice, as git does. |
+| `check-attr` | `[-a\|--all \| <attr>...] [--] <path>...`, `--stdin`, `-z`, `--cached` (`.gitattributes` from the index) and `--source <tree-ish>` (from that tree). Paths are taken from the current folder. Output is `<path>: <attr>: <set\|unset\|unspecified\|<value>>`, or NUL-terminated records with `-z`; `-a` lists the attributes that are not unspecified in the order they were first set. In a bare repository attributes come from `HEAD`'s tree. Usage errors exit `129`, a bad attribute name or tree-ish `128`. |
 | `ls-tree` | `-d`, `-r`, `-t`, `-l`, `-z`, `--name-only`, `--name-status`, `--object-only`, `--full-name`, `--full-tree`, `--abbrev[=<n>]`, and paths. Paths are literal (a `*` is an ordinary character), `:(top)`, `:/` and `:(literal)` are read, and any other magic is git's `pathspec magic not supported by this command` (`128`); `.` and `..` name a folder's contents. |
 | `cat-file` | `-t`, `-s`, `-p`, `-e`, `<type> <object>` (tags are followed to the type), `--batch` and `--batch-check` with git's default format. |
 | `show-ref` | `--head` (shown whatever the other options say, as git documents), `--heads`, `--tags`, `-d`, `-s`/`--hash[=<n>]`, `--abbrev[=<n>]`, `--verify`, `--exists`, `-q`, and patterns that match the end of a ref name on a `/`. |

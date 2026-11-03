@@ -333,13 +333,11 @@ fn write_index(git: &GitHome, head: &ObjectId) -> Result<usize> {
         let mut e = IndexEntry::new(path.clone(), raw_mode(entry.mode), entry.id);
         let file = pyn_gitwork::fs_path(&root, path);
         if let Ok(meta) = std::fs::symlink_metadata(&file) {
-            let bytes = if meta.file_type().is_symlink() {
-                super::stage::link_target(&file).ok()
-            } else {
-                std::fs::read(&file).ok()
-            };
-            if bytes.is_some_and(|b| hash_object(ALGORITHM, Kind::Blob, &b).ok() == Some(entry.id))
-            {
+            let same = git
+                .repo
+                .hash_worktree_entry(path, &file, Some(entry.id))
+                .is_ok_and(|(_, id)| id == entry.id);
+            if same {
                 stat_fields(&mut e, &meta);
             }
             #[cfg(unix)]

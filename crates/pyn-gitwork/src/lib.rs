@@ -22,8 +22,10 @@ mod tree;
 mod wildmatch;
 
 pub use abbrev::Abbreviations;
-pub use attributes::{AttrValue, Attributes, Loader, PathAttributes};
-pub use convert::{Conversion, Converted, SafeCrlf, Settings, ToGit, Unsupported};
+pub use attributes::{
+    AttrValue, Attributes, Loader, PathAttributes, unquote as unquote_c, valid_attribute_name,
+};
+pub use convert::{Conversion, Converted, SafeCrlf, Settings, ToGit, Unsupported, eol_info};
 pub use error::{Error, Result};
 pub use filter::{Driver, External, Filters, Op};
 pub use history::{Log, LogEntry, Walked};
@@ -33,7 +35,7 @@ pub use pathspec::{
     MagicSet, Match, Pathspec, PathspecContext, PathspecError, PathspecOptions, Tracker,
     read_pathspec_file,
 };
-pub use repo::{Head, Repo};
+pub use repo::{AttrSource, Head, Repo};
 pub use safepath::{
     MAX_DEPTH, MAX_PATH_BYTES, Reason, UnsafePath, check_link_target, check_path, check_path_as,
     check_paths,
