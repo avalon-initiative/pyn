@@ -959,7 +959,7 @@ whatever the rules say.
 `pyn-gitwork` has one attributes engine, shared by every command that needs it. It reads the system attributes file
 (`/etc/gitattributes`, skipped when `GIT_ATTR_NOSYSTEM` is set), the global attributes file
 (`core.attributesFile`, else `$XDG_CONFIG_HOME/git/attributes`, else `~/.config/git/attributes`), every `.gitattributes` from the
-work tree root down to the path's folder (from `HEAD`'s tree in a bare repository) (a deeper file wins, and a later line wins within a file) and `.git/info/attributes`
+work tree root down to the path's folder (from `HEAD`'s tree in a bare repository; git versions differ on that default, `--source HEAD` is the same everywhere) (a deeper file wins, and a later line wins within a file) and `.git/info/attributes`
 (which wins over all of them). Patterns follow git: a pattern without a slash matches names at any depth below its file,
 others are anchored to it, `**` and character classes work, `core.ignoreCase` folds case, negative (`!`) and folder-only
 (`dir/`) patterns are ignored, and a symbolic link named `.gitattributes` is not read. Attribute states are set, unset

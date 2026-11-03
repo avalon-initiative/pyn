@@ -282,9 +282,13 @@ fn check_attr_in_a_bare_repository_reads_head() {
             ],
         );
         fs::write(bare.join("info/attributes"), "*.txt late=1\n").unwrap();
-        let mut args = vec!["check-attr", "-a", "--"];
+        // Git versions differ on reading HEAD by default in a bare repository, so compare only the explicit form.
+        let mut args = vec!["check-attr", "-a", "--source", "HEAD", "--"];
         args.extend(PATHS);
         rig.same(&bare, &args, b"");
+        let mut default = vec!["check-attr", "-a", "--"];
+        default.extend(PATHS);
+        assert_eq!(rig.pyn(&bare, &default, b"").code, 0);
         rig.same(
             &bare,
             &["check-attr", "--source", "HEAD", "eol", "--", "a.txt"],
