@@ -33,6 +33,8 @@ pub struct AddOptions {
     pub verbose: bool,
     pub force: bool,
     pub intent_to_add: bool,
+    /// Stage every tracked file again through the clean conversion (implies `update`).
+    pub renormalize: bool,
 }
 
 pub(super) fn raw_mode(mode: FileMode) -> u32 {
@@ -463,6 +465,15 @@ pub(super) fn stage_file(
     path: &[u8],
     existing: Option<&IndexEntry>,
 ) -> Result<IndexEntry> {
+    stage_file_with(git, path, existing, false)
+}
+
+pub(super) fn stage_file_with(
+    git: &GitHome,
+    path: &[u8],
+    existing: Option<&IndexEntry>,
+    renormalize: bool,
+) -> Result<IndexEntry> {
     let file = fs_path(git.repo.root()?, path);
     let meta =
         std::fs::symlink_metadata(&file).with_context(|| format!("reading {}", file.display()))?;
@@ -484,9 +495,9 @@ pub(super) fn stage_file(
     let bytes = if mode == FileMode::Symlink {
         link_target(&file)?
     } else {
-        let clean = git
-            .repo
-            .read_clean(path, &file, existing.map(|e| e.id), true)?;
+        let clean =
+            git.repo
+                .read_clean_with(path, &file, existing.map(|e| e.id), true, renormalize)?;
         for warning in &clean.warnings {
             eprintln!("warning: {warning}");
         }
@@ -558,7 +569,7 @@ fn apply(
     git: &GitHome,
     entries: &mut Entries,
     ops: &BTreeMap<Vec<u8>, Op>,
-    (dry_run, verbose, intent): (bool, bool, bool),
+    (dry_run, verbose, intent, renormalize): (bool, bool, bool, bool),
 ) -> Result<()> {
     let is_tracked = |entries: &Entries, path: &Vec<u8>| {
         (0..=3).any(|s| entries.contains_key(&(path.clone(), s)))
@@ -587,7 +598,7 @@ fn apply(
                             .filter_map(|stage| entries.get(&(path.clone(), stage)))
                             .find(|entry| entry.mode == GITLINK)
                     });
-                    let mut entry = stage_file(git, path, existing)?;
+                    let mut entry = stage_file_with(git, path, existing, renormalize)?;
                     if intent {
                         entry.id = git.repo.objects().write(ObjectKind::Blob, b"")?;
                         entry.intent_to_add = true;
@@ -641,8 +652,16 @@ pub fn add(git: &GitHome, cwd: &Path, options: &AddOptions) -> Result<bool> {
             );
         }
     }
-    let plan = plan(git, &opened.index, &specs, options.update, options.force)?;
-    if options.update {
+    let update = options.update || options.renormalize;
+    let mut plan = plan(git, &opened.index, &specs, update, options.force)?;
+    if options.renormalize {
+        for e in &opened.index.entries {
+            if e.stage == 0 && e.mode != GITLINK && specs.spec.matches(&e.path) {
+                plan.ops.entry(e.path.clone()).or_insert(Op::Put);
+            }
+        }
+    }
+    if update {
         let tracked = opened.index.entries.iter().map(|e| e.path.as_slice());
         // git 2.55 words an attr pathspec that takes nothing from the index differently
         if let Some(n) = specs
@@ -681,7 +700,12 @@ pub fn add(git: &GitHome, cwd: &Path, options: &AddOptions) -> Result<bool> {
         git,
         &mut entries,
         &plan.ops,
-        (options.dry_run, options.verbose, options.intent_to_add),
+        (
+            options.dry_run,
+            options.verbose,
+            options.intent_to_add,
+            options.renormalize,
+        ),
     )?;
     if !options.dry_run && !plan.ops.is_empty() {
         git.save_index(&opened, &index_of(opened.index.version, entries))?;
@@ -962,7 +986,7 @@ pub(super) fn stage_working(
         let known: HashSet<&[u8]> = index.entries.iter().map(|e| e.path.as_slice()).collect();
         plan.ops.retain(|path, _| !known.contains(path.as_slice()));
     }
-    apply(git, entries, &plan.ops, (false, false, false))?;
+    apply(git, entries, &plan.ops, (false, false, false, false))?;
     Ok(!plan.ops.is_empty())
 }
 

@@ -215,6 +215,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             verbose,
             force,
             intent_to_add,
+            renormalize,
             ..
         } => {
             let options = stage::AddOptions {
@@ -224,6 +225,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                 verbose,
                 force,
                 intent_to_add,
+                renormalize,
             };
             if stage::add(git, cwd, &options)? {
                 std::process::exit(1);

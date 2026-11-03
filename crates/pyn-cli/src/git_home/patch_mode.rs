@@ -676,7 +676,7 @@ fn write_file(
     if mode.worktree {
         let result = c.apply(mode.reverse, c.sides.worktree.as_ref(), "working directory")?;
         if let Some((m, _)) = &result {
-            convert::refuse_conversions(git, [(c.path.as_slice(), *m)])?;
+            convert::refuse_unsupported(git, [(c.path.as_slice(), *m)])?;
         }
         match result {
             Some((m, bytes)) => {

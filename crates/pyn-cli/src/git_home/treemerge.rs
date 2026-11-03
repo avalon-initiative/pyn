@@ -138,15 +138,18 @@ pub(super) fn both_present(
     if o.id == t.id {
         return Ok(Resolved::Take(Some(Entry { mode, id: o.id })));
     }
-    if settings.renormalize {
-        convert::refuse_renormalize(git, at.path)?;
-    }
     *line_merged = true;
     let base = match b {
         Some(b) => git.repo.blob(&b.id)?,
         None => Vec::new(),
     };
     let (ours, theirs) = (git.repo.blob(&o.id)?, git.repo.blob(&t.id)?);
+    let (base, ours, theirs) = if settings.renormalize {
+        let norm = |bytes: &[u8]| convert::renormalize(git, at.path, bytes);
+        (norm(&base)?, norm(&ours)?, norm(&theirs)?)
+    } else {
+        (base, ours, theirs)
+    };
     let binary = || match settings.text.favor {
         Some(favor) => {
             let chosen = if favor == Favor::Ours { o } else { t };

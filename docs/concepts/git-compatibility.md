@@ -102,8 +102,9 @@ The commands named in decision #218.
 | `git mv [-f] [-n] [-k] [-v] <source>... <destination>` | `pyn mv ...` | supported | Renames a file or folder, or moves them into an existing folder. On a git home it is git's `mv`; on a pyn server it stages a deletion at the old path and an addition at the new one. See [Removing and moving](#removing-and-moving). |
 | `git add -p` | `pyn add -p` (`--patch`) | git home only | Asks about each hunk with git's answers, see [Choosing hunks](#choosing-hunks). On a pyn server it is a usage error (`129`): a pyn server stages whole files. |
 | `git add -N`, `--intent-to-add` | `pyn add -N` | git home only | Records a new file in the index with empty content and git's intent-to-add flag, so `status` shows ` A`, `diff` shows the file as new and `commit` leaves it out until it is added for real. A tracked path is left alone (a deletion is still staged by a path that names it, `.`, `-A` or `-u`, as git does). Combines with `-n`, `-v`, `-f`, `-u` and `-A`; not with `-p` (usage error, `129`). On a pyn server it is a usage error (`129`). |
+| `git add --renormalize` | `pyn add --renormalize` | git home only | Stages every tracked file under the paths again through the clean conversion (line endings, `ident`, filters), so a changed `.gitattributes` or `core.autocrlf` is applied to what the repository stores; implies `-u`, so new files are left alone, and carriage returns the index blob has are not kept for `text=auto`. `-v` and `-n` list every tracked file. A tracked file missing from the work tree is staged as a removal where git 2.43 stops (`fatal: unable to stat`). On a pyn server it is a usage error (`129`). Covered by `crates/pyn-cli/tests/git_renormalize.rs`. |
 | `git add -i`, `--interactive` | `pyn add -i` | git home only | The menu of status, update, revert, add untracked, patch, diff and help, see [Interactive add](#interactive-add). On a pyn server it is a usage error (`129`). Unmerged paths are listed and handled as git does. |
-| `git add -e`, `--chmod`, `--renormalize` | none | unsupported | Usage error (`129`). A path is a file, a folder or a git pathspec (globs and `:` magic, see [Pathspecs](#pathspecs)), taken relative to where you stand; on a git home `:(attr:...)` selects by attribute, on a pyn server it is refused. |
+| `git add -e`, `--chmod` | none | unsupported | Usage error (`129`). A path is a file, a folder or a git pathspec (globs and `:` magic, see [Pathspecs](#pathspecs)), taken relative to where you stand; on a git home `:(attr:...)` selects by attribute, on a pyn server it is refused. |
 | `git add --pathspec-from-file`, `--pathspec-file-nul` | same | same | Also on `rm`, `reset`, `restore`, `checkout` and `stash push`, see [Pathspecs](#pathspecs). |
 | `git commit -m <msg>` | `pyn commit -m <msg>` | different | Commits what is staged as one unit of work. On a pyn server with the local store (the default for a clone, see [the local store](workspace.md#the-local-store)) it records a local commit and prints `[<branch> <id>] <subject>`; nothing reaches the server until `pyn push`, which publishes it and releases the locks it held. In a `--no-local-store` workspace, and for the path form `pyn commit <path>...`, it is one changeset uploaded to the server at once, so commit and publish are one step (no `push` needed), it releases the locks it held, and the output is `<path> is now at revision N` for each file. On a git home it is a git commit on the current branch (or on a detached `HEAD`, which moves only `HEAD`) and prints `[<branch> <id>] <subject>`, with `detached HEAD` in place of the branch name when detached. `-m` repeats for more paragraphs and is taken as given. Without `-m`, `-F` or `-C` the editor opens on both homes ([lookup order](workspace.md#the-editor): `GIT_EDITOR`, `PYN_EDITOR`, the pyn `editor` setting, `core.editor` on a git home, `VISUAL`, `EDITOR`, then `vi`, which is only started when stdin and the terminal are real: otherwise exit `128` naming `-m`, `-F` and `PYN_EDITOR`) on `COMMIT_EDITMSG` (`.git/COMMIT_EDITMSG` on a git home, `.pyn/local_only/COMMIT_EDITMSG` on a pyn server): an empty first line, git's "Please enter the commit message" lines, the branch and the staged changes in `#` lines; lines starting with `#` are dropped. A git home also lists the unstaged and untracked paths and opens the editor for `-e`, `--amend`, a merge or squash in progress and `--cleanup` as git does, see [The commit editor on a git home](#the-commit-editor-on-a-git-home); a pyn server opens it only when no message is given and refuses `-e`. On a git home `prepare-commit-msg` sees the template and `commit-msg` the edited message. A message that is empty after that cleanup (from the editor, `-m ""`, only blanks or `#` lines, or an empty `-F` file) aborts with `Aborting commit due to empty commit message.` and exit `1`, on both homes; a git home still takes `--allow-empty-message`. A merge in progress keeps its own message. Nothing staged exits `1` with a message and never opens the editor. |
 | `git commit -a`, `-am <msg>` | `pyn commit -a`, `-am <msg>` | same | Stages every changed tracked file, deletions included, then commits; new files are not included. Both homes. |
@@ -987,7 +988,7 @@ index, so a repository that relies on conversions shows no phantom changes. `-di
 
 `pyn convert --home git` keeps a work tree file's stat data in the new index only when its converted form is the committed blob.
 
-Not built: `working-tree-encoding`, `-X renormalize` and `add --renormalize`,
+Not built: `working-tree-encoding`,
 `export-ignore`/`export-subst` (there is no `archive`), the built-in language `diff=` drivers (`cpp`, `python` and the
 rest, which supply `funcname` patterns), `diff.<name>.command`, `diff.<name>.wordRegex`, `diff.<name>.cachetextconv`,
 the `whitespace` attribute in `apply`, `attr.tree` and
@@ -1047,9 +1048,7 @@ the content unfiltered with `error: external filter ... failed`, unless `filter.
 too, as in git.
 
 Not built: the `delay` capability (pyn does not advertise it, so a filter never delays a file), the `ref`, `treeish` and `blob`
-metadata that git sends with `smudge` requests, filters in `apply` and the patch-mode commands that write the work tree
-(`checkout -p`, `restore -p`), which stop for such a path (see [What pyn will not write](#what-pyn-will-not-write)),
-`-X renormalize` through a filter, and `restore` rewrites every matching path rather than only the changed ones, which a
+metadata that git sends with `smudge` requests, and `restore` rewrites every matching path rather than only the changed ones, which a
 `smudge` that does not invert `clean` makes visible. Covered by `crates/pyn-cli/tests/git_filters.rs`, which compares blob
 ids, work tree bytes, `status`, `diff` and exit status class with git (#628).
 
@@ -1803,7 +1802,7 @@ fast-forward or an up-to-date merge. The options of the tree strategies (`ort`, 
 | `subtree[=<path>]` | Shifts as `-s subtree` does; with a path, only that folder is tried, in either direction. |
 | `diff-algorithm=myers\|default\|minimal`, `no-renormalize` | Accepted; pyn has one diff. |
 | `no-renames`, `find-renames[=<n>]`, `rename-threshold=<n>` | Turn rename detection off or on, and set its similarity threshold (`50%` by default, written as for `diff -M`); see [Renames in a merge](#renames-in-a-merge). |
-| `renormalize` | Accepted when no path being merged has a conversion (line endings, `ident`, a filter or `working-tree-encoding`), since then it changes nothing; otherwise the merge is refused with nothing changed (`128`) because pyn does not renormalize the sides (#273). |
+| `renormalize` | Before each three-way content merge, the base and both sides are converted to the work tree form and back through the path's line endings, `ident` and filter, so changes that differ only in conversion merge cleanly; the result is in repository form. Also for `cherry-pick`, `revert`, `rebase` and `pull`, which take `-X`. A path with `working-tree-encoding` is refused with nothing changed (`128`). Covered by `crates/pyn-cli/tests/git_renormalize.rs`. |
 | `patience`, `histogram`, `diff-algorithm=patience\|histogram` | Usage error (`129`): only the Myers diff is built. |
 
 `pull.twohead` names the strategy when no `-s` is given (git reads it for `merge` too); several names in it are refused like several `-s`.
@@ -2840,9 +2839,9 @@ patch to it, and merges the result with the current tree as `cherry-pick` merges
 ### What pyn will not write
 
 Any command that would write a work tree file with `working-tree-encoding` (other than UTF-8) stops first and changes
-nothing (exit `128`, naming the path), because pyn does not apply it. `apply` and the patch-mode commands that write the work
-tree (`checkout -p`, `restore -p`) also stop for a path whose line endings, `ident` or filter git would convert, since they
-copy bytes as they are. Filters run as described in [Filter drivers](#filter-drivers).
+nothing (exit `128`, naming the path), because pyn does not apply it. Line endings, `ident` and filters are applied by every
+writer, including `apply` and the patch modes of `checkout` and `restore`, which read the work tree file in repository form,
+patch it and write it back converted. Filters run as described in [Filter drivers](#filter-drivers).
 The hooks pyn does not run yet (see [Client hooks](#client-hooks)) draw one warning naming the ones that exist
 for the command. The split index, a sparse index and `GIT_DIR` are not supported, and the commands that talk to a remote are `ls-remote`, `fetch`, `pull`, `push`, `clone`, `remote show`, `update` and `prune`, and the submodule commands that clone or fetch (see [Transports and credentials](#transports-and-credentials)).
 
