@@ -70,7 +70,7 @@ published on loopback by default (`PYN_PUBLISH` in `.env`), so only a reverse pr
 ### The web app
 
 The web app is its own image, `ghcr.io/avalon-initiative/pyn-web:<tag>`, released with the same tag scheme as `pyn-core`. It serves the
-app and proxies `/v1` and `/healthz` to the server, so people use one address. It is optional in the Compose file (profile `web`):
+app and proxies `/v1` and `/healthz` to the server, so people use one address. It is optional in the Compose file (profile `web`); without `PYN_WEB_IMAGE` the profile cannot pull an image, and a server-only deployment never reads it:
 
 ```
 # in .env
