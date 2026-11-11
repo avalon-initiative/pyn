@@ -959,6 +959,8 @@ fn diff(
     repo.validate_diff_ignore_submodules()?;
     let modules = repo.submodules();
     let (mut old, mut new) = (Tree::new(), Tree::new());
+    let mut format = format.clone();
+    let names = format.kind == diff::Kind::NameStatus && !format.summary;
     match revs.as_slice() {
         [] | [_] if cached => {
             let tree = match revs.first() {
@@ -980,6 +982,12 @@ fn diff(
             for (path, e) in &staged {
                 if let Some(b) = entry_blob(e) {
                     new.insert(path_string(path), b);
+                }
+            }
+            if names {
+                for path in unmerged_paths(&index, &spec) {
+                    old.remove(&path);
+                    format.unmerged.push(path);
                 }
             }
         }
@@ -1004,7 +1012,28 @@ fn diff(
                     new.insert(name, b);
                 }
             }
-            if wants_harder(git, format) {
+            if names {
+                for path in unmerged_paths(&index, &spec) {
+                    let ours = index
+                        .entries
+                        .iter()
+                        .find(|e| e.stage == 2 && path_string(&e.path) == path);
+                    if let Some(e) = ours {
+                        let recorded = Entry {
+                            mode: stage::leaf_mode(e.mode),
+                            id: e.id,
+                        };
+                        if let Some(b) = entry_blob(&recorded) {
+                            old.insert(path.clone(), b);
+                        }
+                        if let Some(b) = disk_blob(git, &modules, &e.path, Some(&recorded))? {
+                            new.insert(path.clone(), b);
+                        }
+                    }
+                    format.unmerged.push(path);
+                }
+            }
+            if wants_harder(git, &format) {
                 let skipped: BTreeSet<&Vec<u8>> = index
                     .entries
                     .iter()
@@ -1063,7 +1092,7 @@ fn diff(
                 &mut new,
                 &repo.diff_trees(Some(&ta), Some(&tb), &spec)?,
             )?;
-            if wants_harder(git, format) {
+            if wants_harder(git, &format) {
                 add_unchanged(git, (&mut old, &mut new), (Some(&ta), Some(&tb)), &spec)?;
             }
         }
@@ -1071,12 +1100,22 @@ fn diff(
     }
     filter_gitlinks(&modules, &mut old, &mut new)?;
     let mut out = String::new();
-    let differs = diff::compare(git, &old, &new, &[], format, &mut out)?;
+    let differs = diff::compare(git, &old, &new, &[], &format, &mut out)?;
     if !quiet {
         emit(&out);
-        diff::exit_if_check_failed(format, &out);
+        diff::exit_if_check_failed(&format, &out);
     }
     Ok(differs)
+}
+
+/// The paths with conflict stages in `index` that `spec` selects.
+fn unmerged_paths(index: &pyn_git::Index, spec: &Pathspec) -> BTreeSet<String> {
+    index
+        .entries
+        .iter()
+        .filter(|e| e.stage > 0 && spec.matches(&e.path))
+        .map(|e| path_string(&e.path))
+        .collect()
 }
 
 pub(super) fn message_lines(message: &[u8]) -> Vec<String> {

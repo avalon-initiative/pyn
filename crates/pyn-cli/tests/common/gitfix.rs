@@ -108,6 +108,11 @@ impl Repo {
         let root = tmp.path().canonicalize().unwrap();
         let (main, home) = (root.join("main"), root.join("home"));
         fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(".gitconfig"),
+            "[merge]\n\tconflictStyle = diff3\n",
+        )
+        .unwrap();
         copy_tree(&fixtures().join("merge/worktree"), &main);
         copy_tree(
             &fixtures().join("merge").join(format).join("dot-git"),
@@ -127,6 +132,11 @@ impl Repo {
         let root = tmp.path().canonicalize().unwrap();
         let (main, linked, home) = (root.join("main"), root.join("linked"), root.join("home"));
         fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(".gitconfig"),
+            "[merge]\n\tconflictStyle = diff3\n",
+        )
+        .unwrap();
         copy_tree(&fixtures().join("worktree"), &main);
         copy_tree(&fixtures().join(format).join("dot-git"), &main.join(".git"));
         copy_tree(&fixtures().join("linked"), &linked);

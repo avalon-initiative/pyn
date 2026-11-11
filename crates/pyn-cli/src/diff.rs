@@ -121,6 +121,8 @@ pub struct Format {
     pub with_patch: bool,
     /// Only the pairs whose new path is listed, applied after rename detection (the pickaxe's choice).
     pub kept: Vec<String>,
+    /// Unmerged paths, listed as `U` by `--name-status`.
+    pub unmerged: Vec<String>,
 }
 
 impl Format {
@@ -898,6 +900,21 @@ pub fn compare(
         (old, new)
     };
     let mut list = pairs(backend, old, new, only, opts.as_ref())?;
+    if format.kind == Kind::NameStatus && !format.summary {
+        list.extend(format.unmerged.iter().map(|path| Pair {
+            old_path: path.clone(),
+            new_path: path.clone(),
+            old: None,
+            new: None,
+            moved: None,
+            rewrite: None,
+            detached: false,
+        }));
+        list.sort_by(|a, b| {
+            (&a.new_path, a.old.is_some() || a.new.is_some())
+                .cmp(&(&b.new_path, b.old.is_some() || b.new.is_some()))
+        });
+    }
     if !format.kept.is_empty() {
         list.retain(|p| format.kept.contains(&p.new_path));
     }
@@ -1061,6 +1078,7 @@ pub(crate) fn status_of(p: &Pair) -> String {
         return format!("{}{:03}", if m.copy { 'C' } else { 'R' }, m.percent());
     }
     match (&p.old, &p.new) {
+        (None, None) => "U",
         (None, _) => "A",
         (_, None) => "D",
         (Some(a), Some(b)) if type_changed(a, b) => "T",
@@ -1347,6 +1365,7 @@ pub fn sections(
             summary: false,
             with_patch: false,
             kept: kept.to_vec(),
+            unmerged: Vec::new(),
         };
         differs |= compare(backend, old, new, only, &format, &mut out)?;
         Ok(out)

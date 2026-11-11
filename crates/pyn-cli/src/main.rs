@@ -677,6 +677,7 @@ impl DiffFormat {
             summary: self.summary,
             with_patch: false,
             kept: Vec::new(),
+            unmerged: Vec::new(),
         }
     }
 }
