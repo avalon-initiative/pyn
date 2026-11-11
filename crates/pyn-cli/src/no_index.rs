@@ -67,6 +67,8 @@ struct Ctx<'a> {
     algorithm: Algorithm,
     git: Option<&'a GitHome>,
     index: Option<pyn_git::Index>,
+    /// Applies to files outside the repository's work tree, or with no repository.
+    outside: pyn_gitwork::Conversion,
 }
 
 impl<'a> Ctx<'a> {
@@ -75,12 +77,28 @@ impl<'a> Ctx<'a> {
             algorithm: git.map_or(Algorithm::Sha1, |g| g.algorithm()),
             git,
             index: git.and_then(GitHome::index),
+            outside: crate::git_home::config_conversion(git),
         }
     }
 
     /// The repository form of a regular file when a conversion changes it.
-    fn cleaned(&self, file: &Path) -> Option<Vec<u8>> {
-        self.git?.cleaned_file(file, self.index.as_ref()?)
+    fn cleaned(&self, file: &Path, bytes: &[u8]) -> Option<Vec<u8>> {
+        if let (Some(git), Some(index)) = (self.git, &self.index)
+            && git.in_work_tree(file)
+        {
+            return git.cleaned_file(file, index);
+        }
+        if self.outside.is_identity() {
+            return None;
+        }
+        let name = file.file_name()?.as_encoded_bytes();
+        let opts = pyn_gitwork::ToGit {
+            check_roundtrip: false,
+            renormalize: false,
+            index_blob: &|| None,
+        };
+        let out = self.outside.to_git(name, bytes, &opts).ok()?;
+        Some(out.data.into_owned())
     }
 }
 
@@ -91,7 +109,7 @@ fn blob_at(path: &Path, ctx: &Ctx) -> Result<Blob> {
         mode,
         pyn_object::FileMode::Regular | pyn_object::FileMode::Executable
     );
-    let cleaned = regular.then(|| ctx.cleaned(path)).flatten();
+    let cleaned = regular.then(|| ctx.cleaned(path, &bytes)).flatten();
     let hashed = cleaned.as_deref().unwrap_or(&bytes);
     Ok(Blob {
         hash: pyn_object::hash_object(ctx.algorithm, ObjectKind::Blob, hashed)?.to_hex(),

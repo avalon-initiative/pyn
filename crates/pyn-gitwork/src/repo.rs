@@ -253,26 +253,76 @@ impl Repo {
         if let Some(a) = &*cached {
             return Ok(a.clone());
         }
-        let source = if self.git.work_tree().is_some() {
-            AttrSource::WorkTree
-        } else {
-            match self
-                .head_commit()
-                .ok()
-                .flatten()
-                .and_then(|id| self.commit(&id).ok())
-            {
-                Some(commit) => AttrSource::Tree(commit.tree),
-                None => AttrSource::Nowhere,
-            }
-        };
+        let source = self.default_attr_source()?;
         let attrs = Arc::new(self.attributes_from(&source)?);
         *cached = Some(attrs.clone());
         Ok(attrs)
     }
 
+    /// Where `.gitattributes` files are read from: `GIT_ATTR_SOURCE`, else `attr.tree`, else the work tree
+    /// (`HEAD`'s tree in a bare repository). Only the environment variable fails on a bad name.
+    fn default_attr_source(&self) -> Result<AttrSource> {
+        let named = match std::env::var_os("GIT_ATTR_SOURCE") {
+            Some(v) => Some((v.to_string_lossy().into_owned(), true)),
+            None => self.config.get("attr.tree").map(|v| (v.to_owned(), false)),
+        };
+        if let Some((spec, strict)) = named {
+            return match self.resolve_treeish(&spec) {
+                Ok(Some(tree)) => Ok(AttrSource::Tree(tree)),
+                _ if strict => Err(Error::Invalid(
+                    "bad --attr-source or GIT_ATTR_SOURCE".into(),
+                )),
+                _ if self.git.work_tree().is_some() => Ok(AttrSource::WorkTree),
+                _ => Ok(AttrSource::Nowhere),
+            };
+        }
+        if self.git.work_tree().is_some() {
+            return Ok(AttrSource::WorkTree);
+        }
+        let commit = self.head_commit()?.and_then(|id| self.commit(&id).ok());
+        Ok(commit.map_or(AttrSource::Nowhere, |c| AttrSource::Tree(c.tree)))
+    }
+
+    /// The tree a tree-ish names: a revision, a tree id, `<rev>^{tree}` or `<rev>:<path>`.
+    pub fn resolve_treeish(&self, spec: &str) -> Result<Option<ObjectId>> {
+        let (base, path) = match spec.split_once(':') {
+            Some((b, p)) => (b, Some(p)),
+            None => (spec, None),
+        };
+        let base = base.strip_suffix("^{tree}").unwrap_or(base);
+        let mut tree = match self.resolve(base) {
+            Ok(commit) => self.commit(&commit)?.tree,
+            Err(_) => match ObjectId::from_hex(self.algorithm(), base) {
+                Ok(id)
+                    if self
+                        .objects
+                        .read_opt(&id)?
+                        .is_some_and(|o| o.kind == Kind::Tree) =>
+                {
+                    id
+                }
+                _ => return Ok(None),
+            },
+        };
+        if let Some(path) = path.filter(|p| !p.is_empty()) {
+            match self.entry_at(&tree, path.as_bytes())? {
+                Some(e) if e.mode.is_tree() => tree = e.id,
+                _ => return Ok(None),
+            }
+        }
+        Ok(Some(tree))
+    }
+
     /// The attributes with the per-folder `.gitattributes` files taken from `source`; not cached.
     pub fn attributes_from(&self, source: &AttrSource) -> Result<Attributes> {
+        self.attributes_with_system(source, system_attributes_path())
+    }
+
+    fn attributes_with_system(
+        &self,
+        source: &AttrSource,
+        system: Option<PathBuf>,
+    ) -> Result<Attributes> {
         let read = |path: Option<PathBuf>| match path.map(std::fs::read) {
             Some(Ok(bytes)) => Ok(bytes),
             Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(Error::Io {
@@ -281,7 +331,7 @@ impl Repo {
             }),
             _ => Ok(Vec::new()),
         };
-        let mut global = read(system_attributes_path())?;
+        let mut global = read(system)?;
         if !global.is_empty() && global.last() != Some(&b'\n') {
             global.push(b'\n');
         }
@@ -380,5 +430,33 @@ impl Repo {
                 Some(xdg.join("git/ignore"))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_system_file_has_the_lowest_precedence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        pyn_git::init(&root.join(".git"), false, Algorithm::Sha1, "main").unwrap();
+        let system = root.join("sysattrs");
+        std::fs::write(&system, "*.txt sys=1 keep=1 -text").unwrap();
+        std::fs::write(root.join(".gitattributes"), "*.txt sys=2\n").unwrap();
+        let repo = Repo::open(&root, None, None).unwrap();
+        let read = |system| {
+            let attrs = repo.attributes_with_system(&AttrSource::WorkTree, system);
+            attrs.unwrap().for_path(b"a.txt")
+        };
+        let found = read(Some(system));
+        assert_eq!(found.get("sys").as_str(), Some("2"));
+        assert_eq!(found.get("keep").as_str(), Some("1"));
+        assert!(found.get("text").is_unset());
+        let found = read(Some(root.join("missing")));
+        assert!(found.get("keep").is_unspecified());
+        assert_eq!(found.get("sys").as_str(), Some("2"));
+        assert!(read(None).get("keep").is_unspecified());
     }
 }

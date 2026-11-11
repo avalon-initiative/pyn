@@ -6,6 +6,7 @@ mod gitsrv;
 #[path = "common/oracle.rs"]
 mod oracle;
 
+use std::cell::RefCell;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ use tempfile::{TempDir, tempdir};
 struct Rig {
     _tmp: TempDir,
     root: PathBuf,
+    vars: RefCell<Vec<(String, String)>>,
 }
 
 struct Out {
@@ -38,7 +40,11 @@ impl Rig {
         let tmp = tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("home")).unwrap();
-        Self { _tmp: tmp, root }
+        Self {
+            _tmp: tmp,
+            root,
+            vars: RefCell::new(Vec::new()),
+        }
     }
 
     fn work(&self, name: &str, format: &str, files: &[(&str, &[u8])], info: &str) -> PathBuf {
@@ -57,6 +63,7 @@ impl Rig {
 
     fn exec(&self, mut c: Command, dir: &Path, args: &[&str], stdin: &[u8]) -> Out {
         envs(&mut c, &self.root);
+        c.envs(self.vars.borrow().iter().map(|(k, v)| (k, v)));
         let mut child = c
             .current_dir(dir)
             .args(args)
@@ -79,6 +86,15 @@ impl Rig {
 
     fn git(&self, dir: &Path, args: &[&str], stdin: &[u8]) -> Out {
         self.exec(Command::new("git"), dir, args, stdin)
+    }
+
+    /// Sets (or with `None` removes) an environment variable for the tools run after this.
+    fn var(&self, key: &str, value: Option<&str>) {
+        let mut vars = self.vars.borrow_mut();
+        vars.retain(|(k, _)| k != key);
+        if let Some(v) = value {
+            vars.push((key.to_owned(), v.to_owned()));
+        }
     }
 
     /// Runs both tools; the exit class must match, and the output too (`-a` lines compared as a set).
@@ -212,6 +228,8 @@ fn check_attr_usage_errors_exit_like_git() {
         &["check-attr", "text"],
         &["check-attr", "--", "a.txt"],
         &["check-attr", "text", "--"],
+        &["check-attr", "text", "a.txt", "--"],
+        &["check-attr", "-a", "a.txt", "--"],
         &["check-attr", "-a", "text", "--", "a.txt"],
         &["check-attr", "--stdin", "text", "--", "a.txt"],
         &["check-attr", "bad name", "a.txt"],
@@ -462,6 +480,126 @@ fn blame_and_no_index_diff_convert_work_tree_files() {
                 String::from_utf8_lossy(&want.stdout),
                 "{args:?} {config:?}"
             );
+        }
+    }
+}
+
+fn two_commits(rig: &Rig, format: &str) -> PathBuf {
+    let repo = rig.work("r", format, &sample_files(), "");
+    run(&repo, &["add", "-A"]);
+    run(&repo, &["commit", "-q", "-m", "one"]);
+    fs::write(repo.join("sub/.gitattributes"), "*.txt eol=crlf bar\n").unwrap();
+    run(&repo, &["add", "sub/.gitattributes"]);
+    run(&repo, &["commit", "-q", "-m", "two"]);
+    fs::write(repo.join("sub/.gitattributes"), "*.txt work\n").unwrap();
+    repo
+}
+
+#[test]
+fn git_attr_source_and_attr_tree_pick_the_tree_attributes_are_read_from() {
+    for format in FORMATS {
+        let rig = Rig::new();
+        let repo = two_commits(&rig, format);
+        let query = ["check-attr", "-a", "--", "a.txt", "sub/a.txt", "x.txt"];
+        let eol = ["ls-files", "--eol", "sub/a.txt"];
+        for tree in ["HEAD", "HEAD~1", "HEAD^{tree}", "HEAD~1:sub"] {
+            rig.var("GIT_ATTR_SOURCE", Some(tree));
+            rig.same(&repo, &query, b"");
+            rig.same(&repo, &eol, b"");
+            rig.same(&repo.join("sub"), &["check-attr", "-a", "a.txt"], b"");
+        }
+        // The option beats the variable, and the variable beats the setting.
+        rig.var("GIT_ATTR_SOURCE", Some("HEAD~1"));
+        rig.same(
+            &repo,
+            &["check-attr", "--source", "HEAD", "-a", "a.txt"],
+            b"",
+        );
+        run(&repo, &["config", "attr.tree", "HEAD"]);
+        rig.same(&repo, &query, b"");
+        rig.var("GIT_ATTR_SOURCE", None);
+        rig.same(&repo, &query, b"");
+        rig.same(&repo, &eol, b"");
+        run(&repo, &["config", "attr.tree", "HEAD~1"]);
+        rig.same(&repo, &query, b"");
+        rig.same(&repo, &["check-attr", "--cached", "-a", "a.txt"], b"");
+        // A name that resolves to nothing is an error from the variable and ignored from the setting.
+        run(&repo, &["config", "attr.tree", "nonesuch"]);
+        let out = rig.same(&repo, &query, b"");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("work"));
+        run(&repo, &["config", "--unset", "attr.tree"]);
+        for bad in ["nonesuch", ""] {
+            rig.var("GIT_ATTR_SOURCE", Some(bad));
+            let (got, want) = (rig.pyn(&repo, &query, b""), rig.git(&repo, &query, b""));
+            assert_eq!(want.code, 128, "{bad:?}");
+            assert_eq!(got.code, want.code, "{bad:?}");
+        }
+    }
+}
+
+#[test]
+fn a_bare_repository_with_an_unreadable_head_fails_like_git() {
+    for format in FORMATS {
+        let rig = Rig::new();
+        let bare = rig.root.join("b.git");
+        init(&bare, format, true);
+        fs::write(bare.join("HEAD"), "not a ref\n").unwrap();
+        for args in [
+            vec!["check-attr", "-a", "--", "a.txt"],
+            vec!["check-attr", "--source", "HEAD", "-a", "--", "a.txt"],
+        ] {
+            let (got, want) = (rig.pyn(&bare, &args, b""), rig.git(&bare, &args, b""));
+            assert_eq!(want.code, 128, "{args:?}");
+            assert_eq!(got.code, want.code, "{args:?}");
+        }
+    }
+}
+
+#[test]
+fn no_index_diff_outside_the_work_tree_applies_the_global_autocrlf() {
+    for format in FORMATS {
+        for autocrlf in ["true", "input", "false"] {
+            let rig = Rig::new();
+            fs::write(
+                rig.root.join("home/.gitconfig"),
+                format!("[core]\n\tautocrlf = {autocrlf}\n\tsafecrlf = false\n"),
+            )
+            .unwrap();
+            let outside = rig.root.join("out");
+            fs::create_dir_all(&outside).unwrap();
+            fs::write(outside.join("c"), b"a\r\nb\r\n").unwrap();
+            fs::write(outside.join("d"), b"a\nb\nz\n").unwrap();
+            fs::write(outside.join("e"), b"a\nb\r\n").unwrap();
+            let repo = rig.work("r", format, &[("f", b"x\n")], "");
+            for dir in [&outside, &repo] {
+                for args in [
+                    vec!["diff", "--no-index", "c", "d"],
+                    vec!["diff", "--no-index", "--exit-code", "c", "e"],
+                    vec!["diff", "--no-index", "--raw", "c", "d"],
+                ] {
+                    let (a, b) = if *dir == repo {
+                        (
+                            format!("../out/{}", args[args.len() - 2]),
+                            format!("../out/{}", args[args.len() - 1]),
+                        )
+                    } else {
+                        (
+                            args[args.len() - 2].to_owned(),
+                            args[args.len() - 1].to_owned(),
+                        )
+                    };
+                    let mut args = args[..args.len() - 2].to_vec();
+                    args.extend([a.as_str(), b.as_str()]);
+                    let (got, want) = (rig.pyn(dir, &args, b""), rig.git(dir, &args, b""));
+                    assert_eq!(got.code, want.code, "{args:?} {autocrlf}");
+                    assert_eq!(
+                        String::from_utf8_lossy(&got.stdout),
+                        String::from_utf8_lossy(&want.stdout),
+                        "{args:?} {autocrlf} in {}",
+                        dir.display()
+                    );
+                }
+            }
         }
     }
 }

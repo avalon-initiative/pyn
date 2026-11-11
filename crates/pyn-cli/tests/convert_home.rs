@@ -466,6 +466,19 @@ fn conversion_decides_which_files_the_converted_index_trusts() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let index = open(&ws).read_index().unwrap();
+    let entry = |name: &str| {
+        index
+            .entries
+            .iter()
+            .find(|e| e.path == name.as_bytes())
+            .unwrap()
+    };
+    // A file whose converted form is the committed blob keeps its stat data; one that differs gets none.
+    assert_eq!(entry("lf.txt").size, 4);
+    assert_ne!(entry("lf.txt").mtime, pyn_git::Timestamp::default());
+    assert_eq!(entry("crlf.txt").size, 0);
+    assert_eq!(entry("crlf.txt").mtime, pyn_git::Timestamp::default());
     let status = |tool: &mut Command| {
         let out = tool
             .current_dir(&ws)
