@@ -44,7 +44,7 @@ services:
 
   web:
     profiles: [web]
-    image: ${PYN_WEB_IMAGE:?set PYN_WEB_IMAGE in .env (ghcr.io/avalon-initiative/pyn-web:<tag>)}
+    image: ${PYN_WEB_IMAGE:-ghcr.io/avalon-initiative/pyn-web:set-PYN_WEB_IMAGE}
     restart: unless-stopped
     depends_on:
       - server
