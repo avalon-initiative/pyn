@@ -15,23 +15,31 @@ pub fn status_class(code: i32) -> i32 {
 pub fn blame_lines(out: &[u8]) -> String {
     let text = String::from_utf8_lossy(out);
     let mut result = Vec::new();
-    for line in text.lines() {
+    for raw in text.lines() {
+        let (color, line) = split_color(raw);
         let rest = line.trim_start_matches(['^', '*', '?']);
-        let mark = &line[..line.len() - rest.len()];
+        let mark = format!("{color}{}", &line[..line.len() - rest.len()]);
         let blank = rest.trim_start_matches(' ');
         if rest.starts_with(' ') && (blank.starts_with('(') || blank.starts_with("\t(")) {
-            result.push(format!(" {blank}"));
+            result.push(format!("{color} {blank}"));
             continue;
         }
         let hex = rest.chars().take_while(char::is_ascii_hexdigit).count();
         if hex < 6 {
-            result.push(line.to_string());
+            result.push(raw.to_string());
             continue;
         }
         let tail = rest[hex..].trim_start_matches(' ');
         result.push(format!("{mark}{} {tail}", &rest[..6]));
     }
     result.join("\n")
+}
+
+fn split_color(line: &str) -> (&str, &str) {
+    match line.find('m') {
+        Some(end) if line.starts_with('\u{1b}') => (&line[..=end], &line[end + 1..]),
+        _ => ("", line),
+    }
 }
 
 /// Every run of 7 to 64 hex digits cut to seven, so abbreviation width does not matter.
