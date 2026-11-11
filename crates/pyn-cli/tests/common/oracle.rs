@@ -36,12 +36,10 @@ pub fn blame_lines(out: &[u8]) -> String {
 }
 
 fn split_color(line: &str) -> (&str, &str) {
-    if line.starts_with('\u{1b}') {
-        if let Some(end) = line.find('m') {
-            return (&line[..=end], &line[end + 1..]);
-        }
+    match line.find('m') {
+        Some(end) if line.starts_with('\u{1b}') => (&line[..=end], &line[end + 1..]),
+        _ => ("", line),
     }
-    ("", line)
 }
 
 /// Every run of 7 to 64 hex digits cut to seven, so abbreviation width does not matter.
