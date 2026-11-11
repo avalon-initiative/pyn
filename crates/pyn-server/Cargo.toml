@@ -14,12 +14,12 @@ chrono = "0.4.45"
 clap = "4.6.7"
 hex = "0.4.3"
 hmac = "0.13.0"
-pyn-chunk = { version = "0.0.1", path = "../pyn-chunk" }
-pyn-core = { version = "0.0.1", path = "../pyn-core" }
-pyn-fs = { version = "0.0.1", path = "../pyn-fs" }
-pyn-oidc = { version = "0.0.1", path = "../pyn-oidc" }
-pyn-postgres = { version = "0.0.1", path = "../pyn-postgres" }
-pyn-proto = { version = "0.0.1", path = "../pyn-proto" }
+pyn-chunk = { version = "0.1.0", path = "../pyn-chunk" }
+pyn-core = { version = "0.1.0", path = "../pyn-core" }
+pyn-fs = { version = "0.1.0", path = "../pyn-fs" }
+pyn-oidc = { version = "0.1.0", path = "../pyn-oidc" }
+pyn-postgres = { version = "0.1.0", path = "../pyn-postgres" }
+pyn-proto = { version = "0.1.0", path = "../pyn-proto" }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
