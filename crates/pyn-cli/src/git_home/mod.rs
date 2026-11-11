@@ -235,6 +235,20 @@ fn user_dirs() -> (Option<PathBuf>, Option<PathBuf>) {
     (dir("HOME"), dir("XDG_CONFIG_HOME"))
 }
 
+/// The conversion `core.autocrlf` and `core.eol` give a file no attribute applies to: from the repository's
+/// config, else the global one.
+pub(crate) fn config_conversion(git: Option<&GitHome>) -> pyn_gitwork::Conversion {
+    let settings = match git {
+        Some(g) => pyn_gitwork::Settings::from_config(g.repo.config()),
+        None => {
+            let (home, xdg) = user_dirs();
+            let config = home.and_then(|h| pyn_git::Config::global(&h, xdg.as_deref()).ok());
+            pyn_gitwork::Settings::from_config(&config.unwrap_or_default())
+        }
+    };
+    pyn_gitwork::Conversion::new(settings, &pyn_gitwork::PathAttributes::default())
+}
+
 /// The `.pyn` that belongs to folder `p`: `PYN_DIR` when it names one directly under `p`.
 fn pyn_dir_in(p: &Path) -> Workspace {
     let dir = std::env::var_os("PYN_DIR")
@@ -418,6 +432,14 @@ impl GitHome {
 impl GitHome {
     pub(crate) fn index(&self) -> Option<pyn_git::Index> {
         self.repo.read_index().ok()
+    }
+
+    pub(crate) fn in_work_tree(&self, file: &Path) -> bool {
+        let Ok(cwd) = std::env::current_dir() else {
+            return false;
+        };
+        file.to_str()
+            .is_some_and(|f| self.ws.repo_prefix(&cwd, f).is_ok())
     }
 
     /// The repository form of a regular file inside the work tree when a conversion changes it.

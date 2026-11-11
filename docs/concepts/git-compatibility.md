@@ -962,8 +962,13 @@ whatever the rules say.
 `pyn-gitwork` has one attributes engine, shared by every command that needs it. It reads the system attributes file
 (`/etc/gitattributes`, skipped when `GIT_ATTR_NOSYSTEM` is set), the global attributes file
 (`core.attributesFile`, else `$XDG_CONFIG_HOME/git/attributes`, else `~/.config/git/attributes`), every `.gitattributes` from the
-work tree root down to the path's folder (from `HEAD`'s tree in a bare repository; git versions differ on that default, `--source HEAD` is the same everywhere) (a deeper file wins, and a later line wins within a file) and `.git/info/attributes`
-(which wins over all of them). Patterns follow git: a pattern without a slash matches names at any depth below its file,
+work tree root down to the path's folder (a deeper file wins, and a later line wins within a file) and `.git/info/attributes`
+(which wins over all of them). Where the per-folder files come from follows git: `check-attr --source`, else the `GIT_ATTR_SOURCE`
+environment variable, else the `attr.tree` setting, each naming a tree-ish whose `.gitattributes` files replace the work tree's;
+without one, the work tree, or `HEAD`'s tree in a bare repository (git versions differ on that default, an explicit source is the
+same everywhere). A bad `--source` or `GIT_ATTR_SOURCE` is fatal (`128`), a bad `attr.tree` is ignored, and a bare repository whose
+`HEAD` is unreadable is fatal as well. `--cached` still reads the index. A command that cannot report an error (`diff`'s attribute
+lookups) treats a bad `GIT_ATTR_SOURCE` as no attributes. Patterns follow git: a pattern without a slash matches names at any depth below its file,
 others are anchored to it, `**` and character classes work, `core.ignoreCase` folds case, negative (`!`) and folder-only
 (`dir/`) patterns are ignored, and a symbolic link named `.gitattributes` is not read. Attribute states are set, unset
 (`-name`), reset (`!name`) and valued (`name=value`); `[attr]` macros are defined in the top-level `.gitattributes`,
@@ -992,14 +997,14 @@ index, so a repository that relies on conversions shows no phantom changes. `-di
 
 Not built: `working-tree-encoding`,
 `export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.wordRegex`, `diff.<name>.cachetextconv`,
-the `whitespace` attribute in `apply`, `attr.tree` and
-`GIT_ATTR_SOURCE` (`check-attr --source` takes a tree), and `diff --no-index` outside the work tree of a repository
-applies no conversion (git applies `core.autocrlf` from the global config there). Covered by
+the `whitespace` attribute in `apply`. `diff --no-index` on a file outside the work tree of a repository (or with no
+repository) converts it by `core.autocrlf` and `core.eol` only, from the repository's config or the global one, and applies no
+attributes there. Covered by
 `crates/pyn-cli/tests/git_attributes.rs`, which compares blob ids, work tree bytes and `status`
 and `diff` output with git (#273), `crates/pyn-cli/tests/git_check_attr.rs` (`check-attr`, `ls-files --eol`, attributes read
 from the index and trees, `blame` and `diff --no-index`), and `git_diff_attributes.rs` and `git_merge_attributes.rs` for
-the next section. The system attributes file is not covered by a test, as it lives
-outside the test sandbox.
+the next section. git has no way to point its system attributes file elsewhere (only `GIT_ATTR_NOSYSTEM` switches it off), so
+its precedence is covered by a unit test in `pyn-gitwork` that gives the engine another path, not by an oracle test.
 
 #### Diff, merge and whitespace attributes
 
@@ -2730,7 +2735,7 @@ with `fatal: not a git repository (or any of the parent directories): .git` (`12
 | --- | --- |
 | `rev-parse` | `<rev>` in any form `log` takes, plus `^{}`, `^{commit}`, `^{tree}`, `^{blob}`, `^{tag}`, `^{object}`, `<tree-ish>:<path>` (also `./` and `../` paths), `:<path>` and `:<n>:<path>` for the index, `^<rev>`, `<a>..<b>`, `<a>...<b>`, `<rev>^@`, `<rev>^!`; `--verify`, `-q`, `--short[=<n>]`, `--abbrev-ref[=strict\|loose]`, `--symbolic`, `--symbolic-full-name`, `--git-dir`, `--absolute-git-dir`, `--git-common-dir`, `--show-toplevel`, `--show-prefix`, `--show-cdup`, `--is-inside-work-tree`, `--is-inside-git-dir`, `--is-bare-repository`, `--is-shallow-repository`, `--show-object-format`, `--all`, `--branches`, `--tags`, `--remotes`. Options act on the revisions after them, as in git; a name that is no revision is printed back and must be a file. |
 | `ls-files` | `-c`, `-d`, `-m`, `-o`, `-s`, `-u`, `-i` with `--exclude-standard`, `-t` and `-v` (the `S` tag marks a skip-worktree entry), `--sparse` (accepted, as pyn has no sparse index), `-z`, `--full-name`, `--error-unmatch`, `--eol` (`i/<index> w/<work tree> attr/<attributes>` before each name, git's column widths; a conflicted path shows the index side of its first stage, as git does), and pathspecs (see [Pathspecs](#pathspecs)). Paths are relative to the current folder, and only that folder is listed unless a pathspec says otherwise. `-m` lists deleted files too, so `-m -d` lists them twice, as git does. |
-| `check-attr` | `[-a\|--all \| <attr>...] [--] <path>...`, `--stdin`, `-z`, `--cached` (`.gitattributes` from the index) and `--source <tree-ish>` (from that tree). Paths are taken from the current folder. Output is `<path>: <attr>: <set\|unset\|unspecified\|<value>>`, or NUL-terminated records with `-z`; `-a` lists the attributes that are not unspecified in the order they were first set. In a bare repository attributes come from `HEAD`'s tree. Usage errors exit `129`, a bad attribute name or tree-ish `128`. |
+| `check-attr` | `[-a\|--all \| <attr>...] [--] <path>...`, `--stdin`, `-z`, `--cached` (`.gitattributes` from the index) and `--source <tree-ish>` (from that tree, else `GIT_ATTR_SOURCE`, else `attr.tree`). Paths are taken from the current folder. Output is `<path>: <attr>: <set\|unset\|unspecified\|<value>>`, or NUL-terminated records with `-z`; `-a` lists the attributes that are not unspecified in the order they were first set. In a bare repository attributes come from `HEAD`'s tree. A trailing `--` with no path is "No file specified". Usage errors exit `129`, a bad attribute name or tree-ish `128`. |
 | `ls-tree` | `-d`, `-r`, `-t`, `-l`, `-z`, `--name-only`, `--name-status`, `--object-only`, `--full-name`, `--full-tree`, `--abbrev[=<n>]`, and paths. Paths are literal (a `*` is an ordinary character), `:(top)`, `:/` and `:(literal)` are read, and any other magic is git's `pathspec magic not supported by this command` (`128`); `.` and `..` name a folder's contents. |
 | `cat-file` | `-t`, `-s`, `-p`, `-e`, `<type> <object>` (tags are followed to the type), `--batch` and `--batch-check` with git's default format. |
 | `show-ref` | `--head` (shown whatever the other options say, as git documents), `--heads`, `--tags`, `-d`, `-s`/`--hash[=<n>]`, `--abbrev[=<n>]`, `--verify`, `--exists`, `-q`, and patterns that match the end of a ref name on a `/`. |
