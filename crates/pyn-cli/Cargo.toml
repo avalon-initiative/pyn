@@ -20,6 +20,7 @@ pyn-chunk = { version = "0.0.1", path = "../pyn-chunk" }
 pyn-diff = { version = "0.0.1", path = "../pyn-diff" }
 pyn-git = { version = "0.0.1", path = "../pyn-git" }
 pyn-gittransport = { version = "0.0.1", path = "../pyn-gittransport" }
+pyn-gitattr = { version = "0.0.1", path = "../pyn-gitattr" }
 pyn-gitwork = { version = "0.0.1", path = "../pyn-gitwork" }
 pyn-gitwire = { version = "0.0.1", path = "../pyn-gitwire" }
 pyn-hash = { version = "0.0.1", path = "../pyn-hash" }

@@ -3967,6 +3967,121 @@ async fn checkin_json(
     assert_eq!(r.status(), StatusCode::OK, "{path} on {branch}");
 }
 
+async fn preview_disagreements(
+    app: &axum::Router,
+    token: &str,
+    policy: &str,
+) -> Vec<(String, api::LockableDisagreementKind)> {
+    let r = send(
+        app,
+        "POST",
+        "/v1/repos/alice/game/policy/preview",
+        token,
+        Some(serde_json::json!({"content": policy})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let preview: api::PolicyPreview = body_json(r).await;
+    preview
+        .disagreements
+        .into_iter()
+        .map(|d| (d.path, d.kind))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_policy_preview_lists_lockable_disagreements_of_both_kinds() {
+    use api::LockableDisagreementKind::*;
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    checkin_json(
+        &app,
+        &alice,
+        "main",
+        ".gitattributes",
+        "*.psd lockable\n",
+        None,
+    )
+    .await;
+    checkin_json(&app, &alice, "main", "a.psd", "x\n", None).await;
+    checkin_json(&app, &alice, "main", "b.map", "x\n", None).await;
+    checkin_json(&app, &alice, "main", "c.txt", "x\n", None).await;
+    let policy = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"*.map\"]\n";
+    assert_eq!(
+        preview_disagreements(&app, &alice, policy).await,
+        [
+            ("a.psd".to_string(), LockableShared),
+            ("b.map".to_string(), ExclusiveNotLockable)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_policy_preview_without_disagreements_or_gitattributes_lists_none() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let policy = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"*.psd\"]\n";
+    assert!(preview_disagreements(&app, &alice, policy).await.is_empty());
+    checkin_json(&app, &alice, "main", "a.psd", "x\n", None).await;
+    let found = preview_disagreements(&app, &alice, policy).await;
+    assert_eq!(
+        found,
+        [(
+            "a.psd".to_string(),
+            api::LockableDisagreementKind::ExclusiveNotLockable
+        )]
+    );
+    checkin_json(
+        &app,
+        &alice,
+        "main",
+        ".gitattributes",
+        "*.psd lockable\n",
+        None,
+    )
+    .await;
+    assert!(preview_disagreements(&app, &alice, policy).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_policy_preview_reads_nested_gitattributes() {
+    use api::LockableDisagreementKind::*;
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    checkin_json(
+        &app,
+        &alice,
+        "main",
+        ".gitattributes",
+        "*.psd lockable\n",
+        None,
+    )
+    .await;
+    checkin_json(
+        &app,
+        &alice,
+        "main",
+        "art/.gitattributes",
+        "*.psd -lockable\n*.png lockable\n",
+        None,
+    )
+    .await;
+    for p in ["top.psd", "art/a.psd", "art/b.png", "other/c.png"] {
+        checkin_json(&app, &alice, "main", p, "x\n", None).await;
+    }
+    let policy = "[meta]\ndefault = \"shared\"\n";
+    assert_eq!(
+        preview_disagreements(&app, &alice, policy).await,
+        [
+            ("art/b.png".to_string(), LockableShared),
+            ("top.psd".to_string(), LockableShared)
+        ]
+    );
+}
+
 #[tokio::test]
 async fn a_merge_is_previewed_written_and_refused_with_stable_codes() {
     let app = router(state_with(false, RegistrationMode::Open).await);
