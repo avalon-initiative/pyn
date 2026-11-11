@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests release.sh and verify-release-version.sh in a throwaway repository with a bare origin and a stub gh. No network.
 set -euo pipefail
+unset YES VER TITLE SKIP_CHECKS
 
 src=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
