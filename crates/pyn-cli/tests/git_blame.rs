@@ -1497,21 +1497,102 @@ fn graft_files_replace_parents() {
 }
 
 #[test]
-fn graft_files_with_ranges_or_reverse_are_a_usage_error() {
+fn graft_files_reach_ranges_and_reverse() {
     each_format(|r| {
         merged(r);
+        let id = |n: &str| r.rev(n);
+        let cases = [
+            format!("{} {}\n", id("HEAD~1"), id("HEAD~4")),
+            format!("{}\n", id("HEAD~3")),
+            format!("{}\n", id("side~1")),
+            format!("{} {}\n", id("HEAD~2"), id("HEAD~4")),
+            format!("{} {}\n{}\n", id("HEAD~1"), id("HEAD~3"), id("side")),
+            format!("{} {}\n", id("late"), id("HEAD~4")),
+            String::new(),
+        ];
         let file = r.dir.parent().unwrap().join("grafts");
-        fs::write(&file, format!("{} {}\n", r.rev("HEAD~1"), r.rev("HEAD~4"))).unwrap();
-        let file = file.to_str().unwrap();
-        for args in [
-            &["-S", file, "HEAD~2..HEAD", "m.txt"][..],
-            &["-S", file, "--reverse", "HEAD~2", "m.txt"],
-        ] {
-            let (code, out, err) = r.pyn(&r.dir, "blame", args);
-            assert_eq!(code, 129, "{args:?}: {err}");
-            assert!(out.is_empty());
+        for text in cases {
+            fs::write(&file, &text).unwrap();
+            let file = file.to_str().unwrap();
+            for tail in [
+                &["HEAD~2..HEAD"][..],
+                &["^HEAD~2", "HEAD"],
+                &["HEAD~4..HEAD"],
+                &["HEAD~1...late"],
+                &["HEAD~4...late"],
+                &["main...late"],
+                &["side..HEAD"],
+                &["--reverse", "HEAD~4..HEAD"],
+                &["--reverse", "HEAD~2..HEAD"],
+                &["--reverse", "HEAD~4"],
+                &["--reverse", "HEAD~4..late"],
+                &["--reverse", "--first-parent", "HEAD~4..HEAD"],
+                &["--reverse", "--first-parent", "HEAD~3..HEAD"],
+                &["--reverse", "-p", "HEAD~4..HEAD"],
+            ] {
+                let mut args = vec!["-S", file];
+                args.extend_from_slice(tail);
+                args.push("m.txt");
+                r.same(&args);
+            }
         }
     });
+}
+
+#[test]
+fn incremental_prints_entries_as_settled_like_git() {
+    each_format(|r| {
+        merged(r);
+        for args in [
+            &["--incremental", "m.txt"][..],
+            &["--incremental", "--root", "m.txt"],
+            &["--incremental", "-w", "m.txt"],
+            &["--incremental", "-L", "3,9", "m.txt"],
+            &["--incremental", "--first-parent", "m.txt"],
+            &["--incremental", "HEAD~2", "m.txt"],
+            &["--incremental", "HEAD~4..", "m.txt"],
+            &["--incremental", "side...late", "m.txt"],
+            &["--incremental", "--reverse", "HEAD~4..HEAD", "m.txt"],
+            &["--incremental", "--reverse", "HEAD~3", "m.txt"],
+            &["--incremental", "-p", "m.txt"],
+            &["--incremental", "-s", "-e", "m.txt"],
+            &["--incremental", "--progress", "m.txt"],
+        ] {
+            r.same(args);
+        }
+        r.same_masked(&["--incremental", "m.txt"]);
+        let mut text = fs::read_to_string(r.dir.join("m.txt")).unwrap();
+        text = text.replace("line 4", "work tree four");
+        r.write("m.txt", text.as_bytes());
+        r.same_masked(&["--incremental", "m.txt"]);
+        let (code, out, _) = r.pyn(&r.dir, "blame", &["--incremental=x", "m.txt"]);
+        assert_eq!(code, 129);
+        assert!(out.is_empty());
+    });
+    each_format(|r| {
+        r.lines("a.txt", &["one", "two", "three"]);
+        r.commit(ANN, "one");
+        r.git_ok(BOB, &["mv", "a.txt", "b.txt"]);
+        r.lines("b.txt", &["one", "two", "three", "four"]);
+        r.git_ok(BOB, &["add", "-A"]);
+        r.git_ok(BOB, &["commit", "-q", "-m", "rename and add"]);
+        r.git_ok(BOB, &["mv", "b.txt", "a.txt"]);
+        r.git_ok(BOB, &["commit", "-q", "-m", "back"]);
+        r.same(&["--incremental", "a.txt"]);
+        r.same(&["--incremental", "-f", "a.txt"]);
+    });
+    for format in FORMATS {
+        for seed in 1..=12u64 {
+            let r = Repo::new(format);
+            let cur = random_history(&r, seed);
+            r.same(&["--incremental", &cur]);
+            r.same(&["--incremental", "-w", &cur]);
+            r.same(&["--incremental", "-L", "2,5", "-L", "6,9", &cur]);
+            r.same(&["--incremental", "-L", "3,12", &cur]);
+            r.same(&["--incremental", "HEAD~4..", "--", &cur]);
+            r.same(&["--incremental", "--reverse", "HEAD~4..HEAD", &cur]);
+        }
+    }
 }
 
 const FUNCS: &str = "#include <x>\n\nint alpha(void)\n{\n\treturn 1;\n}\n\nstatic int beta(int x)\n{\n\tif (x)\n\t\treturn 2;\n\n\treturn 3;\n}\n$weird() {\n}\n indented()\n\nlast line\n";
@@ -1639,7 +1720,6 @@ fn what_is_not_built_is_a_usage_error() {
             &["-C", "a.txt"],
             &["-C", "-C", "a.txt"],
             &["-M20", "a.txt"],
-            &["--incremental", "a.txt"],
             &["--show-stats", "a.txt"],
             &["--score-debug", "a.txt"],
             &["--diff-algorithm=patience", "a.txt"],

@@ -92,6 +92,10 @@ pub(super) struct Board<'a> {
     /// `-S`: commits whose parents are replaced.
     grafts: HashMap<ObjectId, Vec<ObjectId>>,
     prints: HashMap<usize, Vec<Fingerprint>>,
+    /// The origins that ended up with lines, in the order the walk settled them, with those lines.
+    pub settled: Vec<(usize, Vec<(usize, usize)>)>,
+    /// Per final line, the piece it travels in: lines passed on in one step from one piece stay one piece.
+    pub piece: Vec<u64>,
 }
 
 fn is_link(mode: FileMode) -> bool {
@@ -125,6 +129,8 @@ impl<'a> Board<'a> {
             children: HashMap::new(),
             grafts: HashMap::new(),
             prints: HashMap::new(),
+            settled: Vec::new(),
+            piece: vec![0; line_count],
         }
     }
 
@@ -254,9 +260,10 @@ impl<'a> Board<'a> {
                 let rest = std::mem::take(&mut self.origins[o].suspects);
                 if !rest.is_empty() {
                     self.origins[o].guilty = true;
-                    for (s, l) in rest {
+                    for &(s, l) in &rest {
                         self.lines[l] = Some((o, s));
                     }
+                    self.settled.push((o, rest));
                 }
             }
         }
@@ -437,6 +444,7 @@ impl<'a> Board<'a> {
         }
         let suspects = std::mem::take(&mut self.origins[o].suspects);
         let (mut keep, mut moved) = (Vec::new(), Vec::new());
+        let mut after_hunks: HashMap<usize, usize> = HashMap::new();
         let (mut next, mut offset) = (0, 0i64);
         for (s, l) in suspects {
             while next < diff.len() && s >= diff[next].b_start + diff[next].b_count {
@@ -449,6 +457,7 @@ impl<'a> Board<'a> {
                     Some(g) => match g[s - diff[next].b_start] {
                         Some(ps) => {
                             self.ignored[l] = true;
+                            after_hunks.insert(l, next);
                             moved.push((ps, l));
                         }
                         None => {
@@ -459,11 +468,21 @@ impl<'a> Board<'a> {
                     None => keep.push((s, l)),
                 }
             } else {
+                after_hunks.insert(l, next);
                 moved.push(((s as i64 + offset) as usize, l));
             }
         }
         if ignore {
             moved.sort_unstable();
+        }
+        // a piece is cut where a hunk lies between its lines
+        let mut renamed: HashMap<(u64, usize), u64> = HashMap::new();
+        let top = self.piece.iter().copied().max().unwrap_or(0);
+        for &(_, l) in &moved {
+            let next = top + 1 + renamed.len() as u64;
+            self.piece[l] = *renamed
+                .entry((self.piece[l], after_hunks[&l]))
+                .or_insert(next);
         }
         self.origins[o].suspects = keep;
         self.queue_blames(po, moved)

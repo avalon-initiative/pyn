@@ -193,10 +193,16 @@ impl FormatArgs {
         }
     }
 
-    pub fn style(&self) -> Result<DateMode> {
-        match &self.date {
-            Some(d) => DateMode::parse(d, std::io::stdout().is_terminal()),
-            None => Ok(DateMode::plain(DateStyle::Default)),
+    /// The date style: `--date`, else `configured` (`log.date`), else `default`.
+    pub fn style_or(&self, configured: Option<&str>) -> Result<DateMode> {
+        let terminal = std::io::stdout().is_terminal();
+        // git reads `log.date` while loading config, so a bad value is fatal even under `--date`
+        let configured = configured
+            .map(|d| DateMode::parse(d, terminal))
+            .transpose()?;
+        match self.date.as_deref() {
+            Some(d) => DateMode::parse(d, terminal),
+            None => Ok(configured.unwrap_or_else(|| DateMode::plain(DateStyle::Default))),
         }
     }
 
@@ -210,6 +216,11 @@ impl FormatArgs {
 
     /// The format and date style, `medium` and `default` when no option names them.
     pub fn rendering(&self) -> Result<Rendering> {
+        self.rendering_with(None)
+    }
+
+    /// As `rendering`, with `configured` (`log.date`) as the date style when `--date` is not given.
+    pub fn rendering_with(&self, configured: Option<&str>) -> Result<Rendering> {
         let mut pretty = self.pretty()?;
         if self.oneline
             && let Pretty::Oneline { abbrev } = &mut pretty
@@ -222,7 +233,7 @@ impl FormatArgs {
         };
         Ok(Rendering {
             pretty,
-            style: self.style()?,
+            style: self.style_or(configured)?,
             tabs,
             abbrev_commit: self.abbrev_commit,
         })

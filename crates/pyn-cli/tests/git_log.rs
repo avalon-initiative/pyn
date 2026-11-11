@@ -894,6 +894,41 @@ fn log_decorate_config_matches_git() {
 }
 
 #[test]
+fn log_date_config_matches_git() {
+    each_format(|f| {
+        for mode in [
+            "iso",
+            "short",
+            "unix",
+            "rfc",
+            "raw",
+            "iso-strict",
+            "format:%Y|%H",
+            "default",
+        ] {
+            f.set_config(&["log.date", mode]);
+            f.same(&[]);
+            f.same(&["--pretty=fuller"]);
+            f.same(&["--format=%ad|%cd"]);
+            f.same_show(&["--format=%ad|%cd", "HEAD"]);
+            f.same_show(&["-s", "HEAD"]);
+            f.same(&["--date=short", "--format=%ad"]);
+            f.same_show(&["--date=unix", "--format=%ad", "HEAD"]);
+        }
+        f.set_config(&["log.date", "nonsense"]);
+        let (want, _) = f.oracle(&f.repo, &[]);
+        let (code, out, err) = f.pyn(&f.repo, &[]);
+        assert_eq!(
+            oracle::status_class(code),
+            oracle::status_class(want),
+            "{err}"
+        );
+        assert!(out.is_empty());
+        f.same(&["--date=iso", "--format=%ad"]);
+    });
+}
+
+#[test]
 fn decorate_refs_patterns_match_git() {
     each_format(|f| {
         with_odd_refs(f);

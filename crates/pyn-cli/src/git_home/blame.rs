@@ -37,12 +37,13 @@ Options (a git repository only; output and exit status are git blame's):
   --abbrev=<n>          digits of the id; --date=<format> sets the date style
   --contents <file>     blame this file's contents (`-` for standard input) as the newest version
   --ignore-rev <rev>    blame past this commit (repeatable); --ignore-revs-file <file> lists them (`blame.ignoreRevsFile`)
+  --incremental         print each entry as it is settled, in porcelain form
   --reverse             find where lines last existed: `<old>..<new>`, or `<old>` alone for `<old>..HEAD`
   --color-lines         color repeated lines of an entry; --color-by-age colors by age (`blame.coloring`, `color.blame.*`)
   -S <file>             take parents from a graft file: a commit id and its parents per line
   --minimal             spend extra cycles to find better diffs
-Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): -M, -C, --incremental, --show-stats,
---score-debug, --diff-algorithm, -S with --reverse or a revision range, -L :<funcname> with a built-in diff driver that is not ported and
+Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): -M, -C, --show-stats,
+--score-debug, --diff-algorithm, -L :<funcname> with a built-in diff driver that is not ported and
 other revision options.";
 
 #[derive(Args, Debug)]
@@ -73,6 +74,7 @@ struct Parsed {
     color_lines: bool,
     color_by_age: bool,
     revs_file: Option<String>,
+    incremental: bool,
     reverse: bool,
     ignore_revs: Vec<String>,
     ignore_files: Vec<String>,
@@ -168,7 +170,8 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                     Some(v) => p.contents = Some(v),
                     None => fail(annotate, "option `contents' requires a value"),
                 },
-                ("incremental" | "show-stats" | "score-debug" | "diff-algorithm", _) => {
+                ("incremental", None) => p.incremental = true,
+                ("show-stats" | "score-debug" | "diff-algorithm", _) => {
                     not_built(annotate, &format!("--{name}"))
                 }
                 _ => fail(annotate, &format!("unknown option `{arg}'")),
@@ -263,9 +266,13 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     }
     let pre = prefix(git, cwd).unwrap_or_default();
     let resolver = Resolver { git, prefix: &pre };
+    let grafts = match &p.revs_file {
+        Some(file) => read_grafts(git, cwd, file)?,
+        None => HashMap::new(),
+    };
     let is_rev = |text: &str| {
         resolver
-            .object(text)
+            .object_with(text, Some(&grafts))
             .ok()
             .flatten()
             .is_some_and(|id| super::plumbing::kind_of(git, &id).ok().flatten().is_some())
@@ -295,9 +302,10 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     };
     let path = git.ws.repo_prefix(cwd, &path_arg)?.into_bytes();
 
+    let reachable = |id: &ObjectId| reachable_grafted(git, &grafts, id);
     let commit_of = |text: &str, name: &str| -> Result<ObjectId> {
         let id = resolver
-            .rev(text)?
+            .rev_with(text, Some(&grafts))?
             .ok_or_else(|| die(format!("bad revision '{name}'")))?;
         peel(git, &id, Some(Kind::Commit))?.ok_or_else(|| die(format!("Non commit {name}?")))
     };
@@ -311,15 +319,15 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
                 if b.is_empty() { "HEAD" } else { b },
             );
             let (x, y) = (commit_of(a, a)?, commit_of(b, b)?);
-            for base in git.merge_bases(&x, &y)? {
-                hidden.extend(git.reachable(&base)?);
+            for base in merge_bases_grafted(git, &grafts, &x, &y)? {
+                hidden.extend(reachable(&base)?);
                 negatives.push((base.to_hex(), base));
             }
             positives.push((a.to_string(), x));
             positives.push((b.to_string(), y));
         } else if let Some(rest) = rev.strip_prefix('^') {
             let id = commit_of(rest, rest)?;
-            hidden.extend(git.reachable(&id)?);
+            hidden.extend(reachable(&id)?);
             negatives.push((rest.to_string(), id));
         } else if let Some((a, b)) = rev.split_once("..") {
             let (a, b) = (
@@ -327,7 +335,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
                 if b.is_empty() { "HEAD" } else { b },
             );
             let id = commit_of(a, a)?;
-            hidden.extend(git.reachable(&id)?);
+            hidden.extend(reachable(&id)?);
             negatives.push((a.to_string(), id));
             positives.push((b.to_string(), commit_of(b, b)?));
         } else {
@@ -353,7 +361,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
             match head {
                 Some(head) if rev_args.len() == 1 && positives.len() == 1 => {
                     let from = positives.remove(0);
-                    hidden.extend(git.reachable(&from.1)?);
+                    hidden.extend(reachable(&from.1)?);
                     negatives.push(from);
                     positives.push(("HEAD".to_string(), head));
                 }
@@ -373,7 +381,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
                 bail!("--reverse and --first-parent together require specified latest commit");
             }
             first_parent_children = Some(
-                first_parent_chain(git, tips[0], negatives[0].1)?.ok_or_else(|| {
+                first_parent_chain(git, &grafts, tips[0], negatives[0].1)?.ok_or_else(|| {
                     die(
                         "--reverse --first-parent together require range along first-parent chain"
                             .to_string(),
@@ -392,13 +400,6 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
 
     let algorithm = git.algorithm();
     let zero = ObjectId::from_bytes(algorithm, &vec![0; algorithm.digest_len()])?;
-    let grafts = match &p.revs_file {
-        Some(file) => read_grafts(git, cwd, file)?,
-        None => HashMap::new(),
-    };
-    if !grafts.is_empty() && (p.reverse || !negatives.is_empty()) {
-        not_built(annotate, "-S with --reverse or a revision range");
-    }
     let mut positive = positives.first().cloned();
     if positive.is_none() && git.is_bare() && p.contents.is_none() {
         positive = git.repo.head_commit()?.map(|id| ("HEAD".to_string(), id));
@@ -473,7 +474,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     if p.reverse {
         board.with_children(match first_parent_children {
             Some(map) => map,
-            None => children(git, &tips, &hidden)?,
+            None => children(git, &grafts, &tips, &hidden)?,
         });
     }
     board.start(
@@ -552,7 +553,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     flags.show_email |= git.repo.bool_setting("blame.showEmail", false);
     flags.mark_ignored = git.repo.bool_setting("blame.markIgnoredLines", false);
     flags.mark_unblamable = git.repo.bool_setting("blame.markUnblamableLines", false);
-    if p.progress == Some(true) && flags.porcelain {
+    if p.progress == Some(true) && (flags.porcelain || p.incremental) {
         bail!("--progress can't be used with --incremental or porcelain formats");
     }
     let hex_len = (algorithm.digest_len() * 2) as i64;
@@ -576,6 +577,33 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
         lines: &lines,
         color: color.resolve(p.color_lines, p.color_by_age),
     };
+    if p.incremental {
+        let settled = board.settled.iter().flat_map(|(origin, rest)| {
+            let mut runs: Vec<Entry> = Vec::new();
+            for &(s, l) in rest {
+                match runs.last_mut() {
+                    Some(e)
+                        if e.s_lno + e.count == s
+                            && e.lno + e.count == l
+                            && board.piece[l] == board.piece[l - 1] =>
+                    {
+                        e.count += 1
+                    }
+                    _ => runs.push(Entry {
+                        origin: *origin,
+                        s_lno: s,
+                        lno: l,
+                        count: 1,
+                        ignored: false,
+                        unblamable: false,
+                    }),
+                }
+            }
+            runs
+        });
+        emit_bytes(&layout.incremental(&settled.collect::<Vec<_>>()));
+        return Ok(());
+    }
     emit_bytes(&layout.render(&entries)?);
     Ok(())
 }
@@ -655,6 +683,7 @@ fn ignore_list(
 /// Each commit of the range reached from `tips` and not from `hidden`, as the parent of its children, oldest first.
 fn children(
     git: &GitHome,
+    grafts: &HashMap<ObjectId, Vec<ObjectId>>,
     tips: &[ObjectId],
     hidden: &HashSet<ObjectId>,
 ) -> Result<HashMap<ObjectId, Vec<ObjectId>>> {
@@ -680,7 +709,7 @@ fn children(
     }
     while let Some((_, std::cmp::Reverse(at))) = queue.pop() {
         let commit = by_seq[at];
-        for parent in git.repo.commit(&commit)?.parents {
+        for parent in parents_grafted(git, grafts, &commit)? {
             map.entry(parent).or_default().insert(0, commit);
             if !hidden.contains(&parent) && seen.insert(parent) {
                 enqueue(parent, &mut queue, &mut by_seq)?;
@@ -750,16 +779,83 @@ fn read_grafts(git: &GitHome, cwd: &Path, file: &str) -> Result<HashMap<ObjectId
     Ok(grafts)
 }
 
+/// The parents of `id`, replaced by its `-S` graft when it has one.
+fn parents_grafted(
+    git: &GitHome,
+    grafts: &HashMap<ObjectId, Vec<ObjectId>>,
+    id: &ObjectId,
+) -> Result<Vec<ObjectId>> {
+    match grafts.get(id) {
+        Some(parents) => Ok(parents.clone()),
+        None => Ok(git.repo.commit(id)?.parents),
+    }
+}
+
+/// Every commit reachable from `start` through the grafted parents, `start` included.
+fn reachable_grafted(
+    git: &GitHome,
+    grafts: &HashMap<ObjectId, Vec<ObjectId>>,
+    start: &ObjectId,
+) -> Result<HashSet<ObjectId>> {
+    let mut seen = HashSet::new();
+    let mut queue = vec![*start];
+    while let Some(id) = queue.pop() {
+        if seen.insert(id) {
+            queue.extend(parents_grafted(git, grafts, &id)?);
+        }
+    }
+    Ok(seen)
+}
+
+/// The best common ancestors of `a` and `b` through the grafted parents, as `GitHome::merge_bases` finds them.
+fn merge_bases_grafted(
+    git: &GitHome,
+    grafts: &HashMap<ObjectId, Vec<ObjectId>>,
+    a: &ObjectId,
+    b: &ObjectId,
+) -> Result<Vec<ObjectId>> {
+    if grafts.is_empty() {
+        return git.merge_bases(a, b);
+    }
+    let from_a = reachable_grafted(git, grafts, a)?;
+    let mut candidates: Vec<ObjectId> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut queue = vec![*b];
+    while let Some(id) = queue.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if from_a.contains(&id) {
+            candidates.push(id);
+        } else {
+            queue.extend(parents_grafted(git, grafts, &id)?);
+        }
+    }
+    let mut best = Vec::new();
+    for c in &candidates {
+        let mut covered = false;
+        for other in candidates.iter().filter(|o| *o != c) {
+            covered |= reachable_grafted(git, grafts, other)?.contains(c);
+        }
+        if !covered {
+            best.push(*c);
+        }
+    }
+    best.sort_by_key(ObjectId::to_hex);
+    Ok(best)
+}
+
 /// With `--reverse --first-parent`, each commit on the first-parent chain from `tip` down to `initial`, as the child of its parent.
 fn first_parent_chain(
     git: &GitHome,
+    grafts: &HashMap<ObjectId, Vec<ObjectId>>,
     tip: ObjectId,
     initial: ObjectId,
 ) -> Result<Option<HashMap<ObjectId, Vec<ObjectId>>>> {
     let mut map = HashMap::new();
     let mut at = tip;
     while at != initial {
-        let Some(parent) = git.repo.commit(&at)?.parents.first().copied() else {
+        let Some(parent) = parents_grafted(git, grafts, &at)?.first().copied() else {
             return Ok(None);
         };
         map.insert(parent, vec![at]);
