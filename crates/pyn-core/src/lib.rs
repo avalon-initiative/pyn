@@ -87,6 +87,7 @@ pub use oidc::{
     IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider, pkce_challenge,
 };
 pub use passwords::{InlinePasswords, PasswordWorker};
+pub use pyn_gitattr::lockable::Disagreement;
 pub use pyn_object::{FileMode, ObjectId};
 pub use ratelimit::{RateLimitStore, RateState};
 pub use repo::{

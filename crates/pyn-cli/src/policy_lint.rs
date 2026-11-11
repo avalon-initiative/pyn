@@ -1,41 +1,15 @@
-//! The `lockable` lint: paths where the `.gitattributes` attribute and the `pyn.toml` mode disagree.
-//! `pyn.toml` is the authority (decision #775); the lint changes no enforcement.
+//! The `lockable` lint over a `Policy`; the lint itself is shared with the server (`pyn-gitattr`).
 
+use pyn_gitattr::lockable;
+pub use pyn_gitattr::lockable::Disagreement;
 use pyn_proto::Mode;
 
-use crate::policy::POLICY_PATH;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Disagreement {
-    /// Marked `lockable`, but the policy makes it shared: git-lfs sees a lock, pyn takes only an advisory one.
-    LockableShared,
-    /// Exclusive in the policy, but not marked `lockable`: git-lfs leaves it writable.
-    ExclusiveNotLockable,
-}
-
-impl Disagreement {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::LockableShared => "lockable, shared",
-            Self::ExclusiveNotLockable => "exclusive, not lockable",
-        }
-    }
-}
-
-/// Disagreeing paths in the order given, from `(path, lockable)` pairs. The policy file itself is always exclusive and skipped.
+/// Disagreeing paths in the order given, from `(path, lockable)` pairs.
 pub fn lint<'a>(
     paths: impl IntoIterator<Item = (&'a str, bool)>,
     mode_for: impl Fn(&str) -> Mode,
 ) -> Vec<(&'a str, Disagreement)> {
-    paths
-        .into_iter()
-        .filter(|(p, _)| *p != POLICY_PATH)
-        .filter_map(|(p, lockable)| match (lockable, mode_for(p)) {
-            (true, Mode::Shared) => Some((p, Disagreement::LockableShared)),
-            (false, Mode::Exclusive) => Some((p, Disagreement::ExclusiveNotLockable)),
-            _ => None,
-        })
-        .collect()
+    lockable::lint(paths, |p| mode_for(p) == Mode::Exclusive)
 }
 
 #[cfg(test)]

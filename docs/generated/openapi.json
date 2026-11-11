@@ -9734,6 +9734,29 @@
           }
         }
       },
+      "LockableDisagreement": {
+        "type": "object",
+        "description": "A path whose `lockable` attribute and policy mode disagree.",
+        "required": [
+          "path",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/LockableDisagreementKind"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "LockableDisagreementKind": {
+        "type": "string",
+        "enum": [
+          "lockable_shared",
+          "exclusive_not_lockable"
+        ]
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -10707,6 +10730,13 @@
           "released_locks"
         ],
         "properties": {
+          "disagreements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LockableDisagreement"
+            },
+            "description": "Paths where `lockable` in `.gitattributes` (at the default branch tip) and the proposed policy's mode disagree. Advisory: the policy stays the authority."
+          },
           "released_locks": {
             "type": "array",
             "items": {

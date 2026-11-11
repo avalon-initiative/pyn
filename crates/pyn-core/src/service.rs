@@ -49,6 +49,8 @@ use crate::types::{
     AccountId, ChangesetItem, Commit, CommitFilter, Lock, MAX_CHANGESET_ITEMS, NewRevision, RepoId,
     RepoPath, Revision, RevisionId, UserId, validate_message,
 };
+use pyn_gitattr::attributes::Attributes;
+use pyn_gitattr::lockable::{self, Disagreement};
 use pyn_object::{FileMode, ObjectId};
 
 /// What one revision writes: the content, its file mode and the revision it restores, if any.
@@ -186,6 +188,8 @@ pub struct PolicyPreview {
     pub released_locks: Vec<Lock>,
     /// Diverged shared versions on other branches of the paths that would become exclusive.
     pub stranded: Vec<StrandedVersion>,
+    /// Paths where `lockable` in `.gitattributes` and the proposed policy's mode disagree, by path.
+    pub disagreements: Vec<(RepoPath, Disagreement)>,
 }
 
 /// A recorded revision and what applying it did beyond the revision itself.
@@ -857,7 +861,47 @@ impl RepoService {
         preview.stranded = self
             .stranded_versions(&preview.to_exclusive, &BTreeMap::new())
             .await?;
+        preview.disagreements = self.lockable_disagreements(&new).await?;
         Ok(preview)
+    }
+
+    /// Default-branch paths where `lockable` (from the `.gitattributes` files at the tip) and `rules` disagree.
+    async fn lockable_disagreements(&self, rules: &Rules) -> Result<Vec<(RepoPath, Disagreement)>> {
+        let Some(tip) = self.default_head().await? else {
+            return Ok(Vec::new());
+        };
+        let snapshot = self.meta.snapshot(&self.repo, &tip).await?;
+        let mut files: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        for rev in &snapshot {
+            let path = rev.path.to_string();
+            let dir = match path.strip_suffix(".gitattributes") {
+                Some("") => "",
+                Some(d) if d.ends_with('/') => &d[..d.len() - 1],
+                _ => continue,
+            };
+            let bytes = self
+                .objects
+                .get(&rev.content)
+                .await?
+                .ok_or_else(|| PynError::ObjectMissing(rev.content.to_string()))?;
+            files.insert(dir.as_bytes().to_vec(), bytes);
+        }
+        let attrs = Attributes::new(b"", b"", Box::new(move |d| files.get(d).cloned()), false);
+        let lockable: Vec<(String, bool)> = snapshot
+            .iter()
+            .map(|r| {
+                let path = r.path.to_string();
+                let on = attrs.for_path(path.as_bytes()).get("lockable").is_set();
+                (path, on)
+            })
+            .collect();
+        let found = lockable::lint(lockable.iter().map(|(p, l)| (p.as_str(), *l)), |p| {
+            RepoPath::from_stored(p.to_owned()).is_ok_and(|p| rules.mode_for(&p) == Mode::Exclusive)
+        });
+        found
+            .into_iter()
+            .map(|(p, d)| Ok((RepoPath::from_stored(p.to_owned())?, d)))
+            .collect()
     }
 
     /// Removes someone else's live lock. The reason is required because it goes into the audit log.

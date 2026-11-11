@@ -1905,6 +1905,7 @@ dependencies = [
  "pyn-core",
  "pyn-diff",
  "pyn-git",
+ "pyn-gitattr",
  "pyn-gittransport",
  "pyn-gitwire",
  "pyn-gitwork",
@@ -1941,6 +1942,7 @@ dependencies = [
  "hex",
  "pyn-chunk",
  "pyn-core",
+ "pyn-gitattr",
  "pyn-hash",
  "pyn-merge",
  "pyn-object",
@@ -1990,6 +1992,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyn-gitattr"
+version = "0.0.1"
+
+[[package]]
 name = "pyn-gittransport"
 version = "0.0.1"
 dependencies = [
@@ -2024,6 +2030,7 @@ version = "0.0.1"
 dependencies = [
  "flate2",
  "pyn-git",
+ "pyn-gitattr",
  "pyn-object",
  "sha2 0.11.1",
  "tempfile",

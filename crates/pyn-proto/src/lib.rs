@@ -1082,6 +1082,25 @@ pub struct PolicyPreview {
     /// Diverged shared versions on other branches of the paths that would become exclusive; each would be stranded.
     #[serde(default)]
     pub stranded: Vec<StrandedVersion>,
+    /// Paths where `lockable` in `.gitattributes` (at the default branch tip) and the proposed policy's mode disagree. Advisory: the policy stays the authority.
+    #[serde(default)]
+    pub disagreements: Vec<LockableDisagreement>,
+}
+
+/// A path whose `lockable` attribute and policy mode disagree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LockableDisagreement {
+    pub path: String,
+    pub kind: LockableDisagreementKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LockableDisagreementKind {
+    /// Marked `lockable`, but the policy makes it shared.
+    LockableShared,
+    /// Exclusive in the policy, but not marked `lockable`.
+    ExclusiveNotLockable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

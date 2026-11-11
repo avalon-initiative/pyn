@@ -120,7 +120,9 @@ log as `mode_converted`, and the change itself as `policy_changed`. Storage is u
 
 **Preview.** `pyn policy preview <file>` (`POST /v1/repos/{owner}/{name}/policy/preview`, needs `edit_policy`) reports which paths
 would change mode in each direction, which live locks would be released and which branch versions would be stranded
-(`stranded`, the same entries the change itself returns, without the conversion revision), without applying anything. The
+(`stranded`, the same entries the change itself returns, without the conversion revision) and which paths have a `lockable`/mode disagreement under the proposed policy
+(`disagreements`: `path` and `kind`, `lockable_shared` or `exclusive_not_lockable`, read from the `.gitattributes` files at the
+default branch tip; advisory, see [Git LFS](lfs.md)), without applying anything. The
 conversion rules are decision #195.
 
 ## Stranded versions
