@@ -112,7 +112,7 @@ fn parse_loc<'a>(
     }
 }
 
-/// Whether a line (without its newline) starts a function; `None` when the path's diff driver is a built-in one.
+/// Whether a line (without its newline) starts a function; `None` for a built-in driver that is not ported.
 pub(super) type FuncLines<'a> = Option<&'a dyn Fn(&[u8]) -> bool>;
 
 /// `:<regex>`: from the first function line that matches to the line before the next function line.

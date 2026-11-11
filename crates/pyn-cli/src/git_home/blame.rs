@@ -42,7 +42,7 @@ Options (a git repository only; output and exit status are git blame's):
   -S <file>             take parents from a graft file: a commit id and its parents per line
   --minimal             spend extra cycles to find better diffs
 Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): -M, -C, --incremental, --show-stats,
---score-debug, --diff-algorithm, -S with --reverse or a revision range, -L :<funcname> with a built-in diff driver and
+--score-debug, --diff-algorithm, -S with --reverse or a revision range, -L :<funcname> with a built-in diff driver that is not ported and
 other revision options.";
 
 #[derive(Args, Debug)]
@@ -693,7 +693,7 @@ fn children(
 type LineTest = Box<dyn Fn(&[u8]) -> bool>;
 
 /// What starts a function in `path`: its diff driver's patterns, else the default (a letter, `_` or `$`).
-/// `None` for a built-in language driver, whose patterns are not built.
+/// `None` for a built-in language driver that is not ported.
 fn func_lines(git: &GitHome, path: &[u8]) -> Result<Option<LineTest>> {
     let name = String::from_utf8_lossy(path).into_owned();
     let driver = git.diff_driver(&name)?;
@@ -701,7 +701,7 @@ fn func_lines(git: &GitHome, path: &[u8]) -> Result<Option<LineTest>> {
         return Ok(Some(Box::new(move |l| matcher.heading(l).is_some())));
     }
     if let pyn_gitwork::AttrValue::Value(v) = git.attribute(&name, "diff")
-        && BUILTIN_DRIVERS.contains(&String::from_utf8_lossy(&v).as_ref())
+        && crate::diff_driver::builtin::is_unported(&String::from_utf8_lossy(&v))
     {
         return Ok(None);
     }
@@ -710,12 +710,6 @@ fn func_lines(git: &GitHome, path: &[u8]) -> Result<Option<LineTest>> {
             .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_' || *c == b'$')
     })))
 }
-
-const BUILTIN_DRIVERS: [&str; 26] = [
-    "ada", "bash", "bibtex", "cpp", "csharp", "css", "dts", "elixir", "fortran", "fountain",
-    "golang", "html", "ini", "java", "kotlin", "markdown", "matlab", "objc", "pascal", "perl",
-    "php", "python", "ruby", "rust", "scheme", "tex",
-];
 
 /// `-S`: one graft per line, a commit id followed by its new parents; a malformed line is reported and skipped.
 fn read_grafts(git: &GitHome, cwd: &Path, file: &str) -> Result<HashMap<ObjectId, Vec<ObjectId>>> {

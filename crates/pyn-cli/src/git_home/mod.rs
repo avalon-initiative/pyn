@@ -505,10 +505,20 @@ impl Backend for GitHome {
         let key = |k: &str| format!("diff.{name}.{k}");
         driver.binary = config.get_bool(&key("binary")).ok().flatten();
         driver.textconv = config.get(&key("textconv")).map(str::to_string);
-        driver.funcname = match (config.get(&key("xfuncname")), config.get(&key("funcname"))) {
-            (Some(x), _) => Some(FuncMatcher::parse(x, true)?),
-            (None, Some(f)) => Some(FuncMatcher::parse(f, false)?),
-            (None, None) => None,
+        let last = config.entries().iter().rev().find(|e| {
+            e.section == "diff"
+                && e.subsection.as_deref() == Some(name.as_str())
+                && (e.key == "funcname" || e.key == "xfuncname")
+        });
+        driver.funcname = match last {
+            Some(e) => Some(FuncMatcher::parse(
+                e.value.as_deref().unwrap_or(""),
+                e.key == "xfuncname",
+                false,
+            )?),
+            None => crate::diff_driver::builtin::funcname(&name)
+                .map(|(patterns, icase)| FuncMatcher::parse(&patterns, true, icase))
+                .transpose()?,
         };
         Ok(driver)
     }

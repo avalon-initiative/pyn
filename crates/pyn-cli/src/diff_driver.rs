@@ -8,6 +8,8 @@ use regex::bytes::Regex;
 
 use crate::git_home::grep_regex::{self, Syntax};
 
+pub mod builtin;
+
 #[derive(Clone, Default)]
 pub struct DiffDriver {
     /// `Some(true)` forces binary, `Some(false)` forces text.
@@ -24,7 +26,7 @@ pub struct FuncMatcher {
 
 impl FuncMatcher {
     /// `value` is one pattern per line; `extended` is `xfuncname` (else the basic syntax of `funcname`).
-    pub fn parse(value: &str, extended: bool) -> Result<Self> {
+    pub fn parse(value: &str, extended: bool, icase: bool) -> Result<Self> {
         let mut patterns = Vec::new();
         for raw in value.split('\n').filter(|l| !l.is_empty()) {
             let (negate, text) = match raw.strip_prefix('!') {
@@ -36,7 +38,7 @@ impl FuncMatcher {
             } else {
                 Syntax::Basic
             };
-            let re = grep_regex::compile_with(text, syntax, false, true).map_err(|e| {
+            let re = grep_regex::compile_with(text, syntax, icase, true).map_err(|e| {
                 anyhow::anyhow!("Invalid regexp to look for hunk headers: {text}: {e}")
             })?;
             patterns.push((negate, re));
@@ -89,13 +91,13 @@ mod tests {
 
     #[test]
     fn basic_syntax_groups_are_escaped_parentheses() {
-        let m = FuncMatcher::parse(r"^\(proc\) [a-z]*", false).unwrap();
+        let m = FuncMatcher::parse(r"^\(proc\) [a-z]*", false, false).unwrap();
         assert_eq!(m.heading(b"proc one"), Some(b"proc".to_vec()));
     }
 
     #[test]
     fn the_first_group_is_the_heading_and_a_negated_pattern_rejects() {
-        let m = FuncMatcher::parse("!^skip\n^(sec [a-z]+)\n^[a-z]+ me", true).unwrap();
+        let m = FuncMatcher::parse("!^skip\n^(sec [a-z]+)\n^[a-z]+ me", true, false).unwrap();
         assert_eq!(m.heading(b"sec alpha beta"), Some(b"sec alpha".to_vec()));
         assert_eq!(m.heading(b"skip me"), None);
         assert_eq!(m.heading(b"do me"), Some(b"do me".to_vec()));
