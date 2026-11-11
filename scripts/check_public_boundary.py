@@ -15,7 +15,7 @@ LOCK_SOURCE = re.compile(r'^source = "(?!registry\+https://github\.com/rust-lang
 GIT_SPAWN = re.compile(r'(Command::new|\.command)\(\s*"git(-[\w-]+)?"')
 RUNTIME_SOURCE = re.compile(r"crates/[^/]+/(src/.+\.rs|build\.rs)$")
 SECRET_NAME = re.compile(r"(^|/)(\.env(\..*)?|\.npmrc|\.netrc|id_(rsa|dsa|ecdsa|ed25519)|.*\.(pem|p12|pfx|key))$")
-SECRET_ALLOWED = {".env.example"}
+SECRET_ALLOWED = {".env.example", "deploy/.env.example"}
 SECRET_CONTENT = [
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----\s*\n[A-Za-z0-9+/=]{20,}"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
