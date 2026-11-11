@@ -3,7 +3,7 @@ name: pyn
 
 services:
   db:
-    image: postgres:16-bookworm@sha256:d81f7b51697014367236d07ec58b54153fc28f828b72bf247fe5c7487520bcb0
+    image: postgres:${POSTGRES_VERSION:-16}
     restart: unless-stopped
     environment:
       POSTGRES_USER: pyn

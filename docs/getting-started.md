@@ -56,6 +56,7 @@ On macOS use `sed -i ''` instead of `sed -i`. Then edit `.env` for your network:
 | Setting | What to put |
 | --- | --- |
 | `PYN_PUBLIC_URL` | The address you will type in the browser, for example `http://192.168.1.20:8080` or `https://pyn.example.com`. Keep `http://localhost:8080` if you only use this computer. |
+| `POSTGRES_VERSION` | Optional. The PostgreSQL major version, `16` unless set. A database created on one major version cannot be opened by another, so change it only with a [dump and restore](deployment.md#backups). |
 | `PYN_WEB_PUBLISH` | Remove the `#` and set `0.0.0.0:8080` so other computers can reach it. Leave it commented to keep the server on this computer only. |
 
 `.env` holds secrets and must not be committed or shared. Copy `PYN_SECRET_KEY` somewhere safe: webhook secrets stored in
