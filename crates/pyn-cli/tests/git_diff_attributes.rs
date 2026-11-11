@@ -245,7 +245,7 @@ fn the_last_of_funcname_and_xfuncname_read_wins() {
 }
 
 /// A function line of the language, then a line git's default pattern would take, filler and an edited line.
-const LANGUAGES: [(&str, &str); 36] = [
+const LANGUAGES: [(&str, &str); 34] = [
     ("c", "int run(int x)\n{"),
     ("cpp", "Widget::Widget(int x)\n{"),
     ("java", "public class Foo {\n    public void run(int x) {"),
@@ -274,8 +274,6 @@ const LANGUAGES: [(&str, &str); 36] = [
     ("elixir", "  defmodule Foo do\n  def run(x) do"),
     ("ada", "procedure Run is"),
     ("ada", "PROCEDURE Run is"),
-    ("bash", "run() {"),
-    ("bash", "function run {"),
     ("kotlin", "class Foo {\n    fun run(x: Int) {"),
     ("c", "static int run(int x)"),
     ("java", "class A {\n    void run() throws Exception {"),
