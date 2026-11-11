@@ -43,7 +43,8 @@ repository with a stub `gh`; it is part of `make check`.
    | `aarch64-unknown-linux-gnu` | `pyn-server`, `pyn` |
    | `aarch64-apple-darwin` | `pyn` (CLI only) |
 
-   Windows builds are not produced yet.
+   Windows builds are not produced yet. A target that fails to build does not stop the release: the GitHub Release is
+   created with the archives that did build, and the run shows the failed target.
 5. Builds the server image on a native runner per architecture and publishes the multi-arch manifest
    `ghcr.io/avalon-initiative/pyn-core:v<MAJOR>.<MINOR>.<PATCH>` (linux/amd64 and linux/arm64). The image tag is the plain
    version only, never the title (`v1.0.0-first-stable` publishes `pyn-core:v1.0.0`); there is no `latest` tag.
