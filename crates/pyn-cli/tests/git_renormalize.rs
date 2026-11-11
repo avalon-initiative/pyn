@@ -431,3 +431,106 @@ fn restore_and_checkout_patch_modes_write_converted_files() {
         }
     }
 }
+
+/// `side` only renormalizes `a.txt` while `main` deletes it (or the other way round with `delete_on_side`).
+fn modify_delete(format: &str, delete_on_side: bool) -> Pair {
+    let p = committed_crlf(format, "", "*.txt text=auto\n");
+    p.each(&["add", ".gitattributes"]);
+    p.each(&["commit", "-q", "-m", "rules"]);
+    let (renormalizer, deleter) = if delete_on_side {
+        ("main", "side")
+    } else {
+        ("side", "main")
+    };
+    p.each(&["checkout", "-q", "-b", "side"]);
+    p.each(&["checkout", "-q", renormalizer]);
+    p.both(&["add", "--renormalize", "a.txt"]);
+    p.each(&["commit", "-q", "-m", "normalize"]);
+    p.each(&["checkout", "-q", deleter]);
+    p.each(&["rm", "-q", "a.txt"]);
+    p.each(&["commit", "-q", "-m", "delete"]);
+    p.each(&["checkout", "-q", "main"]);
+    p
+}
+
+#[test]
+fn renormalize_lets_a_deletion_win_over_a_conversion_only_change() {
+    for format in FORMATS {
+        for delete_on_side in [false, true] {
+            let p = modify_delete(format, delete_on_side);
+            let (code, ..) = p.both(&["merge", "--no-edit", "-X", "renormalize", "side"]);
+            assert_eq!(code, 0, "the conversion alone is not a modification");
+            p.same_head("modify/delete");
+            p.same_all("modify/delete");
+
+            let p = modify_delete(format, delete_on_side);
+            let (code, ..) = p.both(&["merge", "--no-edit", "side"]);
+            assert_eq!(code, 1, "without -X renormalize it is a modify/delete");
+            p.same_index("modify/delete conflict");
+            p.same_tree("modify/delete conflict");
+        }
+    }
+}
+
+#[test]
+fn renormalize_keeps_a_real_edit_against_a_deletion_conflicted() {
+    for format in FORMATS {
+        let p = modify_delete(format, false);
+        p.each(&["checkout", "-q", "side"]);
+        p.put("a.txt", b"1\n2\n3\n4\n5\nedit\n");
+        p.each(&["commit", "-q", "-a", "-m", "edit"]);
+        p.each(&["checkout", "-q", "main"]);
+        let (code, ..) = p.both(&["merge", "--no-edit", "-X", "renormalize", "side"]);
+        assert_eq!(code, 1);
+        p.same_index("edit/delete");
+        p.same_tree("edit/delete");
+    }
+}
+
+#[test]
+fn pull_takes_renormalize_from_a_local_remote() {
+    for format in FORMATS {
+        let p = diverged(format, "");
+        for repo in [&p.oracle, &p.ours] {
+            let other = repo.parent().unwrap().join(format!(
+                "remote-{}",
+                repo.file_name().unwrap().to_string_lossy()
+            ));
+            run(
+                repo.parent().unwrap(),
+                &[
+                    "clone",
+                    "-q",
+                    "--bare",
+                    "--branch",
+                    "side",
+                    repo.to_str().unwrap(),
+                    other.to_str().unwrap(),
+                ],
+            );
+            run(repo, &["remote", "add", "up", other.to_str().unwrap()]);
+        }
+        p.both(&["fetch", "-q", "up"]);
+        let (code, ..) = p.both(&[
+            "pull",
+            "--no-rebase",
+            "--no-edit",
+            "-X",
+            "renormalize",
+            "up",
+            "side",
+        ]);
+        assert_eq!(code, 0, "clean once normalized");
+        p.same_head("pull");
+        p.same_all("pull");
+
+        let p = diverged(format, "");
+        for repo in [&p.oracle, &p.ours] {
+            run(repo, &["remote", "add", "up", repo.to_str().unwrap()]);
+        }
+        let (code, ..) = p.both(&["pull", "--no-rebase", "--no-edit", "up", "side"]);
+        assert_eq!(code, 1, "line endings alone conflict");
+        p.same_index("pull conflict");
+        p.same_tree("pull conflict");
+    }
+}

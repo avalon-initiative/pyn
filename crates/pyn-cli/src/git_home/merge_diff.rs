@@ -367,6 +367,7 @@ impl Shape<'_> {
                 renames: want.renames,
                 summary: false,
                 kept: Vec::new(),
+                unmerged: Vec::new(),
             };
             diff::compare(git, &old, &new, self.only, &format, &mut out)?;
         }

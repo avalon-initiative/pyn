@@ -190,7 +190,7 @@ pub(super) fn both_present(
     match merge_text_with(&base, &ours, &theirs, text) {
         Text::Clean(bytes) => take_blob(git, mode, &bytes),
         Text::Conflicted(chunks) => {
-            let bytes = if settings.plain_markers {
+            let bytes = if plain_markers(git) {
                 render_two_way_sized(&chunks, size, labels.ours, labels.theirs)
             } else {
                 render_markers_sized(&chunks, size, (labels.ours, labels.base, labels.theirs))
@@ -199,6 +199,35 @@ pub(super) fn both_present(
         }
         Text::BinaryConflict => binary(),
     }
+}
+
+/// Whether `side` equals `base` once `-X renormalize` converts both, so a deletion on the other side wins.
+fn unchanged(
+    git: &GitHome,
+    settings: &Settings,
+    path: &[u8],
+    base: Option<&Entry>,
+    side: &Entry,
+) -> Result<bool> {
+    let Some(base) = base.filter(|b| b.mode == side.mode) else {
+        return Ok(false);
+    };
+    if !settings.renormalize {
+        return Ok(false);
+    }
+    let norm = |e: &Entry| convert::renormalize(git, path, &git.repo.blob(&e.id)?);
+    Ok(base.id == side.id || norm(base)? == norm(side)?)
+}
+
+/// Git's two-sided markers unless `merge.conflictStyle` is `diff3` or `zdiff3`.
+fn plain_markers(git: &GitHome) -> bool {
+    let style = git
+        .repo
+        .config()
+        .get("merge.conflictstyle")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !matches!(style.as_str(), "diff3" | "zdiff3")
 }
 
 fn take_blob(git: &GitHome, mode: FileMode, bytes: &[u8]) -> Result<Resolved> {
@@ -276,6 +305,8 @@ pub(super) fn merge_trees_with(
                     }
                     r
                 }
+                (Some(o), None) if unchanged(git, settings, path, pb, o)? => Resolved::Take(None),
+                (None, Some(t)) if unchanged(git, settings, path, pb, t)? => Resolved::Take(None),
                 (Some(o), None) => Resolved::Conflict(Conflict {
                     base: pb.copied(),
                     ours: Some(*o),

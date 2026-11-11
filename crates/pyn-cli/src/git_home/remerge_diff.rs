@@ -24,10 +24,9 @@ fn label(git: &GitHome, id: &ObjectId) -> Result<String> {
 }
 
 fn settings(git: &GitHome) -> super::strategy::Settings {
-    let mut settings = super::strategy::Settings::default();
+    let settings = super::strategy::Settings::default();
     match git.repo.config().get("merge.conflictstyle") {
-        None | Some("merge") => settings.plain_markers = true,
-        Some("diff3") => {}
+        None | Some("merge" | "diff3") => {}
         Some(other) => crate::usage_error(&format!(
             "`merge.conflictStyle={other}` is not available for a remerge diff"
         )),

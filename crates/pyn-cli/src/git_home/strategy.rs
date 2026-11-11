@@ -63,8 +63,6 @@ impl Which {
 #[derive(Clone, Debug, Default)]
 pub(super) struct Settings {
     pub text: Options,
-    /// Conflicts get git's two-sided markers instead of diff3 ones.
-    pub plain_markers: bool,
     pub renormalize: bool,
     /// Extra marker width, two per level of a virtual merge base.
     pub marker_extra: usize,

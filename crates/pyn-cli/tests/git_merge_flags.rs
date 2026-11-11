@@ -941,3 +941,54 @@ fn branch_merge_options_setting() {
         p.works(&["merge", "--no-ff", "side"]);
     });
 }
+
+#[test]
+fn conflict_style_picks_the_markers() {
+    for style in [None, Some("merge"), Some("diff3"), Some("zdiff3")] {
+        each_format(CONFLICT, |p| {
+            match style {
+                Some(s) => p.both_sh(&format!("git config merge.conflictStyle {s}")),
+                None => p.both_sh("git config --unset merge.conflictStyle"),
+            }
+            p.refused(&["merge", "side"]);
+            let marked = fs::read_to_string(p.pyn.join("f")).unwrap();
+            assert_eq!(
+                marked.contains("|||||||"),
+                style.is_some_and(|s| s != "merge")
+            );
+        });
+    }
+}
+
+#[test]
+fn default_markers_reach_cherry_pick() {
+    each_format(CONFLICT, |p| {
+        p.both_sh("git config --unset merge.conflictStyle");
+        p.refused(&["cherry-pick", "side"]);
+    });
+}
+
+/// Conflicts of three kinds: both modified `f`, `g` deleted by us and modified by them, `h` the reverse.
+const UNMERGED: &str = "printf 'a\\nb\\nc\\n' >f; echo x >g; echo y >h; git add .; git commit -qm base\n\
+    git checkout -q -b side\nprintf 'a\\nB2\\nc\\n' >f; echo X >g; git rm -q h; git commit -qam side\n\
+    git checkout -q main\ngit rm -q g; echo z >h; printf 'a\\nB1\\nc\\n' >f; git commit -qam main\n";
+
+#[test]
+fn diff_name_status_lists_unmerged_paths() {
+    each_format(UNMERGED, |p| {
+        p.refused(&["merge", "side"]);
+        let names = |args: &[&str]| {
+            let (g, o) = (p.run(false, args), p.run(true, args));
+            assert_eq!(text(&o.stdout), text(&g.stdout), "{args:?}");
+            assert_eq!(o.status.code(), g.status.code(), "{args:?}");
+            text(&g.stdout)
+        };
+        assert!(names(&["diff", "--name-status"]).contains("U\tf\n"));
+        names(&["diff", "--cached", "--name-status"]);
+        names(&["diff", "--name-status", "-z"]);
+        names(&["diff", "--name-status", "--exit-code", "g"]);
+        names(&["diff", "--name-status", "--diff-filter=U"]);
+        p.both_sh("git checkout -q --ours f");
+        names(&["diff", "--name-status"]);
+    });
+}

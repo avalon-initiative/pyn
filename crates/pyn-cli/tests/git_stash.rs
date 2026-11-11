@@ -126,6 +126,11 @@ fn pair() -> Pair {
         _tmp: tmp,
     };
     fs::create_dir_all(&p.home).unwrap();
+    fs::write(
+        p.home.join(".gitconfig"),
+        "[merge]\n\tconflictStyle = diff3\n",
+    )
+    .unwrap();
     fs::create_dir_all(&p.git).unwrap();
     let ok = |args: &[&str]| {
         let out = p.git_in(&p.git, args);
@@ -582,6 +587,11 @@ fn a_sha256_repository_round_trips_through_the_new_options() {
     let dir = tmp.path().canonicalize().unwrap();
     let home = dir.join("home");
     fs::create_dir_all(&home).unwrap();
+    fs::write(
+        home.join(".gitconfig"),
+        "[merge]\n\tconflictStyle = diff3\n",
+    )
+    .unwrap();
     let work = dir.join("w");
     fs::create_dir_all(&work).unwrap();
     let p = Pair {

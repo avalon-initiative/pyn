@@ -193,6 +193,11 @@ impl Pair {
         let root = tmp.path().canonicalize().unwrap();
         let home = root.join("home");
         fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(".gitconfig"),
+            "[merge]\n\tconflictStyle = diff3\n",
+        )
+        .unwrap();
         let git = root.join("git");
         fs::create_dir_all(&git).unwrap();
         (tmp, Env { home }, git)
