@@ -1,0 +1,62 @@
+# pyn from release images: server, web app and PostgreSQL 16. See docs/getting-started.md.
+name: pyn
+
+services:
+  db:
+    image: postgres:${POSTGRES_VERSION:-16}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pyn
+      POSTGRES_DB: pyn
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pyn-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pyn -d pyn"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    image: ghcr.io/avalon-initiative/pyn-core:${PYN_VERSION:?set PYN_VERSION in .env (for example v0.0.2)}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PYN_DATABASE_URL: postgres://pyn:${POSTGRES_PASSWORD}@db:5432/pyn
+      PYN_SECRET_KEY: ${PYN_SECRET_KEY:?set PYN_SECRET_KEY in .env (openssl rand -hex 32)}
+      PYN_DATA_DIR: /data
+      PYN_TRUST_FORWARDED_FOR: "true"
+    ports:
+      - "127.0.0.1:7878:7878"
+    volumes:
+      - pyn-objects:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    image: ghcr.io/avalon-initiative/pyn-web:${PYN_VERSION}
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      PYN_API_URL: http://server:7878
+    ports:
+      - "${PYN_WEB_PUBLISH:-127.0.0.1:8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /etc/nginx/conf.d:uid=101,gid=101
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pyn-db:
+  pyn-objects:

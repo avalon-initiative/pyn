@@ -1,6 +1,7 @@
 # Deployment and backups
 
-Running a pyn server you keep: one node with Docker Compose, TLS in front, upgrades, several copies, and backups with a
+New here? [Getting started](getting-started.md) is the step-by-step version, with an image-only Compose file in
+[`deploy/`](../deploy/docker-compose.yml). This page covers running a server you keep: one node with Docker Compose, TLS in front, upgrades, several copies, and backups with a
 tested restore. Provisional: the first release has not been published yet.
 
 ## What runs
@@ -40,7 +41,9 @@ database cannot be decrypted without it.
 
 ### First run
 
-A new server serves only setup and `/healthz` until the first administrator exists ([first-run
+The easiest way is the browser: with the web app running (below), open its address and enter the setup token from the logs;
+[Getting started](getting-started.md#5-set-up-the-server-first-administrator) walks through it. The `pyn` command works too,
+from a computer that has it (it is not inside the server container). A new server serves only setup and `/healthz` until the first administrator exists ([first-run
 setup](concepts/access.md#first-run-setup)). The setup token is printed once on standard error at first start, or set
 `PYN_SETUP_TOKEN` (at least 16 characters, for example `openssl rand -hex 16`) in `.env` beforehand.
 
