@@ -611,7 +611,7 @@ pub(super) fn log(
     git.repo.validate_diff_ignore_submodules()?;
     // A bare repository has no prefix: paths are relative to the git directory wherever it is run.
     let cwd = if git.is_bare() { &git.ws.root } else { cwd };
-    let rendering = args.fmt.rendering()?;
+    let rendering = args.fmt.rendering_with(git.config().get("log.date"))?;
     let (tabs, abbrev_commit) = (rendering.tab_width(), rendering.abbrev_commit);
     let Rendering { pretty, style, .. } = rendering;
     if args.show_signature {

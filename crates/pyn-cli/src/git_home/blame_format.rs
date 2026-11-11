@@ -137,6 +137,21 @@ impl Layout<'_> {
         }
     }
 
+    /// `--incremental`: each entry as the walk settles it, a commit's details only the first time.
+    pub fn incremental(&self, entries: &[Entry]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut shown = HashSet::new();
+        let all: HashSet<ObjectId> = self.origins.iter().map(|o| o.commit).collect();
+        for e in entries {
+            let hex = self.origins[e.origin].commit.to_hex();
+            out.extend_from_slice(
+                format!("{hex} {} {} {}\n", e.s_lno + 1, e.lno + 1, e.count).as_bytes(),
+            );
+            self.details(e, &mut shown, &all, false, &mut out);
+        }
+        out
+    }
+
     pub fn render(&self, entries: &[Entry]) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         if self.flags.porcelain {

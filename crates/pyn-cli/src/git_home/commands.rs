@@ -1158,7 +1158,7 @@ fn show(
         }
         return Ok(());
     }
-    let rendering = fmt.rendering()?;
+    let rendering = fmt.rendering_with(git.config().get("log.date"))?;
     let (tabs, abbrev_commit) = (rendering.tab_width(), rendering.abbrev_commit);
     let Rendering { pretty, style, .. } = rendering;
     if signatures {

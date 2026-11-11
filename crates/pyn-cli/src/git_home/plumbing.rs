@@ -110,6 +110,9 @@ pub(super) fn shorten_ref(git: &GitHome, full: &str, strict: bool) -> String {
     full.to_string()
 }
 
+/// Commits whose parents are replaced (`blame -S`).
+pub(super) type Grafts = std::collections::HashMap<ObjectId, Vec<ObjectId>>;
+
 /// Revision names of every form `rev-parse` takes, resolved to the object they name without peeling.
 pub(super) struct Resolver<'a> {
     pub git: &'a GitHome,
@@ -119,11 +122,16 @@ pub(super) struct Resolver<'a> {
 impl Resolver<'_> {
     /// The object `spec` names, or `None` when it names nothing.
     pub fn object(&self, spec: &str) -> Result<Option<ObjectId>> {
+        self.object_with(spec, None)
+    }
+
+    /// As `object`, with the parents of the commits in `grafts` replaced when `~` and `^` step through them.
+    pub fn object_with(&self, spec: &str, grafts: Option<&Grafts>) -> Result<Option<ObjectId>> {
         if let Some(rest) = spec.strip_prefix(':') {
             return self.index_entry(rest);
         }
         if let Some(at) = tree_colon(spec) {
-            let Some(tree) = self.rev(&spec[..at])? else {
+            let Some(tree) = self.rev_with(&spec[..at], grafts)? else {
                 return Ok(None);
             };
             let Some(tree) = peel(self.git, &tree, Some(Kind::Tree))? else {
@@ -135,7 +143,7 @@ impl Resolver<'_> {
             }
             return Ok(self.git.repo.entry_at(&tree, &path)?.map(|e| e.id));
         }
-        self.rev(spec)
+        self.rev_with(spec, grafts)
     }
 
     fn join(&self, path: &str) -> Vec<u8> {
@@ -182,6 +190,10 @@ impl Resolver<'_> {
 
     /// A revision expression: a base name followed by `~`, `^` and `^{...}` steps.
     pub fn rev(&self, spec: &str) -> Result<Option<ObjectId>> {
+        self.rev_with(spec, None)
+    }
+
+    pub fn rev_with(&self, spec: &str, grafts: Option<&Grafts>) -> Result<Option<ObjectId>> {
         let (base, mut ops) = split_base(spec);
         if base.is_empty() {
             return Ok(None);
@@ -232,7 +244,11 @@ impl Resolver<'_> {
                 _ => return Ok(None),
             };
             for _ in 0..times {
-                match self.git.repo.commit(&id)?.parents.get(nth - 1) {
+                let parents = match grafts.and_then(|g| g.get(&id)) {
+                    Some(parents) => parents.clone(),
+                    None => self.git.repo.commit(&id)?.parents,
+                };
+                match parents.get(nth - 1) {
                     Some(p) => id = *p,
                     None => return Ok(None),
                 }
