@@ -989,8 +989,7 @@ index, so a repository that relies on conversions shows no phantom changes. `-di
 `pyn convert --home git` keeps a work tree file's stat data in the new index only when its converted form is the committed blob.
 
 Not built: `working-tree-encoding`,
-`export-ignore`/`export-subst` (there is no `archive`), the built-in language `diff=` drivers (`cpp`, `python` and the
-rest, which supply `funcname` patterns), `diff.<name>.command`, `diff.<name>.wordRegex`, `diff.<name>.cachetextconv`,
+`export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.wordRegex`, `diff.<name>.cachetextconv`,
 the `whitespace` attribute in `apply`, `attr.tree` and
 `GIT_ATTR_SOURCE` (`check-attr --source` takes a tree), and `diff --no-index` outside the work tree of a repository
 applies no conversion (git applies `core.autocrlf` from the global config there). Covered by
@@ -1015,8 +1014,15 @@ no such settings changes nothing. `-diff` is binary and `diff` forces text, as b
   above the hunk that matches, shown as its first group or else its match, at most 80 bytes. Several patterns are separated
   by newlines in the value and the first that matches a line decides; one beginning with `!` rejects the line. A path
   with a pattern uses it instead of the default (a line starting with a letter, `_` or `$`). The expressions are
-  translated onto the `regex` crate, as in `grep`. `-W` still grows a hunk to the default function lines.
+  translated onto the `regex` crate, as in `grep`. When both are set for a driver, the one read last from the
+  configuration wins. `-W` still grows a hunk to the default function lines.
   An invalid pattern is a fatal error.
+- Built-in language drivers: `diff=<lang>` with no `diff.<lang>.funcname` or `xfuncname` uses git's pattern for the language
+  (`ada`, `bash`, `bibtex`, `cpp` (also C), `csharp`, `css`, `dts`, `elixir`, `fortran`, `fountain`, `golang`, `html`, `java`,
+  `kotlin`, `markdown`, `matlab`, `objc`, `pascal`, `perl`, `php`, `python`, `ruby`, `rust`, `scheme`, `tex`), ported from git's
+  published `userdiff.c`; `ada`, `fortran` and `fountain` match case-insensitively. Hunk headers and `blame -L :<funcname>`
+  use them. Only the funcname patterns are built, not the per-language word patterns (`--word-diff`), and `ini`, which
+  newer gits have, is not ported.
 - `merge=`: where both sides changed a file, `merge=binary` and `-merge` conflict without a line merge (`-X ours` and `-X theirs`
   pick a side), `merge=text`, `merge` and an unspecified attribute merge by lines (a file with NUL bytes is binary),
   `merge=union` keeps both sides of each conflicting hunk with ours first and no markers, and
@@ -2616,7 +2622,7 @@ commits reachable from the excluded side are boundaries, and so are root commits
 
 `--reverse` walks forward: for each line of the file at `<old>` it shows the last commit in `<new>` that still has it. It takes `<old>..<new>` (or `^<old> <new>`), or a lone `<old>` for `<old>..HEAD`; `<old>` and its ancestors are boundaries. It cannot be combined with `--contents` (`128`). With `--first-parent` the walk goes up the first-parent chain from the newest commit to `<old>`: that commit must be named (`HEAD` alone is `128`), more than one is `128`, and a `<old>` the chain does not reach is `128` (`--reverse --first-parent together require range along first-parent chain`).
 
-`-L :<funcname>` takes a basic regular expression (up to the first `:`) and blames from the first line that matches it and is a function line, up to the line before the next function line, or the end of the file. A function line is one the path's diff driver's `funcname` or `xfuncname` pattern accepts, else one starting with a letter, `_` or `$`. A path with a built-in `diff=` language driver (`cpp`, `python`, and the rest) is a usage error (`129`), as those patterns are not built. As in git, the expression cannot be an end of a range (`3,:name` is `129`), and a second `-L` searches from the line after the previous range unless it is `^:`.
+`-L :<funcname>` takes a basic regular expression (up to the first `:`) and blames from the first line that matches it and is a function line, up to the line before the next function line, or the end of the file. A function line is one the path's diff driver's `funcname` or `xfuncname` pattern accepts, else one starting with a letter, `_` or `$`. A path with the built-in `diff=ini` driver is a usage error (`129`), as that pattern is not built. As in git, the expression cannot be an end of a range (`3,:name` is `129`), and a second `-L` searches from the line after the previous range unless it is `^:`.
 
 `--color-lines` paints the id, name and date columns of every line of an entry after its first (a run of lines from one commit) in `color.blame.repeatedLines` (cyan), and `--color-by-age` paints each line by the author time of its commit with `color.blame.highlightRecent`, a list of `<color>,<date>,<color>,<date>,...,<color>` (default `blue,12 month ago,white,1 month ago,red`): the first color whose date is not before the commit. When both are given a repeated line takes the repeated-line color. `blame.coloring` (`repeatedLines`, `highlightRecent` or `none`) chooses the same when no flag is given, and any flag replaces it. The colors are written whether or not output is a terminal, as git does; `-c`, `annotate` and the porcelain formats are not colored. An invalid color in either setting is reported as git does (a fatal error, `128`, for `highlightRecent`).
 
@@ -2632,7 +2638,7 @@ What differs, all of it refused or documented rather than silently different:
 
 | Difference | pyn |
 | --- | --- |
-| Not built (usage error `129`) | `-M`, `-C`, `--incremental`, `--show-stats` (git prints blob, patch and commit counts that follow its origin cache), `--score-debug` (it prints each suspect's reference count), `--diff-algorithm`, `-S` with `--reverse` or a revision range, `-L :<funcname>` on a path with a built-in `diff=` driver, abbreviated long options and the other revision-list options. |
+| Not built (usage error `129`) | `-M`, `-C`, `--incremental`, `--show-stats` (git prints blob, patch and commit counts that follow its origin cache), `--score-debug` (it prints each suspect's reference count), `--diff-algorithm`, `-S` with `--reverse` or a revision range, `-L :<funcname>` on a path with the `diff=ini` driver, abbreviated long options and the other revision-list options. |
 | Progress | `--progress` is accepted and prints nothing; with a porcelain format it is fatal as in git. |
 | Dates | A `format-local:` pattern with `%s` pads its column as git does in an eastern zone, which may differ by spaces in a western one. `%Z` in a local format prints the offset, not the zone name. |
 | Refused (`128`) | `diff.algorithm` other than `myers` (the line diff has no patience or histogram). |

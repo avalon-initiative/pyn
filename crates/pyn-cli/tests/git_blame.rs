@@ -1620,11 +1620,13 @@ fn function_ranges_follow_the_diff_driver() {
                 r.same(args);
             }
         }
-        r.write("x.rs", b"fn one() {}\nfn two() {}\n");
+        r.write(
+            "x.rs",
+            b"use x;\npub fn one() {}\nlet y = 1;\nfn two() {}\n",
+        );
         r.commit(ANN, "rust");
-        let (code, out, _) = r.pyn(&r.dir, "blame", &["-L", ":one", "x.rs"]);
-        assert_eq!(code, 129);
-        assert!(out.is_empty());
+        r.same(&["-L", ":one", "x.rs"]);
+        r.same(&["-L", ":two", "x.rs"]);
     });
 }
 

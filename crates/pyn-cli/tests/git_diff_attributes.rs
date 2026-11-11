@@ -229,6 +229,92 @@ fn xfuncname_and_funcname_pick_the_hunk_heading() {
 }
 
 #[test]
+fn the_last_of_funcname_and_xfuncname_read_wins() {
+    for config in [
+        "git config diff.fn.xfuncname '^(sec [a-z]+)'; git config diff.fn.funcname '^\\(proc\\) [a-z]*'",
+        "git config diff.fn.funcname '^\\(proc\\) [a-z]*'; git config diff.fn.xfuncname '^(sec [a-z]+)'",
+        "git config diff.fn.xfuncname '^(sec [a-z]+)'; git config diff.fn.funcname '^\\(proc\\) [a-z]*'; \
+         git config --add diff.fn.xfuncname '^(sec [a-z]+ tail)'",
+    ] {
+        let script = sections("*.x diff=fn\\n", config);
+        each(&script, |p| {
+            p.same(&["diff", "-U1"]);
+            p.same(&["show", "HEAD", "-U1"]);
+        });
+    }
+}
+
+/// A function line of the language, then a line git's default pattern would take, filler and an edited line.
+const LANGUAGES: [(&str, &str); 34] = [
+    ("c", "int run(int x)\n{"),
+    ("cpp", "Widget::Widget(int x)\n{"),
+    ("java", "public class Foo {\n    public void run(int x) {"),
+    ("csharp", "namespace Foo\n    public static void Run(int x)"),
+    ("objc", "@implementation Foo\n- (void)run:(int)x"),
+    ("python", "class Foo:\n    async def run(x):"),
+    ("ruby", "module Foo\n  def run"),
+    ("rust", "pub(crate) async fn run(x: u32) {"),
+    ("golang", "func (s *S) Run(x int) {"),
+    ("php", "public static function run($x)"),
+    ("perl", "sub run($x) {"),
+    ("tex", "\\section{Intro}"),
+    ("markdown", "## Heading"),
+    ("bibtex", "@article{key,"),
+    ("html", "<h2 class=\"t\">Title</h2>"),
+    ("css", ".sel > a {"),
+    ("fortran", "      SUBROUTINE FOO(X)"),
+    ("fortran", "subroutine foo(x)"),
+    ("pascal", "procedure Run;"),
+    ("pascal", "PROCEDURE Run;"),
+    ("fountain", "INT. HOUSE - DAY"),
+    ("fountain", "int. house - day"),
+    ("matlab", "function y = f(x)"),
+    ("scheme", "(define (run x)"),
+    ("dts", "&uart0 {"),
+    ("elixir", "  defmodule Foo do\n  def run(x) do"),
+    ("ada", "procedure Run is"),
+    ("ada", "PROCEDURE Run is"),
+    ("kotlin", "class Foo {\n    fun run(x: Int) {"),
+    ("c", "static int run(int x)"),
+    ("java", "class A {\n    void run() throws Exception {"),
+    ("rust", "impl Foo for Bar {"),
+    ("python", "def run(x):"),
+    ("cpp", "namespace foo {"),
+];
+
+fn language(name: &str, head: &str, attrs: &str, config: &str) -> String {
+    format!(
+        "printf '{attrs}' >.gitattributes; {config}\n\
+         {{ cat <<'EOF'\n{head}\nzzz decoy\nEOF\n\
+         for i in $(seq 1 20); do echo '    12'; done; echo '    12 old'; echo '    12'; }} >f.{name}\n\
+         git add -A .; git commit -qm base\n\
+         sed -i 's/12 old/12 new/' f.{name}\n"
+    )
+}
+
+#[test]
+fn builtin_language_drivers_pick_the_hunk_heading() {
+    for (name, head) in LANGUAGES {
+        let script = language(name, head, &format!("f.{name} diff={name}\\n"), "true");
+        each(&script, |p| {
+            p.same(&["diff"]);
+            p.same(&["diff", "-U1"]);
+        });
+    }
+}
+
+#[test]
+fn a_configured_pattern_overrides_a_builtin_driver() {
+    for config in [
+        "git config diff.python.xfuncname '^(zzz.*)'",
+        "git config diff.python.funcname '^zzz'",
+    ] {
+        let script = language("py", "def run(x):", "f.py diff=python\\n", config);
+        each(&script, |p| p.same(&["diff"]));
+    }
+}
+
+#[test]
 fn an_invalid_funcname_pattern_is_an_error() {
     let script = sections(
         "*.x diff=fn\\n",
