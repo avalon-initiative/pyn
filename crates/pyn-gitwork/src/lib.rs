@@ -3,7 +3,6 @@
 //! written by `filter=lfs`, nothing here writes to the repository or the work tree, and git is never invoked.
 
 mod abbrev;
-mod attributes;
 mod convert;
 mod error;
 mod filter;
@@ -19,12 +18,10 @@ mod safepath;
 mod status;
 mod submodule;
 mod tree;
-mod wildmatch;
+
+use pyn_gitattr::{attributes, wildmatch};
 
 pub use abbrev::Abbreviations;
-pub use attributes::{
-    AttrValue, Attributes, Loader, PathAttributes, unquote as unquote_c, valid_attribute_name,
-};
 pub use convert::{Conversion, Converted, SafeCrlf, Settings, ToGit, Unsupported, eol_info};
 pub use error::{Error, Result};
 pub use filter::{Driver, External, Filters, Op};
@@ -35,6 +32,10 @@ pub use pathspec::{
     MagicSet, Match, Pathspec, PathspecContext, PathspecError, PathspecOptions, Tracker,
     read_pathspec_file,
 };
+pub use pyn_gitattr::attributes::{
+    AttrValue, Attributes, Loader, PathAttributes, unquote as unquote_c, valid_attribute_name,
+};
+pub use pyn_gitattr::wildmatch::{matches as wildmatch, matches_fold as wildmatch_fold};
 pub use repo::{AttrSource, Head, Repo};
 pub use safepath::{
     MAX_DEPTH, MAX_PATH_BYTES, Reason, UnsafePath, check_link_target, check_path, check_path_as,
@@ -43,4 +44,3 @@ pub use safepath::{
 pub use status::{Conflict, Kind, Status, StatusEntry, fs_path, hash_worktree_file, worktree_mode};
 pub use submodule::{SubmoduleIgnore, SubmoduleStatus, Submodules};
 pub use tree::{Change, Entry, MAX_TREE_DEPTH};
-pub use wildmatch::{matches as wildmatch, matches_fold as wildmatch_fold};

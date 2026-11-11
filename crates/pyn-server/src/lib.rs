@@ -240,6 +240,8 @@ struct RepoAddress {
         api::MergeReport,
         api::MergeConversion,
         api::StrandedVersion,
+        api::LockableDisagreement,
+        api::LockableDisagreementKind,
         api::SnapshotEntry,
         api::SnapshotPage,
         api::CheckoutRequest,
@@ -2065,6 +2067,21 @@ async fn preview_policy(
         to_exclusive: found.to_exclusive.iter().map(ToString::to_string).collect(),
         released_locks: found.released_locks.into_iter().map(lock_dto).collect(),
         stranded: found.stranded.into_iter().map(stranded_dto).collect(),
+        disagreements: found
+            .disagreements
+            .into_iter()
+            .map(|(path, kind)| api::LockableDisagreement {
+                path: path.to_string(),
+                kind: match kind {
+                    pyn_core::Disagreement::LockableShared => {
+                        api::LockableDisagreementKind::LockableShared
+                    }
+                    pyn_core::Disagreement::ExclusiveNotLockable => {
+                        api::LockableDisagreementKind::ExclusiveNotLockable
+                    }
+                },
+            })
+            .collect(),
     }))
 }
 
