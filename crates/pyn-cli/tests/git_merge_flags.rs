@@ -750,15 +750,18 @@ fn negated_forms_reset_what_came_before() {
         &["-X", "ours", "--no-strategy-option", "-X", "theirs"],
         &["--into-name=topic", "--no-into-name"],
         &["--no-into-name", "--into-name=topic"],
+        &["--no-message"],
+        &["-m", "x", "--no-message"],
+        &["-m", "x", "--no-message", "-m", "y"],
+        &["--no-message", "-m", "y"],
+        &["--no-strategy"],
+        &["-s", "ours", "--no-strategy"],
+        &["--no-strategy", "-s", "ours"],
+        &["--cleanup=verbatim", "--no-cleanup"],
+        &["--cleanup=bogus", "--no-cleanup"],
+        &["--no-cleanup", "--cleanup=strip"],
+        &["--no-cleanup"],
     ];
-    for flag in ["--no-message", "--no-strategy", "--no-cleanup"] {
-        each_format(CLEAN, |p| {
-            let before = p.state(&p.pyn);
-            let out = p.run(true, &["merge", "-m", "x", flag, "side"]);
-            assert_eq!(out.status.code(), Some(129), "{flag}");
-            assert_eq!(p.state(&p.pyn), before, "{flag}");
-        });
-    }
     for flags in cases {
         each_format(CONFLICT, |p| {
             p.both_sh("printf 'file message\\n' >msg");
@@ -775,6 +778,67 @@ fn negated_forms_reset_what_came_before() {
             p.same(&args);
         });
     }
+}
+
+#[test]
+fn no_message_resets_files_too() {
+    for flags in [
+        &["-m", "x", "--no-message", "-F", "msg"][..],
+        &["-F", "msg", "--no-message"],
+        &["-F", "msg", "-m", "y", "--no-message"],
+        &["-F", "msg", "--no-message", "-m", "y"],
+        &["--no-message", "-F", "msg"],
+    ] {
+        each_format(CLEAN, |p| {
+            p.both_sh("printf 'file message\\n' >msg");
+            let mut args = vec!["merge", "--no-edit"];
+            args.extend(flags.iter());
+            args.push("side");
+            p.same(&args);
+        });
+    }
+}
+
+#[test]
+fn rerere_autoupdate_flags_are_accepted() {
+    for flag in ["--rerere-autoupdate", "--no-rerere-autoupdate"] {
+        each_format(CLEAN, |p| p.works(&["merge", flag, "side"]));
+        each_format(CONFLICT, |p| {
+            p.refused(&["merge", flag, "side"]);
+        });
+    }
+}
+
+#[test]
+fn overwrite_ignore_governs_a_fast_forward_only() {
+    let cases: &[&[&str]] = &[
+        &[],
+        &["--overwrite-ignore"],
+        &["--no-overwrite-ignore"],
+        &["--no-overwrite-ignore", "--overwrite-ignore"],
+        &["--overwrite-ignore", "--no-overwrite-ignore"],
+        &["--no-overwrite-ignore", "--no-ff"],
+        &["--no-overwrite-ignore", "--ff-only"],
+    ];
+    for flags in cases {
+        each_format(AHEAD, |p| {
+            p.both_sh("echo n >>.git/info/exclude; echo local >n");
+            let mut args = vec!["merge"];
+            args.extend(flags.iter());
+            args.push("side");
+            p.same(&args);
+        });
+        each_format(AHEAD, |p| {
+            let mut args = vec!["merge"];
+            args.extend(flags.iter());
+            args.push("side");
+            p.works(&args);
+        });
+    }
+    each_format(CLEAN, |p| {
+        p.both_sh("echo n >>.git/info/exclude; echo local >n");
+        p.works(&["merge", "--no-overwrite-ignore", "side"]);
+    });
 }
 
 #[test]
@@ -855,6 +919,10 @@ fn branch_merge_options_setting() {
         ("--no-ff", &["--abort"]),
         ("-m 'open", &["side"]),
         ("--bogus", &["side"]),
+        ("-m x --no-message", &["side"]),
+        ("-m x --no-message", &["-m", "y", "side"]),
+        ("--cleanup=verbatim", &["--no-cleanup", "side"]),
+        ("--no-overwrite-ignore", &["side"]),
     ] {
         each_format(CLEAN, |p| {
             let file = p.home.join("options");

@@ -20,6 +20,8 @@ use super::{GitHome, convert, path_string};
 pub(super) enum Mode {
     /// Local changes are carried along, and a move that would lose any stops.
     Safe,
+    /// As `Safe`, and an ignored file in the way of a write stops the move too.
+    KeepIgnored,
     /// The work tree and index become the target, local changes included.
     Force,
 }
@@ -222,7 +224,7 @@ fn plan(
         .filter(|(_, s)| *s > 0)
         .map(|(p, _)| p)
         .collect();
-    if mode == Mode::Safe {
+    if mode != Mode::Force {
         blocked.unmerged = unmerged.iter().map(|p| (*p).clone()).collect();
         if !blocked.unmerged.is_empty() {
             return Ok(Err(blocked));
@@ -318,7 +320,13 @@ fn plan(
         if submodule_there(path, new.get(path)) {
             continue;
         }
-        if let Some(way) = blocking_path(git, &ignores, path, &removed)? {
+        let way = match blocking_path(git, &ignores, path, &removed)? {
+            None if mode == Mode::KeepIgnored && lexists(&fs_path(root, path)).is_some() => {
+                Some(path.clone())
+            }
+            way => way,
+        };
+        if let Some(way) = way {
             blocked.add_way(repo.root()?, way);
         }
     }

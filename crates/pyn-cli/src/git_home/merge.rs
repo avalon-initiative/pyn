@@ -321,7 +321,9 @@ fn wants_edit(args: &MergeArgs) -> bool {
     if args.edit || args.no_edit {
         return args.edit;
     }
-    if (!args.message.is_empty() || !args.file.is_empty()) && !args.generated_message {
+    if (!args.message.is_empty() || !args.file.is_empty() || args.message_emptied)
+        && !args.generated_message
+    {
         return false;
     }
     if let Ok(value) = std::env::var("GIT_MERGE_AUTOEDIT") {
@@ -430,7 +432,12 @@ fn fast_forward(
             git.repo.abbreviate(theirs)?
         ));
     }
-    if let Err(blocked) = move_tree(git, opened, old_tree.as_ref(), Some(&new_tree), Mode::Safe)? {
+    let mode = if args.no_overwrite_ignore {
+        Mode::KeepIgnored
+    } else {
+        Mode::Safe
+    };
+    if let Err(blocked) = move_tree(git, opened, old_tree.as_ref(), Some(&new_tree), mode)? {
         if let Some(ours) = &ours {
             write_orig_head(git, ours)?;
         }
@@ -706,7 +713,8 @@ impl Finish<'_> {
         let (git, args) = (self.git, self.args);
         git.warn_if_hooks_off(&MERGE_HOOKS);
         let verify = !args.no_verify;
-        if !self.message_stage() {
+        let empty = options::is_empty(message.as_bytes(), options::cleanup_mode(args));
+        if !self.message_stage() && !empty {
             return Ok(message.to_string());
         }
         write_state(git, "MERGE_HEAD", &format!("{}\n", self.theirs))?;
@@ -720,7 +728,8 @@ impl Finish<'_> {
         let file = git.hook_path(&path);
         let abort = |reason: Option<String>| -> ! {
             // git leaves the message as generated, whatever the hooks and editor did to it
-            let _ = write_state(git, "MERGE_MSG", message);
+            let kept = if message.is_empty() { "\n" } else { message };
+            let _ = write_state(git, "MERGE_MSG", kept);
             if let Some(reason) = reason {
                 eprintln!("error: {reason}");
             }
@@ -759,7 +768,9 @@ impl Finish<'_> {
                 let kept = options::cleaned(text, cleanup);
                 (kept.iter().any(|b| !b.is_ascii_whitespace())).then_some(kept)
             }
-            (false, _) => Some(options::cleaned(text, cleanup)),
+            (false, _) => {
+                (!options::is_empty(&text, cleanup)).then(|| options::cleaned(text, cleanup))
+            }
         };
         match cleaned {
             Some(text) => Ok(String::from_utf8_lossy(&text).into_owned()),
