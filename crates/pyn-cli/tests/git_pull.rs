@@ -647,12 +647,14 @@ fn rebase_merges_and_interactive_replay_the_local_commits() {
 fn unsupported_flags_are_usage_errors() {
     let t = Twin::new("sha1", Via::Ssh);
     let before = state(&t.pyn);
-    for flag in ["--all", "--no-strategy"] {
-        let p = t.pyn_cmd(&t.pyn, &["pull", flag]);
-        assert_eq!(p.code, 129, "{flag}: {}", p.stderr);
-        assert!(p.stderr.contains("pyn pull"), "{flag}: {}", p.stderr);
-    }
+    let p = t.pyn_cmd(&t.pyn, &["pull", "--all"]);
+    assert_eq!(p.code, 129, "--all: {}", p.stderr);
+    assert!(p.stderr.contains("pyn pull"), "--all: {}", p.stderr);
     for args in [
+        vec!["--rerere-autoupdate"],
+        vec!["--no-rerere-autoupdate"],
+        vec!["--overwrite-ignore"],
+        vec!["--no-overwrite-ignore"],
         vec!["-F", "msg"],
         vec!["-X", "patience"],
         vec!["-s", "ort", "-s", "ours"],
@@ -1077,6 +1079,9 @@ fn pull_passes_the_merge_message_options_on() {
         &["--cleanup=bogus"],
         &["--cleanup=verbatim", "--no-cleanup"],
         &["--no-cleanup", "--cleanup=strip"],
+        &["--no-strategy"],
+        &["-s", "ours", "--no-strategy"],
+        &["--no-strategy", "-s", "ours"],
         &["--no-commit"],
         &["--no-commit", "--signoff"],
         &["--verify-signatures"],
@@ -1138,6 +1143,53 @@ fn pull_merge_config_reaches_the_merge() {
         t.configure(key, value);
         both_alike(&t, &["--no-edit"]);
     }
+}
+
+#[test]
+fn branch_merge_options_reach_the_pull_merge() {
+    let cases: &[(&str, &[&str])] = &[
+        ("--no-commit", &[]),
+        ("--no-commit", &["--commit"]),
+        ("--squash", &[]),
+        ("--no-ff --signoff", &[]),
+        ("-m 'cfg message'", &[]),
+        ("-m 'cfg message' --no-message", &[]),
+        ("-m 'cfg message' --no-message", &["--no-edit"]),
+        ("--no-ff", &["--ff"]),
+        ("--ff-only", &["--no-ff"]),
+        ("--log", &["--no-log"]),
+        ("--cleanup=verbatim", &["--no-cleanup"]),
+        ("--no-strategy", &[]),
+        ("-s ours", &[]),
+        ("-X ours", &["--no-strategy-option"]),
+        ("   --no-ff    --signoff  ", &[]),
+        ("-m 'open", &[]),
+        ("--bogus", &[]),
+    ];
+    for (config, flags) in cases {
+        let t = diverged("sha1", Via::Ssh);
+        t.configure("branch.main.mergeOptions", config);
+        let mut args = if flags.contains(&"--no-edit") {
+            vec![]
+        } else {
+            vec!["--no-edit"]
+        };
+        args.extend(flags.iter());
+        both_alike(&t, &args);
+    }
+    let t = Twin::new("sha1", Via::Ssh);
+    t.remote("n.txt", "new\n", "remote");
+    t.configure("branch.main.mergeOptions", "--no-ff");
+    t.configure("pull.rebase", "false");
+    both_alike(&t, &["--no-edit"]);
+    let t = Twin::new("sha1", Via::Ssh);
+    t.local("l.txt", "local\n", "local");
+    t.remote("n.txt", "new\n", "remote");
+    t.configure("branch.main.mergeOptions", "--no-commit");
+    both_alike(&t, &["--rebase"]);
+    let t = diverged("sha1", Via::Ssh);
+    t.configure("branch.other.mergeOptions", "--no-commit");
+    both_alike(&t, &["--no-edit"]);
 }
 
 #[test]

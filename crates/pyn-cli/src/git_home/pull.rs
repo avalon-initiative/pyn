@@ -85,7 +85,8 @@ pub struct PullArgs {
     /// The merge strategy: ort, recursive, resolve, octopus, ours or subtree.
     #[arg(short = 's', long, value_name = "STRATEGY")]
     strategy: Vec<String>,
-    #[arg(long, hide = true)]
+    /// Accepted; git keeps the strategies named before it.
+    #[arg(long)]
     no_strategy: bool,
     /// An option for the merge strategy, such as `ours` or `theirs`.
     #[arg(
@@ -213,11 +214,6 @@ impl PullArgs {
                 "--skip",
                 self.skip,
                 "a git rebase is skipped with `pyn rebase --skip`",
-            ),
-            (
-                "--no-strategy",
-                self.no_strategy,
-                "git keeps the strategies named before it",
             ),
             (
                 "--all",
@@ -647,40 +643,114 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
     }
     let message = default_message(git, &candidate.describe())?;
     let _ = merge::ACTION.set(action);
+    let cfg = if rebase_on {
+        MergeArgs::default()
+    } else {
+        super::merge_options::configured_merge_args(git)
+    };
+    let both = |on: bool, off: bool, set: (bool, bool)| if on || off { (on, off) } else { set };
+    let (ff, no_ff, ff_only) = if !how.stated && !rebase_on && (cfg.ff || cfg.no_ff || cfg.ff_only)
+    {
+        (cfg.ff, cfg.no_ff, cfg.ff_only)
+    } else {
+        (
+            !how.no_ff && !how.ff_only && !rebase_on,
+            how.no_ff && !rebase_on,
+            how.ff_only || rebase_on,
+        )
+    };
+    let (commit, no_commit) = both(args.commit, args.no_commit, (cfg.commit, cfg.no_commit));
+    let (squash, no_squash) = both(args.squash, args.no_squash, (cfg.squash, cfg.no_squash));
+    let (edit, no_edit) = both(args.edit, args.no_edit, (cfg.edit, cfg.no_edit));
+    let (signoff, no_signoff) = both(args.signoff, args.no_signoff, (cfg.signoff, cfg.no_signoff));
+    let (stat, no_stat) = both(args.stat, args.no_stat, (cfg.stat, cfg.no_stat));
+    let (autostash, no_autostash) = both(
+        args.autostash,
+        args.no_autostash,
+        (cfg.autostash, cfg.no_autostash),
+    );
+    let (verify_signatures, no_verify_signatures) = both(
+        args.verify_signatures,
+        args.no_verify_signatures,
+        (cfg.verify_signatures, cfg.no_verify_signatures),
+    );
+    let (verify, no_verify) = both(args.verify, args.no_verify, (cfg.verify, cfg.no_verify));
+    let (allow_unrelated_histories, no_allow_unrelated_histories) = both(
+        args.allow_unrelated_histories,
+        args.no_allow_unrelated_histories,
+        (
+            cfg.allow_unrelated_histories,
+            cfg.no_allow_unrelated_histories,
+        ),
+    );
+    let (log, no_log) = if args.log.is_some() || args.no_log {
+        (args.log, args.no_log)
+    } else {
+        (cfg.log.clone(), cfg.no_log)
+    };
+    // git's pull keeps only the mode of `--cleanup`; `--no-cleanup` is never passed to the merge
+    let (cleanup, no_cleanup) = if args.cleanup.is_some() {
+        (args.cleanup, false)
+    } else {
+        (cfg.cleanup.clone(), cfg.no_cleanup)
+    };
+    let sign = if args.sign.gpg_sign.is_some() || args.sign.no_gpg_sign {
+        args.sign
+    } else {
+        cfg.sign.clone()
+    };
+    let strategy: Vec<String> = cfg.strategy.iter().cloned().chain(args.strategy).collect();
+    let reset_options = std::env::args().any(|a| a == "--no-strategy-option");
+    let strategy_option: Vec<String> = if reset_options {
+        args.strategy_option
+    } else {
+        cfg.strategy_option
+            .iter()
+            .cloned()
+            .chain(args.strategy_option)
+            .collect()
+    };
+    let own_message = !cfg.message.is_empty() || !cfg.file.is_empty() || cfg.message_emptied;
     merge::merge(
         git,
         MergeArgs {
             source: Some(theirs.to_hex()),
-            message: vec![message],
-            ff: !how.no_ff && !how.ff_only && !rebase_on,
-            no_ff: how.no_ff && !rebase_on,
-            ff_only: how.ff_only || rebase_on,
-            no_commit: args.no_commit,
-            squash: args.squash,
-            no_squash: args.no_squash,
-            signoff: args.signoff,
-            no_signoff: args.no_signoff,
-            log: args.log,
-            no_log: args.no_log,
-            cleanup: args.cleanup,
-            verify_signatures: args.verify_signatures,
-            no_verify_signatures: args.no_verify_signatures,
-            no_verify: args.no_verify,
-            verify: args.verify,
-            allow_unrelated_histories: args.allow_unrelated_histories,
-            no_allow_unrelated_histories: args.no_allow_unrelated_histories,
-            autostash: args.autostash,
-            no_autostash: args.no_autostash,
-            stat: args.stat,
-            no_stat: args.no_stat,
-            strategy: args.strategy,
-            strategy_option: args.strategy_option,
-            edit: args.edit,
-            no_edit: args.no_edit,
-            generated_message: true,
+            message: if own_message {
+                cfg.message.clone()
+            } else {
+                vec![message]
+            },
+            generated_message: !own_message,
+            ff,
+            no_ff,
+            ff_only,
+            commit,
+            no_commit,
+            squash,
+            no_squash,
+            signoff,
+            no_signoff,
+            log,
+            no_log,
+            cleanup,
+            no_cleanup,
+            verify_signatures,
+            no_verify_signatures,
+            no_verify,
+            verify,
+            allow_unrelated_histories,
+            no_allow_unrelated_histories,
+            autostash,
+            no_autostash,
+            stat,
+            no_stat,
+            strategy,
+            strategy_option,
+            edit,
+            no_edit,
             log_label: candidate.log_label(),
-            sign: args.sign,
-            ..Default::default()
+            sign,
+            ..cfg
         },
     )
 }

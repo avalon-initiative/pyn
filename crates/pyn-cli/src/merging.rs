@@ -43,9 +43,12 @@ pub struct MergeArgs {
     /// The merge commit's message; repeat for more paragraphs.
     #[arg(short = 'm', long = "message")]
     pub(crate) message: Vec<String>,
-    /// Refused: git empties the message only when one came before it.
-    #[arg(long, hide = true)]
+    /// Forget the `-m` and `-F` text given so far; with some given, the message is then empty and the merge stops.
+    #[arg(long)]
     pub(crate) no_message: bool,
+    /// A `-m` or `-F` came before a `--no-message`, so the message is empty rather than the default.
+    #[arg(skip)]
+    pub(crate) message_emptied: bool,
     /// Make a merge commit even when the branch could fast-forward.
     #[arg(long, overrides_with_all = ["ff_only", "ff"])]
     pub(crate) no_ff: bool,
@@ -85,8 +88,8 @@ pub struct MergeArgs {
     /// The merge strategy (a git repository only): ort, recursive, resolve, octopus, ours or subtree.
     #[arg(short = 's', long = "strategy", value_name = "STRATEGY", conflicts_with_all = ["abort", "continue_merge"])]
     pub(crate) strategy: Vec<String>,
-    /// Refused: git keeps the strategies named before it.
-    #[arg(long, hide = true)]
+    /// Accepted; git keeps the strategies named before it (a git repository only).
+    #[arg(long)]
     pub(crate) no_strategy: bool,
     /// An option for the strategy, such as `ours` or `theirs` (a git repository only).
     #[arg(short = 'X', long = "strategy-option", value_name = "OPTION", overrides_with = "no_strategy_option", conflicts_with_all = ["abort", "continue_merge"])]
@@ -133,11 +136,23 @@ pub struct MergeArgs {
     #[arg(skip)]
     pub(crate) message_parts: Vec<MessagePart>,
     /// How the message is cleaned up: strip, whitespace, verbatim, scissors or default (a git repository only).
-    #[arg(long, value_name = "MODE")]
+    #[arg(long, value_name = "MODE", overrides_with = "no_cleanup")]
     pub(crate) cleanup: Option<String>,
-    /// Refused: git keeps the cleanup named before it.
-    #[arg(long, hide = true)]
+    /// Use the default cleanup again (a git repository only).
+    #[arg(long, overrides_with = "cleanup")]
     pub(crate) no_cleanup: bool,
+    /// Accepted; pyn has no rerere, so nothing is staged for it (a git repository only).
+    #[arg(long, overrides_with = "no_rerere_autoupdate")]
+    pub(crate) rerere_autoupdate: bool,
+    /// Do not stage rerere resolutions (the default).
+    #[arg(long, overrides_with = "rerere_autoupdate")]
+    pub(crate) no_rerere_autoupdate: bool,
+    /// Let a fast-forward overwrite an ignored file in its way (the default).
+    #[arg(long, overrides_with = "no_overwrite_ignore")]
+    pub(crate) overwrite_ignore: bool,
+    /// Refuse a fast-forward that would overwrite an ignored file.
+    #[arg(long, overrides_with = "overwrite_ignore")]
+    pub(crate) no_overwrite_ignore: bool,
     /// Name the branch merged into in the message instead of the real one (a git repository only).
     #[arg(long, value_name = "NAME", overrides_with = "no_into_name")]
     pub(crate) into_name: Option<String>,
@@ -195,6 +210,20 @@ impl MergeArgs {
             parts.extend(indices.zip(values).map(|(i, v)| (i, make(v.clone()))));
         }
         parts.sort_by_key(|(i, _)| *i);
+        if matches.get_flag("no_message")
+            && let Some(cut) = matches.indices_of("no_message").and_then(Iterator::max)
+        {
+            self.message_emptied = parts.iter().any(|(i, _)| *i < cut);
+            parts.retain(|(i, _)| *i > cut);
+            self.message.clear();
+            self.file.clear();
+            for (_, part) in &parts {
+                match part {
+                    MessagePart::Text(t) => self.message.push(t.clone()),
+                    MessagePart::File(f) => self.file.push(f.clone()),
+                }
+            }
+        }
         self.message_parts = parts.into_iter().map(|(_, p)| p).collect();
     }
 
@@ -213,6 +242,10 @@ impl MergeArgs {
             ("--no-message", self.no_message),
             ("--no-strategy", self.no_strategy),
             ("--no-strategy-option", self.no_strategy_option),
+            ("--rerere-autoupdate", self.rerere_autoupdate),
+            ("--no-rerere-autoupdate", self.no_rerere_autoupdate),
+            ("--overwrite-ignore", self.overwrite_ignore),
+            ("--no-overwrite-ignore", self.no_overwrite_ignore),
             ("--no-into-name", self.no_into_name),
             ("--into-name", self.into_name.is_some()),
             (

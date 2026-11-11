@@ -62,6 +62,33 @@ pub fn configured_merge_options(git: &GitHome) -> Option<Vec<String>> {
     Some(words)
 }
 
+#[derive(clap::Parser)]
+#[command(name = "merge", no_binary_name = true)]
+struct AsMerge {
+    #[command(flatten)]
+    args: MergeArgs,
+}
+
+/// `branch.<current>.mergeOptions` read as the options of `merge`, for a command that merges on its own; a bad
+/// option is a usage error as in `merge`.
+pub(super) fn configured_merge_args(git: &GitHome) -> MergeArgs {
+    use clap::{CommandFactory, FromArgMatches};
+    let Some(words) = configured_merge_options(git) else {
+        return MergeArgs::default();
+    };
+    let parsed = AsMerge::command()
+        .try_get_matches_from(words)
+        .and_then(|matches| {
+            let mut parsed = AsMerge::from_arg_matches(&matches)?.args;
+            parsed.order_message_parts(&matches);
+            Ok(parsed)
+        });
+    parsed.unwrap_or_else(|e| {
+        let _ = e.print();
+        std::process::exit(129);
+    })
+}
+
 /// How the message is cleaned: the mode named by `--cleanup`, else what the editor or its absence implies.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Cleanup {
@@ -98,15 +125,6 @@ pub(super) fn check_flags(git: &GitHome, args: &MergeArgs) {
     {
         fatal(&format!("Invalid cleanup mode {mode}"));
     }
-    if args.no_cleanup {
-        crate::usage_error("`pyn merge --no-cleanup` is not built");
-    }
-    if args.no_strategy {
-        crate::usage_error("`pyn merge --no-strategy` is not built");
-    }
-    if args.no_message {
-        crate::usage_error("`pyn merge --no-message` is not built");
-    }
     if let Some(file) = args.file.iter().find(|f| std::fs::read(f).is_err()) {
         crate::usage_error(&format!("could not read file '{file}'"));
     }
@@ -126,7 +144,7 @@ pub(super) fn given_message(args: &MergeArgs) -> Result<Option<Vec<u8>>> {
         args.message_parts.clone()
     };
     if parts.is_empty() {
-        return Ok(None);
+        return Ok(args.message_emptied.then(Vec::new));
     }
     let mut out = Vec::new();
     for part in parts {
@@ -178,6 +196,15 @@ pub(super) fn cleaned(text: Vec<u8>, mode: Cleanup) -> Vec<u8> {
         Cleanup::Strip => stripped(&text),
         Cleanup::Whitespace => clean_bytes(&text),
         Cleanup::Scissors => clean_bytes(above_cut_line(&text)),
+    }
+}
+
+/// Whether the message has nothing left after cleanup, which git refuses to commit.
+pub(super) fn is_empty(text: &[u8], mode: Cleanup) -> bool {
+    let kept = cleaned(text.to_vec(), mode);
+    match mode {
+        Cleanup::Verbatim => kept.is_empty(),
+        _ => kept.iter().all(u8::is_ascii_whitespace),
     }
 }
 
