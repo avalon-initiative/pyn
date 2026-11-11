@@ -112,12 +112,12 @@ jobs:
   binaries:
     needs: [verify, live]
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, packages: "-p pyn-server -p pyn-cli", bins: "pyn-server pyn" }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, packages: "-p pyn-server -p pyn-cli", bins: "pyn-server pyn" }
-          - { os: macos-14, target: aarch64-apple-darwin, packages: "-p pyn-cli", bins: "pyn" }
+          - { os: macos-15, target: aarch64-apple-darwin, packages: "-p pyn-cli", bins: "pyn" }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -223,6 +223,8 @@ jobs:
 
   release:
     needs: [verify, live, binaries, manifest]
+    # A binaries target that failed does not block the release; the checksum step fails when no archive built.
+    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.live.result == 'success' && needs.manifest.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
