@@ -38,7 +38,8 @@ pub struct CheckAttrArgs {
 }
 
 pub(super) fn check_attr(git: &GitHome, cwd: &Path, args: CheckAttrArgs) -> Result<()> {
-    let dashes = !args.paths.is_empty();
+    // clap drops a `--` that ends the command line, and git tells it apart from none.
+    let dashes = !args.paths.is_empty() || std::env::args_os().any(|a| a == "--");
     let (names, files): (Vec<String>, Vec<String>) = if args.all {
         if dashes && !args.rest.is_empty() {
             usage("Attributes and --all both specified");
