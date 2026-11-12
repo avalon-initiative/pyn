@@ -511,7 +511,13 @@ impl Backend for GitHome {
     }
 
     fn diff_driver(&self, path: &str) -> Result<crate::diff_driver::DiffDriver> {
-        crate::diff_driver::DiffDriver::resolve(&*self.repo.attributes()?, self.repo.config(), path)
+        let mut driver = crate::diff_driver::DiffDriver::resolve(
+            &*self.repo.attributes()?,
+            self.repo.config(),
+            path,
+        )?;
+        driver.work_tree = self.repo.git().work_tree().map(Path::to_path_buf);
+        Ok(driver)
     }
 
     fn attribute(&self, path: &str, name: &str) -> pyn_gitwork::AttrValue {
