@@ -57,14 +57,17 @@ on the web-only file waits on the web image's own check, if it has one. These fi
 
 ### First run
 
-The easiest way is the browser: with the web app running (below), open its address and enter the setup token from the logs;
+The easiest way is the browser: `docker compose up -d`, read the setup token from the logs, open the address, enter the token
+and step through the wizard. The line printed under the token says where: with `PYN_PUBLIC_URL` set it reads
+`finish setup in the browser at <PYN_PUBLIC_URL>, or run: pyn setup <username>`, and without it
+`finish setup with the CLI: pyn setup <username>`.
 [Getting started](getting-started.md#5-set-up-the-server-first-administrator) walks through it. The `pyn` command works too,
 from a computer that has it (it is not inside the server container). A new server serves only setup and `/healthz` until the first administrator exists ([first-run
 setup](concepts/access.md#first-run-setup)). The setup token is printed once on standard error at first start, or set
 `PYN_SETUP_TOKEN` (at least 16 characters, for example `openssl rand -hex 16`) in `.env` beforehand.
 
 ```bash
-docker compose logs server | grep -A3 "one-time setup token"     # when PYN_SETUP_TOKEN is not set
+docker compose logs server | grep -A4 "one-time setup token"     # when PYN_SETUP_TOKEN is not set
 curl -fsS http://127.0.0.1:7878/healthz
 PYN_SETUP_TOKEN="$TOKEN" pyn --server http://127.0.0.1:7878 setup admin --public-url https://pyn.example.com --registration invite
 ```
