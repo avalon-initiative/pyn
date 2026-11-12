@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Tests release.sh and verify-release-version.sh in a throwaway repository with a bare origin and a stub gh. No network.
+# Tests release.sh, release-all.sh, ci-green-for-tree.sh and verify-release-version.sh in a throwaway repository with a bare origin and a stub gh. No network.
 set -euo pipefail
-unset YES VER TITLE SKIP_CHECKS
+unset YES VER TITLE SKIP_CHECKS FORCE_CHECKS GATE_FAILS GH_AUTH_EXIT GH_API_FAIL GH_REPO GITHUB_REPOSITORY PYN_WEB_DIR PYN_COMMON_UI_DIR
 
 src=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
@@ -34,21 +34,43 @@ done
 : > "$work/out"; verify v1.2.3-title
 expect "verify writes the plain version" grep -qx 'version=1.2.3' "$work/out"
 
+# Stub gh: `auth status` follows GH_AUTH_EXIT; `api` answers from the JSON files in $GH_FIX through the real --jq filter
+# (and fails on a missing file or GH_API_FAIL); everything else is logged to $GH_LOG.
+cat > "$work/gh-stub" <<'STUB'
+#!/bin/bash
+[ "$1 $2" = "auth status" ] && exit "${GH_AUTH_EXIT:-0}"
+if [ "$1" = api ]; then
+  ep=$2; shift 2; q=.
+  while [ $# -gt 0 ]; do [ "$1" = --jq ] && q=$2; shift; done
+  [ -z "${GH_API_FAIL:-}" ] || exit 1
+  case $ep in
+    */pulls) f=$GH_FIX/pulls.json ;;
+    */git/commits/*) f=$GH_FIX/commit-${ep##*/}.json ;;
+    */actions/runs*) f=$GH_FIX/runs.json ;;
+    *) exit 1 ;;
+  esac
+  [ -f "$f" ] || exit 1
+  exec jq -r "$q" "$f"
+fi
+echo "$@" >> "$GH_LOG"
+STUB
+export GH_FIX="$work/fix"
+
 # Fixture: a two-crate workspace, a bare origin and a clone on main with a stub gh.
 new_repo() {
   local d=$1
-  rm -rf "$d" "$d.git"
+  rm -rf "$d" "$d.git" "$GH_FIX"; mkdir -p "$GH_FIX"
   git init -q --bare -b main "$d.git"
   git clone -q "$d.git" "$d" 2>/dev/null
   mkdir -p "$d/scripts" "$d/crates/pyn-a/src" "$d/crates/pyn-b/src" "$d/docs/generated" "$d/bin"
-  cp "$src/scripts/release.sh" "$src/scripts/verify-release-version.sh" "$d/scripts/"
+  cp "$src/scripts/release.sh" "$src/scripts/verify-release-version.sh" "$src/scripts/ci-green-for-tree.sh" "$src/scripts/release-all.sh" "$d/scripts/"
   printf '[workspace]\nmembers = ["crates/*"]\nresolver = "2"\n\n[workspace.package]\nversion = "0.0.1"\n' > "$d/Cargo.toml"
   printf '[package]\nname = "pyn-a"\nversion.workspace = true\nedition = "2021"\n\n[dependencies]\npyn-b = { version = "0.0.1", path = "../pyn-b" }\n' > "$d/crates/pyn-a/Cargo.toml"
   printf '[package]\nname = "pyn-b"\nversion.workspace = true\nedition = "2021"\n' > "$d/crates/pyn-b/Cargo.toml"
   : > "$d/crates/pyn-a/src/lib.rs"; : > "$d/crates/pyn-b/src/lib.rs"
   printf '{\n  "info": {\n    "version": "0.0.1"\n  }\n}\n' > "$d/docs/generated/openapi.json"
   printf 'check:\n\t@test -z "$$GATE_FAILS"\nopenapi:\n\t@sed -i "s/^    \\"version\\": .*/    \\"version\\": \\"$$(sed -n "s/^version = \\"\\(.*\\)\\"$$/\\1/p" Cargo.toml)\\"/" docs/generated/openapi.json\n' > "$d/Makefile"
-  printf '#!/bin/sh\n[ "$1 $2" = "auth status" ] && exit "${GH_AUTH_EXIT:-0}"\necho "$@" >> "$GH_LOG"\n' > "$d/bin/gh"
+  cp "$work/gh-stub" "$d/bin/gh"
   chmod +x "$d/bin/gh"
   printf 'bin\n' > "$d/.gitignore"
   (cd "$d" && cargo metadata --format-version 1 >/dev/null 2>&1 && git add -A && git commit -qm init && git push -q origin main)
@@ -146,6 +168,88 @@ new_repo "$r"
 release VER=0.1.0 TITLE= YES=1 >/dev/null
 merge "[noissue] - Release v0.2.0 (#8)"
 expect_refused "publish refuses a version that differs from the files" "workspace version" publish YES=1
+
+# ci-green-for-tree.sh: a passing CI run on a PR head with the same tree, else non-zero with a reason.
+head=1111111111111111111111111111111111111111
+other=2222222222222222222222222222222222222222
+fixtures() { # fixtures <pr-head-tree> <ci-conclusion>
+  printf '[{"number":7,"head":{"sha":"%s"}}]\n' "$head" > "$GH_FIX/pulls.json"
+  printf '{"tree":{"sha":"%s"}}\n' "$1" > "$GH_FIX/commit-$head.json"
+  printf '{"workflow_runs":[{"name":"Other","conclusion":"failure","created_at":"2026-01-02T00:00:00Z","html_url":"x"},{"name":"CI","conclusion":%s,"status":"in_progress","created_at":"2026-01-01T00:00:00Z","html_url":"https://example.invalid/run/1"}]}\n' "$2" > "$GH_FIX/runs.json"
+}
+tree=$(git -C "$r" rev-parse 'origin/main^{tree}')
+green() { run scripts/ci-green-for-tree.sh "$@"; }
+new_repo "$r"
+tree=$(git -C "$r" rev-parse 'origin/main^{tree}')
+fixtures "$tree" '"success"'
+expect "tree check passes on a matching tree with a green run" green origin/main
+expect "tree check names the PR and run" bash -c 'grep -q "PR #7 (https://example.invalid/run/1)" <<<"$(cd "$0" && PATH="$0/bin:$PATH" scripts/ci-green-for-tree.sh origin/main)"' "$r"
+expect "tree check defaults to HEAD" green
+fixtures "$other" '"success"'
+expect_refused "tree check refuses a different tree" "different tree" green origin/main
+fixtures "$tree" '"failure"'
+expect_refused "tree check refuses a failing run" "is failure" green origin/main
+fixtures "$tree" null
+expect_refused "tree check refuses a run still in progress" "is in_progress" green origin/main
+printf '{"workflow_runs":[{"name":"Other","conclusion":"success","created_at":"2026-01-01T00:00:00Z","html_url":"x"}]}\n' > "$GH_FIX/runs.json"
+expect_refused "tree check refuses a head with no CI run" "is none" green origin/main
+printf '[]\n' > "$GH_FIX/pulls.json"
+expect_refused "tree check refuses a commit with no pull request" "no pull request" green origin/main
+fixtures "$tree" '"success"'
+expect "tree check fails on an API error" bash -c '! (cd "$0" && PATH="$0/bin:$PATH" GH_API_FAIL=1 scripts/ci-green-for-tree.sh origin/main)' "$r"
+expect_refused "tree check says why on an API error" "cannot decide" run env GH_API_FAIL=1 scripts/ci-green-for-tree.sh origin/main
+expect "tree check fails on an unknown commit" bash -c '! (cd "$0" && PATH="$0/bin:$PATH" scripts/ci-green-for-tree.sh nonexistent)' "$r"
+
+# release.sh: the local gate is skipped on a green tree; FORCE_CHECKS and a non-matching tree run it.
+new_repo "$r"
+tree=$(git -C "$r" rev-parse 'origin/main^{tree}')
+fixtures "$tree" '"success"'
+expect_refused "FORCE_CHECKS runs the gate despite a green tree" "checks failed" release FORCE_CHECKS=1 GATE_FAILS=1 VER=0.1.0 TITLE= YES=1
+expect_refused "SKIP_CHECKS with FORCE_CHECKS is refused" "contradict" release SKIP_CHECKS=1 FORCE_CHECKS=1 VER=0.1.0 TITLE= YES=1
+expect "refusals leave main untouched" unchanged
+out=$(release GATE_FAILS=1 VER=0.1.0 TITLE= YES=1 2>&1)
+expect "a green tree skips the failing local gate" test -n "$(git -C "$r" rev-parse -q --verify release-v0.1.0)"
+expect "the skip says why" grep -q "skipping the local checks; ci-green-for-tree: tree .* passed CI on PR #7" <<<"$out"
+new_repo "$r"
+tree=$(git -C "$r" rev-parse 'origin/main^{tree}')
+fixtures "$other" '"success"'
+expect_refused "a different tree still runs the gate" "checks failed" release GATE_FAILS=1 VER=0.1.0 TITLE= YES=1
+fixtures "$tree" '"failure"'
+expect_refused "a failing CI run still runs the gate" "checks failed" release GATE_FAILS=1 VER=0.1.0 TITLE= YES=1
+expect "SKIP_CHECKS still wins without any CI data" bash -c 'cd "$0" && PATH="$0/bin:$PATH" GH_API_FAIL=1 GATE_FAILS=1 SKIP_CHECKS=1 VER=0.1.0 TITLE= YES=1 scripts/release.sh </dev/null >/dev/null 2>&1' "$r"
+
+# release-all.sh refusals, all before anything is changed: a sibling pyn-web fixture beside the pyn one.
+new_repo "$r"
+w="$work/web"
+rm -rf "$w"; mkdir -p "$w/scripts"
+git init -q -b main "$w"
+printf '{\n  "name": "pyn-web",\n  "version": "0.0.1",\n  "dependencies": {\n    "@avalon-initiative/pyn-common-ui": "^0.1.5"\n  }\n}\n' > "$w/package.json"
+printf '#!/bin/sh\nexit 0\n' > "$w/scripts/release.sh"
+(cd "$w" && git add -A && git commit -qm init)
+: > "$GH_LOG"
+all() { run env PYN_WEB_DIR="$w" PYN_COMMON_UI_DIR="$work/none" "$@" scripts/release-all.sh; }
+expect_refused "release-all needs a version" "VER is required" all YES=1
+expect_refused "release-all refuses a bad version" "invalid version" all VER=1.0 YES=1
+expect_refused "release-all refuses a version that is not greater" "not greater" all VER=0.0.1 YES=1
+expect_refused "release-all refuses a missing pyn-web checkout" "no pyn-web checkout" all PYN_WEB_DIR="$work/nowhere" VER=0.2.0 YES=1
+expect_refused "release-all asks for confirmation" "no terminal" all VER=0.2.0
+echo dirty > "$w/dirty"
+expect_refused "release-all refuses a dirty pyn-web" "pyn-web has a dirty" all VER=0.2.0 YES=1
+rm "$w/dirty"
+echo dirty > "$r/dirty"
+expect_refused "release-all refuses a dirty pyn" "pyn has a dirty" all VER=0.2.0 YES=1
+rm "$r/dirty"
+git -C "$w" switch -q -c topic
+expect_refused "release-all refuses pyn-web off main" "pyn-web is not on main" all VER=0.2.0 YES=1
+git -C "$w" switch -q main
+git -C "$r" switch -q -c topic
+expect_refused "release-all refuses pyn off main" "pyn is not on main" all VER=0.2.0 YES=1
+git -C "$r" switch -q main
+sed -i 's/"version": "0.0.1"/"version": "0.0.2"/' "$w/package.json"
+git -C "$w" commit -qam bump
+expect_refused "release-all refuses differing versions" "versions differ" all VER=0.2.0 YES=1
+expect "release-all refusals change nothing" unchanged
+expect "release-all refusals open no pull request" test ! -s "$GH_LOG"
 
 if [ "$fails" -ne 0 ]; then echo "$fails release test(s) failed" >&2; exit 1; fi
 echo "release tests passed"
