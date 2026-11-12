@@ -376,6 +376,43 @@ pub fn render_union(chunks: &[Chunk<&[u8]>]) -> Vec<u8> {
     out
 }
 
+/// Moves the lines both sides share at the start and end of each conflict out of it, as `zdiff3` does; the base is kept whole.
+pub fn zealous_diff3<T: PartialEq + Clone>(chunks: Vec<Chunk<T>>) -> Vec<Chunk<T>> {
+    fn push<T>(out: &mut Vec<Chunk<T>>, lines: Vec<T>) {
+        match out.last_mut() {
+            _ if lines.is_empty() => {}
+            Some(Chunk::Resolved(prev)) => prev.extend(lines),
+            _ => out.push(Chunk::Resolved(lines)),
+        }
+    }
+    let mut out = Vec::new();
+    for chunk in chunks {
+        let mut c = match chunk {
+            Chunk::Resolved(lines) => {
+                push(&mut out, lines);
+                continue;
+            }
+            Chunk::Conflict(c) => c,
+        };
+        let head = c
+            .ours
+            .iter()
+            .zip(&c.theirs)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let rest = (c.ours.len() - head).min(c.theirs.len() - head);
+        let (o, t) = (c.ours.iter().rev(), c.theirs.iter().rev());
+        let tail = o.zip(t).take(rest).take_while(|(a, b)| a == b).count();
+        push(&mut out, c.ours.drain(..head).collect());
+        c.theirs.drain(..head);
+        let tail_lines = c.ours.split_off(c.ours.len() - tail);
+        c.theirs.truncate(c.theirs.len() - tail);
+        out.push(Chunk::Conflict(c));
+        push(&mut out, tail_lines);
+    }
+    out
+}
+
 /// Renders chunks with diff3-style conflict markers, labelled with the given names.
 pub fn render_markers(chunks: &[Chunk<&[u8]>], ours: &str, base: &str, theirs: &str) -> Vec<u8> {
     render_markers_sized(chunks, MARKER_SIZE, (ours, base, theirs))
@@ -404,6 +441,55 @@ pub fn render_markers_sized(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod zdiff3_tests {
+    use super::*;
+
+    fn conflict(
+        base: &[&'static str],
+        ours: &[&'static str],
+        theirs: &[&'static str],
+    ) -> Chunk<&'static str> {
+        Chunk::Conflict(Conflict {
+            base: base.to_vec(),
+            ours: ours.to_vec(),
+            theirs: theirs.to_vec(),
+        })
+    }
+
+    #[test]
+    fn shared_head_and_tail_leave_the_conflict() {
+        let got = zealous_diff3(vec![
+            Chunk::Resolved(vec!["a"]),
+            conflict(&["b", "c"], &["S", "x", "T"], &["S", "y", "T"]),
+            Chunk::Resolved(vec!["e"]),
+        ]);
+        assert_eq!(
+            got,
+            vec![
+                Chunk::Resolved(vec!["a", "S"]),
+                conflict(&["b", "c"], &["x"], &["y"]),
+                Chunk::Resolved(vec!["T", "e"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_side_that_is_all_shared_keeps_an_empty_conflict_side() {
+        let got = zealous_diff3(vec![conflict(&["b"], &["S"], &["S", "T"])]);
+        assert_eq!(
+            got,
+            vec![Chunk::Resolved(vec!["S"]), conflict(&["b"], &[], &["T"])]
+        );
+    }
+
+    #[test]
+    fn a_conflict_with_nothing_shared_is_unchanged() {
+        let c = conflict(&["b"], &["x"], &["y"]);
+        assert_eq!(zealous_diff3(vec![c.clone()]), vec![c]);
+    }
 }
 
 #[cfg(test)]

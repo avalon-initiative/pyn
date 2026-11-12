@@ -207,6 +207,7 @@ fn changed(pa: &Path, na: &str, pb: &Path, nb: &str, ctx: &Ctx) -> Result<Entry>
         moved: None,
         rewrite: None,
         detached: true,
+        unmerged: false,
     }))
 }
 
@@ -372,6 +373,7 @@ pub fn run(
                 moved: None,
                 rewrite: None,
                 detached: true,
+                unmerged: false,
             }),
             Entry::Added(n, b) => {
                 let moved = moves.moved.get(&n).cloned();
@@ -384,6 +386,7 @@ pub fn run(
                         moved: Some(m),
                         rewrite: None,
                         detached: true,
+                        unmerged: false,
                     },
                     None => Pair {
                         old_path: n.clone(),
@@ -393,6 +396,7 @@ pub fn run(
                         moved: None,
                         rewrite: None,
                         detached: true,
+                        unmerged: false,
                     },
                 });
             }

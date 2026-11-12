@@ -31,6 +31,7 @@ mod combined_diff;
 mod commands;
 mod commit;
 mod config_flags;
+mod conflict_style;
 mod convert;
 mod count_objects;
 mod decorate;
