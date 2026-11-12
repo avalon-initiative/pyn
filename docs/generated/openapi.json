@@ -4101,7 +4101,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4148,7 +4148,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4199,7 +4199,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4286,7 +4286,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4383,7 +4383,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4425,7 +4425,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4504,7 +4504,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4561,7 +4561,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4649,7 +4649,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4746,7 +4746,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4823,7 +4823,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4911,7 +4911,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -4989,7 +4989,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5138,7 +5138,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5205,7 +5205,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5299,7 +5299,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5367,7 +5367,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5442,7 +5442,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5511,7 +5511,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5616,7 +5616,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5656,7 +5656,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5715,7 +5715,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5763,7 +5763,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5805,7 +5805,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5854,7 +5854,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5897,7 +5897,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -5958,7 +5958,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6049,7 +6049,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6127,7 +6127,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6211,7 +6211,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6279,7 +6279,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6363,7 +6363,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6424,7 +6424,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6505,7 +6505,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6575,7 +6575,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6683,7 +6683,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6732,7 +6732,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6811,7 +6811,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6873,7 +6873,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -6932,7 +6932,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7028,7 +7028,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7107,7 +7107,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7156,7 +7156,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7219,7 +7219,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7299,7 +7299,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7370,7 +7370,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7447,7 +7447,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7487,7 +7487,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7547,7 +7547,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7615,7 +7615,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner.",
+            "description": "The repository's name within its owner; matched ignoring case.",
             "required": true,
             "schema": {
               "type": "string"

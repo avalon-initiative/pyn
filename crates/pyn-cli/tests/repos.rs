@@ -98,6 +98,42 @@ fn repositories_are_created_listed_and_deleted() {
 }
 
 #[test]
+fn repository_names_keep_their_case_and_resolve_ignoring_it() {
+    let env = start_empty();
+    let home = env.dir("home");
+    let out = env.ok(&home, "alice", &["repo", "create", "MyGame", "--no-policy"]);
+    assert!(out.contains("created alice/MyGame"), "{out}");
+    let taken = env.fails(&home, "alice", &["repo", "create", "mygame"]);
+    assert!(taken.contains("repo_exists"), "{taken}");
+
+    let seed = env.dir("seed");
+    std::fs::write(seed.join("f"), "x").unwrap();
+    env.ok(
+        &seed,
+        "alice",
+        &[
+            "--repo",
+            "alice/MYGAME",
+            "commit",
+            "a.txt",
+            "--file",
+            "f",
+            "-m",
+            "seed",
+        ],
+    );
+    let ws = env.dir("ws");
+    let out = env.ok(
+        &home,
+        "alice",
+        &["clone", &env.source("alice/mygame"), ws.to_str().unwrap()],
+    );
+    assert!(out.contains("cloned 1 files"), "{out}");
+    let listed = env.ok(&home, "alice", &["repo", "list", "--owner", "alice"]);
+    assert!(listed.contains("alice/MyGame"), "{listed}");
+}
+
+#[test]
 fn a_workspace_remembers_its_repository() {
     let env = start_empty();
     let home = env.dir("home");

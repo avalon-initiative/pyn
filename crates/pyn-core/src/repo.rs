@@ -121,16 +121,16 @@ pub struct RepoUpdate {
 
 pub const MAX_NAME_LEN: usize = 100;
 
-/// Lowercase letters, digits, `-`, `_` and `.`, 1 to 100 characters, starting with a letter or digit and
+/// ASCII letters of any case, digits, `-`, `_` and `.`, 1 to 100 characters, starting with a letter or digit and
 /// not ending in `.`.
 pub fn validate_name(name: &str) -> Result<String> {
     let ok_chars = name
         .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.'));
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
     let starts_ok = name
         .bytes()
         .next()
-        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+        .is_some_and(|b| b.is_ascii_alphanumeric());
     if (1..=MAX_NAME_LEN).contains(&name.len()) && ok_chars && starts_ok && !name.ends_with('.') {
         Ok(name.to_string())
     } else {
@@ -151,11 +151,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names_are_lowercase_and_path_safe() {
-        for ok in ["game", "a", "my-repo_2.0", "0day"] {
+    fn names_allow_any_case_and_are_path_safe() {
+        for ok in [
+            "game",
+            "a",
+            "my-repo_2.0",
+            "0day",
+            "MyGame",
+            "UPPER",
+            "camelCase",
+        ] {
             assert!(validate_name(ok).is_ok(), "{ok}");
         }
-        for bad in ["", "Game", "-x", ".x", "x.", "a/b", "a b", &"x".repeat(101)] {
+        for bad in ["", "-x", "_x", ".x", "x.", "a/b", "a b", &"x".repeat(101)] {
             assert!(validate_name(bad).is_err(), "{bad:?}");
         }
     }

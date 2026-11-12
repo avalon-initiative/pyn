@@ -1423,6 +1423,55 @@ pub async fn a_repository_name_is_unique_per_owner(store: Store) {
     assert_eq!(store.list_repos(None).await.unwrap().len(), 2);
 }
 
+pub async fn repository_names_are_case_insensitive(store: Store) {
+    store
+        .create_repo(repo_record("r1", "alice", "Game"))
+        .await
+        .unwrap();
+    let err = store
+        .create_repo(repo_record("r2", "alice", "game"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::RepoExists(_)), "{err}");
+    let found = store
+        .find_repo(&user("alice"), "GAME")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.name, "Game", "the stored case is returned");
+    store
+        .create_repo(repo_record("r3", "alice", "Other"))
+        .await
+        .unwrap();
+
+    let clash = store
+        .update_repo(
+            &RepoId::new("r3"),
+            RepoUpdate {
+                name: Some("GAME".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(clash, PynError::RepoExists(_)), "{clash}");
+    let recased = store
+        .update_repo(
+            &RepoId::new("r1"),
+            RepoUpdate {
+                name: Some("GAME".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(recased.name, "GAME");
+    assert_eq!(
+        store.find_repo(&user("alice"), "game").await.unwrap(),
+        Some(recased)
+    );
+}
+
 pub async fn updating_a_repository_keeps_its_id(store: Store) {
     store
         .create_repo(repo_record("r1", "alice", "game"))
@@ -3253,6 +3302,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_keeps_its_initial_policy_or_none);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; public_repositories_are_listed_in_pages_after_an_address);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_name_is_unique_per_owner);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repository_names_are_case_insensitive);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_repository_keeps_its_id);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_lock_limit_and_can_clear_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_do_not_share_locks_or_revisions);

@@ -2451,7 +2451,7 @@ impl MetadataStore for PgMetadataStore {
                     .await
                     .map_err(db)?;
             let taken: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM repositories WHERE owner = $1 AND name = $2)",
+                "SELECT EXISTS (SELECT 1 FROM repositories WHERE owner = $1 AND lower(name) = lower($2))",
             )
             .bind(repo.owner.as_str())
             .bind(&repo.name)
@@ -2495,7 +2495,7 @@ impl MetadataStore for PgMetadataStore {
     async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
         let row = sqlx::query(
             "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
-             WHERE owner = $1 AND name = $2",
+             WHERE owner = $1 AND lower(name) = lower($2)",
         )
         .bind(owner.as_str())
         .bind(name)

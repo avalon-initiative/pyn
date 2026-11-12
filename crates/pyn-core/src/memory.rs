@@ -1580,7 +1580,7 @@ impl MetadataStore for MemoryMetadataStore {
         if st
             .repos
             .values()
-            .any(|r| r.owner == repo.owner && r.name == repo.name)
+            .any(|r| r.owner == repo.owner && r.name.eq_ignore_ascii_case(&repo.name))
         {
             return Err(PynError::RepoExists(repo.address()));
         }
@@ -1603,7 +1603,7 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(st
             .repos
             .values()
-            .find(|r| &r.owner == owner && r.name == name)
+            .find(|r| &r.owner == owner && r.name.eq_ignore_ascii_case(name))
             .cloned())
     }
 
@@ -1667,11 +1667,9 @@ impl MetadataStore for MemoryMetadataStore {
         if let Some(cap) = update.storage_cap {
             repo.storage_cap = cap;
         }
-        if st
-            .repos
-            .values()
-            .any(|r| &r.id != id && r.owner == repo.owner && r.name == repo.name)
-        {
+        if st.repos.values().any(|r| {
+            &r.id != id && r.owner == repo.owner && r.name.eq_ignore_ascii_case(&repo.name)
+        }) {
             return Err(PynError::RepoExists(repo.address()));
         }
         self.outbox.queue(events)?;
