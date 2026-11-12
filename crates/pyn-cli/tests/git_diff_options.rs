@@ -385,6 +385,100 @@ fn diff_filter_and_silent_diff_match_git() {
     });
 }
 
+/// A seeded pair of files drawn from a small vocabulary, so lines repeat, with edits that differ in kind.
+fn random_pair(seed: u64, lines: usize, vocab: u64) -> (String, String) {
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut next = move |n: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % n
+    };
+    let word = |n: u64| ["a", "b", "c", "}", "{", "", "  x", "    y", "int f() {"][n as usize % 9];
+    let old: Vec<&str> = (0..lines).map(|_| word(next(vocab))).collect();
+    let mut new = old.clone();
+    for _ in 0..1 + next(6) {
+        let at = next(new.len() as u64 + 1) as usize;
+        match next(3) {
+            0 if at < new.len() => {
+                new.remove(at);
+            }
+            1 => new.insert(at, word(next(vocab))),
+            _ if at < new.len() => new[at] = word(next(vocab)),
+            _ => {}
+        }
+    }
+    let join = |l: &[&str]| l.iter().map(|x| format!("{x}\n")).collect();
+    (join(&old), join(&new))
+}
+
+#[test]
+fn patience_and_histogram_match_git() {
+    let anchored = (
+        "one\nfoo\ntwo\nbar\nthree\n",
+        "three\nbar\ntwo\nfoo\none\nfoo\n",
+    );
+    for format in FORMATS {
+        let f = Fixture::new(format);
+        let mut pairs = vec![(anchored.0.to_string(), anchored.1.to_string())];
+        for seed in 1..=24u64 {
+            let lines = [6, 30, 120, 400][seed as usize % 4];
+            pairs.push(random_pair(seed, lines, 3 + seed % 7));
+        }
+        for (n, (old, new)) in pairs.iter().enumerate() {
+            f.write("p.txt", old.as_bytes());
+            f.commit(&format!("old {n}"));
+            f.write("p.txt", new.as_bytes());
+            f.git(&["add", "-A"]);
+            f.git(&["commit", "-q", "--allow-empty", "-m", &format!("new {n}")]);
+            for flag in [
+                "--patience",
+                "--histogram",
+                "--diff-algorithm=patience",
+                "--diff-algorithm=Histogram",
+            ] {
+                f.same(&["diff", flag, "HEAD~1", "HEAD", "--", "p.txt"]);
+            }
+            f.same(&["diff", "--patience", "-w", "HEAD~1", "HEAD", "--", "p.txt"]);
+            f.same(&[
+                "diff",
+                "--histogram",
+                "-U0",
+                "HEAD~1",
+                "HEAD",
+                "--",
+                "p.txt",
+            ]);
+            f.same(&[
+                "diff",
+                "--diff-algorithm",
+                "histogram",
+                "--stat",
+                "HEAD~1",
+                "HEAD",
+                "--",
+                "p.txt",
+            ]);
+        }
+        f.all(&[
+            &["log", "-p", "-3", "--patience", "--", "p.txt"],
+            &["show", "--histogram", "HEAD"],
+        ]);
+        f.config("diff.algorithm", "patience");
+        f.all(&[
+            &["diff", "HEAD~2", "HEAD"],
+            &["log", "-p", "-2", "--", "p.txt"],
+            &["diff", "--histogram", "HEAD~2", "HEAD"],
+            &["diff", "--diff-algorithm=default", "HEAD~2", "HEAD"],
+        ]);
+        f.config("diff.algorithm", "histogram");
+        f.all(&[
+            &["diff", "HEAD~2", "HEAD"],
+            &["diff", "--minimal", "HEAD~2", "HEAD"],
+        ]);
+    }
+}
+
 #[test]
 fn word_diff_matches_git() {
     each_format(|f| {
@@ -880,9 +974,7 @@ fn diff_configuration_matches_git() {
 fn unfinished_options_are_usage_errors() {
     let f = Fixture::new("sha1");
     for args in [
-        &["diff", "--patience"][..],
-        &["diff", "--histogram"],
-        &["diff", "--diff-algorithm=patience"],
+        &["diff", "--diff-algorithm=nope"][..],
         &["diff", "--binary"],
         &["diff", "--color=sometimes"],
         &["diff", "--word-diff=wide"],

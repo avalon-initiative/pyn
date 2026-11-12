@@ -1,7 +1,8 @@
 //! Matching for `pyn log` filters: POSIX basic regular expressions (git's default) and the date forms `--since` takes.
 
+use super::approxidate::approxidate;
 use anyhow::{Result, bail};
-use chrono::{DateTime, Duration, Local, Months, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use regex::{Regex, RegexBuilder};
 
 /// How `--grep`, `--author` and `--committer` read their patterns.
@@ -182,18 +183,13 @@ fn bracket(chars: &[char], start: usize, out: &mut String, pattern: &str) -> Res
     bail!("command line, '{pattern}': Unmatched [, [^, [:, [., or [=")
 }
 
-fn unit_seconds(word: &str) -> Option<(i64, bool)> {
-    let word = word.strip_suffix('s').unwrap_or(word);
-    Some(match word {
-        "second" | "sec" => (1, false),
-        "minute" | "min" => (60, false),
-        "hour" => (3600, false),
-        "day" => (86_400, false),
-        "week" => (7 * 86_400, false),
-        "month" => (1, true),
-        "year" => (12, true),
-        _ => return None,
-    })
+/// The current time, or `GIT_TEST_DATE_NOW` (seconds) when git's own override is set.
+pub fn now() -> DateTime<Local> {
+    std::env::var("GIT_TEST_DATE_NOW")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .and_then(|t| Local.timestamp_opt(t, 0).single())
+        .unwrap_or_else(Local::now)
 }
 
 /// Seconds since the epoch for a `--since` / `--until` value.
@@ -208,42 +204,16 @@ pub fn parse_date(text: &str, now: DateTime<Local>) -> Result<i64> {
     {
         return number.parse().map_err(|_| bad());
     }
-    match text {
-        "now" => return Ok(now.timestamp()),
-        "yesterday" => return Ok(back(now, 1, 86_400, false)?.timestamp()),
-        _ => {}
-    }
-    if let Some(ago) = text.strip_suffix(" ago") {
-        return relative_past(ago, now).ok_or_else(bad);
-    }
     if let Ok(t) = DateTime::parse_from_rfc2822(text) {
         return Ok(t.timestamp());
     }
-    iso(text, now).ok_or_else(bad)
-}
-
-fn back(now: DateTime<Local>, n: i64, seconds: i64, months: bool) -> Result<DateTime<Local>> {
-    let moved = if months {
-        now.checked_sub_months(Months::new(u32::try_from(n * seconds)?))
-    } else {
-        now.checked_sub_signed(Duration::seconds(n.saturating_mul(seconds)))
-    };
-    moved.ok_or_else(|| anyhow::anyhow!("date out of range"))
-}
-
-/// `2 days`, `1 year 3 months`: every pair subtracted from `now`.
-fn relative_past(spec: &str, now: DateTime<Local>) -> Option<i64> {
-    let words: Vec<&str> = spec.split_whitespace().collect();
-    if words.is_empty() || !words.len().is_multiple_of(2) {
-        return None;
+    if let Some(secs) = iso(text, now) {
+        return Ok(secs);
     }
-    let mut at = now;
-    for pair in words.chunks(2) {
-        let n: i64 = pair[0].parse().ok()?;
-        let (size, months) = unit_seconds(pair[1])?;
-        at = back(at, n, size, months).ok()?;
+    match approxidate(text, now.timestamp()) {
+        (secs, true) => Ok(secs),
+        _ => Err(bad()),
     }
-    Some(at.timestamp())
 }
 
 /// `YYYY-MM-DD`, optionally with `[T ]HH:MM[:SS]` and a zone (`Z`, `+hh:mm`, `+hhmm`); the local zone and, for
@@ -258,7 +228,11 @@ fn iso(text: &str, now: DateTime<Local>) -> Option<i64> {
     if parts.next().is_some() || y.len() != 4 || m.len() > 2 || d.len() > 2 {
         return None;
     }
-    let day = NaiveDate::from_ymd_opt(y.parse().ok()?, m.parse().ok()?, d.parse().ok()?)?;
+    let year: i32 = y.parse().ok()?;
+    if !(1970..2100).contains(&year) {
+        return None;
+    }
+    let day = NaiveDate::from_ymd_opt(year, m.parse().ok()?, d.parse().ok()?)?;
     if rest.is_empty() {
         let at = day.and_time(now.time());
         return Local
@@ -348,7 +322,9 @@ mod tests {
         assert_eq!(at("2 hours ago"), 1_800_000_000 - 7200);
         assert_eq!(at("1 day 2 hours ago"), 1_800_000_000 - 86_400 - 7200);
         assert_eq!(at("now"), 1_800_000_000);
+        assert_eq!(at("3 days ago"), 1_800_000_000 - 3 * 86_400);
+        assert_eq!(at("2 weeks 3 days ago"), 1_800_000_000 - 17 * 86_400);
+        assert_eq!(at("five minutes"), 1_800_000_000 - 300);
         assert!(parse_date("garbage", now()).is_err());
-        assert!(parse_date("2023-13-40", now()).is_err());
     }
 }

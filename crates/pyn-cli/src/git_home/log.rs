@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use chrono::Local;
 use pyn_gitwork::{Mailmap, Pathspec, fs_path};
 use pyn_object::{Commit, ObjectId};
 use regex::Regex;
@@ -244,7 +243,7 @@ impl GitLogArgs {
 
     /// The `/commits` parameters of `--author`, `--grep`, `--since` and `--until`.
     pub fn commit_filter(&self) -> Result<crate::log_filter::CommitFilter> {
-        let now = Local::now();
+        let now = super::log_match::now();
         let date = |d: &Option<String>| -> Result<Option<String>> {
             let Some(d) = d else { return Ok(None) };
             let secs = parse_date(d, now)?;
@@ -421,7 +420,7 @@ impl Filters {
                 .map(|p| compile_as(p, a.ignore_case, a.dialect()))
                 .collect()
         };
-        let now = Local::now();
+        let now = super::log_match::now();
         let date = |d: &Option<String>| d.as_deref().map(|d| parse_date(d, now)).transpose();
         Ok(Self {
             authors: all(&a.author)?,
