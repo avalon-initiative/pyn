@@ -1,7 +1,6 @@
 //! `--color-lines`, `--color-by-age`, `blame.coloring` and the `color.blame.*` settings.
 
 use anyhow::{Result, bail};
-use chrono::Local;
 
 use super::GitHome;
 use super::log_match::parse_date;
@@ -33,7 +32,7 @@ fn color_of(text: &str) -> Option<String> {
 }
 
 fn age_fields(spec: &str) -> Result<Vec<(i64, String)>> {
-    let now = Local::now();
+    let now = super::log_match::now();
     let fields: Vec<&str> = spec.split(',').collect();
     let mut out = Vec::new();
     for (i, field) in fields.iter().enumerate() {

@@ -1,0 +1,18 @@
+# pyn web app only, from a release image, in front of a server running elsewhere. See docs/getting-started.md.
+name: pyn
+
+services:
+  web:
+    image: ghcr.io/avalon-initiative/pyn-web:${PYN_VERSION:?set PYN_VERSION in .env (for example v0.0.2)}
+    restart: unless-stopped
+    environment:
+      PYN_API_URL: ${PYN_API_URL:?set PYN_API_URL in .env (the server address, for example https://pyn.example.com)}
+    ports:
+      - "${PYN_WEB_PUBLISH:-127.0.0.1:8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /etc/nginx/conf.d:uid=101,gid=101
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
