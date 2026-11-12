@@ -91,6 +91,30 @@ impl Pair {
             .unwrap()
     }
 
+    /// Like `same`, run from the folder `sub` of the work tree.
+    fn same_from(&self, sub: &str, args: &[&str]) {
+        let g = self.git_in(&self.git.join(sub), args);
+        let p = Command::new(env!("CARGO_BIN_EXE_pyn"))
+            .args(args)
+            .current_dir(self.pyn.join(sub))
+            .env("HOME", &self.home)
+            .env("TZ", "UTC")
+            .envs(IDENTITY)
+            .env("PYN_CONFIG_DIR", self.home.join("pyn-config"))
+            .env_remove("PYN_SERVER")
+            .env_remove("PYN_REPO")
+            .output()
+            .unwrap();
+        assert_eq!(
+            oracle::status_class(g.status.code().unwrap()),
+            oracle::status_class(p.status.code().unwrap()),
+            "{args:?} in {sub}: git said {} pyn said {}",
+            text(&g.stderr),
+            text(&p.stderr)
+        );
+        assert_eq!(text(&g.stdout), text(&p.stdout), "{args:?} in {sub}");
+    }
+
     /// Runs `args` with both tools: the status class and standard output must agree.
     fn same(&self, args: &[&str]) {
         let (g, p) = (self.git_in(&self.git, args), self.pyn_cmd(args));
@@ -321,6 +345,72 @@ fn an_invalid_funcname_pattern_is_an_error() {
         "git config diff.fn.xfuncname '^(unclosed'",
     );
     each(&script, |p| p.same(&["diff"]));
+}
+
+#[test]
+fn a_driver_setting_with_no_value_is_a_fatal_config_error() {
+    for key in ["funcname", "xfuncname", "textconv", "wordRegex"] {
+        let script = format!(
+            "printf 'f diff=fn\\n' >.gitattributes; printf 'one\\ntwo\\n' >f; git add -A .; git commit -qm base\n\
+             printf 'one\\nTWO\\n' >f; printf '[diff \"fn\"]\\n\\t{key}\\n' >>.git/config\n"
+        );
+        each(&script, |p| {
+            p.same(&["diff"]);
+            p.same(&["diff", "--word-diff"]);
+        });
+    }
+}
+
+#[test]
+fn textconv_runs_at_the_work_tree_root() {
+    let script = "mkdir sub; printf 'f diff=up\\n' >.gitattributes; printf 'ROOT\\n' >marker\n\
+        git config diff.up.textconv 'cat marker 2>/dev/null; cat'\n\
+        printf 'one\\ntwo\\n' >f; git add -A .; git commit -qm base; printf 'one\\nTWO\\n' >f\n";
+    each(script, |p| {
+        p.same(&["diff"]);
+        p.same_from("sub", &["diff"]);
+        p.same_from("sub", &["diff", "HEAD", "--", "../f"]);
+    });
+}
+
+#[test]
+fn a_driver_word_regex_picks_the_words() {
+    for (config, args) in [
+        (
+            "git config diff.w.wordRegex '[a-z]+'",
+            &["diff", "--word-diff"][..],
+        ),
+        (
+            "git config diff.w.wordRegex '[a-z]+'",
+            &["diff", "--color-words"],
+        ),
+        (
+            "git config diff.w.wordRegex '[a-z]+'",
+            &["diff", "--word-diff=porcelain"],
+        ),
+        (
+            "git config diff.w.wordRegex '[a-z]+'; git config diff.wordRegex '[^ ]+'",
+            &["diff", "--word-diff"],
+        ),
+        (
+            "git config diff.w.wordRegex '[a-z]+'",
+            &["diff", "--word-diff", "--word-diff-regex=[^ ]+"],
+        ),
+        (
+            "git config diff.w.wordRegex '[a-z]+'",
+            &["show", "HEAD", "--word-diff"],
+        ),
+        (
+            "git config diff.w.wordRegex '[a-z]+'; git config diff.other.wordRegex '.'",
+            &["diff", "--word-diff"],
+        ),
+    ] {
+        let script = format!(
+            "printf 'f diff=w\\n' >.gitattributes; {config}\n\
+             printf 'foo-bar baz\\nx\\n' >f; git add -A .; git commit -qm base; printf 'foo-qux baz\\nx\\n' >f\n"
+        );
+        each(&script, |p| p.same(args));
+    }
 }
 
 const WS_FILES: &str = "printf 'a \\n\\tb \\n        c\\n \\td\\n' >t.plain; for e in ws on off list; do cp t.plain t.$e; done; \

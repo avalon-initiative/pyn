@@ -269,6 +269,7 @@ struct Contents {
     new: Vec<u8>,
     binary: bool,
     funcs: Option<crate::diff_driver::FuncMatcher>,
+    word_regex: Option<String>,
 }
 
 /// Binary-ness forced by `-a`, and whether textconv applies: only to a patch, and not under `--no-textconv`.
@@ -293,7 +294,7 @@ fn contents(
             let Some(b) = blob else { return Ok(Vec::new()) };
             let data = bytes(backend, path, b, false)?;
             if b.is_regular() {
-                crate::diff_driver::textconv(command, &data)
+                crate::diff_driver::textconv(command, &data, driver.work_tree.as_deref())
             } else {
                 Ok(data)
             }
@@ -303,6 +304,7 @@ fn contents(
             new: convert(new)?,
             binary: false,
             funcs,
+            word_regex: driver.word_regex.clone(),
         });
     }
     let old_probe = old
@@ -321,6 +323,7 @@ fn contents(
             new: Vec::new(),
             binary: true,
             funcs,
+            word_regex: driver.word_regex.clone(),
         });
     }
     let full = |blob: Option<&Blob>, probe: Vec<u8>| -> Result<Vec<u8>> {
@@ -336,6 +339,7 @@ fn contents(
         new,
         binary,
         funcs,
+        word_regex: driver.word_regex.clone(),
     })
 }
 
@@ -478,7 +482,8 @@ fn patch(
         spaced(&old_label, &from),
         spaced(&new_label, &to)
     );
-    let body = if let Some(setup) = words {
+    let own = words.and_then(|w| w.for_driver(c.word_regex.as_deref()));
+    let body = if let Some(setup) = own.as_ref().or(words) {
         String::from_utf8_lossy(&word_diff::render(&hunks, setup, style)).into_owned()
     } else if let Some(st) = style {
         let eof = diff_color::blank_at_eof(&c.old, &c.new, &st.rule);
