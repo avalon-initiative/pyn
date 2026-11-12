@@ -16,6 +16,10 @@ pub struct DiffDriver {
     pub binary: Option<bool>,
     pub textconv: Option<String>,
     pub funcname: Option<FuncMatcher>,
+    /// `diff.<name>.wordRegex`: the word pattern of `--word-diff` for the path.
+    pub word_regex: Option<String>,
+    /// Where `textconv` runs; `None` keeps the current folder.
+    pub work_tree: Option<std::path::PathBuf>,
 }
 
 impl DiffDriver {
@@ -40,6 +44,18 @@ impl DiffDriver {
             AttrValue::Unspecified => return Ok(driver),
         };
         let key = |k: &str| format!("diff.{name}.{k}");
+        for e in config.entries() {
+            let valued = ["funcname", "xfuncname", "textconv", "wordregex"];
+            if e.section == "diff"
+                && e.subsection.as_deref() == Some(name.as_str())
+                && e.value.is_none()
+                && valued.contains(&e.key.as_str())
+            {
+                eprintln!("error: missing value for '{}'", key(&e.key));
+                bail!("bad config variable '{}'", key(&e.key));
+            }
+        }
+        driver.word_regex = config.get(&key("wordregex")).map(str::to_string);
         driver.binary = config.get_bool(&key("binary")).ok().flatten();
         driver.textconv = config.get(&key("textconv")).map(str::to_string);
         let last = config.entries().iter().rev().find(|e| {
@@ -105,7 +121,7 @@ impl FuncMatcher {
 }
 
 /// Runs `command` on a file holding `content` and returns its output, as `diff.<name>.textconv` does.
-pub fn textconv(command: &str, content: &[u8]) -> Result<Vec<u8>> {
+pub fn textconv(command: &str, content: &[u8], dir: Option<&std::path::Path>) -> Result<Vec<u8>> {
     let tmp = tempfile::Builder::new()
         .prefix(".diff_")
         .tempfile()
@@ -118,6 +134,9 @@ pub fn textconv(command: &str, content: &[u8]) -> Result<Vec<u8>> {
         .arg(tmp.path())
         .stdin(Stdio::null())
         .stderr(Stdio::inherit());
+    if let Some(dir) = dir {
+        run.current_dir(dir);
+    }
     let out = run
         .output()
         .with_context(|| format!("running textconv `{command}`"))?;

@@ -190,7 +190,7 @@ Commands people reach for that are not in the daily set.
 | `git config --remove-section`, `--rename-section`, `-e`, `--blob`, `--type`, `--bool`, `--get-regexp`, `--show-origin`, `-z` and value patterns | none | unsupported | Usage error (`129`). |
 | `git fsck` | `pyn verify [<path>]` | different | Checks every revision's hash and its link to the one before, and the audit log's chain. Silent and exit 0 when intact, as git; otherwise a `PROBLEM`, `WHAT`, `PATH` table and exit 1. `-v` / `--verbose` also prints what was checked. See [integrity](integrity.md). On a git home `pyn fsck` is git's command; see [Storage maintenance](#storage-maintenance). |
 | `git reflog [show\|list\|exists\|expire\|delete]` | `pyn reflog ...` on a git home | git home only | See [Reflogs](#reflogs). On a pyn server it prints the git-command message; the closest analogue there is `pyn audit`, an append-only log of lock, revision and access events, filtered with `--path`, `--actor`, `--action`, `--before`, `--limit` and permission-gated (`view_audit`). |
-| `git lfs track`, `untrack`, `ls-files`, `fetch`, `pull`, `push`, `prune` | `pyn lfs <subcommand>` on a git home | git home only | See [Git LFS commands](#git-lfs-commands). No `git-lfs` program is needed. |
+| `git lfs track`, `untrack`, `ls-files`, `status`, `fetch`, `pull`, `push`, `prune` | `pyn lfs <subcommand>` on a git home | git home only | See [Git LFS commands](#git-lfs-commands). No `git-lfs` program is needed. |
 | `git count-objects`, `git fsck`, `git prune`, `git repack`, `git gc`, `git pack-refs` | the same names on a git home | git home only | See [Storage maintenance](#storage-maintenance). On a pyn server they fail with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
 | `git grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]` | `pyn grep ...` on a git home | git home only | See [Grep](#grep). Searches the tracked files of the work tree, the index (`--cached`) or the commits named; `-n -i -w -l -c -v -q -h -H -a -I -E -G -F`, `-e` (repeatable), `--and`, `--or`, `--not` and parentheses, pathspecs after the revisions or `--`. On a pyn server or local-store workspace it says it needs a git repository (`1`). |
 | `git bisect start [--term-(bad\|new)=<term> --term-(good\|old)=<term>] [--no-checkout] [--first-parent] [<bad> [<good>...]] [--] [<pathspec>...]`, `good`\|`old`, `bad`\|`new`, `skip`, `next`, `reset`, `run`, `log`, `replay`, `terms` | `pyn bisect ...` on a git home | git home only | See [Bisect](#bisect). Git's search, output, exit statuses and `.git` state, so git and pyn can continue each other's bisection; `visualize` and `view` are not built (`129`). On a pyn server or local-store workspace it fails with `fatal: not a git repository (or any of the parent directories): .git` (`128`). |
@@ -996,7 +996,7 @@ index, so a repository that relies on conversions shows no phantom changes. `-di
 `pyn convert --home git` keeps a work tree file's stat data in the new index only when its converted form is the committed blob.
 
 Not built: `working-tree-encoding`,
-`export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.wordRegex`, `diff.<name>.cachetextconv`,
+`export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.cachetextconv`,
 the `whitespace` attribute in `apply`. `diff --no-index` on a file outside the work tree of a repository (or with no
 repository) converts it by `core.autocrlf` and `core.eol` only, from the repository's config or the global one. The diff
 attributes (`diff`, `whitespace`) there come from the system and global attributes files only, as in git; the per-folder
@@ -1011,14 +1011,14 @@ The bare-repository default of reading `HEAD`'s attributes has an oracle test th
 
 #### Diff, merge and whitespace attributes
 
-`diff=<name>` picks a diff driver; `diff.<name>.binary`, `textconv`, `funcname` and `xfuncname` are read, and a name with
+`diff=<name>` picks a diff driver; `diff.<name>.binary`, `textconv`, `funcname`, `xfuncname` and `wordRegex` are read, and a name with
 no such settings changes nothing. `-diff` is binary and `diff` forces text, as before.
 
 - `textconv`: `diff`, `log -p` and `show` run the command on a temporary file holding each side (the file name is appended
   to the command, which goes through `sh -c`) and diff its output; the sides are not checked for binary content. Added and
   deleted files convert one side. `--no-textconv` turns it off and `--textconv` turns it back on. It does not apply to
   `--stat`, `--numstat`, `--check`, `format-patch` or `blame`. A command that fails stops the diff (`fatal: unable to read
-  files to diff`). Only regular files are converted. The command runs in the current folder, where git runs it at the top of the work tree.
+  files to diff`). Only regular files are converted. The command runs at the top of the work tree, as git's does, wherever you are in it.
 - `binary`: `diff.<name>.binary` true or false forces binary or text for every output that decides it.
 - `xfuncname` (extended expression) and `funcname` (basic expression) choose the heading after `@@`: the nearest line
   above the hunk that matches, shown as its first group or else its match, at most 80 bytes. Several patterns are separated
@@ -1026,7 +1026,9 @@ no such settings changes nothing. `-diff` is binary and `diff` forces text, as b
   with a pattern uses it instead of the default (a line starting with a letter, `_` or `$`). The expressions are
   translated onto the `regex` crate, as in `grep`. When both are set for a driver, the one read last from the
   configuration wins. `-W` still grows a hunk to the default function lines.
-  An invalid pattern is a fatal error.
+  An invalid pattern is a fatal error, and so is a `funcname`, `xfuncname`, `textconv` or `wordRegex` with no value (`error: missing value`, exit `128`, as git).
+- `wordRegex`: `diff.<name>.wordRegex` is the word pattern of `--word-diff` and `--color-words` for the path (an extended expression, as
+  `--word-diff-regex`). A regular expression on the command line wins over it, and it wins over `diff.wordRegex`.
 - Built-in language drivers: `diff=<lang>` with no `diff.<lang>.funcname` or `xfuncname` uses git's pattern for the language
   (`ada`, `bash`, `bibtex`, `cpp` (also C), `csharp`, `css`, `dts`, `elixir`, `fortran`, `fountain`, `golang`, `html`, `java`,
   `kotlin`, `markdown`, `matlab`, `objc`, `pascal`, `perl`, `php`, `python`, `ruby`, `rust`, `scheme`, `tex`), ported from git's
@@ -3014,6 +3016,7 @@ upload without a git push, to recover after `push --no-verify` or `GIT_LFS_SKIP_
 | `pyn lfs track [<pattern>...]` | Appends `<pattern> filter=lfs diff=lfs merge=lfs -text` to the `.gitattributes` at the root of the work tree (spaces in a pattern are written as `[[:space:]]`), printing `Tracking "<pattern>"`, or `"<pattern>" already supported`. Without a pattern it lists the root file's `filter=lfs` patterns. Files already in the index are not converted; `pyn add` them again. |
 | `pyn lfs untrack <pattern>...` | Removes the `filter=lfs` lines for those patterns from the root `.gitattributes`, printing `Untracking "<pattern>"`. |
 | `pyn lfs ls-files [-l] [-n]` | Lists the index entries that are pointer files as `<oid> <state> <path>`, state `*` when the local store has the object and `-` when it does not. `-l` shows the whole object id (10 characters otherwise); `-n` shows only paths. Only paths that `filter=lfs` applies to are read. |
+| `pyn lfs status` | Prints `On branch <name>`, then `Objects to be committed:` (index entries that differ from `HEAD`) and `Objects not staged for commit:` (work tree files that differ from the index), each limited to paths `filter=lfs` applies to. An entry reads `<path> (LFS: <7-character oid>)`; a staged blob that is not a pointer reads `(Git: <7-character hash>)`. Deletions and renames are not listed. |
 | `pyn lfs fetch [<remote> [<rev>...]]` | Downloads the objects the pointers in the trees of the revisions (default `HEAD`) name and the store lacks, through the Batch client. `lfs.fetchinclude` and `lfs.fetchexclude` apply. The remote is `origin`, else the only remote; it must be configured. |
 | `pyn lfs pull [<remote>]` | `fetch` for `HEAD`, then replaces each indexed pointer file in the work tree that still holds exactly its pointer with the object. Modified and missing files are left alone. |
 | `pyn lfs push [<remote> [<rev>...]]` | Offers every object the pointers in the commits reachable from the revisions (default `HEAD`) name, and uploads the ones the server lacks. Unlike the upload in `push`, it does not skip what the remote-tracking refs already have, so it also repairs a push made with `--no-verify`. |
@@ -3061,9 +3064,9 @@ downloads, uploads, credentials), `crates/pyn-cli/tests/git_lfs_remote.rs` (smud
 and skipped otherwise) `crates/pyn-gittransport/tests/lfs_locks.rs` (the Locks client against a local Locks server), `crates/pyn-cli/tests/git_lfs_locks.rs`
 (`lockable`, `lock`, `unlock`, `locks`, the pre-push check; #786) and `crates/pyn-cli/tests/git_lfs.rs` (#311, #628, #785).
 
-Not built on the git home: `ssh` remotes (`git-lfs-authenticate`) and the other transfer adapters (`tus`, custom), concurrent
-transfers, `lfs.transfer.*` tuning, `lfs.extension.*` programs, and the `git lfs` commands not listed under
-[Git LFS commands](#git-lfs-commands) or the locking commands above (`status`, `migrate`, `env`, `install`, `fsck`).
+Not built on the git home: `ssh` remotes (`git-lfs-authenticate`, #917) and the other transfer adapters (`tus`, #918; custom),
+concurrent transfers (#919), `lfs.transfer.*` tuning, `lfs.extension.*` programs, and the `git lfs` commands not listed under
+[Git LFS commands](#git-lfs-commands) or the locking commands above (`migrate`, `env`, `install`, `fsck`).
 
 ### Refused commands
 
