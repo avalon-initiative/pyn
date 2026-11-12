@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # `release.sh` bumps the version on a release branch and opens a pull request; `release.sh publish`
-# tags the merged commit on main. Inputs: VER, TITLE, SKIP_CHECKS=1, YES=1 (skip the questions).
+# tags the merged commit on main. Inputs: VER, TITLE, SKIP_CHECKS=1, FORCE_CHECKS=1, YES=1 (skip the questions).
 set -Eeuo pipefail
 
 die() { echo "release: $*" >&2; exit 1; }
@@ -39,13 +39,27 @@ tag_exists() {
 
 workspace_version() { sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml; }
 
-release() {
-  preconditions
+# The release branch is cut from HEAD, which preconditions made equal to origin/main, so the tree check is on that commit.
+run_checks() {
+  [ "${SKIP_CHECKS:-}" = 1 ] && [ "${FORCE_CHECKS:-}" = 1 ] && die "SKIP_CHECKS and FORCE_CHECKS contradict each other"
   if [ "${SKIP_CHECKS:-}" = 1 ]; then
     echo "release: skipping the checks (SKIP_CHECKS=1)"
-  else
-    make check || die "the checks failed; nothing was changed"
+    return
   fi
+  if [ "${FORCE_CHECKS:-}" != 1 ]; then
+    local note
+    if note=$(scripts/ci-green-for-tree.sh origin/main 2>&1); then
+      echo "release: skipping the local checks; $note"
+      return
+    fi
+    echo "release: running the local checks; $note"
+  fi
+  make check || die "the checks failed; nothing was changed"
+}
+
+release() {
+  preconditions
+  run_checks
 
   [ "$(grep -c '^version = ' Cargo.toml)" -eq 1 ] || die "expected exactly one 'version = ' line in Cargo.toml"
   local current ver title slug tag branch
