@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result, bail};
 use chrono::{DateTime, Utc};
 use pyn_git::Remote;
 use pyn_gittransport::credential::Prompt;
-use pyn_gittransport::lfs::{Client, endpoint};
+use pyn_gittransport::lfs::Client;
 use pyn_gittransport::lfs_locks::Lock;
 use pyn_gittransport::{Env, Error as TransportError};
 use pyn_gitwork::{Head, Pathspec, fs_path};
@@ -61,11 +61,17 @@ fn open_client(
             (name, url)
         }
     };
-    if interactive {
-        return lfs_net::client(&env, &config, remote.as_deref(), url.as_deref(), false);
-    }
-    let base = endpoint(&config, remote.as_deref(), url.as_deref(), false)?;
-    Ok(Client::new(base, &config, &env, Box::new(Silent))?)
+    let operation = if interactive { "upload" } else { "download" };
+    let prompt: Option<Box<dyn Prompt>> = (!interactive).then(|| Box::new(Silent) as _);
+    lfs_net::client_for(
+        &env,
+        &config,
+        remote.as_deref(),
+        url.as_deref(),
+        false,
+        operation,
+        prompt,
+    )
 }
 
 /// Tracked paths with whether their `lockable` attribute is set.

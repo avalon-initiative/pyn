@@ -10,6 +10,7 @@ pub mod exchange;
 mod http;
 pub mod lfs;
 pub mod lfs_locks;
+pub mod lfs_ssh;
 mod local;
 pub mod promisor;
 mod ssh;

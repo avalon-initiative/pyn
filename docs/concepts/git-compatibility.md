@@ -2976,8 +2976,17 @@ the first of these that is set:
 1. for a push, `remote.<name>.lfspushurl`, then `lfs.pushurl`;
 2. `remote.<name>.lfsurl`;
 3. `lfs.url`;
-4. the remote's URL (after `url.<base>.insteadOf`), made an LFS URL as git-lfs does: `.git` is appended when missing, then
-   `/info/lfs`. Only `http` and `https` remotes can be derived from; any other remote needs one of the settings above.
+4. the remote's URL (after `url.<base>.insteadOf`): an `http` or `https` remote is made an LFS URL as git-lfs does, `.git`
+   appended when missing, then `/info/lfs`; an `ssh` remote (`ssh://` or scp-like `user@host:path`) is asked, see below. Any other
+   remote needs one of the settings above.
+
+An ssh remote with none of the settings above runs `git-lfs-authenticate '<path>' download` (`upload` for a push, and for taking
+or releasing a lock) over the same ssh client as the git transport (`GIT_SSH_COMMAND`, `core.sshCommand`, `GIT_SSH`, `ssh`), the
+path without its leading slash. The JSON answer gives the endpoint (`href`, http or https) and the `header` map sent with every Batch and
+Locks request to that endpoint, not to object-storage action URLs on another host; `expires_in` (seconds) or `expires_at`
+(RFC 3339) makes pyn ask again shortly before the headers lapse. When the command fails or its answer is unusable, pyn falls
+back to `https://<host>/<path>.git/info/lfs`, as git-lfs does (the port and user of the ssh URL are dropped). The server side
+of the command is the remote's business: pyn's own server does not serve ssh.
 
 A pyn server accepts `https://pyn.example/v1/repos/acme/game` as a remote and serves the derived
 `.../acme/game.git/info/lfs` (see [Git LFS](lfs.md)). Settings are read from `.git/config`, then the user's global
@@ -3059,12 +3068,12 @@ A server that answers `verify` with `404` or `501` is not checked; `lfs.locksver
 `lockable` files, or whose remote has no derivable LFS endpoint, makes no request.
 
 Covered by `crates/pyn-gittransport/tests/lfs.rs` (the client against a local Batch server: endpoints, verified and resumed
-downloads, uploads, credentials), `crates/pyn-cli/tests/git_lfs_remote.rs` (smudge, push, settings, `.lfsconfig`), `crates/pyn-cli/tests/git_lfs_commands.rs` (the `pyn lfs` commands),
+downloads, uploads, credentials, and `git-lfs-authenticate` through a stand-in ssh client), `crates/pyn-cli/tests/git_lfs_remote.rs` (smudge, push, settings, `.lfsconfig`), `crates/pyn-cli/tests/git_lfs_commands.rs` (the `pyn lfs` commands),
 `crates/pyn-cli/tests/git_lfs_client.rs` (the pointer bytes are also compared with `git lfs pointer` when `git-lfs` is installed
 and skipped otherwise) `crates/pyn-gittransport/tests/lfs_locks.rs` (the Locks client against a local Locks server), `crates/pyn-cli/tests/git_lfs_locks.rs`
 (`lockable`, `lock`, `unlock`, `locks`, the pre-push check; #786) and `crates/pyn-cli/tests/git_lfs.rs` (#311, #628, #785).
 
-Not built on the git home: `ssh` remotes (`git-lfs-authenticate`, #917) and the other transfer adapters (`tus`, #918; custom),
+Not built on the git home: the other transfer adapters (`tus`, #918; custom),
 concurrent transfers (#919), `lfs.transfer.*` tuning, `lfs.extension.*` programs, and the `git lfs` commands not listed under
 [Git LFS commands](#git-lfs-commands) or the locking commands above (`migrate`, `env`, `install`, `fsck`).
 

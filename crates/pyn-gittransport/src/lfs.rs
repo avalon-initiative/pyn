@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use pyn_git::Config;
 use reqwest::Url;
@@ -18,6 +19,7 @@ use crate::credential::{Flow, Offer, Prompt};
 use crate::env::Env;
 use crate::error::{Error, Result};
 use crate::http::build_client;
+use crate::lfs_ssh::{Grant, Renewal, Resolved, lapsing};
 use crate::url::{RemoteUrl, redact_text, rewrite, scoped_values};
 
 pub(crate) const MEDIA: &str = "application/vnd.git-lfs+json";
@@ -124,6 +126,8 @@ pub struct Client {
     auth: Option<Offer>,
     unconfirmed: bool,
     extra_headers: Vec<(String, String)>,
+    grant: Option<Grant>,
+    renewal: Option<Renewal>,
 }
 
 impl Client {
@@ -146,7 +150,34 @@ impl Client {
             auth: None,
             unconfirmed: false,
             extra_headers,
+            grant: None,
+            renewal: None,
         })
+    }
+
+    /// A client for a resolved endpoint: the headers a remote granted go on every request to it, and are renewed
+    /// when they lapse.
+    pub fn from_resolved(
+        resolved: Resolved,
+        config: &Config,
+        env: &Env,
+        prompt: Box<dyn Prompt>,
+    ) -> Result<Self> {
+        let mut c = Self::new(resolved.base, config, env, prompt)?;
+        c.grant = resolved.grant;
+        c.renewal = resolved.renewal;
+        Ok(c)
+    }
+
+    fn renew(&mut self) -> Result<()> {
+        let now = SystemTime::now();
+        let (Some(renewal), Some(g)) = (&self.renewal, &self.grant) else {
+            return Ok(());
+        };
+        if lapsing(g.expires, now) {
+            self.grant = Some(renewal.grant(now)?);
+        }
+        Ok(())
     }
 
     pub(crate) fn shown(&self) -> String {
@@ -160,13 +191,24 @@ impl Client {
         headers: &[(String, String)],
         make: &dyn Fn(&Http) -> io::Result<RequestBuilder>,
     ) -> Result<Response> {
+        let home = origin(url) == origin(&self.base);
+        if home {
+            self.renew()?;
+        }
+        let granted: &[(String, String)] = match (&self.grant, home) {
+            (Some(g), true) => &g.header,
+            _ => &[],
+        };
         let own_auth = headers
             .iter()
+            .chain(granted)
             .any(|(n, _)| n.eq_ignore_ascii_case("authorization"));
-        let home = origin(url) == origin(&self.base);
         loop {
             let mut req = make(&self.http)?;
             for (n, v) in headers {
+                req = req.header(n.as_str(), v.as_str());
+            }
+            for (n, v) in granted {
                 req = req.header(n.as_str(), v.as_str());
             }
             if home {
