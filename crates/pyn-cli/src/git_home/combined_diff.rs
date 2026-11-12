@@ -528,15 +528,24 @@ fn header(
     out
 }
 
-/// The combined patch of one element; `None` when `--cc` leaves nothing of it to show.
+/// The combined patch of one element; `None` when `--cc` leaves nothing of it to show. A work tree file keeps its header.
 pub(super) fn patch(
     git: &GitHome,
     e: &Element,
     (dense, context): (bool, usize),
-    full_index: bool,
+    (full_index, working_tree): (bool, bool),
 ) -> Result<Option<String>> {
     let np = e.parents.len();
     let abbreviations = git.repo.abbreviations(None)?;
+    if working_tree && e.result.is_none() {
+        return Ok(Some(header(
+            git,
+            (&abbreviations, full_index),
+            e,
+            dense,
+            true,
+        )));
+    }
     let bytes = |b: Option<&Blob>| -> Result<Vec<u8>> {
         b.map_or(Ok(Vec::new()), |b| diff::blob_bytes(git, &e.path, b))
     };
@@ -574,7 +583,7 @@ pub(super) fn patch(
         }
     }
     let show_hunks = make_hunks(&mut sline, cnt, np, (dense, context));
-    if !show_hunks && !mode_differs {
+    if !show_hunks && !mode_differs && !working_tree {
         return Ok(None);
     }
     let mut out = header(git, (&abbreviations, full_index), e, dense, true).into_bytes();

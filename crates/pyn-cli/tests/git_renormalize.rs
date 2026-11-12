@@ -305,6 +305,144 @@ fn merge_without_renormalize_still_conflicts_like_git() {
     }
 }
 
+/// `a.txt` is renamed on one branch and, on the other, deleted or only converted from CRLF to LF.
+fn renamed_vs_converted(format: &str, rename_here: bool, other: &str) -> Pair {
+    let p = committed_crlf(format, "", "*.txt text=auto\n");
+    p.each(&["add", ".gitattributes"]);
+    p.each(&["commit", "-q", "-m", "rules"]);
+    p.each(&["checkout", "-q", "-b", "side"]);
+    let lf = b"1\n2\n3\n4\n5\n6\n";
+    let rename = |p: &Pair, to_lf: bool| {
+        p.each(&["mv", "a.txt", "moved.txt"]);
+        if to_lf {
+            p.put("moved.txt", lf);
+        }
+        p.each(&["add", "-A"]);
+        p.each(&["commit", "-q", "-m", "rename"]);
+    };
+    let change = |p: &Pair| match other {
+        "delete" => {
+            p.each(&["rm", "-q", "a.txt"]);
+            p.each(&["commit", "-q", "-m", "delete"]);
+        }
+        _ => {
+            p.put("a.txt", lf);
+            p.each(&["add", "-A"]);
+            p.each(&["commit", "-q", "-m", "convert"]);
+        }
+    };
+    if rename_here {
+        change(&p);
+        p.each(&["checkout", "-q", "main"]);
+        rename(&p, other == "delete");
+    } else {
+        rename(&p, other == "delete");
+        p.each(&["checkout", "-q", "main"]);
+        change(&p);
+    }
+    p
+}
+
+#[test]
+fn renamed_files_meet_deletions_and_conversions_under_renormalize_like_git() {
+    for format in FORMATS {
+        for rename_here in [true, false] {
+            for other in ["delete", "convert"] {
+                let p = renamed_vs_converted(format, rename_here, other);
+                p.both(&["merge", "--no-edit", "-X", "renormalize", "side"]);
+                let what = format!("rename here {rename_here}, other {other}");
+                p.same_index(&what);
+                p.same_tree(&what);
+            }
+        }
+    }
+}
+
+/// Both branches edit CRLF files; `rules_on` is the branch that adds `.gitattributes` (`*.txt text`) and converts to LF.
+fn attributes_added_on(format: &str, rules_on: &str) -> Pair {
+    let p = Pair::new(format, "");
+    p.put("a.txt", b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n");
+    p.put("d/b.txt", b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n");
+    p.both(&["add", "-A"]);
+    p.both(&["commit", "-q", "-m", "base"]);
+    p.each(&["checkout", "-q", "-b", "side"]);
+    let lf = b"1\n2\n3\n4\n5\nside\n";
+    let crlf = b"main\r\n2\r\n3\r\n4\r\n5\r\n6\r\n";
+    let (side_rules, main_rules) = (rules_on == "side", rules_on == "main");
+    if side_rules {
+        p.put(".gitattributes", b"*.txt text\n");
+        p.each(&["add", ".gitattributes"]);
+    }
+    p.put("a.txt", lf);
+    p.put("d/b.txt", lf);
+    p.each(&["add", "a.txt", "d/b.txt"]);
+    p.each(&["commit", "-q", "-m", "side"]);
+    p.each(&["checkout", "-q", "main"]);
+    if main_rules {
+        p.put(".gitattributes", b"*.txt text\n");
+        p.each(&["add", ".gitattributes"]);
+    }
+    p.put("a.txt", crlf);
+    p.put("d/b.txt", crlf);
+    p.each(&["add", "a.txt", "d/b.txt"]);
+    p.each(&["commit", "-q", "-m", "main"]);
+    p
+}
+
+#[test]
+fn renormalize_reads_the_attributes_of_the_merged_result() {
+    for format in FORMATS {
+        for rules_on in ["side", "main", "neither"] {
+            let p = attributes_added_on(format, rules_on);
+            p.both(&["merge", "--no-edit", "-X", "renormalize", "side"]);
+            p.same_index(rules_on);
+            p.same_tree(rules_on);
+        }
+    }
+}
+
+/// Both branches change `.gitattributes` (`base` is its first version, absent when empty) and `a.txt` from CRLF.
+fn attributes_changed(format: &str, [base, ours, theirs]: [&str; 3]) -> Pair {
+    let p = Pair::new(format, "");
+    p.put("a.txt", b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n");
+    if !base.is_empty() {
+        p.put(".gitattributes", base.as_bytes());
+    }
+    p.both(&["add", "-A"]);
+    p.both(&["commit", "-q", "-m", "base"]);
+    p.each(&["checkout", "-q", "-b", "side"]);
+    p.put(".gitattributes", theirs.as_bytes());
+    p.put("a.txt", b"1\n2\n3\n4\n5\nside\n");
+    p.each(&["add", "-A"]);
+    p.each(&["commit", "-q", "-m", "side"]);
+    p.each(&["checkout", "-q", "main"]);
+    p.put(".gitattributes", ours.as_bytes());
+    p.put("a.txt", b"main\r\n2\r\n3\r\n4\r\n5\r\n6\r\n");
+    p.each(&["add", "-A"]);
+    p.each(&["commit", "-q", "-m", "main"]);
+    p
+}
+
+#[test]
+fn a_conflicted_gitattributes_stands_for_its_base_or_our_side() {
+    let rule = "*.txt text\n";
+    let cases = [
+        [&format!("{rule}# b\n"), "# o\n", "# t\n"],
+        [&format!("{rule}# b\n"), &format!("{rule}# o\n"), "# t\n"],
+        ["# b\n", &format!("{rule}# o\n"), &format!("{rule}# t\n")],
+        ["", &format!("{rule}# o\n"), "# t\n"],
+        ["", "# o\n", &format!("{rule}# t\n")],
+    ];
+    for format in FORMATS {
+        for case in &cases {
+            let p = attributes_changed(format, [case[0], case[1], case[2]]);
+            p.both(&["merge", "--no-edit", "-X", "renormalize", "side"]);
+            p.same_index(&format!("{case:?}"));
+            p.same_tree(&format!("{case:?}"));
+        }
+    }
+}
+
 #[test]
 fn renormalize_reaches_cherry_pick_revert_and_rebase() {
     for format in FORMATS {

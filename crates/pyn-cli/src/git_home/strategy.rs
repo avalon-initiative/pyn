@@ -59,11 +59,22 @@ impl Which {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct MergedAttrs(pub std::sync::Arc<pyn_gitwork::Attributes>);
+
+impl std::fmt::Debug for MergedAttrs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MergedAttrs")
+    }
+}
+
 /// What the tree merge honors from `-X`.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Settings {
     pub text: Options,
     pub renormalize: bool,
+    /// The attributes `-X renormalize` converts by: those of the merged result, set while merging trees.
+    pub attrs: Option<MergedAttrs>,
     /// Extra marker width, two per level of a virtual merge base.
     pub marker_extra: usize,
     /// `-X subtree[=<path>]` or `-s subtree`: the prefix, empty to find it.
