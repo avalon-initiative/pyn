@@ -7,6 +7,8 @@ pub enum Counts {
     Lines(usize, usize),
     /// Old and new size in bytes.
     Binary(usize, usize),
+    /// A path with conflict stages: shown as `Unmerged` and left out of the totals.
+    Unmerged,
 }
 
 pub struct Row {
@@ -82,6 +84,7 @@ pub fn render_with(all: &[Row], layout: &Layout) -> String {
                 bin_width = bin_width.max(14 + digits(old) + digits(new));
                 number_width = 3;
             }
+            Counts::Unmerged => {}
         }
     }
     number_width = number_width.max(digits(max_change));
@@ -142,7 +145,7 @@ pub fn render_with(all: &[Row], layout: &Layout) -> String {
                 }
                 let n = match row.counts {
                     Counts::Lines(x, y) => x + y,
-                    Counts::Binary(..) => 0,
+                    Counts::Binary(..) | Counts::Unmerged => 0,
                 };
                 let bar = |c: &str, ch: &str, n: usize| {
                     if n == 0 {
@@ -167,6 +170,9 @@ pub fn render_with(all: &[Row], layout: &Layout) -> String {
                 };
                 let _ = writeln!(out, " {name} | {:>number_width$}{sizes}", "Bin");
             }
+            Counts::Unmerged => {
+                let _ = writeln!(out, " {name} | Unmerged");
+            }
         }
     }
     if shown < all.len() {
@@ -178,7 +184,11 @@ pub fn render_with(all: &[Row], layout: &Layout) -> String {
             }
         }
     }
-    out.push_str(&summary(all.len(), added, deleted));
+    let files = all
+        .iter()
+        .filter(|r| !matches!(r.counts, Counts::Unmerged))
+        .count();
+    out.push_str(&summary(files, added, deleted));
     out
 }
 
@@ -201,6 +211,10 @@ pub fn summary(files: usize, added: usize, deleted: usize) -> String {
     let plural =
         |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let mut out = format!(" {} changed", plural(files, "file", "files"));
+    if files == 0 {
+        out.push('\n');
+        return out;
+    }
     if added > 0 || deleted == 0 {
         let _ = write!(out, ", {}(+)", plural(added, "insertion", "insertions"));
     }
