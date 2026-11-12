@@ -1869,6 +1869,33 @@ async fn create_repo(app: &axum::Router, token: &str, name: &str) -> api::RepoIn
 }
 
 #[tokio::test]
+async fn repository_names_keep_their_case_and_resolve_ignoring_it() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let made = create_repo(&app, &alice, "MyGame").await;
+    assert_eq!(made.name, "MyGame");
+
+    for path in ["/v1/repos/alice/mygame", "/v1/repos/alice/MYGAME"] {
+        let r = send(&app, "GET", path, &alice, None).await;
+        assert_eq!(r.status(), StatusCode::OK, "{path}");
+        assert_eq!(body_json::<api::RepoInfo>(r).await.name, "MyGame");
+    }
+    let r = send(&app, "GET", "/v1/repos/alice/MYGAME/me", &alice, None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let dup = send(
+        &app,
+        "POST",
+        "/v1/repos",
+        &alice,
+        Some(serde_json::json!({"name": "mygame"})),
+    )
+    .await;
+    assert_eq!(dup.status(), StatusCode::CONFLICT);
+    assert_eq!(body_json::<api::ErrorBody>(dup).await.code, "repo_exists");
+}
+
+#[tokio::test]
 async fn anyone_can_create_repositories_in_their_own_namespace() {
     let app = router(state_with(false, RegistrationMode::Open).await);
     let alice = register_and_sign_in(&app, "alice").await;

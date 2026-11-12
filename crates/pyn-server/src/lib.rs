@@ -68,7 +68,7 @@ pub struct AppState {
 struct RepoAddress {
     /// The namespace that owns the repository.
     owner: String,
-    /// The repository's name within its owner.
+    /// The repository's name within its owner; matched ignoring case.
     name: String,
 }
 

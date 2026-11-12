@@ -9,8 +9,11 @@ server and work across repositories.
 
 An owner is a **namespace**: a user account or an [organization](#organizations), and its name is the account's user name or
 the organization's name. Users and organizations share one namespace, so a name belongs to exactly one of them. A repository name is 1
-to 100 lowercase letters, digits, `-`, `_` or `.`, starting with a letter or digit and not ending in `.`. Names are
-unique per owner, so `alice/game` and `bob/game` are different repositories.
+to 100 ASCII letters of any case, digits, `-`, `_` or `.`, starting with a letter or digit and not ending in `.`. A name keeps
+the case it was created with (`MyGame` stays `MyGame`), but names are unique per owner ignoring case and every lookup of
+`owner/name` (API path, CLI, clone, rename) matches ignoring case, so `Game` and `game` cannot both exist under one owner and
+`alice/GAME` finds `alice/Game`. Different owners are independent: `alice/game` and `bob/game` are different repositories.
+Renaming a repository to another case of its own name is allowed. This is the current behaviour.
 
 Anyone with an account can create repositories **in their own namespace**, and becomes the repository's `admin`.
 In an organization, its owners can, and other members as its [creation policy](#repository-creation-policy) allows.
