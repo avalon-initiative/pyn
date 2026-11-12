@@ -95,14 +95,14 @@ Check the server any time with `curl http://localhost:8080/healthz`.
 
 ## 6. Install the `pyn` command
 
-On the release page, download the archive for your computer (`pyn-<tag>-x86_64-unknown-linux-gnu.tar.gz`,
-`...-aarch64-unknown-linux-gnu.tar.gz` or, for macOS on Apple silicon, `...-aarch64-apple-darwin.tar.gz`), check it and
-put `pyn` on your `PATH`:
+On the release page, download the CLI archive for your computer (`pyn-cli-<tag>-linux-x86_64.tar.gz`,
+`pyn-cli-<tag>-linux-arm64.tar.gz` or, for macOS on Apple silicon, `pyn-cli-<tag>-macos-arm64.tar.gz`), check it and
+put `pyn` on your `PATH`. (The `pyn-server-` archives are only for running the server without Docker.)
 
 ```bash
 sha256sum --check --ignore-missing SHA256SUMS      # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
-tar xzf pyn-*.tar.gz
-sudo install pyn-*/pyn /usr/local/bin/pyn          # or any folder on your PATH
+tar xzf pyn-cli-*.tar.gz
+sudo install pyn-cli-*/pyn /usr/local/bin/pyn          # or any folder on your PATH
 pyn --version
 ```
 

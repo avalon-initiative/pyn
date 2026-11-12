@@ -35,13 +35,14 @@ repository with a stub `gh`; it is part of `make check`.
 2. Checks the tag against the workspace version ([`scripts/verify-release-version.sh`](../scripts/verify-release-version.sh)).
 3. Runs the same checks CI runs: `make check` (fmt, clippy, docs links, public boundary, tests) and, against a Postgres 16
    service, `make test-live`. Nothing below is built or pushed unless both pass.
-4. Builds release binaries and packs `pyn-<tag>-<target>.tar.gz` (binaries plus `LICENSE`):
+4. Builds release binaries and packs each program in its own archive (the program plus `LICENSE`), so people can
+   download only the CLI, only the server, or both:
 
-   | Target | Contents |
-   | --- | --- |
-   | `x86_64-unknown-linux-gnu` | `pyn-server`, `pyn` |
-   | `aarch64-unknown-linux-gnu` | `pyn-server`, `pyn` |
-   | `aarch64-apple-darwin` | `pyn` (CLI only) |
+   | Platform | CLI archive | Server archive |
+   | --- | --- | --- |
+   | Linux x86_64 | `pyn-cli-<tag>-linux-x86_64.tar.gz` | `pyn-server-<tag>-linux-x86_64.tar.gz` |
+   | Linux arm64 | `pyn-cli-<tag>-linux-arm64.tar.gz` | `pyn-server-<tag>-linux-arm64.tar.gz` |
+   | macOS Apple silicon | `pyn-cli-<tag>-macos-arm64.tar.gz` | none (the server runs on Linux or in Docker) |
 
    Windows builds are not produced yet. A target that fails to build does not stop the release: the GitHub Release is
    created with the archives that did build, and the run shows the failed target.
@@ -61,5 +62,5 @@ it starts private, and pulls need a login until then.
 
 - Server: set `PYN_IMAGE=ghcr.io/avalon-initiative/pyn-core:v<version>` (for example `:v1.0.0`; the title is not part of the image tag) in `.env` and follow [deployment](deployment.md); an
   upgrade is a new tag in the same place.
-- CLI and server binaries: download the archive for your platform from the release page and check it with
+- CLI and server binaries: download the `pyn-cli-` and/or `pyn-server-` archive for your platform from the release page and check it with
   `sha256sum --check --ignore-missing SHA256SUMS`.
