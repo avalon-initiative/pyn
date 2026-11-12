@@ -326,6 +326,157 @@ fn a_refused_upload_and_a_failing_batch_report_why() {
     );
 }
 
+#[cfg(unix)]
+#[path = "common/script.rs"]
+mod script;
+
+#[cfg(unix)]
+mod ssh_endpoint {
+    use super::*;
+    use pyn_gittransport::lfs_ssh::resolve;
+
+    use super::script;
+
+    /// An ssh client that logs the remote command and answers `git-lfs-authenticate` with `answer` (or fails when empty).
+    fn shim(dir: &Path, answer: &str) -> String {
+        let log = dir.join("auth.log");
+        let body = format!(
+            "for a; do cmd=\"$a\"; done\nprintf '%s\\n' \"$cmd\" >> '{}'\n{}",
+            log.display(),
+            if answer.is_empty() {
+                "echo denied >&2; exit 1".to_owned()
+            } else {
+                format!("printf '%s' '{answer}'")
+            }
+        );
+        let path = dir.join("ssh-lfs");
+        script::write_script(&path, &body);
+        path.to_str().unwrap().to_owned()
+    }
+
+    fn commands(dir: &Path) -> Vec<String> {
+        fs::read_to_string(dir.join("auth.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn resolved_client(
+        tmp: &Path,
+        shim: &str,
+        url: &str,
+        push: bool,
+    ) -> (Client, pyn_gittransport::lfs_ssh::Resolved) {
+        let env = env(tmp).with("GIT_SSH_COMMAND", shim);
+        let cfg = Config::parse(b"").unwrap();
+        let op = if push { "upload" } else { "download" };
+        let r = resolve(&cfg, &env, Some("origin"), Some(url), push, op).unwrap();
+        let c = Client::new(r.base.clone(), &cfg, &env, Box::new(Answers(vec![]))).unwrap();
+        (c, r)
+    }
+
+    #[test]
+    fn the_granted_href_and_headers_reach_the_server() {
+        let srv = LfsServer::start();
+        let content = vec![5u8; 3000];
+        let want = object(&content);
+        srv.put(&content);
+        let tmp = tempdir().unwrap();
+        let answer = format!(
+            r#"{{"href":"{}","header":{{"Authorization":"Bearer granted"}},"expires_in":3600}}"#,
+            srv.url("/org/repo.git/info/lfs")
+        );
+        let shim = shim(tmp.path(), &answer);
+        let env = env(tmp.path()).with("GIT_SSH_COMMAND", &shim);
+        let cfg = Config::parse(b"").unwrap();
+        let r = resolve(
+            &cfg,
+            &env,
+            Some("origin"),
+            Some("git@host.example:org/repo.git"),
+            false,
+            "download",
+        )
+        .unwrap();
+        assert_eq!(
+            commands(tmp.path()),
+            ["git-lfs-authenticate 'org/repo.git' download"]
+        );
+        let mut c = Client::from_resolved(r, &cfg, &env, Box::new(Answers(vec![]))).unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir_all(&out).unwrap();
+        c.download(
+            std::slice::from_ref(&want),
+            &tmp.path().join("tmp"),
+            &mut install_to(&out),
+        )
+        .unwrap();
+        assert_eq!(fs::read(out.join(&want.oid)).unwrap(), content);
+        let seen = srv.state.lock().unwrap().auth_seen.clone();
+        assert!(
+            seen.len() >= 2 && seen.iter().all(|a| a == "Bearer granted"),
+            "{seen:?}"
+        );
+        assert_eq!(commands(tmp.path()).len(), 1);
+    }
+
+    #[test]
+    fn lapsed_headers_are_asked_for_again() {
+        let srv = LfsServer::start();
+        let content = vec![6u8; 100];
+        let want = object(&content);
+        srv.put(&content);
+        let tmp = tempdir().unwrap();
+        let answer = format!(
+            r#"{{"href":"{}","header":{{"Authorization":"Bearer short"}},"expires_at":"2000-01-01T00:00:00Z"}}"#,
+            srv.url("/r.git/info/lfs")
+        );
+        let shim = shim(tmp.path(), &answer);
+        let env = env(tmp.path()).with("GIT_SSH_COMMAND", &shim);
+        let cfg = Config::parse(b"").unwrap();
+        let r = resolve(
+            &cfg,
+            &env,
+            Some("origin"),
+            Some("ssh://git@host.example/org/repo.git"),
+            false,
+            "download",
+        )
+        .unwrap();
+        let mut c = Client::from_resolved(r, &cfg, &env, Box::new(Answers(vec![]))).unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir_all(&out).unwrap();
+        c.download(
+            std::slice::from_ref(&want),
+            &tmp.path().join("tmp"),
+            &mut install_to(&out),
+        )
+        .unwrap();
+        assert!(
+            commands(tmp.path()).len() >= 3,
+            "{:?}",
+            commands(tmp.path())
+        );
+    }
+
+    #[test]
+    fn a_remote_that_cannot_authenticate_falls_back_to_https() {
+        let tmp = tempdir().unwrap();
+        let shim = shim(tmp.path(), "");
+        let (_, r) = resolved_client(tmp.path(), &shim, "git@host.example:org/repo", true);
+        assert_eq!(
+            r.base.as_str(),
+            "https://host.example/org/repo.git/info/lfs"
+        );
+        assert!(r.grant.is_none());
+        assert_eq!(
+            commands(tmp.path()),
+            ["git-lfs-authenticate 'org/repo' upload"]
+        );
+    }
+}
+
 fn tus_upload_fixture(dir: &Path, size: usize) -> (Vec<u8>, Object) {
     let data: Vec<u8> = (0..size).map(|i| (i * 13 % 251) as u8).collect();
     fs::write(dir.join(sha256_hex(&data)), &data).unwrap();

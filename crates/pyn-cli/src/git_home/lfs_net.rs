@@ -5,8 +5,9 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 use pyn_git::{Config, Remote, Repository, remote_names};
-use pyn_gittransport::credential::SystemPrompt;
-use pyn_gittransport::lfs::{Client, Object, endpoint};
+use pyn_gittransport::credential::{Prompt, SystemPrompt};
+use pyn_gittransport::lfs::{Client, Object};
+use pyn_gittransport::lfs_ssh::resolve;
 use pyn_gittransport::{Env, user_config};
 use pyn_gitwork::Pathspec;
 use pyn_gitwork::lfs::{Context, Pointer, Store, lfsconfig_layer};
@@ -49,9 +50,23 @@ pub(super) fn client(
     url: Option<&str>,
     push: bool,
 ) -> Result<Client> {
-    let base = endpoint(config, remote, url, push)?;
-    let prompt = Box::new(SystemPrompt::new(env, config));
-    Ok(Client::new(base, config, env, prompt)?)
+    let operation = if push { "upload" } else { "download" };
+    client_for(env, config, remote, url, push, operation, None)
+}
+
+/// `operation` is what an ssh remote's `git-lfs-authenticate` is asked for; `prompt` defaults to the system one.
+pub(super) fn client_for(
+    env: &Env,
+    config: &Config,
+    remote: Option<&str>,
+    url: Option<&str>,
+    push: bool,
+    operation: &str,
+    prompt: Option<Box<dyn Prompt>>,
+) -> Result<Client> {
+    let resolved = resolve(config, env, remote, url, push, operation)?;
+    let prompt = prompt.unwrap_or_else(|| Box::new(SystemPrompt::new(env, config)));
+    Ok(Client::from_resolved(resolved, config, env, prompt)?)
 }
 
 fn to_objects<'a>(pointers: impl IntoIterator<Item = &'a Pointer>) -> Vec<Object> {

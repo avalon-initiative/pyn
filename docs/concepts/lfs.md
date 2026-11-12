@@ -24,6 +24,10 @@ that works. To be explicit, set the URL in the repository:
 git config lfs.url https://pyn.example/v1/repos/acme/game/info/lfs
 ```
 
+pyn does not serve ssh, so an `ssh` remote pointing at a pyn repository has no `git-lfs-authenticate` to ask: set `lfs.url` as
+above. For an ssh remote on a third-party git host, the pyn CLI derives the endpoint the way git-lfs does, see
+[the endpoint](git-compatibility.md#git-lfs).
+
 ## Authentication
 
 The same credentials as the rest of the API: a pyn token as `Authorization: Bearer <token>`, or HTTP Basic with the token as

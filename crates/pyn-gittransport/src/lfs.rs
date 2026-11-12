@@ -7,7 +7,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, mpsc};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use pyn_git::Config;
 use reqwest::Url;
@@ -21,6 +21,7 @@ use crate::credential::{Flow, Offer, Prompt};
 use crate::env::Env;
 use crate::error::{Error, Result};
 use crate::http::build_client;
+use crate::lfs_ssh::{Grant, Renewal, Resolved, lapsing};
 use crate::url::{RemoteUrl, redact_text, rewrite, scoped_values};
 
 pub(crate) const MEDIA: &str = "application/vnd.git-lfs+json";
@@ -130,12 +131,14 @@ struct Session {
     auth: Option<Offer>,
     unconfirmed: bool,
     generation: u64,
+    grant: Option<Grant>,
 }
 
 pub struct Client {
     http: Http,
     pub(crate) base: Url,
     session: Mutex<Session>,
+    renewal: Option<Renewal>,
     extra_headers: Vec<(String, String)>,
     concurrency: usize,
     tus: bool,
@@ -217,11 +220,46 @@ impl Client {
                 auth: None,
                 unconfirmed: false,
                 generation: 0,
+                grant: None,
             }),
+            renewal: None,
             extra_headers,
             concurrency,
             tus,
         })
+    }
+
+    /// A client for a resolved endpoint: the headers a remote granted go on every request to it, and are renewed
+    /// when they lapse.
+    pub fn from_resolved(
+        resolved: Resolved,
+        config: &Config,
+        env: &Env,
+        prompt: Box<dyn Prompt>,
+    ) -> Result<Self> {
+        let mut c = Self::new(resolved.base, config, env, prompt)?;
+        c.session().grant = resolved.grant;
+        c.renewal = resolved.renewal;
+        Ok(c)
+    }
+
+    /// Asks the remote again when the grant is about to lapse; the lock is not held while it runs.
+    fn renew(&self) -> Result<()> {
+        let Some(renewal) = &self.renewal else {
+            return Ok(());
+        };
+        let now = SystemTime::now();
+        if !self
+            .session()
+            .grant
+            .as_ref()
+            .is_some_and(|g| lapsing(g.expires, now))
+        {
+            return Ok(());
+        }
+        let fresh = renewal.grant(now)?;
+        self.session().grant = Some(fresh);
+        Ok(())
     }
 
     fn session(&self) -> MutexGuard<'_, Session> {
@@ -239,10 +277,18 @@ impl Client {
         headers: &[(String, String)],
         make: &dyn Fn(&Http) -> io::Result<RequestBuilder>,
     ) -> Result<Response> {
+        let home = origin(url) == origin(&self.base);
+        if home {
+            self.renew()?;
+        }
+        let granted = match (home, self.session().grant.as_ref()) {
+            (true, Some(g)) => g.header.clone(),
+            _ => Vec::new(),
+        };
         let own_auth = headers
             .iter()
+            .chain(&granted)
             .any(|(n, _)| n.eq_ignore_ascii_case("authorization"));
-        let home = origin(url) == origin(&self.base);
         loop {
             let (auth, generation) = {
                 let st = self.session();
@@ -250,6 +296,9 @@ impl Client {
             };
             let mut req = make(&self.http)?;
             for (n, v) in headers {
+                req = req.header(n.as_str(), v.as_str());
+            }
+            for (n, v) in &granted {
                 req = req.header(n.as_str(), v.as_str());
             }
             if home {

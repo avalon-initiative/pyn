@@ -102,6 +102,10 @@ impl SshTransport {
 
     /// The arguments after the program: options, `[user@]host`, then the remote command.
     pub fn args(&self, service: Service, version: ProtocolVersion) -> Result<Vec<String>> {
+        self.args_for(remote_command(service, &self.url.path), version)
+    }
+
+    fn args_for(&self, command: String, version: ProtocolVersion) -> Result<Vec<String>> {
         let mut args = Vec::new();
         let u = &self.url;
         match self.variant {
@@ -141,8 +145,36 @@ impl SshTransport {
             None => u.host.clone(),
         };
         args.push(host);
-        args.push(remote_command(service, &u.path));
+        args.push(command);
         Ok(args)
+    }
+
+    /// Runs `command` on the remote and returns its standard output; a failing exit is an error carrying its stderr.
+    pub fn exec(&self, command: &str) -> crate::Result<Vec<u8>> {
+        let args = self.args_for(command.to_owned(), ProtocolVersion::V0)?;
+        let mut cmd = self.command(&args);
+        cmd.env_remove("GIT_PROTOCOL")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let out = cmd
+            .spawn()
+            .map_err(|e| self.spawn_error(&e))?
+            .wait_with_output()?;
+        if out.status.success() {
+            return Ok(out.stdout);
+        }
+        let to = crate::url::RemoteUrl::Ssh(self.url.clone()).display();
+        let err = String::from_utf8_lossy(&out.stderr);
+        let status = out
+            .status
+            .code()
+            .map_or_else(|| "a signal".to_owned(), |c| format!("exit status {c}"));
+        Err(WireError::Connection(format!(
+            "'{command}' failed at {to} ({status}): {}",
+            err.trim()
+        ))
+        .into())
     }
 
     fn command(&self, args: &[String]) -> std::process::Command {
