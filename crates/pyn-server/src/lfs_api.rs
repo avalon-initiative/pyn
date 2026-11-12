@@ -17,6 +17,8 @@ use crate::{
     range_not_satisfiable, status_for, upload,
 };
 
+pub(crate) mod tus;
+
 const LFS_TYPE: &str = "application/vnd.git-lfs+json";
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1000;
@@ -550,9 +552,17 @@ pub(crate) async fn batch(
             )));
         }
     };
-    if !req.transfers.is_empty() && !req.transfers.iter().any(|t| t == "basic") {
+    let offered = |name: &str| req.transfers.iter().any(|t| t == name);
+    if !req.transfers.is_empty() && !offered("basic") && !offered("tus") {
         return Err(LfsError::Malformed(
-            "only the basic transfer adapter is supported".into(),
+            "the basic and tus transfer adapters are supported".into(),
+        ));
+    }
+    // tus carries uploads only, so a download needs basic.
+    let resumable = upload && offered("tus");
+    if !upload && !req.transfers.is_empty() && !offered("basic") {
+        return Err(LfsError::Malformed(
+            "a download needs the basic transfer adapter".into(),
         ));
     }
     if req.hash_algo.as_deref().is_some_and(|h| h != "sha256") {
@@ -640,7 +650,11 @@ pub(crate) async fn batch(
                     pending = pending.saturating_add(size);
                     out.actions = Some(Actions {
                         upload: Some(Action {
-                            href: format!("{base}/{}", spec.oid),
+                            href: if resumable {
+                                format!("{base}/{}/tus", spec.oid)
+                            } else {
+                                format!("{base}/{}", spec.oid)
+                            },
                         }),
                         verify: Some(Action {
                             href: format!("{base}/verify"),
@@ -659,7 +673,7 @@ pub(crate) async fn batch(
     Ok(Lfs(
         StatusCode::OK,
         BatchResponse {
-            transfer: "basic",
+            transfer: if resumable { "tus" } else { "basic" },
             objects,
             hash_algo: "sha256",
         },

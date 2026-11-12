@@ -326,6 +326,115 @@ fn a_refused_upload_and_a_failing_batch_report_why() {
     );
 }
 
+fn tus_upload_fixture(dir: &Path, size: usize) -> (Vec<u8>, Object) {
+    let data: Vec<u8> = (0..size).map(|i| (i * 13 % 251) as u8).collect();
+    fs::write(dir.join(sha256_hex(&data)), &data).unwrap();
+    let object = object(&data);
+    (data, object)
+}
+
+fn upload_one(c: &mut Client, dir: &Path, o: &Object) -> pyn_gittransport::Result<usize> {
+    c.upload(std::slice::from_ref(o), &|o| {
+        fs::File::open(dir.join(&o.oid))
+    })
+}
+
+#[test]
+fn a_server_that_offers_tus_gets_a_resumable_upload() {
+    let srv = LfsServer::start();
+    srv.state.lock().unwrap().tus = true;
+    let dir = tempdir().unwrap();
+    let (data, o) = tus_upload_fixture(dir.path(), 70_000);
+    let mut c = client(&srv.url("/lfs"), "", &[], dir.path());
+    assert_eq!(upload_one(&mut c, dir.path(), &o).unwrap(), 1);
+    assert_eq!(srv.has(&o.oid).unwrap(), data);
+    assert_eq!(
+        srv.state.lock().unwrap().offered,
+        [["tus".to_string(), "basic".to_string()]]
+    );
+    let log = srv.log();
+    assert_eq!(log.len(), 5, "{log:?}");
+    assert!(
+        log[1].starts_with("HEAD ") && log[1].ends_with("/tus"),
+        "{log:?}"
+    );
+    assert!(log[2].starts_with("POST "), "{log:?}");
+    assert!(log[3].starts_with("PATCH "), "{log:?}");
+    assert!(log[4].starts_with("POST /lfs/objects/verify"), "{log:?}");
+    assert_eq!(srv.count("PUT"), 0);
+}
+
+#[test]
+fn an_interrupted_tus_upload_continues_from_the_servers_offset() {
+    let srv = LfsServer::start();
+    let dir = tempdir().unwrap();
+    let (data, o) = tus_upload_fixture(dir.path(), 50_000);
+    {
+        let mut st = srv.state.lock().unwrap();
+        st.tus = true;
+        st.partial.insert(o.oid.clone(), data[..20_000].to_vec());
+        st.tus_lengths.insert(o.oid.clone(), data.len());
+    }
+    let mut c = client(&srv.url("/lfs"), "", &[], dir.path());
+    assert_eq!(upload_one(&mut c, dir.path(), &o).unwrap(), 1);
+    assert_eq!(srv.has(&o.oid).unwrap(), data);
+    assert_eq!(
+        srv.count("POST /lfs/objects/"),
+        2,
+        "a batch and a verify, no creation"
+    );
+    assert_eq!(srv.count("PATCH"), 1);
+}
+
+#[test]
+fn a_server_that_accepts_part_of_a_patch_is_asked_again_from_its_new_offset() {
+    let srv = LfsServer::start();
+    let dir = tempdir().unwrap();
+    let (data, o) = tus_upload_fixture(dir.path(), 25_000);
+    {
+        let mut st = srv.state.lock().unwrap();
+        st.tus = true;
+        st.tus_accept_limit = Some(10_000);
+    }
+    let mut c = client(&srv.url("/lfs"), "", &[], dir.path());
+    assert_eq!(upload_one(&mut c, dir.path(), &o).unwrap(), 1);
+    assert_eq!(srv.has(&o.oid).unwrap(), data);
+    assert_eq!(srv.count("PATCH"), 3);
+    assert_eq!(srv.count("HEAD"), 3);
+}
+
+#[test]
+fn a_refused_tus_upload_is_reported_and_basic_is_used_when_tus_is_off() {
+    let srv = LfsServer::start();
+    let dir = tempdir().unwrap();
+    let (data, o) = tus_upload_fixture(dir.path(), 4_000);
+    srv.state.lock().unwrap().tus = true;
+    let mut corrupt = data.clone();
+    corrupt[0] ^= 1;
+    fs::write(dir.path().join(&o.oid), &corrupt).unwrap();
+    let mut c = client(&srv.url("/lfs"), "", &[], dir.path());
+    let err = upload_one(&mut c, dir.path(), &o).unwrap_err().to_string();
+    assert!(
+        err.contains("422") && err.contains("digest mismatch"),
+        "{err}"
+    );
+    assert!(srv.has(&o.oid).is_none());
+
+    let srv = LfsServer::start();
+    srv.state.lock().unwrap().tus = true;
+    fs::write(dir.path().join(&o.oid), &data).unwrap();
+    let mut c = client(
+        &srv.url("/lfs"),
+        "[lfs]\n\ttustransfers = false\n",
+        &[],
+        dir.path(),
+    );
+    assert_eq!(upload_one(&mut c, dir.path(), &o).unwrap(), 1);
+    assert_eq!(srv.state.lock().unwrap().offered, [["basic".to_string()]]);
+    assert_eq!(srv.count("PUT"), 1);
+    assert_eq!(srv.count("PATCH"), 0);
+}
+
 fn many(n: usize) -> Vec<Vec<u8>> {
     (0..n)
         .map(|i| format!("object number {i}\n").repeat(50).into_bytes())
