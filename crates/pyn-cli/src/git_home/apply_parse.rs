@@ -4,6 +4,7 @@
 use std::sync::atomic::AtomicBool;
 
 use super::apply_ws::check_added;
+use pyn_diff::whitespace::Rule;
 
 /// While set, diagnostics are not printed: `am --3way` tries a plain apply first without reporting it.
 pub(super) static QUIET: AtomicBool = AtomicBool::new(false);
@@ -140,6 +141,8 @@ pub(super) struct Reader<'a> {
     strip: usize,
     label: &'a str,
     ws: bool,
+    /// The whitespace rule for a path.
+    rules: &'a dyn Fn(&[u8]) -> Rule,
     ws_errors: usize,
 }
 
@@ -292,7 +295,13 @@ fn hunk_header(line: &[u8]) -> Option<(usize, usize, usize, usize)> {
 }
 
 impl<'a> Reader<'a> {
-    pub fn new(buf: &'a [u8], label: &'a str, strip: usize, ws: bool) -> Self {
+    pub fn new(
+        buf: &'a [u8],
+        label: &'a str,
+        strip: usize,
+        ws: bool,
+        rules: &'a dyn Fn(&[u8]) -> Rule,
+    ) -> Self {
         Self {
             buf,
             pos: 0,
@@ -300,6 +309,7 @@ impl<'a> Reader<'a> {
             strip,
             label,
             ws,
+            rules,
             ws_errors: 0,
         }
     }
@@ -643,8 +653,10 @@ impl<'a> Reader<'a> {
                         return Err(self.corrupt());
                     }
                     if self.ws {
+                        let name = patch.new_name.as_deref().or(patch.old_name.as_deref());
+                        let rule = (self.rules)(name.unwrap_or_default());
                         let reported =
-                            check_added(&line[1..], self.label, self.line, self.ws_errors);
+                            check_added(&line[1..], &rule, self.label, self.line, self.ws_errors);
                         self.ws_errors += usize::from(reported);
                     }
                     new_left -= 1;

@@ -2,9 +2,9 @@
 
 mod common;
 
-use std::cell::Cell;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pyn_git::Config;
 use pyn_gittransport::credential::Prompt;
@@ -91,17 +91,20 @@ fn an_upload_cut_off_midway_resumes_where_the_server_stopped() {
     let o = object(&data);
     fs::write(dir.path().join("full"), &data).unwrap();
     fs::write(dir.path().join("short"), &data[..600_000]).unwrap();
-    let opened = Cell::new(0);
+    let opened = AtomicUsize::new(0);
     let mut c = client(&env, dir.path());
     let sent = c
         .upload(std::slice::from_ref(&o), &|_| {
-            opened.set(opened.get() + 1);
+            let n = opened.fetch_add(1, Ordering::SeqCst) + 1;
             // The first attempt promises the whole object but can only supply part of it.
-            let name = if opened.get() == 1 { "short" } else { "full" };
+            let name = if n == 1 { "short" } else { "full" };
             fs::File::open(dir.path().join(name))
         })
         .unwrap();
     assert_eq!(sent, 1);
-    assert!(opened.get() >= 2, "the upload was attempted again");
+    assert!(
+        opened.load(Ordering::SeqCst) >= 2,
+        "the upload was attempted again"
+    );
     assert_eq!(fetch(&mut c, &o, dir.path()), data);
 }

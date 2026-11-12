@@ -3,7 +3,7 @@
 A pyn server speaks the Git LFS Locks API and the Batch API with the `basic` and `tus` transfer adapters (decision #775). Stock
 `git lfs lock`, `unlock` and `locks` work against it, and the locks taken that way are the same locks the pyn CLI and web app
 see. Stock `git lfs push` and `fetch` store and retrieve large files through it, and so does the pyn CLI's own client on a git
-home (see [Git LFS](git-compatibility.md#git-lfs), whose `pyn lfs status` lists staged and unstaged pointers). The client transfers one object at a time (#919).
+home (see [Git LFS](git-compatibility.md#git-lfs), whose `pyn lfs status` lists staged and unstaged pointers). The client transfers up to `lfs.concurrenttransfers` objects at once (default 8, #919).
 
 The routes are not in the generated OpenAPI document: LFS clients send and expect `application/vnd.git-lfs+json`, which the
 generated client contract does not model. This page is their contract.

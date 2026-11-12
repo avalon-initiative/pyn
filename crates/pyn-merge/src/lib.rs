@@ -18,6 +18,8 @@ pub struct Conflict<T> {
     pub base: Vec<T>,
     pub ours: Vec<T>,
     pub theirs: Vec<T>,
+    /// The lines (ours, theirs) between this conflict and the next one when only unconflicted text lies between them.
+    pub gap: Option<(Vec<T>, Vec<T>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,7 +122,9 @@ pub fn merge_favoring<T: PartialEq + Clone>(
         .collect();
     all.sort_by_key(|(_, r)| (r.b0, r.b1));
 
-    let mut out = Vec::new();
+    let mut out: Vec<Chunk<T>> = Vec::new();
+    // (chunk index, ours end, theirs end) of the last conflict
+    let mut last: Option<(usize, usize, usize)> = None;
     let mut ours_pos = 0;
     let mut i = 0;
     while i < all.len() {
@@ -159,11 +163,21 @@ pub fn merge_favoring<T: PartialEq + Clone>(
                     match favor {
                         Some(Favor::Ours) => push_resolved(&mut out, &ours[oa..ob]),
                         Some(Favor::Theirs) => push_resolved(&mut out, &theirs[ta..tb]),
-                        None => out.push(Chunk::Conflict(Conflict {
-                            base: base[start..end].to_vec(),
-                            ours: ours[oa..ob].to_vec(),
-                            theirs: theirs[ta..tb].to_vec(),
-                        })),
+                        None => {
+                            if let Some((idx, po, pt)) = last
+                                && out.len() <= idx + 2
+                                && let Chunk::Conflict(prev) = &mut out[idx]
+                            {
+                                prev.gap = Some((ours[po..oa].to_vec(), theirs[pt..ta].to_vec()));
+                            }
+                            last = Some((out.len(), ob, tb));
+                            out.push(Chunk::Conflict(Conflict {
+                                base: base[start..end].to_vec(),
+                                ours: ours[oa..ob].to_vec(),
+                                theirs: theirs[ta..tb].to_vec(),
+                                gap: None,
+                            }));
+                        }
                     }
                 }
             }
@@ -298,6 +312,7 @@ pub fn merge_text_with<'a>(
                     base: raw(c.base),
                     ours: raw(c.ours),
                     theirs: raw(c.theirs),
+                    gap: c.gap.map(|(o, t)| (raw(o), raw(t))),
                 }),
             })
             .collect()
@@ -413,6 +428,89 @@ pub fn zealous_diff3<T: PartialEq + Clone>(chunks: Vec<Chunk<T>>) -> Vec<Chunk<T
     out
 }
 
+/// Refines conflicts as git's default style does: each conflict splits where its sides agree, then conflicts at most three
+/// lines apart (counted on our side) join again. The base of a split conflict is dropped.
+pub fn refine_two_way<T: PartialEq + Clone>(chunks: Vec<Chunk<T>>) -> Vec<Chunk<T>> {
+    /// Unconflicted lines as ours has them, as theirs has them, and as merged.
+    struct Gap<T>(Vec<T>, Vec<T>, Vec<T>);
+    enum Piece<T> {
+        Gap(Gap<T>),
+        Conflict(Vec<T>, Vec<T>),
+    }
+    fn add_gap<T>(pieces: &mut Vec<Piece<T>>, add: Gap<T>) {
+        match pieces.last_mut() {
+            Some(Piece::Gap(g)) => {
+                g.0.extend(add.0);
+                g.1.extend(add.1);
+                g.2.extend(add.2);
+            }
+            _ => pieces.push(Piece::Gap(add)),
+        }
+    }
+    fn same<T: Clone>(lines: Vec<T>) -> Gap<T> {
+        Gap(lines.clone(), lines.clone(), lines)
+    }
+    fn flush<T>(pieces: &mut Vec<Piece<T>>, o: &mut Vec<T>, t: &mut Vec<T>) {
+        if !(o.is_empty() && t.is_empty()) {
+            pieces.push(Piece::Conflict(std::mem::take(o), std::mem::take(t)));
+        }
+    }
+    let mut pieces: Vec<Piece<T>> = Vec::new();
+    let mut pending: Option<(Vec<T>, Vec<T>)> = None;
+    for chunk in chunks {
+        match chunk {
+            Chunk::Resolved(lines) => match pending.take() {
+                Some((o, t)) => add_gap(&mut pieces, Gap(o, t, lines)),
+                None => add_gap(&mut pieces, same(lines)),
+            },
+            Chunk::Conflict(c) => {
+                pending = c.gap;
+                let (mut o, mut t) = (c.ours.iter(), c.theirs.iter());
+                let (mut co, mut ct) = (Vec::new(), Vec::new());
+                for op in diff(&c.ours, &c.theirs) {
+                    match op {
+                        Op::Equal => {
+                            flush(&mut pieces, &mut co, &mut ct);
+                            t.next();
+                            let line = o.next().expect("equal consumes ours").clone();
+                            add_gap(&mut pieces, same(vec![line]));
+                        }
+                        Op::Delete => co.push(o.next().expect("delete consumes ours").clone()),
+                        Op::Insert => ct.push(t.next().expect("insert consumes theirs").clone()),
+                    }
+                }
+                flush(&mut pieces, &mut co, &mut ct);
+            }
+        }
+    }
+    let mut out: Vec<Chunk<T>> = Vec::new();
+    let mut it = pieces.into_iter().peekable();
+    while let Some(piece) = it.next() {
+        match piece {
+            Piece::Gap(g) => {
+                let joins = g.0.len() <= 3
+                    && matches!(out.last(), Some(Chunk::Conflict(_)))
+                    && matches!(it.peek(), Some(Piece::Conflict(..)));
+                let Some(Piece::Conflict(po, pt)) = joins.then(|| it.next()).flatten() else {
+                    push_resolved(&mut out, &g.2);
+                    continue;
+                };
+                if let Some(Chunk::Conflict(prev)) = out.last_mut() {
+                    prev.ours.extend(g.0.into_iter().chain(po));
+                    prev.theirs.extend(g.1.into_iter().chain(pt));
+                }
+            }
+            Piece::Conflict(o, t) => out.push(Chunk::Conflict(Conflict {
+                base: Vec::new(),
+                ours: o,
+                theirs: t,
+                gap: None,
+            })),
+        }
+    }
+    out
+}
+
 /// Renders chunks with diff3-style conflict markers, labelled with the given names.
 pub fn render_markers(chunks: &[Chunk<&[u8]>], ours: &str, base: &str, theirs: &str) -> Vec<u8> {
     render_markers_sized(chunks, MARKER_SIZE, (ours, base, theirs))
@@ -456,7 +554,69 @@ mod zdiff3_tests {
             base: base.to_vec(),
             ours: ours.to_vec(),
             theirs: theirs.to_vec(),
+            gap: None,
         })
+    }
+
+    fn gapped(
+        ours: &[&'static str],
+        theirs: &[&'static str],
+        gap: (&[&'static str], &[&'static str]),
+    ) -> Chunk<&'static str> {
+        Chunk::Conflict(Conflict {
+            base: vec![],
+            ours: ours.to_vec(),
+            theirs: theirs.to_vec(),
+            gap: Some((gap.0.to_vec(), gap.1.to_vec())),
+        })
+    }
+
+    #[test]
+    fn a_shared_middle_beyond_three_lines_splits_the_conflict() {
+        let mid = ["m1", "m2", "m3", "m4"];
+        let ours: Vec<_> = ["P"].into_iter().chain(mid).chain(["Q"]).collect();
+        let theirs: Vec<_> = ["R"].into_iter().chain(mid).chain(["S"]).collect();
+        let got = refine_two_way(vec![conflict(&["b"], &ours, &theirs)]);
+        let sub = |o, t| conflict(&[], o, t);
+        assert_eq!(
+            got,
+            vec![
+                sub(&["P"], &["R"]),
+                Chunk::Resolved(mid.to_vec()),
+                sub(&["Q"], &["S"])
+            ]
+        );
+    }
+
+    #[test]
+    fn a_shared_middle_of_three_lines_or_fewer_stays_in_one_conflict() {
+        let c = conflict(&["b"], &["P", "m", "Q"], &["R", "m", "S"]);
+        let got = refine_two_way(vec![c]);
+        assert_eq!(got, vec![conflict(&[], &["P", "m", "Q"], &["R", "m", "S"])]);
+    }
+
+    #[test]
+    fn conflicts_at_most_three_lines_apart_join_using_each_sides_own_gap() {
+        let got = refine_two_way(vec![
+            gapped(&["P"], &["R"], (&["x", "y"], &["x", "z"])),
+            Chunk::Resolved(vec!["x", "w"]),
+            conflict(&["b"], &["Q"], &["S"]),
+        ]);
+        assert_eq!(
+            got,
+            vec![conflict(&[], &["P", "x", "y", "Q"], &["R", "x", "z", "S"])]
+        );
+    }
+
+    #[test]
+    fn conflicts_more_than_three_lines_apart_stay_apart() {
+        let gap: &[&str] = &["1", "2", "3", "4"];
+        let got = refine_two_way(vec![
+            gapped(&["P"], &["R"], (gap, gap)),
+            Chunk::Resolved(gap.to_vec()),
+            conflict(&["b"], &["Q"], &["S"]),
+        ]);
+        assert_eq!(got.len(), 3);
     }
 
     #[test]

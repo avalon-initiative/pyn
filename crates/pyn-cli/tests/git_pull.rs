@@ -657,7 +657,6 @@ fn unsupported_flags_are_usage_errors() {
         vec!["--no-overwrite-ignore"],
         vec!["-F", "msg"],
         vec!["-X", "patience"],
-        vec!["-s", "ort", "-s", "ours"],
         vec!["--rebase", "-s", "ours"],
         vec!["--rebase", "-X", "patience"],
     ] {
@@ -724,6 +723,29 @@ fn pull_twohead_names_the_default_merge_strategy() {
     assert_eq!((g.code, p.code), (0, 0), "{}", p.stderr);
     let tree = |dir: &Path| run(dir, &["rev-parse", "HEAD^{tree}"]);
     assert_eq!(tree(&t.git), tree(&t.pyn));
+}
+
+#[test]
+fn pull_tries_several_strategies_in_turn() {
+    for (flags, config) in [
+        (vec!["-s", "ort", "-s", "ours"], None),
+        (vec![], Some("ort ours")),
+    ] {
+        let t = Twin::new("sha1", Via::Ssh);
+        t.local("a.txt", "local\n", "local a");
+        t.remote("a.txt", "remote\n", "remote a");
+        if let Some(names) = config {
+            for dir in [&t.git, &t.pyn] {
+                run(dir, &["config", "pull.twohead", names]);
+            }
+        }
+        let mut full = vec!["--no-rebase", "--no-edit"];
+        full.extend(&flags);
+        let (g, p) = t.both(&full);
+        assert_eq!((g.code, p.code), (0, 0), "{flags:?}: {}", p.stderr);
+        let tree = |dir: &Path| run(dir, &["rev-parse", "HEAD^{tree}"]);
+        assert_eq!(tree(&t.git), tree(&t.pyn), "{flags:?}");
+    }
 }
 
 #[test]
@@ -1095,6 +1117,45 @@ fn pull_passes_the_merge_message_options_on() {
             let mut args = vec!["--no-edit"];
             args.extend(flags.iter());
             both_alike(&t, &args);
+        }
+    }
+}
+
+#[test]
+fn the_shortlog_heading_names_a_tag_or_a_bare_head_as_git_does() {
+    let cases: &[&[&str]] = &[
+        &["origin", "tag", "r1"],
+        &["origin", "tag", "r2"],
+        &["origin", "r1"],
+        &["origin", "refs/tags/r2"],
+        &["origin", "HEAD"],
+        &["origin", "main"],
+    ];
+    for (format, via) in [("sha1", Via::Ssh), ("sha256", Via::Http)] {
+        for refs in cases {
+            let t = diverged(format, via);
+            run(&t.seed, &["tag", "r1"]);
+            run(&t.seed, &["tag", "-a", "r2", "-m", "annotated"]);
+            run(
+                &t.seed,
+                &["push", "-q", t.bare.to_str().unwrap(), "r1", "r2"],
+            );
+            let mut args = vec!["--no-edit", "--log"];
+            args.extend(refs.iter());
+            both_alike(&t, &args);
+        }
+        for spec in ["origin/main", "r1", "r2"] {
+            let t = diverged(format, via);
+            run(&t.seed, &["tag", "r1"]);
+            run(&t.seed, &["tag", "-a", "r2", "-m", "annotated"]);
+            run(
+                &t.seed,
+                &["push", "-q", t.bare.to_str().unwrap(), "r1", "r2"],
+            );
+            for dir in [&t.git, &t.pyn] {
+                assert_eq!(t.git_cmd(dir, &["fetch", "-q", "--tags"]).code, 0);
+            }
+            both_alike(&t, &["--no-edit", "--log", ".", spec]);
         }
     }
 }

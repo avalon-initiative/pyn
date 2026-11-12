@@ -426,3 +426,40 @@ fn pointers_with_extensions_are_kept_and_never_downloaded() {
     assert_eq!(r.read("big.bin"), ext.as_bytes());
     assert!(r.srv.log().is_empty());
 }
+
+#[test]
+fn concurrent_downloads_match_a_sequential_one_and_the_setting_is_validated() {
+    let r = Repo::new();
+    r.add_remote();
+    let contents: Vec<Vec<u8>> = (0..10)
+        .map(|i| format!("file {i}\n").repeat(40).into_bytes())
+        .collect();
+    for (i, c) in contents.iter().enumerate() {
+        r.srv.put(c);
+        r.write(&format!("f{i}.bin"), &pointer_of(c));
+    }
+    r.commit_all("one");
+    for setting in ["1", "8"] {
+        run(&r.dir, &["config", "lfs.concurrenttransfers", setting]);
+        for i in 0..10 {
+            let _ = fs::remove_file(r.dir.join(format!("f{i}.bin")));
+        }
+        let _ = fs::remove_dir_all(r.dir.join(".git/lfs"));
+        let err = r.ok(&["restore", "."]);
+        assert_eq!(warnings(&err), 0, "{setting}: {err}");
+        for (i, c) in contents.iter().enumerate() {
+            assert_eq!(r.read(&format!("f{i}.bin")), *c, "{setting}");
+        }
+    }
+    let _ = fs::remove_dir_all(r.dir.join(".git/lfs"));
+    fs::remove_file(r.dir.join("f0.bin")).unwrap();
+    run(&r.dir, &["config", "lfs.concurrenttransfers", "0"]);
+    let (_, err) = r.pyn(&["restore", "f0.bin"]);
+    assert!(
+        err.contains("lfs.concurrenttransfers must be a positive integer"),
+        "{err}"
+    );
+    let (code, err) = r.pyn(&["lfs", "fetch"]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("lfs.concurrenttransfers"), "{err}");
+}

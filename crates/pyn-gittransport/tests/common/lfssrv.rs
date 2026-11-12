@@ -49,6 +49,13 @@ pub struct Inner {
     pub tus_accept_limit: Option<usize>,
     /// The declared length of each upload in progress.
     pub tus_lengths: HashMap<String, usize>,
+    /// Holds each object GET and PUT this long, so overlapping transfers can be seen.
+    pub object_delay_ms: u64,
+    pub in_flight: usize,
+    /// The most object transfers that were in progress at once.
+    pub max_in_flight: usize,
+    /// Object GETs and PUTs for these ids answer 500.
+    pub fail_objects: Vec<String>,
 }
 
 pub struct LfsServer {
@@ -145,6 +152,19 @@ async fn handle(State(state): State<Arc<Mutex<Inner>>>, req: Request) -> Respons
         })
         .collect();
     let body = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+    let delayed = matches!(parts.method, Method::GET | Method::PUT)
+        && path.contains("/objects/")
+        && !path.ends_with("/objects/verify");
+    if delayed {
+        let delay = {
+            let mut st = state.lock().unwrap();
+            st.in_flight += 1;
+            st.max_in_flight = st.max_in_flight.max(st.in_flight);
+            st.object_delay_ms
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        state.lock().unwrap().in_flight -= 1;
+    }
     let mut st = state.lock().unwrap();
     st.log.push(format!("{} {}", parts.method, short.join("/")));
     if let Some(a) = parts.headers.get(header::AUTHORIZATION) {
@@ -230,6 +250,9 @@ async fn handle(State(state): State<Arc<Mutex<Inner>>>, req: Request) -> Respons
     };
     if let Some(oid) = oid.strip_suffix("/tus") {
         return tus_route(&mut st, &parts, oid, body, &host, &prefix);
+    }
+    if matches!(parts.method, Method::GET | Method::PUT) && st.fail_objects.contains(&oid) {
+        return reply(500, r#"{"message":"boom"}"#);
     }
     match parts.method {
         Method::GET => {

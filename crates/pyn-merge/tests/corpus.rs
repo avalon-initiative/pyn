@@ -16,6 +16,7 @@ fn conflicts(base: &str, ours: &str, theirs: &str) -> Vec<Conflict<String>> {
                     base: join(&c.base),
                     ours: join(&c.ours),
                     theirs: join(&c.theirs),
+                    gap: None,
                 }),
                 Chunk::Resolved(_) => None,
             })
@@ -37,6 +38,7 @@ fn one(base: &[&str], ours: &[&str], theirs: &[&str]) -> Conflict<String> {
         base: to(base),
         ours: to(ours),
         theirs: to(theirs),
+        gap: None,
     }
 }
 
