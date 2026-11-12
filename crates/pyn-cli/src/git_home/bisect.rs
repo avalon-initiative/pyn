@@ -1106,7 +1106,8 @@ impl<'a> Bisect<'a> {
                 .config()
                 .get("diff.statgraphwidth")
                 .and_then(|w| w.parse::<usize>().ok());
-            let stat = diff::merge_stat(git, &old, &new, (diffstat::terminal_width(), graph))?;
+            let stat =
+                diff::merge_stat(git, &old, &new, (diffstat::terminal_width(), graph), false)?;
             if !stat.is_empty() {
                 out.push('\n');
                 out.push_str(&stat);

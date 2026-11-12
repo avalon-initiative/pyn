@@ -14,8 +14,23 @@ use crate::local_store::file_mode;
 use crate::localfile;
 use crate::rename;
 
-/// A stand-in home for a diff that reads nothing from a repository.
-struct Detached;
+/// A stand-in home for a diff with no repository: only the global config and attributes files apply.
+struct Detached {
+    attrs: Option<pyn_gitwork::Attributes>,
+    config: pyn_git::Config,
+}
+
+impl Detached {
+    fn new() -> Self {
+        let (home, xdg) = crate::git_home::user_dirs();
+        let config = home
+            .as_deref()
+            .and_then(|h| pyn_git::Config::global(h, xdg.as_deref()).ok())
+            .unwrap_or_default();
+        let attrs = pyn_gitwork::global_attributes(&config, home.as_deref(), xdg.as_deref()).ok();
+        Self { attrs, config }
+    }
+}
 
 macro_rules! none {
     ($($name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {
@@ -32,6 +47,21 @@ impl Backend for Detached {
             mode: Some(rename::Mode::Renames),
             ..rename::Defaults::default()
         }
+    }
+
+    fn diff_driver(&self, path: &str) -> Result<crate::diff_driver::DiffDriver> {
+        match &self.attrs {
+            Some(a) => crate::diff_driver::DiffDriver::resolve(a, &self.config, path),
+            None => Ok(Default::default()),
+        }
+    }
+
+    fn attribute(&self, path: &str, name: &str) -> pyn_gitwork::AttrValue {
+        self.attrs
+            .as_ref()
+            .map_or(pyn_gitwork::AttrValue::Unspecified, |a| {
+                a.for_path(path.as_bytes()).get(name)
+            })
     }
 
     none! {
@@ -207,6 +237,7 @@ fn changed(pa: &Path, na: &str, pb: &Path, nb: &str, ctx: &Ctx) -> Result<Entry>
         moved: None,
         rewrite: None,
         detached: true,
+        unmerged: false,
     }))
 }
 
@@ -320,7 +351,7 @@ pub fn run(
     if format.opts.reverse {
         found = found.into_iter().map(reversed).collect();
     }
-    let detached = Detached;
+    let detached = Detached::new();
     let backend: &dyn Backend = match git {
         Some(g) => g,
         None => &detached,
@@ -372,6 +403,7 @@ pub fn run(
                 moved: None,
                 rewrite: None,
                 detached: true,
+                unmerged: false,
             }),
             Entry::Added(n, b) => {
                 let moved = moves.moved.get(&n).cloned();
@@ -384,6 +416,7 @@ pub fn run(
                         moved: Some(m),
                         rewrite: None,
                         detached: true,
+                        unmerged: false,
                     },
                     None => Pair {
                         old_path: n.clone(),
@@ -393,6 +426,7 @@ pub fn run(
                         moved: None,
                         rewrite: None,
                         detached: true,
+                        unmerged: false,
                     },
                 });
             }

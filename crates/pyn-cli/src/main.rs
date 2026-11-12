@@ -1083,7 +1083,8 @@ fn fatal_message(error: &anyhow::Error) -> String {
     message
 }
 
-/// Puts `branch.<current>.mergeOptions` right after `merge`, so the command line's own options win.
+/// Puts `branch.<current>.mergeOptions` right after `merge`, so the command line's own options win; with
+/// `--abort`, `--continue` or `--quit` they are only checked.
 fn with_merge_options(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     const ENDS: [&str; 3] = ["--abort", "--continue", "--quit"];
     let mut i = 1;
@@ -1095,14 +1096,19 @@ fn with_merge_options(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsStri
         }
         i += 1;
     }
-    if args.get(i).is_none_or(|a| a != "merge") || args.iter().any(|a| ENDS.iter().any(|e| a == e))
-    {
+    if args.get(i).is_none_or(|a| a != "merge") {
         return args;
     }
-    let configured = std::env::current_dir()
+    let git = std::env::current_dir()
         .ok()
-        .and_then(|cwd| git_home::detect(&cwd).ok().flatten())
-        .and_then(|git| git_home::configured_merge_options(&git));
+        .and_then(|cwd| git_home::detect(&cwd).ok().flatten());
+    if args.iter().any(|a| ENDS.iter().any(|e| a == e)) {
+        if let Some(git) = &git {
+            git_home::check_merge_options(git);
+        }
+        return args;
+    }
+    let configured = git.and_then(|git| git_home::configured_merge_options(&git));
     if let Some(words) = configured {
         args.splice(i + 1..i + 1, words.into_iter().map(Into::into));
     }
