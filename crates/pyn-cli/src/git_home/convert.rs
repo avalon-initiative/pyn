@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 use pyn_gitwork::{Attributes, Pathspec, ToGit};
 use pyn_object::{FileMode, ObjectId};
 
+use super::strategy::Settings;
 use super::{GitHome, path_string};
 
 fn skipped(mode: FileMode) -> bool {
@@ -35,8 +36,16 @@ pub(super) fn refuse_unsupported<'a>(
 }
 
 /// `-X renormalize`: a side's content as git's merge sees it, converted to the work tree form and back.
-pub(super) fn renormalize(git: &GitHome, path: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-    let conv = git.repo.conversion(path)?;
+pub(super) fn renormalize(
+    git: &GitHome,
+    settings: &Settings,
+    path: &[u8],
+    data: &[u8],
+) -> Result<Vec<u8>> {
+    let conv = match &settings.attrs {
+        Some(a) => git.repo.conversion_under(&a.0, path),
+        None => git.repo.conversion(path)?,
+    };
     if let Some(u) = conv.unsupported() {
         bail!(
             "`-X renormalize` would convert '{}' ({u}), and pyn cannot do that here yet (#273); nothing was changed",

@@ -131,6 +131,8 @@ pub struct Unmerged {
     pub path: String,
     pub old: Option<Blob>,
     pub new: Option<Blob>,
+    /// The combined patch git prints instead of `* Unmerged path` for a path with an `ours` and a `theirs` stage.
+    pub patch: Option<String>,
 }
 
 impl Format {
@@ -589,6 +591,7 @@ pub(crate) struct Pair {
     pub(crate) detached: bool,
     /// A path with conflict stages: only its name (and raw sides) are shown.
     pub(crate) unmerged: bool,
+    pub(crate) combined: Option<String>,
 }
 
 /// The content of a blob.
@@ -659,6 +662,7 @@ pub(crate) fn pairs(
                 rewrite: None,
                 detached: false,
                 unmerged: false,
+                combined: None,
             },
             None => Pair {
                 old_path: path.clone(),
@@ -669,6 +673,7 @@ pub(crate) fn pairs(
                 rewrite: found.as_ref().and_then(|f| f.rewrites.get(path)).copied(),
                 detached: false,
                 unmerged: false,
+                combined: None,
             },
         });
     }
@@ -954,6 +959,7 @@ pub fn compare(
             rewrite: None,
             detached: false,
             unmerged: true,
+            combined: u.patch.clone(),
         }));
         list.sort_by_key(|p| (p.new_path.clone(), !p.unmerged));
     }
@@ -1172,7 +1178,10 @@ fn render(
         {
             differs = true;
             match format.kind {
-                Kind::Patch => out.push_str(&format!("* Unmerged path {path}\n")),
+                Kind::Patch => match &p.combined {
+                    Some(text) => out.push_str(text),
+                    None => out.push_str(&format!("* Unmerged path {path}\n")),
+                },
                 _ => {
                     stat_rows.push((quote(path), Counts::Unmerged));
                     moved_from.push(None);

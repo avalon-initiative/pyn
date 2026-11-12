@@ -12,6 +12,7 @@ use pyn_gitwork::{
 };
 use pyn_object::ObjectId;
 
+use super::combined_diff;
 use super::decorate::{DecorateArgs, with_decoration};
 use super::merge_diff::{Against, Body, MergeArgs, Shape, Want, with_from};
 use super::show_object::Item;
@@ -991,6 +992,7 @@ fn diff(
                         path,
                         old: committed,
                         new: None,
+                        patch: None,
                     });
                 }
             }
@@ -1037,10 +1039,45 @@ fn diff(
                             cleaned: None,
                         },
                     };
-                    // The patch shows a path with both sides as a combined diff, which is not built.
-                    let combined = at(2).is_some() && at(3).is_some();
-                    if let Some(e) = at(2).filter(|_| format.kind != diff::Kind::Patch || !combined)
-                    {
+                    let combined = at(2)
+                        .zip(at(3))
+                        .filter(|_| format.kind == diff::Kind::Patch);
+                    if let Some((ours, theirs)) = combined {
+                        let side = |e: &pyn_git::IndexEntry| {
+                            entry_blob(&Entry {
+                                mode: stage::leaf_mode(e.mode),
+                                id: e.id,
+                            })
+                        };
+                        let recorded = Entry {
+                            mode: stage::leaf_mode(ours.mode),
+                            id: ours.id,
+                        };
+                        let result =
+                            disk_blob(git, &modules, &ours.path, Some(&recorded))?.map(|b| Blob {
+                                hash: shown.hash.clone(),
+                                ..b
+                            });
+                        let element = combined_diff::Element {
+                            path: path.clone(),
+                            result,
+                            parents: vec![(side(ours), 'M'), (side(theirs), 'M')],
+                        };
+                        let text = combined_diff::patch(
+                            git,
+                            &element,
+                            (true, format.context),
+                            (format.opts.full_index, true),
+                        )?;
+                        format.unmerged.push(diff::Unmerged {
+                            path,
+                            old: None,
+                            new: Some(shown),
+                            patch: text,
+                        });
+                        continue;
+                    }
+                    if let Some(e) = at(2) {
                         let recorded = Entry {
                             mode: stage::leaf_mode(e.mode),
                             id: e.id,
@@ -1052,13 +1089,12 @@ fn diff(
                             new.insert(path.clone(), b);
                         }
                     }
-                    if format.kind != diff::Kind::Patch || !combined {
-                        format.unmerged.push(diff::Unmerged {
-                            path,
-                            old: None,
-                            new: Some(shown),
-                        });
-                    }
+                    format.unmerged.push(diff::Unmerged {
+                        path,
+                        old: None,
+                        new: Some(shown),
+                        patch: None,
+                    });
                 }
             }
             if wants_harder(git, &format) {
