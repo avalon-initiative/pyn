@@ -227,6 +227,13 @@ jobs:
           docker buildx imagetools create -t "${IMAGE}:v${VERSION}" \
             $(printf "${IMAGE}@sha256:%s " *)
 
+  # Runs beside `release` and is not a dependency of it: a failed smoke run never blocks the GitHub Release.
+  smoke:
+    needs: [verify, manifest]
+    uses: ./.github/workflows/smoke.yml
+    with:
+      version: ${{ needs.verify.outputs.version }}
+
   release:
     needs: [verify, live, binaries, manifest]
     # A binaries target that failed does not block the release; the checksum step fails when no archive built.
