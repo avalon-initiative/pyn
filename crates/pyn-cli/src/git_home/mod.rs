@@ -525,6 +525,19 @@ impl Backend for GitHome {
         };
         let config = self.repo.config();
         let key = |k: &str| format!("diff.{name}.{k}");
+        for e in config.entries() {
+            let valued = ["funcname", "xfuncname", "textconv", "wordregex"];
+            if e.section == "diff"
+                && e.subsection.as_deref() == Some(name.as_str())
+                && e.value.is_none()
+                && valued.contains(&e.key.as_str())
+            {
+                eprintln!("error: missing value for '{}'", key(&e.key));
+                bail!("bad config variable '{}'", key(&e.key));
+            }
+        }
+        driver.work_tree = self.repo.git().work_tree().map(Path::to_path_buf);
+        driver.word_regex = config.get(&key("wordregex")).map(str::to_string);
         driver.binary = config.get_bool(&key("binary")).ok().flatten();
         driver.textconv = config.get(&key("textconv")).map(str::to_string);
         let last = config.entries().iter().rev().find(|e| {

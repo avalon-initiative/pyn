@@ -996,7 +996,7 @@ index, so a repository that relies on conversions shows no phantom changes. `-di
 `pyn convert --home git` keeps a work tree file's stat data in the new index only when its converted form is the committed blob.
 
 Not built: `working-tree-encoding`,
-`export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.wordRegex`, `diff.<name>.cachetextconv`,
+`export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.cachetextconv`,
 the `whitespace` attribute in `apply`. `diff --no-index` on a file outside the work tree of a repository (or with no
 repository) converts it by `core.autocrlf` and `core.eol` only, from the repository's config or the global one, and applies no
 attributes there. Covered by
@@ -1008,14 +1008,14 @@ its precedence is covered by a unit test in `pyn-gitwork` that gives the engine 
 
 #### Diff, merge and whitespace attributes
 
-`diff=<name>` picks a diff driver; `diff.<name>.binary`, `textconv`, `funcname` and `xfuncname` are read, and a name with
+`diff=<name>` picks a diff driver; `diff.<name>.binary`, `textconv`, `funcname`, `xfuncname` and `wordRegex` are read, and a name with
 no such settings changes nothing. `-diff` is binary and `diff` forces text, as before.
 
 - `textconv`: `diff`, `log -p` and `show` run the command on a temporary file holding each side (the file name is appended
   to the command, which goes through `sh -c`) and diff its output; the sides are not checked for binary content. Added and
   deleted files convert one side. `--no-textconv` turns it off and `--textconv` turns it back on. It does not apply to
   `--stat`, `--numstat`, `--check`, `format-patch` or `blame`. A command that fails stops the diff (`fatal: unable to read
-  files to diff`). Only regular files are converted. The command runs in the current folder, where git runs it at the top of the work tree.
+  files to diff`). Only regular files are converted. The command runs at the top of the work tree, as git's does, wherever you are in it.
 - `binary`: `diff.<name>.binary` true or false forces binary or text for every output that decides it.
 - `xfuncname` (extended expression) and `funcname` (basic expression) choose the heading after `@@`: the nearest line
   above the hunk that matches, shown as its first group or else its match, at most 80 bytes. Several patterns are separated
@@ -1023,7 +1023,9 @@ no such settings changes nothing. `-diff` is binary and `diff` forces text, as b
   with a pattern uses it instead of the default (a line starting with a letter, `_` or `$`). The expressions are
   translated onto the `regex` crate, as in `grep`. When both are set for a driver, the one read last from the
   configuration wins. `-W` still grows a hunk to the default function lines.
-  An invalid pattern is a fatal error.
+  An invalid pattern is a fatal error, and so is a `funcname`, `xfuncname`, `textconv` or `wordRegex` with no value (`error: missing value`, exit `128`, as git).
+- `wordRegex`: `diff.<name>.wordRegex` is the word pattern of `--word-diff` and `--color-words` for the path (an extended expression, as
+  `--word-diff-regex`). A regular expression on the command line wins over it, and it wins over `diff.wordRegex`.
 - Built-in language drivers: `diff=<lang>` with no `diff.<lang>.funcname` or `xfuncname` uses git's pattern for the language
   (`ada`, `bash`, `bibtex`, `cpp` (also C), `csharp`, `css`, `dts`, `elixir`, `fortran`, `fountain`, `golang`, `html`, `java`,
   `kotlin`, `markdown`, `matlab`, `objc`, `pascal`, `perl`, `php`, `python`, `ruby`, `rust`, `scheme`, `tex`), ported from git's

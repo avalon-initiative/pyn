@@ -16,6 +16,10 @@ pub struct DiffDriver {
     pub binary: Option<bool>,
     pub textconv: Option<String>,
     pub funcname: Option<FuncMatcher>,
+    /// `diff.<name>.wordRegex`: the word pattern of `--word-diff` for the path.
+    pub word_regex: Option<String>,
+    /// Where `textconv` runs; `None` keeps the current folder.
+    pub work_tree: Option<std::path::PathBuf>,
 }
 
 /// Hunk-header patterns in order: the first one that matches a line decides, and a negated one rejects the line.
@@ -62,7 +66,7 @@ impl FuncMatcher {
 }
 
 /// Runs `command` on a file holding `content` and returns its output, as `diff.<name>.textconv` does.
-pub fn textconv(command: &str, content: &[u8]) -> Result<Vec<u8>> {
+pub fn textconv(command: &str, content: &[u8], dir: Option<&std::path::Path>) -> Result<Vec<u8>> {
     let tmp = tempfile::Builder::new()
         .prefix(".diff_")
         .tempfile()
@@ -75,6 +79,9 @@ pub fn textconv(command: &str, content: &[u8]) -> Result<Vec<u8>> {
         .arg(tmp.path())
         .stdin(Stdio::null())
         .stderr(Stdio::inherit());
+    if let Some(dir) = dir {
+        run.current_dir(dir);
+    }
     let out = run
         .output()
         .with_context(|| format!("running textconv `{command}`"))?;
