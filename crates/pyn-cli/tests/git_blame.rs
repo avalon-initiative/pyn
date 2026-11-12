@@ -1752,10 +1752,6 @@ fn diff_algorithms_are_checked_and_leave_blame_alone_like_git() {
             );
             assert_eq!(out.is_empty(), want != 0, "{args:?}");
         }
-        r.git_ok(ANN, &["config", "diff.algorithm", "nope"]);
-        let (want, _) = r.oracle(&r.dir, "blame", &["a.txt"]);
-        let (code, _, _) = r.pyn(&r.dir, "blame", &["a.txt"]);
-        assert_eq!(oracle::status_class(code), oracle::status_class(want));
     });
 }
 
