@@ -6,13 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 use pyn_gitwork::{Entry, Pathspec};
-use pyn_merge::{
-    Favor, Outcome as Text, merge_text_with, render_markers_sized, render_two_way_sized,
-    render_union,
-};
+use pyn_merge::{Favor, Outcome as Text, merge_text_with, render_union};
 use pyn_object::{FileMode, Kind, ObjectId};
 
 use super::GitHome;
+use super::conflict_style::Style;
 use super::convert;
 use super::mergedrv::{self, Driver};
 use super::stage::write_leaves;
@@ -190,11 +188,8 @@ pub(super) fn both_present(
     match merge_text_with(&base, &ours, &theirs, text) {
         Text::Clean(bytes) => take_blob(git, mode, &bytes),
         Text::Conflicted(chunks) => {
-            let bytes = if plain_markers(git) {
-                render_two_way_sized(&chunks, size, labels.ours, labels.theirs)
-            } else {
-                render_markers_sized(&chunks, size, (labels.ours, labels.base, labels.theirs))
-            };
+            let style = Style::of(git.repo.config());
+            let bytes = style.render(chunks, size, (labels.ours, labels.base, labels.theirs));
             conflict(kind, Worktree::Write { mode, bytes })
         }
         Text::BinaryConflict => binary(),
@@ -217,17 +212,6 @@ fn unchanged(
     }
     let norm = |e: &Entry| convert::renormalize(git, path, &git.repo.blob(&e.id)?);
     Ok(base.id == side.id || norm(base)? == norm(side)?)
-}
-
-/// Git's two-sided markers unless `merge.conflictStyle` is `diff3` or `zdiff3`.
-fn plain_markers(git: &GitHome) -> bool {
-    let style = git
-        .repo
-        .config()
-        .get("merge.conflictstyle")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    !matches!(style.as_str(), "diff3" | "zdiff3")
 }
 
 fn take_blob(git: &GitHome, mode: FileMode, bytes: &[u8]) -> Result<Resolved> {

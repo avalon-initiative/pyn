@@ -36,7 +36,7 @@ pub use pyn_gitattr::attributes::{
     AttrValue, Attributes, Loader, PathAttributes, unquote as unquote_c, valid_attribute_name,
 };
 pub use pyn_gitattr::wildmatch::{matches as wildmatch, matches_fold as wildmatch_fold};
-pub use repo::{AttrSource, Head, Repo};
+pub use repo::{AttrSource, Head, Repo, global_attributes};
 pub use safepath::{
     MAX_DEPTH, MAX_PATH_BYTES, Reason, UnsafePath, check_link_target, check_path, check_path_as,
     check_paths,

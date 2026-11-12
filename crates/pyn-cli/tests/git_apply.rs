@@ -444,6 +444,24 @@ fn refuses_binary_data_and_unsupported_options_with_a_usage_status() {
 }
 
 #[test]
+fn three_way_conflicts_follow_the_conflict_style() {
+    for style in ["merge", "diff3", "zdiff3"] {
+        each("c1", |t| {
+            for dir in [&t.git, &t.pyn] {
+                write(
+                    dir,
+                    "a.txt",
+                    &lines("line", 12).replace("line3\n", "mine3\n"),
+                );
+                run(dir, &["config", "merge.conflictStyle", style]);
+                run(dir, &["add", "a.txt"]);
+            }
+            same(t, "", &["--3way", &patch(t, "a-only")], b"");
+        });
+    }
+}
+
+#[test]
 fn merges_with_three_way_like_git() {
     // A change within the hunk's context, away from the changed lines: the plain patch fails, the merge is clean.
     each("c1", |t| {

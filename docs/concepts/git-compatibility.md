@@ -131,7 +131,7 @@ The commands named in decision #218.
 | `pyn log --commits` | | pyn only | List commits (`COMMIT`, `AUTHOR`, `WHEN`, `FILES`, `MESSAGE`) instead of revisions. |
 | `pyn log --filter <glob>` | | pyn only | Only paths matching the glob. |
 | `git diff [<c1> [<c2>]] [-- <path>...]` | `pyn diff [<c1> [<c2>]] [-- <path>...]` | different | Unified output as git, computed in the CLI. Commits are hashes (or abbreviations of 4 or more digits), `HEAD`, `~N`, `^`, or `a..b`; two commits work outside a workspace. With no commit it compares the work tree with the index: the staged content, or the last update for what is not staged. File modes print as in git, including `old mode` and `new mode`. On a git home an argument that is neither a revision nor an existing path (a deleted file needs `--`) fails with `fatal: ambiguous argument '<arg>'` (or `bad revision` before `--`), exit `128`, as git does; `a...b` is not supported and fails the same way. |
-| `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, and `D`, and on a git home `U` for each unmerged path (before the `M` git adds when the work tree differs from the `ours` stage; `--stat`, `--raw` and the patch do not list it yet); gitlink type changes print `T`, and on a git home a rename or copy prints `R<nn>` or `C<nn>` (see [Rename and copy detection](#rename-and-copy-detection)). On a git home `--stat` (also in `show`, `log` and `stash show`) prints a binary file as git does, `Bin <old> -> <new> bytes` (`Bin` alone for a rename with identical content, as in the merge diffstat), aligned in the graph column and left out of the insertion and deletion totals; `--numstat` prints `-` and `-`. |
+| `git diff -U<n>`, `--unified=<n>`, `--stat`, `--name-only`, `--name-status`, `--exit-code`, `-q` | same | same | `--name-status` prints `A`, `M`, and `D`, and on a git home `U` for each unmerged path (before the `M` git adds when the work tree differs from the `ours` stage). `--raw`, `--name-only`, `--stat`, `--numstat`, `--shortstat` and the patch list unmerged paths as git does (`:000000 <mode> ... U` in `--raw`, ` <path> | Unmerged` left out of the totals, `* Unmerged path <path>` in the patch), and `--cached` shows them as `U` instead of `D`; the work tree patch of a path with both an `ours` and a `theirs` stage prints git's combined diff, which is not built, so that path is left out of it; gitlink type changes print `T`, and on a git home a rename or copy prints `R<nn>` or `C<nn>` (see [Rename and copy detection](#rename-and-copy-detection)). On a git home `--stat` (also in `show`, `log` and `stash show`) prints a binary file as git does, `Bin <old> -> <new> bytes` (`Bin` alone for a rename with identical content, as in the merge diffstat), aligned in the graph column and left out of the insertion and deletion totals; `--numstat` prints `-` and `-`. |
 | `git diff --numstat` | same | different | Both homes. Prints added and deleted line counts per path, or `-` and `-` for a binary file. It combines with none of `--stat`, `--shortstat`, `--name-only`, `--name-status` or `--check` (usage error, `129`); git can combine numeric and other stats or give another format precedence. |
 | `git diff --cached`, `--staged` | `pyn diff --cached`, `--staged` | different | The staged content against the last commit (the last update on a pyn server). On a git home it takes one optional commit to compare with, as git; on a pyn server it takes none. |
 | `git diff --shortstat`, `-w` (`--ignore-all-space`), `--check` | same | same | Both homes. `--shortstat` prints only the totals line. `-w` compares lines with all whitespace removed, prints context lines as they are in the new file, and leaves out a file that differs only in whitespace (so `--exit-code` is `0` when nothing else changed); `--name-only` and `--name-status` still list it, as git 2.43 does (newer git versions differ on this edge; pyn lists the file). `--check` prints `path:line: trailing whitespace.` (or `space before tab in indent.`, `indent with spaces.`, `tab in indent.`, or several) and the added line, `path:line: leftover conflict marker`, then `path:line: new blank line at EOF.`, for the rules of `core.whitespace` (git's default without it), and exits `2` if it printed anything; `-w` does not affect it (newer git versions differ here too). `--check` and `--shortstat` combine with no other format (`--stat`, `--name-only`, `--name-status`): a usage error (`129`), where git prints both stats or refuses with `128`. |
@@ -156,7 +156,7 @@ The commands named in decision #218.
 | `git restore --staged <path>...` | `pyn restore --staged <path>...` (`-S`) | same | Puts the staged entries under the paths back to the last commit and leaves the files alone. On a git home `--source <commit>` takes the entries from that commit, as git; on a pyn server there is no commit to take them from and it is a usage error. |
 | `git restore [-s <rev>] [-S] [-W] <path>...` (the work tree) | `pyn restore ...` on a git home | git home only | Takes the paths from the index (or `--source`) into the work tree, and with `--staged --worktree` into both. See [Branches, switching and the work tree](#branches-switching-and-the-work-tree). On a pyn server `--worktree` is a usage error (`129`): a restore there makes an older revision the new head. |
 | `git restore --ours\|--theirs [-W] <path>...` | `pyn restore --ours\|--theirs <path>...` | git home only | Writes one side of an unmerged path into the work tree and leaves the path unmerged. On a pyn server it is a usage error (`129`). See [`restore`](#branches-switching-and-the-work-tree). |
-| `git restore --merge <path>...` | `pyn restore --merge <path>...` | git home only | Recreates the conflicted merge of an unmerged path in the work tree, with diff3 markers. `--merge` has no `-m` short form (that is `--message`), and `--conflict=<style>` is not accepted. |
+| `git restore --merge <path>...` | `pyn restore --merge <path>...` | git home only | Recreates the conflicted merge of an unmerged path in the work tree, with the markers `merge.conflictStyle` asks for. `--merge` has no `-m` short form (that is `--message`), and `--conflict=<style>` is not accepted. |
 | `git checkout -p [<tree-ish>] [--] [<path>...]`, `git reset -p [<tree-ish>] [--] [<path>...]` | `pyn checkout -p`, `pyn reset -p` | git home only | The prompt of `restore -p`, see [Choosing hunks](#choosing-hunks): `checkout -p` discards from the work tree (index to work tree) or, with a tree-ish, from the index and the work tree (`Discard` for `HEAD`, `Apply` for anything else); `reset -p` unstages (`Unstage`, or `Apply ... to index` for a tree-ish other than `HEAD`) and works on an unborn branch. `reset -p` with `--soft`, `--mixed`, `--hard`, `--keep` or `--merge` is `fatal` (`128`); `checkout -p` with `-f`, `--detach`, `-b` or `-B` is `fatal` (`128`) with git's wording, `--ours` and `--theirs` are ignored (`fatal` with a tree-ish, as git), and `--yes` is a usage error (`129`). On a pyn server both are usage errors. |
 | `git restore -p` | `pyn restore -p` (`--patch`) | git home only | Asks about each hunk of the work tree, the index (`--staged`) or both, from the index, `HEAD` or `--source`, see [Choosing hunks](#choosing-hunks). On a pyn server it is a usage error (`129`). |
 | `git reset [--soft\|--mixed\|--hard\|--keep\|--merge] [-q] [<rev>]`, `git reset [<rev>] [--] <path>...` | `pyn reset ...` | git home: supported; pyn server: different | On a git home it is git's reset, see [Reset](#reset). On a pyn server `pyn reset [--soft\|--mixed\|--hard] [<commit>]` only drops unpublished local commits ([workspace](workspace.md#the-local-store)); `--keep`, `--merge`, `-q`, paths and a second revision are a usage error there. |
@@ -967,8 +967,8 @@ work tree root down to the path's folder (a deeper file wins, and a later line w
 environment variable, else the `attr.tree` setting, each naming a tree-ish whose `.gitattributes` files replace the work tree's;
 without one, the work tree, or `HEAD`'s tree in a bare repository (git versions differ on that default, an explicit source is the
 same everywhere). A bad `--source` or `GIT_ATTR_SOURCE` is fatal (`128`), a bad `attr.tree` is ignored, and a bare repository whose
-`HEAD` is unreadable is fatal as well. `--cached` still reads the index. A command that cannot report an error (`diff`'s attribute
-lookups) treats a bad `GIT_ATTR_SOURCE` as no attributes. Patterns follow git: a pattern without a slash matches names at any depth below its file,
+`HEAD` is unreadable is fatal as well. `--cached` still reads the index. A `diff` that prints a patch, `--stat` or `--check` is fatal too, as git's is; the
+attribute lookups that cannot report an error (`diff --color` whitespace marks) treat a bad `GIT_ATTR_SOURCE` as no attributes. Patterns follow git: a pattern without a slash matches names at any depth below its file,
 others are anchored to it, `**` and character classes work, `core.ignoreCase` folds case, negative (`!`) and folder-only
 (`dir/`) patterns are ignored, and a symbolic link named `.gitattributes` is not read. Attribute states are set, unset
 (`-name`), reset (`!name`) and valued (`name=value`); `[attr]` macros are defined in the top-level `.gitattributes`,
@@ -998,13 +998,16 @@ index, so a repository that relies on conversions shows no phantom changes. `-di
 Not built: `working-tree-encoding`,
 `export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.wordRegex`, `diff.<name>.cachetextconv`,
 the `whitespace` attribute in `apply`. `diff --no-index` on a file outside the work tree of a repository (or with no
-repository) converts it by `core.autocrlf` and `core.eol` only, from the repository's config or the global one, and applies no
-attributes there. Covered by
+repository) converts it by `core.autocrlf` and `core.eol` only, from the repository's config or the global one. The diff
+attributes (`diff`, `whitespace`) there come from the system and global attributes files only, as in git; the per-folder
+files and `info/attributes` do not apply, and the global files' line-ending attributes are not applied to the conversion yet. Covered by
 `crates/pyn-cli/tests/git_attributes.rs`, which compares blob ids, work tree bytes and `status`
 and `diff` output with git (#273), `crates/pyn-cli/tests/git_check_attr.rs` (`check-attr`, `ls-files --eol`, attributes read
 from the index and trees, `blame` and `diff --no-index`), and `git_diff_attributes.rs` and `git_merge_attributes.rs` for
 the next section. git has no way to point its system attributes file elsewhere (only `GIT_ATTR_NOSYSTEM` switches it off), so
-its precedence is covered by a unit test in `pyn-gitwork` that gives the engine another path, not by an oracle test.
+its precedence is covered by a unit test in `pyn-gitwork` that gives the engine another path, not by an oracle test. The path is
+fixed at `/etc/gitattributes`; a git built with another prefix reads elsewhere, which pyn cannot learn without running git.
+The bare-repository default of reading `HEAD`'s attributes has an oracle test that skips itself when the installed git does not do that.
 
 #### Diff, merge and whitespace attributes
 
@@ -1174,7 +1177,7 @@ Differences from git, all deliberate or not yet done:
   `working-tree-encoding` is not applied.
 - `log` and `show` print no color on a terminal.
 - A nested repository that the index does not track is one untracked `dir/`.
-- `zdiff3` is written as `diff3` (git also moves lines both sides share out of the conflict), and `stash apply` merges only when
+- Conflicts are not refined beyond the lines both sides share at their edges (git also splits a conflict where the two sides agree in the middle), and `stash apply` merges only when
   there is one merge base; `stash apply` does not write `AUTO_MERGE`; `switch` and `checkout` print their own wording where git's differs (`Fast-forward` without a diffstat, the status
   after `stash pop` in pyn's table).
 
@@ -1675,7 +1678,7 @@ and, as in git, removes tracked files the commit lacks; `--staged --worktree` do
 
 `restore --ours` and `--theirs` write that stage of each unmerged path under the paths into the work tree (the later of the two
 wins), and `restore --merge` merges stages 2 and 3 over stage 1 again and writes the result with `ours`, `base` and `theirs` as the
-marker labels, always in diff3 style. Neither touches the index, so the paths stay unmerged. A side the path lacks removes the work
+marker labels, in the style `merge.conflictStyle` names. Neither touches the index, so the paths stay unmerged. A side the path lacks removes the work
 tree file, as `restore` does for any path the source lacks (`checkout --ours|--theirs` reports `error: path '<path>' does not have
 our version` or `their version` and exits `1` instead). A path that is not unmerged is restored from the index, local edits
 included. `--merge` on an unmerged path without both sides prints `error: path '<path>' does not have all necessary versions`
@@ -1772,7 +1775,7 @@ state folder (`rebase-merge/`, `sequencer/`) is not removed. `--hard --recurse-s
    reflog line `merge <name>: Merge made by the 'ort' strategy.` (the strategy is the one `-s` names). `--no-commit` stops before
    the commit with `MERGE_HEAD`, `MERGE_MSG` and `MERGE_MODE` written.
 8. A conflict leaves the file with two-sided markers (`<<<<<<< HEAD`, `=======`, `>>>>>>> <name>`), or **diff3** ones with
-   `||||||| <base abbreviation>` when `merge.conflictStyle` is `diff3` (`zdiff3` is written as `diff3`),
+   `||||||| <base abbreviation>` when `merge.conflictStyle` is `diff3` or `zdiff3` (`zdiff3` and the default style also move the lines both sides share at the start and end of a conflict out of it),
    the unmerged index entries at stages 1, 2 and 3 (only the sides that exist), and `MERGE_HEAD`, `MERGE_MSG` (with git's
    `# Conflicts:` list), `MERGE_MODE` (`no-ff` or empty) and `AUTO_MERGE` (see below). It prints `Auto-merging <path>`, `CONFLICT (content|add/add|modify/delete):
    ...` and `Automatic merge failed; fix conflicts and then commit the result.`, and exits `1`. git sees an ordinary conflicted merge:
@@ -2850,8 +2853,8 @@ file names. Commits are signed when `commit.gpgsign` is set or `-S` is given (`-
 `-S` applying to the invocation that gives it, as in git. On a failure it prints `Patch failed at <nnnn> <subject>` and the
 lines telling how to go on (naming `pyn am`), and exits `128`; `--continue` commits the index, `--skip` resets to `HEAD` and
 goes on, `--abort` restores `ORIG_HEAD`. `--3way` rebuilds a base from the blobs in the patch's `index` lines, applies the
-patch to it, and merges the result with the current tree as `cherry-pick` merges: conflict markers are diff3 style whatever
-`merge.conflictStyle` says, and no `Removing <path>` lines are printed (older git, which merges with merge-recursive, prints them). A file meeting a folder is moved to `<path>~HEAD` (or `<path>~<subject>`) while its unmerged entries stay at `<path>`, as git leaves them. Maildirs, StGit and Mercurial formats, `-k`, `-b`, `-c`/scissors, `--ignore-date`, `--committer-date-is-author-date`,
+patch to it, and merges the result with the current tree as `cherry-pick` merges: conflict markers follow
+`merge.conflictStyle`, and no `Removing <path>` lines are printed (older git, which merges with merge-recursive, prints them). A file meeting a folder is moved to `<path>~HEAD` (or `<path>~<subject>`) while its unmerged entries stay at `<path>`, as git leaves them. Maildirs, StGit and Mercurial formats, `-k`, `-b`, `-c`/scissors, `--ignore-date`, `--committer-date-is-author-date`,
 `-i`, `--rerere-autoupdate`, `--allow-empty` and `-C`/`-p` are not built (a patch with no changes stops the session with
 `Patch is empty.` and the hint to record an empty commit is left out). The apply hooks run as in [Client hooks](#client-hooks);
 `-n`/`--no-verify` skips `applypatch-msg` and `pre-applypatch` for the invocation that gives it.

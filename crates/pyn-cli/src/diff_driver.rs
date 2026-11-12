@@ -18,6 +18,49 @@ pub struct DiffDriver {
     pub funcname: Option<FuncMatcher>,
 }
 
+impl DiffDriver {
+    /// The driver `path`'s `diff` attribute names, with its `diff.<name>.*` settings from `config`.
+    pub fn resolve(
+        attrs: &pyn_gitwork::Attributes,
+        config: &pyn_git::Config,
+        path: &str,
+    ) -> Result<Self> {
+        use pyn_gitwork::AttrValue;
+        let mut driver = Self::default();
+        let name = match attrs.for_path(path.as_bytes()).get("diff") {
+            AttrValue::Unset => {
+                driver.binary = Some(true);
+                return Ok(driver);
+            }
+            AttrValue::Set => {
+                driver.binary = Some(false);
+                return Ok(driver);
+            }
+            AttrValue::Value(v) => String::from_utf8_lossy(&v).into_owned(),
+            AttrValue::Unspecified => return Ok(driver),
+        };
+        let key = |k: &str| format!("diff.{name}.{k}");
+        driver.binary = config.get_bool(&key("binary")).ok().flatten();
+        driver.textconv = config.get(&key("textconv")).map(str::to_string);
+        let last = config.entries().iter().rev().find(|e| {
+            e.section == "diff"
+                && e.subsection.as_deref() == Some(name.as_str())
+                && (e.key == "funcname" || e.key == "xfuncname")
+        });
+        driver.funcname = match last {
+            Some(e) => Some(FuncMatcher::parse(
+                e.value.as_deref().unwrap_or(""),
+                e.key == "xfuncname",
+                false,
+            )?),
+            None => builtin::funcname(&name)
+                .map(|(patterns, icase)| FuncMatcher::parse(&patterns, true, icase))
+                .transpose()?,
+        };
+        Ok(driver)
+    }
+}
+
 /// Hunk-header patterns in order: the first one that matches a line decides, and a negated one rejects the line.
 #[derive(Clone)]
 pub struct FuncMatcher {
