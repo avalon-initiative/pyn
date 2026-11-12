@@ -3,6 +3,9 @@
 
 use std::collections::HashMap;
 
+mod histogram;
+mod patience;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hunk {
     pub a_start: usize,
@@ -53,7 +56,12 @@ pub fn unified(
     layout: &pyn_diff::Layout,
     ws: &pyn_diff::Ws,
 ) -> Vec<pyn_diff::Hunk> {
-    pyn_diff::hunks_from_script(old, new, layout, ws, &edits(old, new, ws))
+    let trim = layout.context == 0 && !layout.function;
+    let script = hunks_trimmed(old, new, ws, true, trim)
+        .iter()
+        .map(|h| (h.a_start, h.a_count, h.b_start, h.b_count))
+        .collect::<Vec<_>>();
+    pyn_diff::hunks_from_script(old, new, layout, ws, &script)
 }
 
 /// Lines added and deleted going from `old` to `new`, as the diffstat counts them.
@@ -76,9 +84,28 @@ pub fn line_counts(old: &[u8], new: &[u8], ws: &pyn_diff::Ws) -> (usize, usize) 
 
 /// `hunks` comparing lines as `ws` says.
 pub fn hunks_ws(a: &[u8], b: &[u8], ws: &pyn_diff::Ws, indent_heuristic: bool) -> Vec<Hunk> {
-    let (a, b) = trim_common_tail(a, b);
+    hunks_trimmed(a, b, ws, indent_heuristic, true)
+}
+
+/// `hunks_ws`; git drops the common tail only when it shows no context.
+fn hunks_trimmed(
+    a: &[u8],
+    b: &[u8],
+    ws: &pyn_diff::Ws,
+    indent_heuristic: bool,
+    trim_tail: bool,
+) -> Vec<Hunk> {
+    let (a, b) = if trim_tail {
+        trim_common_tail(a, b)
+    } else {
+        (a, b)
+    };
     let (mut x, mut y) = prepare(a, b, ws);
-    recs_cmp_all(&mut x, &mut y, ws.minimal);
+    match ws.algorithm {
+        pyn_diff::Algorithm::Myers => recs_cmp_all(&mut x, &mut y, ws.minimal),
+        pyn_diff::Algorithm::Patience => patience::diff(&mut x, &mut y, ws),
+        pyn_diff::Algorithm::Histogram => histogram::diff(&mut x, &mut y, ws),
+    }
     let indent_heuristic = indent_heuristic && !ws.no_indent_heuristic;
     compact(&mut x, &mut y, indent_heuristic);
     compact(&mut y, &mut x, indent_heuristic);
@@ -145,6 +172,16 @@ fn records(data: &[u8]) -> Vec<&[u8]> {
 }
 
 fn prepare<'a>(a: &'a [u8], b: &'a [u8], ws: &pyn_diff::Ws) -> (Side<'a>, Side<'a>) {
+    let optimize = ws.algorithm == pyn_diff::Algorithm::Myers;
+    prepare_records(records(a), records(b), ws, optimize)
+}
+
+fn prepare_records<'a>(
+    ra: Vec<&'a [u8]>,
+    rb: Vec<&'a [u8]>,
+    ws: &pyn_diff::Ws,
+    optimize: bool,
+) -> (Side<'a>, Side<'a>) {
     let mut classes: HashMap<Vec<u8>, usize> = HashMap::new();
     let mut lens: Vec<(i64, i64)> = Vec::new();
     let mut classify = |recs: &[&[u8]], pass: usize| -> Vec<usize> {
@@ -165,7 +202,6 @@ fn prepare<'a>(a: &'a [u8], b: &'a [u8], ws: &pyn_diff::Ws) -> (Side<'a>, Side<'
             })
             .collect()
     };
-    let (ra, rb) = (records(a), records(b));
     let (ca, cb) = (classify(&ra, 1), classify(&rb, 2));
     let side = |recs: Vec<&'a [u8]>, class: Vec<usize>| Side {
         changed: vec![false; recs.len() + 2],
@@ -178,8 +214,29 @@ fn prepare<'a>(a: &'a [u8], b: &'a [u8], ws: &pyn_diff::Ws) -> (Side<'a>, Side<'
     };
     let (mut x, mut y) = (side(ra, ca), side(rb, cb));
     trim_ends(&mut x, &mut y);
-    cleanup(&lens, &mut x, &mut y);
+    if optimize {
+        cleanup(&lens, &mut x, &mut y);
+    }
     (x, y)
+}
+
+/// Runs plain Myers over lines `line1..` and `line2..` (1-based) of both sides, as `xdl_fall_back_diff` does.
+fn fall_back<'a>(
+    x: &mut Side<'a>,
+    y: &mut Side<'a>,
+    ws: &pyn_diff::Ws,
+    (line1, count1): (usize, usize),
+    (line2, count2): (usize, usize),
+) {
+    let sub = |s: &Side<'a>, line: usize, count: usize| s.recs[line - 1..line - 1 + count].to_vec();
+    let (mut sx, mut sy) = prepare_records(sub(x, line1, count1), sub(y, line2, count2), ws, true);
+    recs_cmp_all(&mut sx, &mut sy, ws.minimal);
+    x.changed[line1..line1 + count1].copy_from_slice(&sx.changed[1..=count1]);
+    y.changed[line2..line2 + count2].copy_from_slice(&sy.changed[1..=count2]);
+}
+
+fn mark_changed(side: &mut Side, line: usize, count: usize) {
+    side.changed[line..line + count].fill(true);
 }
 
 fn trim_ends(x: &mut Side, y: &mut Side) {
@@ -923,5 +980,57 @@ mod tests {
         let a = b"fn a() {\n    x();\n}\n\nfn c() {\n}\n";
         let b = b"fn a() {\n    x();\n}\n\nfn b() {\n    y();\n}\n\nfn c() {\n}\n";
         assert_eq!(hunks(a, b, false, true), vec![h(4, 0, 4, 4)]);
+    }
+
+    fn with(algorithm: pyn_diff::Algorithm) -> pyn_diff::Ws {
+        pyn_diff::Ws {
+            algorithm,
+            ..pyn_diff::Ws::default()
+        }
+    }
+
+    const OLD: &[u8] = b"one\nfoo\ntwo\nbar\nthree\n";
+    const NEW: &[u8] = b"three\nbar\ntwo\nfoo\none\nfoo\n";
+
+    #[test]
+    fn patience_anchors_on_lines_unique_to_both_sides() {
+        let ws = with(pyn_diff::Algorithm::Patience);
+        assert_eq!(
+            hunks_ws(OLD, NEW, &ws, true),
+            vec![h(0, 4, 0, 0), h(5, 0, 1, 5)]
+        );
+    }
+
+    #[test]
+    fn histogram_anchors_on_the_rarest_common_run() {
+        let ws = with(pyn_diff::Algorithm::Histogram);
+        assert_eq!(
+            hunks_ws(OLD, NEW, &ws, true),
+            vec![h(0, 0, 0, 4), h(2, 3, 6, 0)]
+        );
+    }
+
+    #[test]
+    fn patience_and_histogram_handle_empty_and_disjoint_sides() {
+        for algorithm in [
+            pyn_diff::Algorithm::Patience,
+            pyn_diff::Algorithm::Histogram,
+        ] {
+            let ws = with(algorithm);
+            assert!(hunks_ws(b"a\nb\n", b"a\nb\n", &ws, true).is_empty());
+            assert_eq!(hunks_ws(b"", b"a\n", &ws, true), vec![h(0, 0, 0, 1)]);
+            assert_eq!(hunks_ws(b"a\n", b"b\n", &ws, true), vec![h(0, 1, 0, 1)]);
+        }
+    }
+
+    #[test]
+    fn lines_repeated_past_the_histogram_limit_fall_back_to_myers() {
+        let old: Vec<u8> = "a\nb\n".repeat(40).into_bytes();
+        let new: Vec<u8> = ("a\nb\n".repeat(20) + "c\n" + &"a\nb\n".repeat(20)).into_bytes();
+        let ws = with(pyn_diff::Algorithm::Histogram);
+        assert_eq!(
+            hunks_ws(&old, &new, &ws, true),
+            hunks_ws(&old, &new, &pyn_diff::Ws::default(), true)
+        );
     }
 }

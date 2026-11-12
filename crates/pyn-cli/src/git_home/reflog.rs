@@ -3,7 +3,6 @@
 use std::collections::{BTreeSet, HashSet};
 
 use anyhow::{Result, bail};
-use chrono::Local;
 use clap::{Args, Subcommand};
 use pyn_git::{Expect, Ref, ReflogEntry};
 use pyn_object::ObjectId;
@@ -180,7 +179,7 @@ pub(super) fn limit(text: &str) -> Result<i64> {
             } else {
                 text.to_string()
             };
-            parse_date(&text, Local::now())
+            parse_date(&text, super::log_match::now())
         }
     }
 }

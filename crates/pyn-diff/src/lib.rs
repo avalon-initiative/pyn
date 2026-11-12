@@ -127,6 +127,28 @@ fn is_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
 }
 
+/// How the edit script is found: Myers is the default, patience and histogram anchor on unique or rare lines.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Algorithm {
+    #[default]
+    Myers,
+    Patience,
+    Histogram,
+}
+
+impl Algorithm {
+    /// The `--diff-algorithm` value as `(algorithm, minimal)`; `None` for an unknown name.
+    pub fn parse(name: &str) -> Option<(Self, bool)> {
+        match name.to_ascii_lowercase().as_str() {
+            "default" | "myers" => Some((Self::Myers, false)),
+            "minimal" => Some((Self::Myers, true)),
+            "patience" => Some((Self::Patience, false)),
+            "histogram" => Some((Self::Histogram, false)),
+            _ => None,
+        }
+    }
+}
+
 /// Which differences in whitespace make two lines count as equal, as git's `-w`, `-b`, `--ignore-space-at-eol`,
 /// `--ignore-cr-at-eol` and `--ignore-blank-lines` do.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -138,6 +160,7 @@ pub struct Ws {
     pub blank_lines: bool,
     /// `--minimal`: no shortcuts in finding the edit script.
     pub minimal: bool,
+    pub algorithm: Algorithm,
     /// `--no-indent-heuristic`: leave changed blocks where the diff first put them.
     pub no_indent_heuristic: bool,
 }
@@ -908,6 +931,17 @@ pub fn whitespace_report(path: &str, old: &[u8], new: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn algorithm_names_parse_as_git_reads_them() {
+        assert_eq!(
+            Algorithm::parse("Patience"),
+            Some((Algorithm::Patience, false))
+        );
+        assert_eq!(Algorithm::parse("minimal"), Some((Algorithm::Myers, true)));
+        assert_eq!(Algorithm::parse("default"), Some((Algorithm::Myers, false)));
+        assert_eq!(Algorithm::parse("anchored"), None);
+    }
 
     fn apply(a: &[&str], b: &[&str], ops: &[Op]) -> Vec<String> {
         let (mut i, mut j, mut out) = (0, 0, Vec::new());

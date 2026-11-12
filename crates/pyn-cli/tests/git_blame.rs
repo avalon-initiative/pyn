@@ -1378,6 +1378,9 @@ fn colors_match_git() {
             ("color.blame.highlightRecent", ""),
             ("color.blame.highlightRecent", "red,1999-01-01,blue"),
             ("color.blame.highlightRecent", "red,6 months ago"),
+            ("color.blame.highlightRecent", "red,9999-12-31,blue"),
+            ("color.blame.highlightRecent", "red,in 5 years,blue"),
+            ("color.blame.highlightRecent", "red,2100-01-01,blue"),
             ("color.blame.highlightRecent", "nonsense"),
         ] {
             r.git_ok(ANN, &["config", key, value]);
@@ -1722,15 +1725,74 @@ fn what_is_not_built_is_a_usage_error() {
             &["-M20", "a.txt"],
             &["--show-stats", "a.txt"],
             &["--score-debug", "a.txt"],
-            &["--diff-algorithm=patience", "a.txt"],
         ] {
             let (code, out, err) = r.pyn(&r.dir, "blame", args);
             assert_eq!(code, 129, "{} blame {args:?}: {err}", r.format);
             assert!(out.is_empty(), "{args:?}");
         }
-        r.git_ok(ANN, &["config", "diff.algorithm", "patience"]);
-        let (code, _, err) = r.pyn(&r.dir, "blame", &["a.txt"]);
-        assert_eq!(code, 128, "{err}");
+    });
+}
+
+#[test]
+fn diff_algorithms_are_checked_and_leave_blame_alone_like_git() {
+    each_format(|r| {
+        linear(r);
+        for args in [
+            &["--diff-algorithm=patience", "a.txt"][..],
+            &["--diff-algorithm", "histogram", "a.txt"],
+            &["--diff-algorithm=minimal", "a.txt"],
+            &["--diff-algorithm=nope", "a.txt"],
+        ] {
+            let (want, _) = r.oracle(&r.dir, "blame", args);
+            let (code, out, err) = r.pyn(&r.dir, "blame", args);
+            assert_eq!(
+                oracle::status_class(code),
+                oracle::status_class(want),
+                "{args:?}: {err}"
+            );
+            assert_eq!(out.is_empty(), want != 0, "{args:?}");
+        }
+        r.git_ok(ANN, &["config", "diff.algorithm", "nope"]);
+        let (want, _) = r.oracle(&r.dir, "blame", &["a.txt"]);
+        let (code, _, _) = r.pyn(&r.dir, "blame", &["a.txt"]);
+        assert_eq!(oracle::status_class(code), oracle::status_class(want));
+    });
+}
+
+#[test]
+fn a_packed_repository_lengthens_the_default_abbreviation() {
+    use std::io::Write;
+    use std::process::Stdio;
+    each_format(|r| {
+        linear(r);
+        let mut child = git(&r.dir)
+            .args(["fast-import", "--quiet"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        {
+            let mut input = child.stdin.take().unwrap();
+            for n in 0..16384 {
+                let data = format!("blame-abbrev-{n}\n");
+                write!(input, "blob\ndata {}\n{data}\n", data.len()).unwrap();
+            }
+            writeln!(input, "done").unwrap();
+        }
+        assert!(child.wait().unwrap().success());
+        let first_field = |out: &[u8]| {
+            let text = String::from_utf8_lossy(out);
+            text.split_whitespace()
+                .next()
+                .unwrap()
+                .trim_start_matches('^')
+                .len()
+        };
+        let (_, want) = r.oracle(&r.dir, "blame", &["a.txt"]);
+        let (code, got, err) = r.pyn(&r.dir, "blame", &["a.txt"]);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(first_field(&got), first_field(&want));
+        assert!(first_field(&got) > 7, "{}", first_field(&got));
     });
 }
 

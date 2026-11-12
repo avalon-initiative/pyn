@@ -540,6 +540,70 @@ fn ranges_with_a_path_match_git_without_merges_on_the_excluded_side() {
 }
 
 #[test]
+fn approximate_dates_match_git() {
+    let now = "1700003600";
+    for format in FORMATS {
+        let f = Fixture::new(format);
+        for spec in [
+            "30 minutes ago",
+            "1 hour ago",
+            "1 hour 5 minutes ago",
+            "2 hours",
+            "5 days",
+            "in 5 years",
+            "5 years",
+            "9999-12-31",
+            "2100-01-01",
+            "2038-01-19",
+            "1969-12-31",
+            "noon yesterday",
+            "midnight",
+            "noon",
+            "tea",
+            "now",
+            "never",
+            "last year",
+            "ten minutes ago",
+            "Nov 14",
+            "14 nov",
+            "11/14",
+            "Nov 14 2023",
+            "23:30",
+            "11pm",
+            "yesterday 11pm",
+            "last tuesday",
+            "garbage 5",
+        ] {
+            for flag in ["--since", "--until"] {
+                let arg = format!("{flag}={spec}");
+                let want = git(&f.repo)
+                    .env("TZ", "UTC")
+                    .env("GIT_TEST_DATE_NOW", now)
+                    .args(["log", "--oneline", &arg])
+                    .output()
+                    .unwrap();
+                let got = Command::new(env!("CARGO_BIN_EXE_pyn"))
+                    .current_dir(&f.repo)
+                    .args(["log", "--oneline", &arg])
+                    .env_clear()
+                    .env("PATH", path_env())
+                    .env("HOME", f.repo.parent().unwrap())
+                    .env("TZ", "UTC")
+                    .env("GIT_TEST_DATE_NOW", now)
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    String::from_utf8_lossy(&got.stdout),
+                    String::from_utf8_lossy(&want.stdout),
+                    "{format} {arg}: {}",
+                    String::from_utf8_lossy(&got.stderr)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn filters_match_git() {
     each_format(|f| {
         for args in [

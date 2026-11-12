@@ -1,7 +1,6 @@
 //! The shallow flags of `clone` and `fetch`, resolved to a wire request.
 
 use anyhow::{Result, bail};
-use chrono::Local;
 use clap::Args;
 use pyn_git::INFINITE_DEPTH;
 use pyn_gitwire::Deepen;
@@ -61,7 +60,7 @@ impl ShallowFlags {
         let since = self
             .shallow_since
             .as_deref()
-            .map(|d| parse_date(d, Local::now()))
+            .map(|d| parse_date(d, super::log_match::now()))
             .transpose()?;
         Ok(Some(Deepen {
             depth,
