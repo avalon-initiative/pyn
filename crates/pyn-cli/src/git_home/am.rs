@@ -106,12 +106,7 @@ pub(super) fn am(git: &GitHome, cwd: &Path, args: AmArgs) -> Result<()> {
     refuse_settings(
         git,
         "am",
-        &[
-            ("am", None),
-            APPLY_SETTINGS[0],
-            APPLY_SETTINGS[1],
-            APPLY_SETTINGS[2],
-        ],
+        &[("am", None), APPLY_SETTINGS[0], APPLY_SETTINGS[1]],
     );
     let dir = dir_of(git);
     let in_progress = dir.join("last").exists() && dir.join("next").exists();

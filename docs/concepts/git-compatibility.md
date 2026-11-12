@@ -995,8 +995,7 @@ index, so a repository that relies on conversions shows no phantom changes. `-di
 `pyn convert --home git` keeps a work tree file's stat data in the new index only when its converted form is the committed blob.
 
 Not built: `working-tree-encoding`,
-`export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.cachetextconv`,
-the `whitespace` attribute in `apply`. `diff --no-index` on a file outside the work tree of a repository (or with no
+`export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.cachetextconv`. `diff --no-index` on a file outside the work tree of a repository (or with no
 repository) converts it by `core.autocrlf` and `core.eol` only, from the repository's config or the global one. The diff
 attributes (`diff`, `whitespace`) there come from the system and global attributes files only, as in git; the per-folder
 files and `info/attributes` do not apply, and the global files' line-ending attributes are not applied to the conversion yet. Covered by
@@ -1042,10 +1041,11 @@ no such settings changes nothing. `-diff` is binary and `diff` forces text, as b
   `%O` (base), `%A` (ours; the result is read back from it), `%B` (theirs), `%L` (marker size), `%P` (path) and
   `%S`, `%X`, `%Y` (the base, ours and theirs labels) replaced by quoted values; exit `0` is a clean merge and any other
   status up to `128` is a conflict that leaves the file as the driver wrote it. `merge.<name>.recursive` is not read. It applies to `merge`,
-  `cherry-pick`, `revert`, `rebase`, `am --3way`, `stash apply` and `pull`; `apply --3way` and `--remerge-diff` merge by lines whatever the attribute says.
+  `cherry-pick`, `revert`, `rebase`, `am --3way`, `stash apply`, `pull` and `apply --3way` (where `merge=binary` and `-merge` leave the file as ours with the three stages, and a driver gets the labels `base`, `ours` and `theirs`); `--remerge-diff` merges by lines whatever the attribute says.
 - `whitespace`: sets the rule for a path in `diff --check` and in colored whitespace errors. `whitespace` is git's default
   rules plus `indent-with-non-tab`, `-whitespace` none, and a list (`trailing-space,tabwidth=4`) starts from the default rules
-  rather than `core.whitespace`, skipping tokens it does not know. Unspecified leaves `core.whitespace`.
+  rather than `core.whitespace`, skipping tokens it does not know. Unspecified leaves `core.whitespace`. `apply` (and `am`) use the
+  same rules for the lines a patch adds: every rule token (`trailing-space`, `space-before-tab`, `indent-with-non-tab`, `tab-in-indent`, `cr-at-eol`, `blank-at-eol`, `blank-at-eof`, `tabwidth=<n>`), from `core.whitespace` and the attribute, decides what is reported.
 
 #### Filter drivers
 
@@ -2826,7 +2826,7 @@ and `--max-cruft-size`.
 files written, exit statuses, whether standard error carries anything, the work tree, the index and, for `am`, the commit ids
 and the session files in `.git/rebase-apply`, so git can carry on a session pyn stopped and the other way round. Settings and
 options that are not listed are a usage error (`129`) where git would accept them; settings that change the result and are
-not read (`format.*`, `am.*`, `apply.whitespace`, `apply.ignoreWhitespace`, `core.whitespace`) are refused the same way.
+not read (`format.*`, `am.*`, `apply.whitespace`, `apply.ignoreWhitespace`) are refused the same way.
 
 | Command | Supported |
 | --- | --- |
@@ -2844,8 +2844,8 @@ names, and a hunk without leading or trailing context is held to the start or en
 anything is written, so a failure changes nothing (`1`; a malformed patch is `128`), including a patch that needs a folder where a file or a symbolic link is, or a file where a folder keeps files the patches do not remove. It handles creations, deletions, renames,
 copies, mode changes, symlinks and several patches (or several files) in one input, applies to the work tree alone, to the work
 tree and index (`--index`, which requires the work tree to match the index by content, where git compares file stat data) or to
-the index alone, and reports whitespace errors in added lines (trailing whitespace, a space before a tab, blank lines at the end
-of the file) as `--whitespace=warn` does, but only when it applies the patch, as git does. `--3way` merges each file against the
+the index alone, and reports whitespace errors in added lines as `--whitespace=warn` does under the rules of `core.whitespace` and the `whitespace`
+attribute (git's default rules without them), but only when it applies the patch, as git does. `--3way` merges each file against the
 blob the patch's `index` line names; conflicts are left as `ours`/`theirs` markers (with a base section when
 `merge.conflictStyle` is `diff3`; `zdiff3` is a usage error) and as unmerged index entries, with `U <path>` and exit `1`.
 Binary patches (`GIT binary patch`), submodule patches and these options are a usage error (`129`): `--reject`, `-C`,

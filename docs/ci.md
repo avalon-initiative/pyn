@@ -4,7 +4,7 @@ Many git-home tests use a real `git` as an oracle (decision #718). CI does not u
 between releases: every job that runs tests builds the pinned version from the kernel.org tarball with the composite
 action `.github/actions/setup-git`, caches it by version, puts it first on `PATH` and prints `git --version` in the log.
 The action fails the job if the built git is not exactly the pinned version. `ci.yml` (`test` shards and `live`) and
-`release.yml` (`verify` and `live`) use it.
+`release.yml` (`gate` and `live`) use it.
 
 The build keeps libcurl, because the HTTP transport tests need `git-remote-http`; gettext, Tcl/Tk, Perl, Python and expat are
 off.
