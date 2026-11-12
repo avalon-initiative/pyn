@@ -4900,6 +4900,18 @@ fn a_non_https_public_url_on_a_reachable_address_warns_about_cookies() {
     assert!(!warns("0.0.0.0:7878", "https://pyn.example"));
 }
 
+#[test]
+fn the_setup_hint_points_at_the_public_url_and_the_cli() {
+    assert_eq!(
+        pyn_server::setup_hint(Some("https://pyn.example.com/")),
+        "finish setup in the browser at https://pyn.example.com, or run: pyn setup <username>"
+    );
+    assert_eq!(
+        pyn_server::setup_hint(None),
+        "finish setup with the CLI: pyn setup <username>"
+    );
+}
+
 async fn put_chunk_in(app: &axum::Router, repo: &str, token: &str, bytes: &[u8]) -> String {
     let req = Request::put(format!("/v1/repos/alice/{repo}/objects/chunk"))
         .header("authorization", format!("Bearer {token}"))
