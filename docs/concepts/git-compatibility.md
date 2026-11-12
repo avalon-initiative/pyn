@@ -967,8 +967,8 @@ work tree root down to the path's folder (a deeper file wins, and a later line w
 environment variable, else the `attr.tree` setting, each naming a tree-ish whose `.gitattributes` files replace the work tree's;
 without one, the work tree, or `HEAD`'s tree in a bare repository (git versions differ on that default, an explicit source is the
 same everywhere). A bad `--source` or `GIT_ATTR_SOURCE` is fatal (`128`), a bad `attr.tree` is ignored, and a bare repository whose
-`HEAD` is unreadable is fatal as well. `--cached` still reads the index. A command that cannot report an error (`diff`'s attribute
-lookups) treats a bad `GIT_ATTR_SOURCE` as no attributes. Patterns follow git: a pattern without a slash matches names at any depth below its file,
+`HEAD` is unreadable is fatal as well. `--cached` still reads the index. A `diff` that prints a patch, `--stat` or `--check` is fatal too, as git's is; the
+attribute lookups that cannot report an error (`diff --color` whitespace marks) treat a bad `GIT_ATTR_SOURCE` as no attributes. Patterns follow git: a pattern without a slash matches names at any depth below its file,
 others are anchored to it, `**` and character classes work, `core.ignoreCase` folds case, negative (`!`) and folder-only
 (`dir/`) patterns are ignored, and a symbolic link named `.gitattributes` is not read. Attribute states are set, unset
 (`-name`), reset (`!name`) and valued (`name=value`); `[attr]` macros are defined in the top-level `.gitattributes`,
@@ -998,13 +998,16 @@ index, so a repository that relies on conversions shows no phantom changes. `-di
 Not built: `working-tree-encoding`,
 `export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.wordRegex`, `diff.<name>.cachetextconv`,
 the `whitespace` attribute in `apply`. `diff --no-index` on a file outside the work tree of a repository (or with no
-repository) converts it by `core.autocrlf` and `core.eol` only, from the repository's config or the global one, and applies no
-attributes there. Covered by
+repository) converts it by `core.autocrlf` and `core.eol` only, from the repository's config or the global one. The diff
+attributes (`diff`, `whitespace`) there come from the system and global attributes files only, as in git; the per-folder
+files and `info/attributes` do not apply, and the global files' line-ending attributes are not applied to the conversion yet. Covered by
 `crates/pyn-cli/tests/git_attributes.rs`, which compares blob ids, work tree bytes and `status`
 and `diff` output with git (#273), `crates/pyn-cli/tests/git_check_attr.rs` (`check-attr`, `ls-files --eol`, attributes read
 from the index and trees, `blame` and `diff --no-index`), and `git_diff_attributes.rs` and `git_merge_attributes.rs` for
 the next section. git has no way to point its system attributes file elsewhere (only `GIT_ATTR_NOSYSTEM` switches it off), so
-its precedence is covered by a unit test in `pyn-gitwork` that gives the engine another path, not by an oracle test.
+its precedence is covered by a unit test in `pyn-gitwork` that gives the engine another path, not by an oracle test. The path is
+fixed at `/etc/gitattributes`; a git built with another prefix reads elsewhere, which pyn cannot learn without running git.
+The bare-repository default of reading `HEAD`'s attributes has an oracle test that skips itself when the installed git does not do that.
 
 #### Diff, merge and whitespace attributes
 

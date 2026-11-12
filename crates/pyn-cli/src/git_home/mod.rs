@@ -227,7 +227,7 @@ fn is_server_workspace(ws: &Workspace) -> bool {
     ws.dir.join("local_only/state/files.toml").is_file()
 }
 
-fn user_dirs() -> (Option<PathBuf>, Option<PathBuf>) {
+pub(crate) fn user_dirs() -> (Option<PathBuf>, Option<PathBuf>) {
     let dir = |name| {
         std::env::var_os(name)
             .filter(|v| !v.is_empty())
@@ -510,40 +510,7 @@ impl Backend for GitHome {
     }
 
     fn diff_driver(&self, path: &str) -> Result<crate::diff_driver::DiffDriver> {
-        use crate::diff_driver::{DiffDriver, FuncMatcher};
-        let mut driver = DiffDriver::default();
-        let name = match self.attribute(path, "diff") {
-            pyn_gitwork::AttrValue::Unset => {
-                driver.binary = Some(true);
-                return Ok(driver);
-            }
-            pyn_gitwork::AttrValue::Set => {
-                driver.binary = Some(false);
-                return Ok(driver);
-            }
-            pyn_gitwork::AttrValue::Value(v) => String::from_utf8_lossy(&v).into_owned(),
-            pyn_gitwork::AttrValue::Unspecified => return Ok(driver),
-        };
-        let config = self.repo.config();
-        let key = |k: &str| format!("diff.{name}.{k}");
-        driver.binary = config.get_bool(&key("binary")).ok().flatten();
-        driver.textconv = config.get(&key("textconv")).map(str::to_string);
-        let last = config.entries().iter().rev().find(|e| {
-            e.section == "diff"
-                && e.subsection.as_deref() == Some(name.as_str())
-                && (e.key == "funcname" || e.key == "xfuncname")
-        });
-        driver.funcname = match last {
-            Some(e) => Some(FuncMatcher::parse(
-                e.value.as_deref().unwrap_or(""),
-                e.key == "xfuncname",
-                false,
-            )?),
-            None => crate::diff_driver::builtin::funcname(&name)
-                .map(|(patterns, icase)| FuncMatcher::parse(&patterns, true, icase))
-                .transpose()?,
-        };
-        Ok(driver)
+        crate::diff_driver::DiffDriver::resolve(&*self.repo.attributes()?, self.repo.config(), path)
     }
 
     fn attribute(&self, path: &str, name: &str) -> pyn_gitwork::AttrValue {
