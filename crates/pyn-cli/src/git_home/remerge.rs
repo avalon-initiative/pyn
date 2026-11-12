@@ -2,12 +2,13 @@
 
 use anyhow::Result;
 use pyn_gitwork::Entry;
-use pyn_merge::{Outcome, merge_text, render_markers};
+use pyn_merge::{Outcome, merge_text};
 use pyn_object::FileMode;
 
+use super::conflict_style::Style;
 use super::{GitHome, path_string};
 
-/// The mode (ours) and content the work tree gets: a clean merge, or text with diff3 markers; binary content is ours.
+/// The mode (ours) and content the work tree gets: a clean merge, or text with the configured conflict markers; binary content is ours.
 pub(super) fn recreate(
     git: &GitHome,
     path: &[u8],
@@ -22,7 +23,11 @@ pub(super) fn recreate(
     let (o, t) = (git.repo.blob(&ours.id)?, git.repo.blob(&theirs.id)?);
     let bytes = match merge_text(&base_bytes, &o, &t) {
         Outcome::Clean(merged) => merged,
-        Outcome::Conflicted(chunks) => render_markers(&chunks, "ours", "base", "theirs"),
+        Outcome::Conflicted(chunks) => Style::of(git.repo.config()).render(
+            chunks,
+            pyn_merge::MARKER_SIZE,
+            ("ours", "base", "theirs"),
+        ),
         Outcome::BinaryConflict => {
             eprintln!(
                 "warning: Cannot merge binary files: {} (ours vs. theirs)",

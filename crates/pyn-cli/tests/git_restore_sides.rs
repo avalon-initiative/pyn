@@ -26,7 +26,7 @@ struct Env {
 impl Env {
     fn git(&self, cwd: &Path, args: &[&str]) -> Output {
         Command::new("git")
-            .args(["-c", "gc.auto=0", "-c", "merge.conflictStyle=diff3"])
+            .args(["-c", "gc.auto=0"])
             .args(args)
             .current_dir(cwd)
             .env("HOME", &self.home)
@@ -128,6 +128,7 @@ fn conflicted(format: &str) -> Pair {
             &format!("--object-format={format}"),
         ],
     );
+    env.ok(&git, &["config", "merge.conflictStyle", "diff3"]);
     write(&git, "c.txt", b"a\nb\nc\n");
     write(&git, "md.txt", b"x\n");
     write(&git, "dm.txt", b"y\n");
@@ -139,7 +140,7 @@ fn conflicted(format: &str) -> Pair {
     env.ok(&git, &["add", "-A"]);
     env.ok(&git, &["commit", "-q", "-m", "base"]);
     env.ok(&git, &["checkout", "-q", "-b", "side"]);
-    write(&git, "c.txt", b"a\nB-theirs\nc\n");
+    write(&git, "c.txt", b"a\nS\nB-theirs\nT\n");
     fs::remove_file(git.join("md.txt")).unwrap();
     write(&git, "dm.txt", b"y2\n");
     write(&git, "aa.txt", b"new-t\n");
@@ -151,7 +152,7 @@ fn conflicted(format: &str) -> Pair {
     env.ok(&git, &["add", "-A"]);
     env.ok(&git, &["commit", "-q", "-m", "side"]);
     env.ok(&git, &["checkout", "-q", "main"]);
-    write(&git, "c.txt", b"a\nB-ours\nc\n");
+    write(&git, "c.txt", b"a\nS\nB-ours\nT\n");
     write(&git, "md.txt", b"x2\n");
     fs::remove_file(git.join("dm.txt")).unwrap();
     write(&git, "aa.txt", b"new-o\n");
@@ -257,6 +258,19 @@ fn sides_and_merges_match_git() {
             &["c.txt"],
         ] {
             conflicted(format).same("", args, format);
+        }
+    }
+}
+
+#[test]
+fn merge_writes_the_configured_conflict_style() {
+    for style in ["merge", "diff3", "zdiff3"] {
+        for format in FORMATS {
+            let pair = conflicted(format);
+            pair.both(&["config", "merge.conflictStyle", style]);
+            pair.same("", &["--merge", "c.txt", "d/e.txt"], style);
+            let marked = fs::read_to_string(pair.pyn.join("c.txt")).unwrap();
+            assert_eq!(marked.starts_with("a\nS\n<<<<<<<"), style != "diff3");
         }
     }
 }
