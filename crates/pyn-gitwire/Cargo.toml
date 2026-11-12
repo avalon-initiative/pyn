@@ -6,7 +6,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-pyn-object = { version = "0.1.0", path = "../pyn-object" }
+pyn-object = { version = "0.1.1", path = "../pyn-object" }
 thiserror = "2.0.21"
 
 [dev-dependencies]

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/pyn-core", "crates/pyn-proto", "crates/pyn-server", "crates/pyn-cli", "crates/pyn-fs", "crates/pyn-postgres", "crates/pyn-oidc", "crates/pyn-chunk", "crates/pyn-diff", "crates/pyn-hash", "crates/pyn-merge", "crates/pyn-object", "crates/pyn-git", "crates/pyn-gitattr", "crates/pyn-gitwork", "crates/pyn-gitwire", "crates/pyn-gittransport"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 publish = false
 license = "Apache-2.0"
