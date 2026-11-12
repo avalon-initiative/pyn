@@ -16,17 +16,17 @@ chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 globset = "0.4.20"
 hex = "0.4.3"
-pyn-chunk = { version = "0.1.0", path = "../pyn-chunk" }
-pyn-diff = { version = "0.1.0", path = "../pyn-diff" }
-pyn-git = { version = "0.1.0", path = "../pyn-git" }
-pyn-gittransport = { version = "0.1.0", path = "../pyn-gittransport" }
-pyn-gitattr = { version = "0.1.0", path = "../pyn-gitattr" }
-pyn-gitwork = { version = "0.1.0", path = "../pyn-gitwork" }
-pyn-gitwire = { version = "0.1.0", path = "../pyn-gitwire" }
-pyn-hash = { version = "0.1.0", path = "../pyn-hash" }
-pyn-merge = { version = "0.1.0", path = "../pyn-merge" }
-pyn-object = { version = "0.1.0", path = "../pyn-object" }
-pyn-proto = { version = "0.1.0", path = "../pyn-proto" }
+pyn-chunk = { version = "0.1.1", path = "../pyn-chunk" }
+pyn-diff = { version = "0.1.1", path = "../pyn-diff" }
+pyn-git = { version = "0.1.1", path = "../pyn-git" }
+pyn-gittransport = { version = "0.1.1", path = "../pyn-gittransport" }
+pyn-gitattr = { version = "0.1.1", path = "../pyn-gitattr" }
+pyn-gitwork = { version = "0.1.1", path = "../pyn-gitwork" }
+pyn-gitwire = { version = "0.1.1", path = "../pyn-gitwire" }
+pyn-hash = { version = "0.1.1", path = "../pyn-hash" }
+pyn-merge = { version = "0.1.1", path = "../pyn-merge" }
+pyn-object = { version = "0.1.1", path = "../pyn-object" }
+pyn-proto = { version = "0.1.1", path = "../pyn-proto" }
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "query", "rustls"] }
 rpassword = "7.5.4"
