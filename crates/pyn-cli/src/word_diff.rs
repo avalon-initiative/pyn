@@ -33,18 +33,27 @@ impl Setup {
     ) -> Option<Self> {
         let request = opts.word.clone()?;
         let pattern = request.regex.clone().or_else(|| setting("diff.wordregex"));
-        let regex = pattern.map(|p| {
-            crate::git_home::grep_regex::compile(
-                &p,
-                crate::git_home::grep_regex::Syntax::Extended,
-                false,
-            )
-            .unwrap_or_else(|e| {
-                crate::usage_error(&format!("invalid regular expression: {p}: {e}"))
-            })
-        });
+        let regex = pattern.map(|p| compile(&p));
         Some(Self { request, regex })
     }
+
+    /// This setup with a driver's `wordRegex`, unless the command line gave a regular expression.
+    pub fn for_driver(&self, pattern: Option<&str>) -> Option<Self> {
+        let pattern = pattern.filter(|_| self.request.regex.is_none())?;
+        Some(Self {
+            request: self.request.clone(),
+            regex: Some(compile(pattern)),
+        })
+    }
+}
+
+fn compile(pattern: &str) -> Regex {
+    crate::git_home::grep_regex::compile(
+        pattern,
+        crate::git_home::grep_regex::Syntax::Extended,
+        false,
+    )
+    .unwrap_or_else(|e| crate::usage_error(&format!("invalid regular expression: {pattern}: {e}")))
 }
 
 struct Piece {
