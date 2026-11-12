@@ -2961,7 +2961,7 @@ pointers as they are.
 
 **Download on smudge.** `smudge` turns a pointer file into the object. When the object is not in the store, pyn downloads it
 first with the Batch API (`download` operation, `basic` transfer, `application/vnd.git-lfs+json`), a hundred objects to a
-request. The download is written to `<storage>/tmp/<oid>.part`; an interrupted one continues with a `Range` request, and the
+request, the objects of a request moving in parallel (see Settings). The download is written to `<storage>/tmp/<oid>.part`; an interrupted one continues with a `Range` request, and the
 finished file must match the pointer's size and sha256 before it enters the store (a mismatch is discarded and retried once).
 If the object cannot be had (no endpoint, no credentials, the server refuses, a transfer fails, the path is excluded by
 `lfs.fetchinclude` or `lfs.fetchexclude`), the pointer file stays in the work tree and one warning goes to standard error per
@@ -2972,7 +2972,7 @@ file is written to the work tree. The warning wording is not part of the contrac
 
 **Upload before push.** `push` (unless `--no-verify`, as for git's `pre-push` hook) looks at the files the commits being sent
 change, finds the ones that are pointer files, and offers them to the server (`upload` operation) before the refs move. For
-each object the server lacks it sends a `PUT` of the stored file with its `Content-Length`, then calls the `verify` action when
+each object the server lacks it sends a `PUT` (in parallel, see Settings) of the stored file with its `Content-Length`, then calls the `verify` action when
 the server names one. Objects the server already has are not sent. A repository with no local LFS store skips this step. A
 failed upload fails the push before any ref is updated; an object that the server wants but the local store lacks is an error
 that names it.
@@ -2999,7 +2999,11 @@ endpoint's host; an action URL on another host (object storage) is called withou
 `Authorization` header for it. The `basic` HTTP scheme is the only one used, and an action URL that downgrades `https` to `http`
 is refused.
 
-**Settings.** `lfs.storage` moves the local store (the default is `lfs` in the common directory; a relative value is relative to
+**Settings.** `lfs.concurrenttransfers` is how many objects of a batch move at once (default 8, as in git-lfs); it must be a
+positive integer, and 0, a negative number or text is an error that names the setting. Each batch request is made first, so
+credentials are resolved once and shared by the transfers; objects are installed as they finish, and every
+failed object is reported (the first in object order is named, with a count of the rest), so the outcome and the exit status do
+not depend on the setting. There is no environment variable for it. `lfs.storage` moves the local store (the default is `lfs` in the common directory; a relative value is relative to
 that directory). `lfs.fetchinclude` and `lfs.fetchexclude` take comma-separated path patterns that decide which paths a smudge
 downloads for: a pattern without a slash matches at any depth, a leading slash anchors it at the root, a trailing slash matches
 everything below the folder, and `*`, `?` and `**` work as in `.gitignore`. A pointer whose path is not allowed stays a pointer.
@@ -3072,7 +3076,7 @@ and skipped otherwise) `crates/pyn-gittransport/tests/lfs_locks.rs` (the Locks c
 (`lockable`, `lock`, `unlock`, `locks`, the pre-push check; #786) and `crates/pyn-cli/tests/git_lfs.rs` (#311, #628, #785).
 
 Not built on the git home: `ssh` remotes (`git-lfs-authenticate`, #917) and the other transfer adapters (`tus`, #918; custom),
-concurrent transfers (#919), `lfs.transfer.*` tuning, `lfs.extension.*` programs, and the `git lfs` commands not listed under
+`lfs.transfer.*` tuning, `lfs.extension.*` programs, and the `git lfs` commands not listed under
 [Git LFS commands](#git-lfs-commands) or the locking commands above (`migrate`, `env`, `install`, `fsck`).
 
 ### Refused commands
