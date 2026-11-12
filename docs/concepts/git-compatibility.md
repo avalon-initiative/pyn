@@ -491,7 +491,7 @@ that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`1
 | `--no-rebase`, `--rebase`, `-r` | `--no-rebase` merges; `--rebase` fast-forwards or replays as above. |
 | `--autostash`, `--no-autostash` | Stash before the merge or the rebase and apply after, as for `pyn merge` and `pyn rebase`; the last of the two wins over `merge.autoStash` and `rebase.autoStash`. |
 | `--squash`, `--no-squash`, `--signoff`, `--no-signoff`, `--log[=<n>]`, `--no-log`, `--cleanup=<mode>`, `--no-cleanup`, `--verify-signatures`, `--no-verify-signatures`, `--verify`, `--no-verify`, `--allow-unrelated-histories`, `--no-allow-unrelated-histories` | Passed to the merge exactly as for `pyn merge`, with the `merge.*` settings it reads (`merge.log`, `merge.verifySignatures`, `merge.autoStash`), see [Merge options](#merge-options). The `--log` heading is `'<branch>' of <url>`, as git writes it. A bad `--cleanup` mode is `fatal` (`128`) before the fetch. A pull that rebases or fast-forwards ignores the message options, and `--squash` with `--rebase` behaves as in git. `-F` and `-m` are not pull options (usage error, `129`, as in git). |
-| `-s`, `--strategy`, `-X`, `--strategy-option` | Passed to the merge as for `pyn merge`, see [Strategies and options](#strategies-and-options). A strategy name git does not define is `Could not find merge strategy '<name>'.` (`1`); more than one `-s`, and `-X` options pyn cannot honor, are usage errors (`129`). With a pull that rebases they go to the rebase as for `pyn rebase`, see [Strategies in a replay](#strategies-in-a-replay). |
+| `-s`, `--strategy`, `-X`, `--strategy-option` | Passed to the merge as for `pyn merge`, see [Strategies and options](#strategies-and-options). A strategy name git does not define is `Could not find merge strategy '<name>'.` (`1`); `-X` options pyn cannot honor are usage errors (`129`). Several `-s` are tried in turn as for `pyn merge`. With a pull that rebases they go to the rebase as for `pyn rebase`, see [Strategies in a replay](#strategies-in-a-replay). |
 | `-S[<keyid>]`, `--gpg-sign[=<keyid>]`, `--no-gpg-sign` | Passed on: the merge commit of a merge pull, or each commit a rebasing pull makes, is signed as for `pyn merge` and `pyn rebase`, see [Signing](#signing). |
 | `--recurse-submodules[=yes\|on-demand\|no]`, `--no-recurse-submodules` | Fetches in submodules as `fetch` does; with `yes` (or `submodule.recurse`) the checked-out submodules are then updated to the merged result. |
 | `--no-strategy` | Accepted and changes nothing: git keeps the strategies named before it. |
@@ -499,8 +499,7 @@ that cannot fast-forward is `fatal: Not possible to fast-forward, aborting.` (`1
 | `--rerere-autoupdate`, `--no-rerere-autoupdate`, `--overwrite-ignore`, `--no-overwrite-ignore` | Usage error (`129`), as in git: they are options of `merge`, not of `pull`. |
 
 Config read: `pull.ff`, `pull.rebase`, `branch.<name>.rebase`, `branch.<name>.merge`, `branch.<name>.remote`, `merge.ff`, plus what
-`pyn fetch` reads, plus `merge.stat` and `pull.twohead` (the default strategy of a merge, as for `pyn merge`). `pull.octopus` is not read by `pull`. `branch.<name>.mergeOptions` of the current branch is applied to a merge pull as it is to `pyn merge`, before the options `pull` passes on, so those win; a pull that rebases ignores it. `--no-cleanup` is not passed to the merge, as in git, so it does not undo a `--cleanup` from `mergeOptions`. A merge pull also reads `merge.log`, `merge.verifySignatures`, `merge.autoStash` and the other settings of [Merge options](#merge-options). The message of an annotated tag
-is not appended to a tag merge's message. Pulling on a pyn server is #310 and still prints the git-command message.
+`pyn fetch` reads, plus `merge.stat` and `pull.twohead` (the default strategy of a merge, as for `pyn merge`). `pull.octopus` is not read by `pull`, and a pull of several refs (an octopus pull) is not built. `branch.<name>.mergeOptions` of the current branch is applied to a merge pull as it is to `pyn merge`, before the options `pull` passes on, so those win; a pull that rebases ignores it. `--no-cleanup` is not passed to the merge, as in git, so it does not undo a `--cleanup` from `mergeOptions`. A merge pull also reads `merge.log`, `merge.verifySignatures`, `merge.autoStash` and the other settings of [Merge options](#merge-options). The message of an annotated tag is appended to a tag merge's message, as in git. Pulling on a pyn server is #310 and still prints the git-command message.
 
 ### Clone from a git URL
 
@@ -1798,8 +1797,16 @@ before 2.50 only for `ort`, and pyn follows 2.55. `resolve` and `ours` never wri
 
 #### Strategies and options
 
-`-s <strategy>` (`--strategy`) and `-X <option>` (`--strategy-option`, repeatable) are read by `merge` and `pull`. Only one `-s`
-is accepted: trying several in turn is a usage error (`129`).
+`-s <strategy>` (`--strategy`) and `-X <option>` (`--strategy-option`, repeatable) are read by `merge` and `pull`. With several
+`-s` (or several names in `pull.twohead`) git tries each in turn, printing `Trying merge strategy <name>...` and, between tries,
+`Rewinding the tree to pristine...`. The first that merges cleanly is used. If all conflict, the one that left the fewest
+unmerged entries wins (a tie goes to the one tried later) and, unless it was the last tried, is run again
+(`Using the <name> strategy to prepare resolving by hand.`). A try that is refused outright (a failed `ours`, `octopus` or
+`resolve`, local changes in the way) does not count; when every try is refused it is `No merge strategy handled the merge.` (`2`).
+pyn rehearses each try in memory against the untouched work tree and index, so nothing needs rewinding, and writes only the
+chosen one. The count adds the stages of every conflicted path to the number of conflicted paths, as git's `diff-files` plus
+unmerged-entry count does; only its order matters. `-X` goes to every tree strategy, and git's in-index merge is tried only when
+no strategy is a tree merge.
 
 | Strategy | What pyn does |
 | --- | --- |
@@ -1823,7 +1830,7 @@ fast-forward or an up-to-date merge. The options of the tree strategies (`ort`, 
 | `renormalize` | Before each three-way content merge, the base and both sides are converted to the work tree form and back through the path's line endings, `ident` and filter, so changes that differ only in conversion merge cleanly, and a side that differs from the base only by conversion counts as unchanged (a deletion on the other side wins, as in `ort`); the result is in repository form. Also for `cherry-pick`, `revert`, `rebase` and `pull`, which take `-X`. A path with `working-tree-encoding` is refused with nothing changed (`128`). Covered by `crates/pyn-cli/tests/git_renormalize.rs`. |
 | `patience`, `histogram`, `diff-algorithm=patience\|histogram` | Usage error (`129`): only the Myers diff is built. |
 
-`pull.twohead` names the strategy when no `-s` is given (git reads it for `merge` too); several names in it are refused like several `-s`.
+`pull.twohead` names the strategy when no `-s` is given (git reads it for `merge` too); several names in it are tried like several `-s`.
 Not built: several `-s` in one command, `-X` for `resolve`, `pull.octopus` and `merge.<name>.mergeoptions`.
 #### Renames in a merge
 
@@ -1888,7 +1895,7 @@ These shape the message and the surroundings of a git home merge; `pull` passes 
 | Option | What pyn does |
 | --- | --- |
 | `--signoff`, `--no-signoff` | Appends `Signed-off-by: <committer>` to the merge commit's message before the hooks and the editor see it, as `commit -s` does (not twice). Not added to `MERGE_MSG` of a stopped merge or to `SQUASH_MSG`. |
-| `--log[=<n>]`, `--no-log`, `merge.log` | Adds git's shortlog to the generated or given message after a blank line: `* <branch>:` and one indented subject per non-merge commit brought in, newest first. More than `<n>` commits (20 by default, `merge.log=true` is 20, a number is that many) print `* <branch>: (N commits)`, `<n>` subjects and `  ...`. A tag is `tag '<name>'`, a bare commit `commit '<name>'`. `--log=0` and `--no-log` add none, a negative `--log=` value falls back to `merge.log`, a non-number is a usage error (`129`), and a bad `merge.log` is `fatal` (`128`) before anything changes. `SQUASH_MSG` has none. |
+| `--log[=<n>]`, `--no-log`, `merge.log` | Adds git's shortlog to the generated or given message after a blank line: `* <branch>:` and one indented subject per non-merge commit brought in, newest first. More than `<n>` commits (20 by default, `merge.log=true` is 20, a number is that many) print `* <branch>: (N commits)`, `<n>` subjects and `  ...`. A tag is `tag '<name>'`, a bare commit `commit '<name>'`. In a pull the heading is the branch as fetched (`'<branch>' of <url>`, plain `<branch>` for `.`), `tag '<name>' of <url>` for a tag and the bare `<url>` for `HEAD`. `--log=0` and `--no-log` add none, a negative `--log=` value falls back to `merge.log`, a non-number is a usage error (`129`), and a bad `merge.log` is `fatal` (`128`) before anything changes. `SQUASH_MSG` has none. |
 | `-F <file>`, `--file=<file>` | The message is the file, taken as `-m` is (it counts as given: no editor by default). `-` is a file named `-` (`merge` never reads standard input, as in git). An unreadable file is a usage error (`129`). `-F` and `-m` may be mixed and repeated and are joined in command-line order as git joins them: a `-m` after earlier text follows a blank line, a `-F` file follows a newline and is taken as it is. |
 | `--cleanup=<mode>` | `strip` drops `#` lines and tidies blank lines and trailing blanks, `whitespace` tidies only (the default without the editor, so `#` lines of `-m` and `-F` stay), `verbatim` keeps every byte, `scissors` with the editor puts a scissors line after the message and drops everything from it on (otherwise it is `whitespace`, as in git, so a scissors line in `-m` stays), `default` is `strip` with the editor and `whitespace` without. Another name is `fatal` (`128`). With the editor, only `strip` appends the comment block. |
 | `--into-name <name>`, `merge.suppressDest` | The title says `into <name>` instead of the real branch. ` into <dest>` is left out when the destination (the name given, else the branch, else `HEAD`) matches a `merge.suppressDest` glob (several allowed); with none set it is left out for `main` and `master`, and a setting replaces that default. |

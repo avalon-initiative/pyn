@@ -307,12 +307,20 @@ impl Candidate {
         }
     }
 
-    /// The shortlog heading: the branch as fetched, `'x' of <url>`.
+    /// The shortlog heading: `'x' of <url>` for a branch, `tag 'x' of <url>` for a tag, the bare `<url>` for `HEAD`.
     fn log_label(&self) -> Option<String> {
-        let what = self.what.as_ref().filter(|_| self.kind == "branch")?;
+        let origin = match (self.kind.as_str(), &self.what) {
+            ("branch" | "remote-tracking branch", Some(what)) => format!("'{what}'"),
+            ("tag", Some(what)) => format!("tag '{what}'"),
+            (_, None) => return Some(self.url.clone()),
+            _ => return None,
+        };
         Some(match self.url.as_str() {
-            "." => what.clone(),
-            url => format!("'{what}' of {url}"),
+            "." => origin
+                .strip_prefix('\'')
+                .and_then(|o| o.strip_suffix('\''))
+                .map_or(origin.clone(), str::to_owned),
+            url => format!("{origin} of {url}"),
         })
     }
 }
@@ -551,7 +559,7 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
             &args.strategy_option,
         )
     } else {
-        super::strategy::Strategy::parse(&args.strategy, &args.strategy_option);
+        super::strategy::Strategy::parse_all(&args.strategy, &args.strategy_option);
         Default::default()
     };
     let how = integration(git, &args)?;
@@ -641,7 +649,12 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
     if args.quiet > 0 {
         QUIET.store(true, Ordering::Relaxed);
     }
-    let message = default_message(git, &candidate.describe())?;
+    let mut message = default_message(git, &candidate.describe())?;
+    if candidate.kind == "tag"
+        && let Some(tag) = merge::tag_object_message(git, &candidate.id)
+    {
+        message = format!("{message}\n\n{tag}");
+    }
     let _ = merge::ACTION.set(action);
     let cfg = if rebase_on {
         MergeArgs::default()
