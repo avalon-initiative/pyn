@@ -263,6 +263,7 @@ jobs:
   # Runs beside `release` and is not a dependency of it: a failed smoke run never blocks the GitHub Release.
   smoke:
     needs: [preflight, manifest]
+    if: ${{ !cancelled() && needs.manifest.result == 'success' }}
     uses: ./.github/workflows/smoke.yml
     with:
       version: ${{ needs.preflight.outputs.version }}
