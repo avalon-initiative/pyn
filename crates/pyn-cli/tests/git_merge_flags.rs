@@ -1049,3 +1049,67 @@ fn diff_listings_cover_unmerged_paths() {
         listed(&["diff", "--cached", "--raw"]);
     });
 }
+
+#[test]
+fn merge_verbosity_setting() {
+    for (value, ok) in [("0", true), ("5", true), ("abc", false)] {
+        each_format(CLEAN, |p| {
+            p.both_sh(&format!("git config merge.verbosity '{value}'"));
+            if ok {
+                p.works(&["merge", "side"]);
+            } else {
+                p.refused(&["merge", "side"]);
+            }
+        });
+    }
+    each_format(CLEAN, |p| {
+        p.both_sh("git config merge.verbosity abc");
+        p.refused(&["merge", "--abort"]);
+    });
+}
+
+#[test]
+fn file_message_of_a_conflicted_merge() {
+    for body in ["msg\n", "msg\n\n", "msg", "  spaced  \n\n# note\n", ""] {
+        for args in [&[][..], &["--cleanup=verbatim"], &["--no-ff"]] {
+            each_format(CONFLICT, |p| {
+                let file = p.home.join("message");
+                fs::write(&file, body).unwrap();
+                let file = file.to_str().unwrap();
+                p.refused(&[&["merge"][..], args, &["-F", file, "side"]].concat());
+            });
+        }
+    }
+    each_format(CONFLICT, |p| {
+        let file = p.home.join("message");
+        fs::write(&file, "from file\n").unwrap();
+        let file = file.to_str().unwrap();
+        p.refused(&["merge", "-m", "first", "-F", file, "side"]);
+    });
+}
+
+#[test]
+fn merge_options_are_read_before_abort_continue_and_quit() {
+    for config in [
+        "--no-commit",
+        "--squash -m x",
+        "-s ours",
+        "--ff-only",
+        "--bogus",
+        "-m 'open",
+        "-X nonsense",
+    ] {
+        for end in ["--abort", "--continue", "--quit"] {
+            each_format(CONFLICT, |p| {
+                p.refused(&["merge", "side"]);
+                let file = p.home.join("options");
+                fs::write(&file, config).unwrap();
+                p.both_sh(&format!(
+                    "git config branch.main.mergeOptions \"$(cat '{}')\"",
+                    file.display()
+                ));
+                p.same(&["merge", end]);
+            });
+        }
+    }
+}

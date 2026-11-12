@@ -774,12 +774,14 @@ fn summary_line(backend: &dyn Backend, p: &Pair) -> String {
     out
 }
 
-/// The diffstat and the create, delete, mode-change and rename lines git prints after a merge or fast-forward.
+/// The diffstat and the create, delete, mode-change and rename lines git prints after a merge or fast-forward;
+/// `compact` notes those in each name instead (`--compact-summary`).
 pub fn merge_stat(
     backend: &dyn Backend,
     old: &Tree,
     new: &Tree,
     layout: (usize, Option<usize>),
+    compact: bool,
 ) -> Result<String> {
     let opts = rename::Options {
         limit: backend.rename_defaults().limit,
@@ -815,12 +817,16 @@ pub fn merge_stat(
             }
         };
         let quote = |s: &str| backend.quote_diff_path(s.as_bytes());
-        let name = if p.moved.is_some() {
+        let mut name = if p.moved.is_some() {
             diffstat::rename_name(&quote(&p.old_path), &quote(&p.new_path))
         } else {
             quote(&p.new_path)
         };
-        summary.push_str(&summary_line(backend, p));
+        if !compact {
+            summary.push_str(&summary_line(backend, p));
+        } else if let Some(note) = compact_note(p) {
+            let _ = write!(name, " ({note})");
+        }
         rows.push(diffstat::Row { name, counts });
     }
     let mut out = diffstat::render(&rows, layout.0, layout.1);

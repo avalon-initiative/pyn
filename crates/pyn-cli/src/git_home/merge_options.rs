@@ -89,6 +89,27 @@ pub(super) fn configured_merge_args(git: &GitHome) -> MergeArgs {
     })
 }
 
+/// Ends the command as `merge` does when `branch.<current>.mergeOptions` is malformed, without applying it.
+pub fn check_merge_options(git: &GitHome) {
+    configured_merge_args(git);
+}
+
+/// `merge.verbosity` must be an integer (git's units `k`, `m`, `g` allowed); its value changes no output here.
+/// A bad value ends the command as git's merge machinery does, once the merge is under way.
+pub(super) fn check_verbosity(git: &GitHome, ours: &ObjectId) {
+    let Some(text) = git.config().get("merge.verbosity") else {
+        return;
+    };
+    let digits = text.trim_end_matches(['k', 'K', 'm', 'M', 'g', 'G']);
+    if text.len() - digits.len() <= 1 && digits.parse::<i64>().is_ok() {
+        return;
+    }
+    let _ = super::merge::write_orig_head(git, ours);
+    fatal(&format!(
+        "bad numeric config value '{text}' for 'merge.verbosity': invalid unit"
+    ));
+}
+
 /// How the message is cleaned: the mode named by `--cleanup`, else what the editor or its absence implies.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Cleanup {
