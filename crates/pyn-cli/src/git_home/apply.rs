@@ -17,18 +17,21 @@ use super::apply_parse::{Binary, Fail, FilePatch, Reader, diag};
 use super::apply_ws::summarize;
 use super::conflict_style::Style;
 use super::convert;
+use super::mergedrv::{self, Driver};
 use super::plumbing::prefix;
 use super::stage::{
     Entries, OpenIndex, entries_of, index_of, put_entry, raw_mode, remove_entry, stat_fields,
 };
+use super::treemerge::Labels;
 use super::worktree::{check_writes, remove_entry_file, write_bytes};
 use crate::backend::Backend;
+use crate::diff_color;
 use crate::diffstat::{self, rename_name};
+use pyn_diff::whitespace::{BLANK_AT_EOF, Rule};
 
-pub(super) const APPLY_SETTINGS: [(&str, Option<&str>); 3] = [
+pub(super) const APPLY_SETTINGS: [(&str, Option<&str>); 2] = [
     ("apply", Some("whitespace")),
     ("apply", Some("ignorewhitespace")),
-    ("core", Some("whitespace")),
 ];
 
 /// Apply a patch to files and the index.
@@ -200,6 +203,13 @@ fn io_message(e: &std::io::Error) -> String {
 }
 
 impl<'g> Session<'g> {
+    /// The whitespace rule of a path: `core.whitespace` refined by its `whitespace` attribute.
+    fn rule_for(&self, name: &[u8]) -> Rule {
+        let base = diff_color::whitespace_rule(&|k| self.git.diff_setting(k));
+        let path = String::from_utf8_lossy(name);
+        diff_color::path_rule(&self.git.attribute(&path, "whitespace"), base)
+    }
+
     pub fn new(git: &'g GitHome, opts: Options) -> Result<Self> {
         let opened = if opts.index {
             Some(git.open_index()?)
@@ -227,7 +237,8 @@ impl<'g> Session<'g> {
     /// Parses `buf`, checks every patch, prints the listings and writes the result.
     pub fn run(&mut self, buf: &[u8], label: &str) -> std::result::Result<(), Fail> {
         self.label = label.to_string();
-        let parsed = Reader::new(buf, label, self.opts.strip, self.opts.ws).parse()?;
+        let rules = |name: &[u8]| self.rule_for(name);
+        let parsed = Reader::new(buf, label, self.opts.strip, self.opts.ws, &rules).parse()?;
         let mut list: Vec<FilePatch> = parsed.patches;
         if list.is_empty() {
             if self.opts.allow_empty {
@@ -490,6 +501,7 @@ impl<'g> Session<'g> {
             match apply_hunks(&base, patch) {
                 Ok(done) => {
                     if self.opts.ws
+                        && self.rule_for(&new_name).bits & BLANK_AT_EOF != 0
                         && let Some(line) = done.blank_at_eof
                     {
                         diag!("{}:{line}: new blank line at EOF.\n+", self.label);
@@ -805,20 +817,49 @@ impl Session<'_> {
         let style = Style::of(self.git.config());
         let name = show(patch.name());
         let objects = self.git.repo.objects();
-        match pyn_merge::merge_text(&base, &ours.bytes, &post.bytes) {
-            pyn_merge::Outcome::Clean(bytes) => {
-                diag!("Applied patch to '{name}' cleanly.");
-                Ok(Some((bytes, None)))
+        let conflicted = |text: Vec<u8>| -> Result<Option<Patched>, Fail> {
+            let ids = [
+                *base_id,
+                objects.write(Kind::Blob, &ours.bytes).map_err(internal)?,
+                objects.write(Kind::Blob, &post.bytes).map_err(internal)?,
+            ];
+            diag!("Applied patch to '{name}' with conflicts.");
+            Ok(Some((text, Some(ids))))
+        };
+        let clean = |bytes: Vec<u8>| {
+            diag!("Applied patch to '{name}' cleanly.");
+            Ok(Some((bytes, None)))
+        };
+        let merged = match mergedrv::find(self.git, patch.name()) {
+            Driver::Binary => return conflicted(ours.bytes.clone()),
+            Driver::Union => match pyn_merge::merge_text(&base, &ours.bytes, &post.bytes) {
+                pyn_merge::Outcome::Conflicted(chunks) => {
+                    return clean(pyn_merge::render_union(&chunks));
+                }
+                other => other,
+            },
+            Driver::External(cmd) => {
+                let labels = Labels {
+                    ours: "ours",
+                    theirs: "theirs",
+                    base: "base",
+                };
+                let call = mergedrv::Call {
+                    path: patch.name(),
+                    labels: &labels,
+                    marker_size: pyn_merge::MARKER_SIZE,
+                };
+                let inputs = [base.as_slice(), &ours.bytes, &post.bytes];
+                let (bytes, ok) =
+                    mergedrv::run_external(self.git, &cmd, inputs, &call).map_err(internal)?;
+                return if ok { clean(bytes) } else { conflicted(bytes) };
             }
+            Driver::Text => pyn_merge::merge_text(&base, &ours.bytes, &post.bytes),
+        };
+        match merged {
+            pyn_merge::Outcome::Clean(bytes) => clean(bytes),
             pyn_merge::Outcome::Conflicted(chunks) => {
-                let text = style.render(chunks, pyn_merge::MARKER_SIZE, ("ours", "base", "theirs"));
-                let ids = [
-                    *base_id,
-                    objects.write(Kind::Blob, &ours.bytes).map_err(internal)?,
-                    objects.write(Kind::Blob, &post.bytes).map_err(internal)?,
-                ];
-                diag!("Applied patch to '{name}' with conflicts.");
-                Ok(Some((text, Some(ids))))
+                conflicted(style.render(chunks, pyn_merge::MARKER_SIZE, ("ours", "base", "theirs")))
             }
             pyn_merge::Outcome::BinaryConflict => Ok(None),
         }
@@ -827,7 +868,8 @@ impl Session<'_> {
 
 /// The patches in `buf`, for a caller that needs more than applying them.
 pub(super) fn parse_patches(buf: &[u8], strip: usize) -> Result<Vec<FilePatch>, Fail> {
-    Ok(Reader::new(buf, "", strip, false).parse()?.patches)
+    let rules = |_: &[u8]| Rule::default();
+    Ok(Reader::new(buf, "", strip, false, &rules).parse()?.patches)
 }
 
 /// The patches applied to `base` in memory: the content each touched path ends with, `None` for a removed one.
