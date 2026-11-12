@@ -84,6 +84,11 @@ fn mktime(tm: &Tm) -> i64 {
         .map_or(naive_secs, |t| t.timestamp())
 }
 
+/// C's `int` multiplication wraps in the arithmetic on a pending count.
+fn wrap(v: i64) -> i64 {
+    i64::from(v as i32)
+}
+
 fn update_tm(tm: &mut Tm, now: &Tm, sec: i64) -> i64 {
     if tm.mday < 0 {
         tm.mday = now.mday;
@@ -284,7 +289,7 @@ fn approxidate_digit(date: &[u8], at: usize, tm: &mut Tm, num: &mut i64, now: i6
         }
     }
     if date[at] != b'0' || end - at <= 2 {
-        *num = number;
+        *num = i64::from(number as i32);
     }
     end
 }
@@ -386,7 +391,7 @@ fn approxidate_alpha(
     }
     for (name, length) in UNITS {
         if match_string(word, name) >= name.len() - 1 {
-            update_tm(tm, now, length * *num);
+            update_tm(tm, now, wrap(length * *num));
             *num = 0;
             *touched = true;
             return end;
@@ -401,7 +406,7 @@ fn approxidate_alpha(
                 n += 1;
             }
             diff += 7 * n;
-            update_tm(tm, now, diff * 86_400);
+            update_tm(tm, now, wrap(diff * 86_400));
             *touched = true;
             return end;
         }
@@ -426,6 +431,264 @@ fn approxidate_alpha(
         return end;
     }
     end
+}
+
+const TIMEZONES: [(&str, i64, i64); 43] = [
+    ("IDLW", -12, 0),
+    ("NT", -11, 0),
+    ("CAT", -10, 0),
+    ("HST", -10, 0),
+    ("HDT", -10, 1),
+    ("YST", -9, 0),
+    ("YDT", -9, 1),
+    ("PST", -8, 0),
+    ("PDT", -8, 1),
+    ("MST", -7, 0),
+    ("MDT", -7, 1),
+    ("CST", -6, 0),
+    ("CDT", -6, 1),
+    ("EST", -5, 0),
+    ("EDT", -5, 1),
+    ("AST", -3, 0),
+    ("ADT", -3, 1),
+    ("WAT", -1, 0),
+    ("GMT", 0, 0),
+    ("UTC", 0, 0),
+    ("Z", 0, 0),
+    ("WET", 0, 0),
+    ("BST", 0, 1),
+    ("CET", 1, 0),
+    ("MET", 1, 0),
+    ("MEWT", 1, 0),
+    ("MEST", 1, 1),
+    ("CEST", 1, 1),
+    ("MESZ", 1, 1),
+    ("FWT", 1, 0),
+    ("FST", 1, 1),
+    ("EET", 2, 0),
+    ("EEST", 2, 1),
+    ("WAST", 7, 0),
+    ("WADT", 7, 1),
+    ("CCT", 8, 0),
+    ("JST", 9, 0),
+    ("EAST", 10, 0),
+    ("EADT", 10, 1),
+    ("GST", 10, 0),
+    ("NZT", 12, 0),
+    ("NZST", 12, 0),
+    ("NZDT", 12, 1),
+];
+
+/// `parse_date_basic`'s `match_alpha`: month and weekday names, zone names, `am`/`pm` and a `T` before a time.
+fn strict_alpha(date: &[u8], at: usize, tm: &mut Tm, offset: &mut i64) -> usize {
+    let word = &date[at..];
+    for (i, month) in MONTHS.iter().enumerate() {
+        let m = match_string(word, month);
+        if m >= 3 {
+            tm.mon = i as i64;
+            return m;
+        }
+    }
+    for (i, day) in WEEKDAYS.iter().enumerate() {
+        let m = match_string(word, day);
+        if m >= 3 {
+            tm.wday = i as i64;
+            return m;
+        }
+    }
+    for (name, off, dst) in TIMEZONES {
+        let m = match_string(word, name);
+        if m >= 3 || m == name.len() {
+            if *offset == -1 {
+                *offset = 60 * (off + dst);
+            }
+            return m;
+        }
+    }
+    for (name, add) in [("PM", 12), ("AM", 0)] {
+        if match_string(word, name) == 2 {
+            tm.hour = tm.hour % 12 + add;
+            return 2;
+        }
+    }
+    if word[0] == b'T' && word.get(1).is_some_and(u8::is_ascii_digit) && tm.hour == -1 {
+        tm.min = 0;
+        tm.sec = 0;
+        return 1;
+    }
+    1 + word[1..]
+        .iter()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .count()
+}
+
+/// `match_tz`: a `+hhmm`, `+hh` or `+hh:mm` offset; the length consumed.
+fn strict_tz(date: &[u8], at: usize, offset: &mut i64) -> usize {
+    let (mut hour, mut end) = digits(date, at + 1);
+    let n = end - (at + 1);
+    let mut min = 0;
+    if n == 4 {
+        min = hour % 100;
+        hour /= 100;
+    } else if n != 2 {
+        min = 99;
+    } else if date.get(end) == Some(&b':') {
+        let (m, e) = digits(date, end + 1);
+        (min, end) = (m, e);
+        if end - (at + 1) != 5 {
+            min = 99;
+        }
+    }
+    if min < 60 && hour < 24 {
+        let off = hour * 60 + min;
+        *offset = if date[at] == b'-' { -off } else { off };
+    }
+    end - at
+}
+
+fn strict_digit(
+    date: &[u8],
+    at: usize,
+    tm: &mut Tm,
+    offset: &mut i64,
+    gmt: &mut bool,
+    now: i64,
+) -> usize {
+    let (num, end) = digits(date, at);
+    let blank = [tm.year, tm.mon, tm.mday, tm.hour, tm.min, tm.sec]
+        .iter()
+        .all(|v| *v < 0);
+    if num >= 100_000_000 && blank {
+        *tm = localtime_utc(num);
+        *gmt = true;
+        return end - at;
+    }
+    if let Some(&c) = date.get(end)
+        && matches!(c, b':' | b'.' | b'/' | b'-')
+        && date.get(end + 1).is_some_and(u8::is_ascii_digit)
+    {
+        let matched = match_multi_number(num, c, date, at, end, tm, now);
+        if matched != 0 {
+            return matched;
+        }
+    }
+    let n = end - at;
+    if n == 8 || n == 6 {
+        let (a, b, c) = (num / 10_000, num % 10_000 / 100, num % 100);
+        let mut end = end;
+        if n == 8 {
+            set_date(a, b, c, None, now, tm);
+        } else if (0..=24).contains(&a) && (0..60).contains(&b) && (0..=61).contains(&c) {
+            (tm.hour, tm.min, tm.sec) = (a, b, c);
+            if date.get(end) == Some(&b'.') && date.get(end + 1).is_some_and(u8::is_ascii_digit) {
+                end = digits(date, end + 1).1;
+            }
+        }
+        return end - at;
+    }
+    if tm.hour < 0 && tm.min == 0 {
+        // the first number after a `T` is the time or spoils it
+        let (h, m) = if n == 4 {
+            (num / 100, num % 100)
+        } else {
+            (num, 0)
+        };
+        if (n == 2 || n == 4) && (0..=24).contains(&h) && (0..60).contains(&m) {
+            (tm.hour, tm.min) = (h, m);
+        } else {
+            tm.min = -1;
+        }
+        return n;
+    }
+    if n == 4 {
+        if num <= 1400 && *offset == -1 {
+            *offset = num / 100 * 60 + num % 100;
+        } else if num > 1900 && num < 2100 {
+            tm.year = num - 1900;
+        }
+        return n;
+    }
+    if n > 2 {
+        return n;
+    }
+    if num > 0 && num < 32 && tm.mday < 0 {
+        tm.mday = num;
+        return n;
+    }
+    if n == 2 && tm.year < 0 {
+        if num < 10 && tm.mday >= 0 {
+            tm.year = num + 100;
+            return n;
+        }
+        if num >= 70 {
+            tm.year = num;
+            return n;
+        }
+    }
+    if num > 0 && num < 13 && tm.mon < 0 {
+        tm.mon = num - 1;
+    }
+    n
+}
+
+/// `parse_date_basic`: the strict reading of dates git itself writes, as seconds; None when it does not apply.
+pub fn parse_date_basic(date: &str, now: i64) -> Option<i64> {
+    let bytes = date.as_bytes();
+    let mut tm = Tm {
+        sec: -1,
+        min: -1,
+        hour: -1,
+        mday: -1,
+        mon: -1,
+        year: -1,
+        wday: 0,
+    };
+    let (mut offset, mut gmt) = (-1i64, false);
+    let mut i = 0;
+    if bytes.first() == Some(&b'@')
+        && let Some(found) = object_header_date(&bytes[1..])
+    {
+        return Some(found);
+    }
+    while i < bytes.len() && bytes[i] != b'\n' {
+        let c = bytes[i];
+        let matched = if c.is_ascii_alphabetic() {
+            strict_alpha(bytes, i, &mut tm, &mut offset)
+        } else if c.is_ascii_digit() {
+            strict_digit(bytes, i, &mut tm, &mut offset, &mut gmt, now)
+        } else if (c == b'-' || c == b'+') && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+            strict_tz(bytes, i, &mut offset)
+        } else {
+            0
+        };
+        i += matched.max(1);
+    }
+    let stamp = tm_to_time_t(&tm)?;
+    if offset == -1 {
+        let local = mktime(&tm);
+        offset = if stamp > local {
+            (stamp - local) / 60
+        } else {
+            -((local - stamp) / 60)
+        };
+    }
+    Some(if gmt { stamp } else { stamp - offset * 60 })
+}
+
+/// `match_object_header_date`: `<seconds> +hhmm` as a commit header writes it.
+fn object_header_date(date: &[u8]) -> Option<i64> {
+    if !date.first()?.is_ascii_digit() {
+        return None;
+    }
+    let (stamp, end) = digits(date, 0);
+    if date.get(end) != Some(&b' ') || !matches!(date.get(end + 1), Some(b'+' | b'-')) {
+        return None;
+    }
+    let stop = digits(date, end + 2).1;
+    if stop != end + 6 || date.get(stop).is_some_and(|c| *c != b'\n') {
+        return None;
+    }
+    Some(stamp)
 }
 
 /// The seconds `date` reads as, and whether any part of it was understood.
@@ -466,6 +729,30 @@ mod tests {
         assert_eq!(approxidate("in 2 days", NOW), (NOW - 2 * 86_400, true));
         assert!(!approxidate("garbage", NOW).1);
         assert!(!approxidate("", NOW).1);
+    }
+
+    #[test]
+    fn strict_dates_read_as_git_writes_them() {
+        let at = |d: &str| parse_date_basic(d, NOW);
+        assert_eq!(at("2023-11-14 22:30:00 +0100"), Some(1_699_997_400));
+        assert_eq!(
+            at("2023-11-14T22:30 +0100"),
+            at("2023-11-14 22:30:00 +0100")
+        );
+        assert_eq!(at("2023-11-14T2230 +0100"), at("2023-11-14 22:30:00 +0100"));
+        assert_eq!(at("1700003500"), Some(1_700_003_500));
+        assert_eq!(at("garbage"), None);
+        assert_eq!(at("2023-11-14"), None);
+    }
+
+    #[test]
+    fn a_month_a_year_and_a_time_without_a_day_land_before_the_first() {
+        let at = |d: &str| parse_date_basic(d, NOW).unwrap();
+        let june_first = parse_date_basic("2026-06-01 00:00:00 +0000", NOW).unwrap();
+        assert_eq!(
+            at("jun 5:00 2026 +0000"),
+            june_first - 2 * 86_400 + 5 * 3600
+        );
     }
 
     #[test]

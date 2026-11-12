@@ -14,6 +14,9 @@ use super::blame_fuzzy::{Fingerprint, fingerprints, guess_line_blames};
 use super::blame_rename::find_source;
 use crate::xdiff::hunks_ws;
 
+#[path = "blame_move.rs"]
+mod moves;
+
 pub(super) struct Origin {
     pub commit: ObjectId,
     pub path: Vec<u8>,
@@ -41,6 +44,11 @@ pub(super) struct Settings {
     pub first_parent: bool,
     pub minimal: bool,
     pub reverse: bool,
+    pub moves: bool,
+    pub move_score: usize,
+    /// 0 none, 1 changed files (`-C`), 2 any file for a new path (`-C -C`), 3 any file (`-C -C -C`).
+    pub copy_level: u8,
+    pub copy_score: usize,
 }
 
 struct Queued {
@@ -96,6 +104,20 @@ pub(super) struct Board<'a> {
     pub settled: Vec<(usize, Vec<(usize, usize)>)>,
     /// Per final line, the piece it travels in: lines passed on in one step from one piece stay one piece.
     pub piece: Vec<u64>,
+    /// The blamed file's text and the offset of each of its lines, for scoring moved and copied lines.
+    final_text: Rc<Vec<u8>>,
+    final_off: Vec<usize>,
+}
+
+/// A stable merge by source line: on a tie the lines already there come first, as git's list merge does.
+fn merge_by_source(a: Vec<(usize, usize)>, b: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut a, mut b) = (a.into_iter().peekable(), b.into_iter().peekable());
+    while let (Some(x), Some(y)) = (a.peek(), b.peek()) {
+        out.push(if x.0 <= y.0 { a.next() } else { b.next() }.unwrap());
+    }
+    out.extend(a.chain(b));
+    out
 }
 
 fn is_link(mode: FileMode) -> bool {
@@ -131,7 +153,22 @@ impl<'a> Board<'a> {
             prints: HashMap::new(),
             settled: Vec::new(),
             piece: vec![0; line_count],
+            final_text: Rc::new(Vec::new()),
+            final_off: Vec::new(),
         }
+    }
+
+    pub fn with_final_text(&mut self, text: Rc<Vec<u8>>) {
+        let mut at = 0;
+        self.final_off = pyn_diff::split_lines(&text)
+            .iter()
+            .map(|l| {
+                at += l.len();
+                at - l.len()
+            })
+            .chain([text.len()])
+            .collect();
+        self.final_text = text;
     }
 
     pub fn ignoring(&mut self, commits: HashSet<ObjectId>) {
@@ -251,6 +288,7 @@ impl<'a> Board<'a> {
         while let Some(q) = self.queue.pop() {
             while let Some(o) = self.by_commit.get(&q.commit).and_then(|v| {
                 v.iter()
+                    .rev()
                     .copied()
                     .find(|i| !self.origins[*i].suspects.is_empty())
             }) {
@@ -276,11 +314,12 @@ impl<'a> Board<'a> {
         let sibling_busy = self.by_commit[&commit]
             .iter()
             .any(|i| !self.origins[*i].suspects.is_empty());
+        add.sort_by_key(|(s, _)| *s);
         if was_empty {
             self.origins[po].suspects = add;
         } else {
-            self.origins[po].suspects.append(&mut add);
-            self.origins[po].suspects.sort_unstable();
+            let have = std::mem::take(&mut self.origins[po].suspects);
+            self.origins[po].suspects = merge_by_source(have, add);
         }
         if was_empty && !sibling_busy {
             let time = self.time_of(&commit)?;
@@ -390,7 +429,7 @@ impl<'a> Board<'a> {
             }
         }
         if self.ignore.contains(&commit) {
-            for po in found.into_iter().flatten() {
+            for po in found.iter().flatten().copied() {
                 self.pass_to_parent(o, po, true)?;
                 self.prints.remove(&po);
                 if self.origins[o].suspects.is_empty() {
@@ -398,6 +437,11 @@ impl<'a> Board<'a> {
                 }
             }
             self.prints.remove(&o);
+        }
+        if self.settings.moves && !parents.is_empty() {
+            self.find_moves_copies(o, &parents, &found)?;
+        } else {
+            self.origins[o].suspects = self.in_entry_order(&self.origins[o].suspects);
         }
         Ok(())
     }
