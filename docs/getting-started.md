@@ -2,7 +2,7 @@
 
 Run a pyn server from a release, set it up in the browser and connect the `pyn` command to it. You need a computer or
 virtual machine with [Docker](https://docs.docker.com/engine/install/) (with the Compose plugin: `docker compose version`
-should print a version) and about 2 GB of free memory. Provisional: the first release has just been published.
+should print a version) and about 2 GB of free memory. Provisional: written against the first pre-release, `v0.1.0-alpha`.
 
 What you end up with: the server, the web app and a PostgreSQL database, started by one Compose file that takes four
 settings.

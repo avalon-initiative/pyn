@@ -2,7 +2,7 @@
 
 New here? [Getting started](getting-started.md) is the step-by-step version, with an image-only Compose file in
 [`deploy/`](../deploy/docker-compose.yml). This page covers running a server you keep: one node with Docker Compose, TLS in front, upgrades, several copies, and backups with a
-tested restore. Provisional: the first release has not been published yet.
+tested restore. Provisional: written against the first pre-release, `v0.1.0-alpha`; the image-only Compose file in `deploy/` has not been run against a release yet.
 
 ## What runs
 
