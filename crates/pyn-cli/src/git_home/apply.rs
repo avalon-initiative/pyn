@@ -15,6 +15,7 @@ use super::GitHome;
 use super::apply_hunk::apply_hunks;
 use super::apply_parse::{Binary, Fail, FilePatch, Reader, diag};
 use super::apply_ws::summarize;
+use super::conflict_style::Style;
 use super::convert;
 use super::plumbing::prefix;
 use super::stage::{
@@ -767,31 +768,6 @@ fn internal(e: impl Into<anyhow::Error>) -> Fail {
     Fail(128)
 }
 
-/// Conflict markers in git's default style, without the base section.
-fn render_two_way(chunks: &[pyn_merge::Chunk<&[u8]>]) -> Vec<u8> {
-    use pyn_merge::Chunk;
-    let side = |out: &mut Vec<u8>, lines: &[&[u8]]| {
-        lines.iter().for_each(|l| out.extend_from_slice(l));
-        if lines.last().is_some_and(|l| !l.ends_with(b"\n")) {
-            out.push(b'\n');
-        }
-    };
-    let mut out = Vec::new();
-    for chunk in chunks {
-        match chunk {
-            Chunk::Resolved(lines) => lines.iter().for_each(|l| out.extend_from_slice(l)),
-            Chunk::Conflict(c) => {
-                out.extend_from_slice(b"<<<<<<< ours\n");
-                side(&mut out, &c.ours);
-                out.extend_from_slice(b"=======\n");
-                side(&mut out, &c.theirs);
-                out.extend_from_slice(b">>>>>>> theirs\n");
-            }
-        }
-    }
-    out
-}
-
 impl Session<'_> {
     /// Merges the patch into the file: the patch is applied to the blob its `index` line names and the result merged
     /// with the current content. `None` leaves the file to direct application.
@@ -826,16 +802,7 @@ impl Session<'_> {
             diag!("error: patch failed: {}", show(patch.name()));
             return Ok(None);
         };
-        let style = self
-            .git
-            .config()
-            .get("merge.conflictstyle")
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if style == "zdiff3" {
-            diag!("error: merge.conflictStyle=zdiff3 is not supported by pyn apply yet");
-            return Err(Fail(129));
-        }
+        let style = Style::of(self.git.config());
         let name = show(patch.name());
         let objects = self.git.repo.objects();
         match pyn_merge::merge_text(&base, &ours.bytes, &post.bytes) {
@@ -844,11 +811,7 @@ impl Session<'_> {
                 Ok(Some((bytes, None)))
             }
             pyn_merge::Outcome::Conflicted(chunks) => {
-                let text = if style == "diff3" {
-                    pyn_merge::render_markers(&chunks, "ours", "base", "theirs")
-                } else {
-                    render_two_way(&chunks)
-                };
+                let text = style.render(chunks, pyn_merge::MARKER_SIZE, ("ours", "base", "theirs"));
                 let ids = [
                     *base_id,
                     objects.write(Kind::Blob, &ours.bytes).map_err(internal)?,

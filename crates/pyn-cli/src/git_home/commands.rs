@@ -960,7 +960,7 @@ fn diff(
     let modules = repo.submodules();
     let (mut old, mut new) = (Tree::new(), Tree::new());
     let mut format = format.clone();
-    let names = format.kind == diff::Kind::NameStatus && !format.summary;
+    let listed = diff::lists_unmerged(&format);
     match revs.as_slice() {
         [] | [_] if cached => {
             let tree = match revs.first() {
@@ -984,10 +984,14 @@ fn diff(
                     new.insert(path_string(path), b);
                 }
             }
-            if names {
+            if listed {
                 for path in unmerged_paths(&index, &spec) {
-                    old.remove(&path);
-                    format.unmerged.push(path);
+                    let committed = old.remove(&path);
+                    format.unmerged.push(diff::Unmerged {
+                        path,
+                        old: committed,
+                        new: None,
+                    });
                 }
             }
         }
@@ -1012,13 +1016,31 @@ fn diff(
                     new.insert(name, b);
                 }
             }
-            if names {
+            if listed {
                 for path in unmerged_paths(&index, &spec) {
-                    let ours = index
-                        .entries
-                        .iter()
-                        .find(|e| e.stage == 2 && path_string(&e.path) == path);
-                    if let Some(e) = ours {
+                    let at = |stage| {
+                        index
+                            .entries
+                            .iter()
+                            .find(|e| e.stage == stage && path_string(&e.path) == path)
+                    };
+                    let first = at(1)
+                        .or(at(2))
+                        .or(at(3))
+                        .expect("an unmerged path has a stage");
+                    let zeros = "0".repeat(first.id.to_hex().len());
+                    let shown = Blob {
+                        hash: zeros,
+                        mode: stage::leaf_mode(first.mode),
+                        source: diff::Source::Worktree {
+                            file: fs_path(git.repo.root()?, &first.path),
+                            cleaned: None,
+                        },
+                    };
+                    // The patch shows a path with both sides as a combined diff, which is not built.
+                    let combined = at(2).is_some() && at(3).is_some();
+                    if let Some(e) = at(2).filter(|_| format.kind != diff::Kind::Patch || !combined)
+                    {
                         let recorded = Entry {
                             mode: stage::leaf_mode(e.mode),
                             id: e.id,
@@ -1030,7 +1052,13 @@ fn diff(
                             new.insert(path.clone(), b);
                         }
                     }
-                    format.unmerged.push(path);
+                    if format.kind != diff::Kind::Patch || !combined {
+                        format.unmerged.push(diff::Unmerged {
+                            path,
+                            old: None,
+                            new: Some(shown),
+                        });
+                    }
                 }
             }
             if wants_harder(git, &format) {

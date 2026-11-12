@@ -4,8 +4,17 @@ Run a pyn server from a release, set it up in the browser and connect the `pyn` 
 virtual machine with [Docker](https://docs.docker.com/engine/install/) (with the Compose plugin: `docker compose version`
 should print a version) and about 2 GB of free memory. Provisional: written against the first pre-release, `v0.1.0-alpha`.
 
-What you end up with: the server, the web app and a PostgreSQL database, started by one Compose file that takes four
-settings.
+What you end up with: by default the server, the web app and a PostgreSQL database, started by one Compose file that takes
+four settings. Pick the shape that fits (each is one self-contained Compose file, so no extra flags):
+
+| You want | Download | Env file | Runs |
+| --- | --- | --- | --- |
+| Server and web app together (the usual case) | `docker-compose.yml` | `.env.example` | PostgreSQL, server, web app |
+| The API only, no web app | `docker-compose.server.yml` | `.env.server.example` | PostgreSQL, server |
+| Only the web app, against a server hosted elsewhere | `docker-compose.web.yml` | `.env.web.example` | web app |
+| Only the `pyn` command, against an existing server | nothing | nothing | go to [step 6](#6-install-the-pyn-command) |
+
+Step 3 uses the first row; the other rows change only the two downloads, see [Other shapes](#other-shapes).
 
 ## 1. Find the release
 
@@ -72,13 +81,52 @@ The first start pulls the images and takes a minute or two. It returns when the 
 healthy. If it fails, `docker compose logs` shows why; `required variable ... is missing` means a setting in `.env` is
 empty.
 
+### Other shapes
+
+Download the files of your row and save them as `docker-compose.yml` and `.env`, so every later command is the plain
+`docker compose ...` used in this guide. Replace the two `curl` lines of step 3 with:
+
+```bash
+# server only
+curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/docker-compose.server.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/.env.server.example -o .env
+
+# web app only
+curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/docker-compose.web.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/.env.web.example -o .env
+```
+
+**Server only.** Fill in `PYN_VERSION`, `POSTGRES_PASSWORD` and `PYN_SECRET_KEY` as above. `PYN_PUBLIC_URL` is the
+server's own address, for example `http://192.168.1.20:7878` (the API listens on port 7878; set `PYN_SERVER_PUBLISH=0.0.0.0:7878`
+to reach it from other computers). Setup (step 5) then happens with the `pyn` command instead of the browser, and step 7
+points `pyn` at this address:
+`PYN_SETUP_TOKEN="<token>" pyn --server http://192.168.1.20:7878 setup admin --public-url http://192.168.1.20:7878`.
+A web app can be added later: run the web-only file elsewhere (next paragraph).
+
+**Web app only.** Fill in `PYN_VERSION` and `PYN_API_URL`, the address of the server this web app talks to (for example
+`https://pyn.example.com`). There is no database and no secret; `docker compose up --detach --wait` starts just the web
+app, on `127.0.0.1:8080` unless `PYN_WEB_PUBLISH` says otherwise. Signing in checks the origin the browser loaded the page
+from, so the server must be told this web app's address: set `PYN_ALLOWED_ORIGINS` on the remote server to it, with the
+scheme and port and no path (`http://localhost:8080` for a web app on your own computer; several are comma-separated), and
+restart that server. Without it sign-in fails with `403 origin_not_allowed`. See
+[access](concepts/access.md#web-sessions) and [configuration](configuration.md).
+
 ## 5. Set up the server (first administrator)
 
 A new server serves only setup until the first administrator exists. To stop a stranger from claiming it first, setup
 needs a one-time **setup token**, printed in the server's log at first start:
 
 ```bash
-docker compose logs server | grep -A3 "one-time setup token"
+docker compose logs server | grep -A4 "one-time setup token"
+```
+
+The block looks like this, followed by one line saying where to finish setup:
+
+```text
+----- pyn one-time setup token -----
+<the token>
+------------------------------------
+finish setup in the browser at https://pyn.example.com, or run: pyn setup <username>
 ```
 
 Copy the long string between the dashes. Then:

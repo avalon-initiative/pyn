@@ -121,8 +121,16 @@ pub struct Format {
     pub with_patch: bool,
     /// Only the pairs whose new path is listed, applied after rename detection (the pickaxe's choice).
     pub kept: Vec<String>,
-    /// Unmerged paths, listed as `U` by `--name-status`.
-    pub unmerged: Vec<String>,
+    /// Unmerged paths, listed with status `U`.
+    pub unmerged: Vec<Unmerged>,
+}
+
+/// A path with conflict stages and the sides git shows for it: the committed blob (cached) or the entry's mode (work tree).
+#[derive(Clone)]
+pub struct Unmerged {
+    pub path: String,
+    pub old: Option<Blob>,
+    pub new: Option<Blob>,
 }
 
 impl Format {
@@ -261,6 +269,7 @@ struct Contents {
     new: Vec<u8>,
     binary: bool,
     funcs: Option<crate::diff_driver::FuncMatcher>,
+    word_regex: Option<String>,
 }
 
 /// Binary-ness forced by `-a`, and whether textconv applies: only to a patch, and not under `--no-textconv`.
@@ -285,7 +294,7 @@ fn contents(
             let Some(b) = blob else { return Ok(Vec::new()) };
             let data = bytes(backend, path, b, false)?;
             if b.is_regular() {
-                crate::diff_driver::textconv(command, &data)
+                crate::diff_driver::textconv(command, &data, driver.work_tree.as_deref())
             } else {
                 Ok(data)
             }
@@ -295,6 +304,7 @@ fn contents(
             new: convert(new)?,
             binary: false,
             funcs,
+            word_regex: driver.word_regex.clone(),
         });
     }
     let old_probe = old
@@ -313,6 +323,7 @@ fn contents(
             new: Vec::new(),
             binary: true,
             funcs,
+            word_regex: driver.word_regex.clone(),
         });
     }
     let full = |blob: Option<&Blob>, probe: Vec<u8>| -> Result<Vec<u8>> {
@@ -328,6 +339,7 @@ fn contents(
         new,
         binary,
         funcs,
+        word_regex: driver.word_regex.clone(),
     })
 }
 
@@ -470,7 +482,8 @@ fn patch(
         spaced(&old_label, &from),
         spaced(&new_label, &to)
     );
-    let body = if let Some(setup) = words {
+    let own = words.and_then(|w| w.for_driver(c.word_regex.as_deref()));
+    let body = if let Some(setup) = own.as_ref().or(words) {
         String::from_utf8_lossy(&word_diff::render(&hunks, setup, style)).into_owned()
     } else if let Some(st) = style {
         let eof = diff_color::blank_at_eof(&c.old, &c.new, &st.rule);
@@ -550,10 +563,16 @@ fn blob_size(backend: &dyn Backend, path: &str, blob: Option<&Blob>) -> Result<u
     blob.map_or(Ok(0), |b| Ok(bytes(backend, path, b, false)?.len()))
 }
 
+fn counted(rows: &[(String, Counts)]) -> usize {
+    rows.iter()
+        .filter(|(_, c)| !matches!(c, Counts::Unmerged))
+        .count()
+}
+
 fn totals(rows: &[(String, Counts)]) -> (usize, usize) {
     rows.iter().fold((0, 0), |(a, d), (_, c)| match c {
         Counts::Lines(x, y) => (a + x, d + y),
-        Counts::Binary(..) => (a, d),
+        Counts::Binary(..) | Counts::Unmerged => (a, d),
     })
 }
 
@@ -568,6 +587,8 @@ pub(crate) struct Pair {
     pub(crate) rewrite: Option<u64>,
     /// Compared outside a repository: stat and name-status show both names.
     pub(crate) detached: bool,
+    /// A path with conflict stages: only its name (and raw sides) are shown.
+    pub(crate) unmerged: bool,
 }
 
 /// The content of a blob.
@@ -637,6 +658,7 @@ pub(crate) fn pairs(
                 moved: Some(m.clone()),
                 rewrite: None,
                 detached: false,
+                unmerged: false,
             },
             None => Pair {
                 old_path: path.clone(),
@@ -646,6 +668,7 @@ pub(crate) fn pairs(
                 moved: None,
                 rewrite: found.as_ref().and_then(|f| f.rewrites.get(path)).copied(),
                 detached: false,
+                unmerged: false,
             },
         });
     }
@@ -756,12 +779,14 @@ fn summary_line(backend: &dyn Backend, p: &Pair) -> String {
     out
 }
 
-/// The diffstat and the create, delete, mode-change and rename lines git prints after a merge or fast-forward.
+/// The diffstat and the create, delete, mode-change and rename lines git prints after a merge or fast-forward;
+/// `compact` notes those in each name instead (`--compact-summary`).
 pub fn merge_stat(
     backend: &dyn Backend,
     old: &Tree,
     new: &Tree,
     layout: (usize, Option<usize>),
+    compact: bool,
 ) -> Result<String> {
     let opts = rename::Options {
         limit: backend.rename_defaults().limit,
@@ -797,12 +822,16 @@ pub fn merge_stat(
             }
         };
         let quote = |s: &str| backend.quote_diff_path(s.as_bytes());
-        let name = if p.moved.is_some() {
+        let mut name = if p.moved.is_some() {
             diffstat::rename_name(&quote(&p.old_path), &quote(&p.new_path))
         } else {
             quote(&p.new_path)
         };
-        summary.push_str(&summary_line(backend, p));
+        if !compact {
+            summary.push_str(&summary_line(backend, p));
+        } else if let Some(note) = compact_note(p) {
+            let _ = write!(name, " ({note})");
+        }
         rows.push(diffstat::Row { name, counts });
     }
     let mut out = diffstat::render(&rows, layout.0, layout.1);
@@ -881,6 +910,21 @@ fn refuse_with_break(backend: &dyn Backend, format: &Format) {
     crate::usage_error(&format!("`-B` with {what} is not built"));
 }
 
+/// Whether this output shows unmerged paths, as git does for every listing and the patch but not `--check` or `--dirstat`.
+pub(crate) fn lists_unmerged(format: &Format) -> bool {
+    !format.summary
+        && matches!(
+            format.kind,
+            Kind::NameStatus
+                | Kind::NameOnly
+                | Kind::Raw
+                | Kind::Stat
+                | Kind::NumStat
+                | Kind::ShortStat
+                | Kind::Patch
+        )
+}
+
 /// Appends the difference between `old` and `new` (limited to `only` when given) to `out`; true if any file differs.
 pub fn compare(
     backend: &dyn Backend,
@@ -900,20 +944,18 @@ pub fn compare(
         (old, new)
     };
     let mut list = pairs(backend, old, new, only, opts.as_ref())?;
-    if format.kind == Kind::NameStatus && !format.summary {
-        list.extend(format.unmerged.iter().map(|path| Pair {
-            old_path: path.clone(),
-            new_path: path.clone(),
-            old: None,
-            new: None,
+    if lists_unmerged(format) {
+        list.extend(format.unmerged.iter().map(|u| Pair {
+            old_path: u.path.clone(),
+            new_path: u.path.clone(),
+            old: u.old.clone(),
+            new: u.new.clone(),
             moved: None,
             rewrite: None,
             detached: false,
+            unmerged: true,
         }));
-        list.sort_by(|a, b| {
-            (&a.new_path, a.old.is_some() || a.new.is_some())
-                .cmp(&(&b.new_path, b.old.is_some() || b.new.is_some()))
-        });
+        list.sort_by_key(|p| (p.new_path.clone(), !p.unmerged));
     }
     if !format.kept.is_empty() {
         list.retain(|p| format.kept.contains(&p.new_path));
@@ -1077,6 +1119,9 @@ pub(crate) fn status_of(p: &Pair) -> String {
     if let Some(m) = &p.moved {
         return format!("{}{:03}", if m.copy { 'C' } else { 'R' }, m.percent());
     }
+    if p.unmerged {
+        return "U".into();
+    }
     match (&p.old, &p.new) {
         (None, None) => "U",
         (None, _) => "A",
@@ -1119,6 +1164,22 @@ fn render(
     for p in list {
         let (a, b) = (p.old.as_ref(), p.new.as_ref());
         let path = &p.new_path;
+        if p.unmerged
+            && matches!(
+                format.kind,
+                Kind::Patch | Kind::Stat | Kind::NumStat | Kind::ShortStat
+            )
+        {
+            differs = true;
+            match format.kind {
+                Kind::Patch => out.push_str(&format!("* Unmerged path {path}\n")),
+                _ => {
+                    stat_rows.push((quote(path), Counts::Unmerged));
+                    moved_from.push(None);
+                }
+            }
+            continue;
+        }
         match format.kind {
             Kind::NameOnly => {
                 differs = true;
@@ -1264,6 +1325,7 @@ fn render(
             let (x, y) = match counts {
                 Counts::Lines(a, d) => (a.to_string(), d.to_string()),
                 Counts::Binary(..) => ("-".into(), "-".into()),
+                Counts::Unmerged => ("0".into(), "0".into()),
             };
             match (from, format.opts.nul) {
                 (Some((old, new)), true) => {
@@ -1280,7 +1342,7 @@ fn render(
     }
     if format.kind == Kind::ShortStat && !stat_rows.is_empty() {
         let (added, deleted) = totals(&stat_rows);
-        out.push_str(&diffstat::summary(stat_rows.len(), added, deleted));
+        out.push_str(&diffstat::summary(counted(&stat_rows), added, deleted));
     }
     if format.kind == Kind::Stat {
         let rows: Vec<diffstat::Row> = stat_rows

@@ -383,20 +383,18 @@ fn show_stat(
     new: &ObjectId,
 ) -> Result<()> {
     let config = git.config();
-    let enabled = match (args.stat, args.no_stat) {
-        (true, _) => true,
-        (_, true) => false,
-        _ => ["merge.stat", "merge.diffstat"]
-            .iter()
-            .find_map(|k| {
-                let v = config.get(k)?;
-                config
-                    .get_bool(k)
-                    .ok()
-                    .flatten()
-                    .or_else(|| v.eq_ignore_ascii_case("compact").then_some(true))
-            })
-            .unwrap_or(true),
+    let setting = ["merge.stat", "merge.diffstat"].iter().find_map(|k| {
+        let v = config.get(k)?;
+        let compact = v.eq_ignore_ascii_case("compact");
+        Some((
+            compact,
+            compact || config.get_bool(k).ok().flatten().unwrap_or(true),
+        ))
+    });
+    let (compact, enabled) = match (args.stat, args.no_stat) {
+        (true, _) => (false, true),
+        (_, true) => (false, false),
+        _ => setting.unwrap_or((false, true)),
     };
     if !enabled || QUIET.load(std::sync::atomic::Ordering::Relaxed) {
         return Ok(());
@@ -407,7 +405,13 @@ fn show_stat(
     let graph = config
         .get("diff.statgraphwidth")
         .and_then(|w| w.parse::<usize>().ok());
-    let text = diff::merge_stat(git, &before, &after, (diffstat::terminal_width(), graph))?;
+    let text = diff::merge_stat(
+        git,
+        &before,
+        &after,
+        (diffstat::terminal_width(), graph),
+        compact,
+    )?;
     print!("{text}");
     Ok(())
 }
@@ -523,6 +527,9 @@ fn true_merge(
     if unrelated && !args.allow_unrelated_histories {
         write_orig_head(git, &ours)?;
         bail!("refusing to merge unrelated histories");
+    }
+    if kind.is_tree_merge() {
+        options::check_verbosity(git, &ours);
     }
     let tree_of = |c: &ObjectId| -> Result<ObjectId> { Ok(git.repo.commit(c)?.tree) };
     let ours_tree = tree_of(&ours)?;
@@ -842,6 +849,18 @@ impl Finish<'_> {
         Ok(String::from_utf8_lossy(&text).into_owned())
     }
 
+    /// A message given with `-m` or `-F` goes into `MERGE_MSG` uncleaned and followed by a newline, as git does.
+    fn conflict_message(&self, cleaned: &str) -> Result<String> {
+        let args = self.args;
+        if args.edit || options::log_limit(self.git, args) > 0 {
+            return Ok(cleaned.to_string());
+        }
+        Ok(match options::given_message(args)? {
+            Some(raw) => format!("{}\n", String::from_utf8_lossy(&raw)),
+            None => cleaned.to_string(),
+        })
+    }
+
     fn conclude(
         &self,
         conflicted: Vec<Vec<u8>>,
@@ -882,7 +901,7 @@ impl Finish<'_> {
             return Ok(());
         }
         if !conflicted.is_empty() {
-            let mut text = format!("{message}\n# Conflicts:\n");
+            let mut text = format!("{}\n# Conflicts:\n", self.conflict_message(&message)?);
             for p in &conflicted {
                 text.push_str(&format!("#\t{}\n", path_string(p)));
             }

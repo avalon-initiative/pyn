@@ -603,3 +603,88 @@ fn no_index_diff_outside_the_work_tree_applies_the_global_autocrlf() {
         }
     }
 }
+
+#[test]
+fn a_bad_attr_source_is_fatal_for_diff_as_it_is_in_git() {
+    for format in FORMATS {
+        let rig = Rig::new();
+        let repo = two_commits(&rig, format);
+        fs::write(repo.join("a.txt"), b"changed\n").unwrap();
+        rig.var("GIT_ATTR_SOURCE", Some("nonesuch"));
+        for args in [
+            vec!["diff"],
+            vec!["diff", "--stat"],
+            vec!["diff", "HEAD~1", "HEAD"],
+            vec!["diff", "--stat", "HEAD~1", "HEAD"],
+            vec!["diff", "--check", "HEAD~1", "HEAD"],
+            vec!["diff", "--name-only", "HEAD~1", "HEAD"],
+        ] {
+            let (got, want) = (rig.pyn(&repo, &args, b""), rig.git(&repo, &args, b""));
+            assert_eq!(
+                oracle::status_class(got.code),
+                oracle::status_class(want.code),
+                "{args:?}"
+            );
+        }
+        rig.var("GIT_ATTR_SOURCE", None);
+        let ok = rig.pyn(&repo, &["diff", "HEAD~1", "HEAD"], b"");
+        assert_eq!(ok.code, 0);
+    }
+}
+
+#[test]
+fn a_bare_repository_reads_attributes_from_head_when_git_does() {
+    for format in FORMATS {
+        let rig = Rig::new();
+        let repo = rig.work("r", format, &sample_files(), "");
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "one"]);
+        let bare = rig.root.join("b.git");
+        init(&bare, format, true);
+        let branch = run(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        let branch = branch.trim();
+        run(&repo, &["push", "-q", bare.to_str().unwrap(), branch]);
+        run(
+            &bare,
+            &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")],
+        );
+        let args = ["check-attr", "-a", "--", "a.txt", "sub/a.txt"];
+        if rig.git(&bare, &args, b"").stdout.is_empty() {
+            eprintln!("skipped: this git does not read HEAD's attributes in a bare repository");
+            return;
+        }
+        rig.same(&bare, &args, b"");
+    }
+}
+
+#[test]
+fn no_index_diff_applies_the_global_attributes_file() {
+    for format in FORMATS {
+        let rig = Rig::new();
+        let global = rig.root.join("home/attrs");
+        fs::write(&global, "*.x -diff\n").unwrap();
+        fs::write(
+            rig.root.join("home/.gitconfig"),
+            format!("[core]\n\tattributesFile = {}\n", global.display()),
+        )
+        .unwrap();
+        let outside = rig.root.join("out");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("p.x"), b"a\n").unwrap();
+        fs::write(outside.join("q.x"), b"b\n").unwrap();
+        fs::write(outside.join("p.y"), b"a\n").unwrap();
+        fs::write(outside.join("q.y"), b"b\n").unwrap();
+        let repo = rig.work("r", format, &[("f", b"x\n")], "");
+        for (dir, prefix) in [(&outside, ""), (&repo, "../out/")] {
+            for ext in ["x", "y"] {
+                let (a, b) = (format!("{prefix}p.{ext}"), format!("{prefix}q.{ext}"));
+                let args = ["diff", "--no-index", a.as_str(), b.as_str()];
+                let (got, want) = (rig.pyn(dir, &args, b""), rig.git(dir, &args, b""));
+                assert_eq!(got.code, want.code, "{args:?}");
+                let binary = |o: &Out| String::from_utf8_lossy(&o.stdout).contains("Binary files");
+                assert_eq!(binary(&got), binary(&want), "{args:?} in {}", dir.display());
+                assert_eq!(binary(&want), ext == "x");
+            }
+        }
+    }
+}

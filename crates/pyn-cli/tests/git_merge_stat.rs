@@ -281,3 +281,31 @@ fn unfinished_merges_are_refused_with_git_s_messages() {
     );
     both_formats(&concluded, |p| p.same(&["merge", "side"]));
 }
+
+#[test]
+fn compact_stat_matches_the_compact_summary_diff() {
+    let script = format!(
+        "seq 1 5 >a; echo old >gone; echo x >exec.sh; seq 1 40 >ren; git add .; git commit -qm one\n{SIDE}\
+         echo 6 >>a; git rm -q gone; chmod +x exec.sh; git mv ren moved; echo n >new; ln -s new lnk; \
+         git add -A; git commit -qm two\n{BACK}"
+    );
+    for how in [
+        vec!["merge", "side"],
+        vec!["merge", "--no-ff", "-m", "x", "side"],
+    ] {
+        both_formats(&format!("{script}git config merge.stat compact\n"), |p| {
+            let want = text(
+                &p.git(
+                    &p.git,
+                    &["diff", "--stat", "--compact-summary", "main", "side"],
+                    None,
+                )
+                .stdout,
+            );
+            let got = text(&p.pyn(&how, None).stdout);
+            assert!(want.contains("(new"), "{want}");
+            assert!(!want.contains("create mode"), "{want}");
+            assert!(got.ends_with(&want), "{how:?}: want {want:?} in {got:?}");
+        });
+    }
+}

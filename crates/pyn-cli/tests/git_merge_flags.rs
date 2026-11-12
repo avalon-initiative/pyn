@@ -960,6 +960,25 @@ fn conflict_style_picks_the_markers() {
     }
 }
 
+/// Both sides rewrote `b..d` and kept `S` before and `T` after their own line.
+const SHARED_LINES: &str = "printf 'a\\nb\\nc\\nd\\ne\\n' >f; git add .; git commit -qm base\n\
+    git checkout -q -b side\nprintf 'a\\nS\\nB2\\nT\\ne\\n' >f; git commit -qam 'side one'\n\
+    git checkout -q main\nprintf 'a\\nS\\nB1\\nT\\ne\\n' >f; git commit -qam main\n";
+
+#[test]
+fn shared_lines_leave_the_conflict_unless_diff3() {
+    for style in ["merge", "diff3", "zdiff3"] {
+        each_format(SHARED_LINES, |p| {
+            p.both_sh(&format!("git config merge.conflictStyle {style}"));
+            p.refused(&["merge", "side"]);
+            let marked = fs::read_to_string(p.pyn.join("f")).unwrap();
+            let outside =
+                marked.starts_with("a\nS\n<<<<<<<") && marked.ends_with(">>>>>>> side\nT\ne\n");
+            assert_eq!(outside, style != "diff3", "{marked}");
+        });
+    }
+}
+
 #[test]
 fn default_markers_reach_cherry_pick() {
     each_format(CONFLICT, |p| {
@@ -991,4 +1010,106 @@ fn diff_name_status_lists_unmerged_paths() {
         p.both_sh("git checkout -q --ours f");
         names(&["diff", "--name-status"]);
     });
+}
+
+#[test]
+fn diff_listings_cover_unmerged_paths() {
+    each_format(UNMERGED, |p| {
+        p.refused(&["merge", "side"]);
+        let listed = |args: &[&str]| {
+            let (g, o) = (p.run(false, args), p.run(true, args));
+            assert_eq!(text(&o.stdout), text(&g.stdout), "{args:?}");
+            assert_eq!(o.status.code(), g.status.code(), "{args:?}");
+            text(&g.stdout)
+        };
+        assert!(listed(&["diff", "--raw"]).contains(" U\tf\n"));
+        for mode in [&["diff"][..], &["diff", "--cached"]] {
+            for format in [
+                "--raw",
+                "--raw -z",
+                "--name-only",
+                "--stat",
+                "--numstat",
+                "--shortstat",
+                "--raw --diff-filter=U",
+            ] {
+                let mut args = mode.to_vec();
+                args.extend(format.split(' '));
+                listed(&args);
+            }
+        }
+        assert!(listed(&["diff", "--cached", "--raw"]).contains(" U\th\n"));
+        listed(&["diff", "--cached"]);
+        listed(&["diff", "--", "g", "h"]);
+        listed(&["diff", "--exit-code", "--raw", "g"]);
+        listed(&["diff", "--stat", "g"]);
+        listed(&["diff", "--cached", "--stat", "g"]);
+        p.both_sh("git checkout -q --ours f");
+        listed(&["diff", "--raw"]);
+        listed(&["diff", "--cached", "--raw"]);
+    });
+}
+
+#[test]
+fn merge_verbosity_setting() {
+    for (value, ok) in [("0", true), ("5", true), ("abc", false)] {
+        each_format(CLEAN, |p| {
+            p.both_sh(&format!("git config merge.verbosity '{value}'"));
+            if ok {
+                p.works(&["merge", "side"]);
+            } else {
+                p.refused(&["merge", "side"]);
+            }
+        });
+    }
+    each_format(CLEAN, |p| {
+        p.both_sh("git config merge.verbosity abc");
+        p.refused(&["merge", "--abort"]);
+    });
+}
+
+#[test]
+fn file_message_of_a_conflicted_merge() {
+    for body in ["msg\n", "msg\n\n", "msg", "  spaced  \n\n# note\n", ""] {
+        for args in [&[][..], &["--cleanup=verbatim"], &["--no-ff"]] {
+            each_format(CONFLICT, |p| {
+                let file = p.home.join("message");
+                fs::write(&file, body).unwrap();
+                let file = file.to_str().unwrap();
+                p.refused(&[&["merge"][..], args, &["-F", file, "side"]].concat());
+            });
+        }
+    }
+    each_format(CONFLICT, |p| {
+        let file = p.home.join("message");
+        fs::write(&file, "from file\n").unwrap();
+        let file = file.to_str().unwrap();
+        p.refused(&["merge", "-m", "first", "-F", file, "side"]);
+    });
+}
+
+#[test]
+fn merge_options_are_read_before_abort_continue_and_quit() {
+    for config in [
+        "--no-commit",
+        "--squash -m x",
+        "-s ours",
+        "--ff-only",
+        "--bogus",
+        "-m 'open",
+        "-X nonsense",
+    ] {
+        for end in ["--abort", "--continue", "--quit"] {
+            each_format(CONFLICT, |p| {
+                p.refused(&["merge", "side"]);
+                let file = p.home.join("options");
+                fs::write(&file, config).unwrap();
+                p.both_sh(&format!(
+                    "git config branch.main.mergeOptions \"$(cat '{}')\"",
+                    file.display()
+                ));
+                p.same(&["merge", end]);
+            });
+        }
+    }
 }

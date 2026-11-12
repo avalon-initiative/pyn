@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e docker-build docker-build-cli fmt fmt-check clippy lint check release release-skip-tests release-publish release-test clean
+.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e docker-build docker-build-cli fmt fmt-check clippy lint check release release-skip-tests release-publish release-test release-smoke clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -35,6 +35,7 @@ help:
 	@echo "  make release-skip-tests  same as release without the checks"
 	@echo "  make release-publish  tag the merged release commit on main and push the tag"
 	@echo "  make release-test  test the release scripts against a throwaway repository"
+	@echo "  make release-smoke VER=x.y.z  run the published images of a release through deploy/docker-compose.yml (needs docker)"
 	@echo "  make clean         remove build artifacts and PID/log files"
 
 build:
@@ -149,6 +150,9 @@ release-publish:
 
 release-test:
 	@scripts/test-release.sh
+
+release-smoke:
+	@scripts/smoke-release.sh "$(VER)"
 
 clean:
 	cargo clean

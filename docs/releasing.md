@@ -51,12 +51,38 @@ repository with a stub `gh`; it is part of `make check`.
    version only, never the title (`v1.0.0-first-stable` publishes `pyn-core:v1.0.0`); there is no `latest` tag.
 6. Creates the GitHub Release with the archives, a `SHA256SUMS` file and generated notes; the title is the tag, and
    only an `alpha`, `beta`, `rc` or `pre` suffix marks it as a pre-release.
+7. In parallel with step 6, runs the [smoke test](#smoke-test) against the published images. It is not a dependency of the
+   GitHub Release and never blocks it.
 
 The image and archives are built from the same tagged commit. A failed run publishes no release. If it fails after the
 image push in step 5, fix forward with a new patch version rather than re-tagging.
 
 After the first push, the org owner must set the `pyn-core` package on ghcr.io to public (GitHub Packages settings);
 it starts private, and pulls need a login until then.
+
+## Smoke test
+
+[`scripts/smoke-release.sh`](../scripts/smoke-release.sh) checks what was actually published: it takes `deploy/docker-compose.yml`
+from the checkout, writes a throwaway `.env` (`PYN_VERSION=v<version>`, random secrets, a free web port) in a temporary
+directory and starts the stack under its own compose project, so it does not touch a real deployment (it still needs host
+port 7878 for the server). It then checks `/healthz` and the web app, completes first-run setup with the token from the
+server log through `POST /v1/setup`, and confirms `GET /v1/setup` reports `initialised`. It always removes the stack and its
+volumes (`docker compose down --volumes`), and on failure prints `compose ps` and the logs first.
+
+The release workflow runs it as the `smoke` job once the images are published ([`smoke.yml`](../.github/workflows/smoke.yml)).
+The web image is built by pyn-web's own tag workflow, which can finish after this one, so the script retries the pull for
+about ten minutes (`SMOKE_PULL_ATTEMPTS`, `SMOKE_PULL_WAIT`).
+
+A failed smoke run means look at it, not that the release is bad: the job is not part of the gate, the GitHub Release is
+created regardless, and the cause is as often a late web image or a runner problem as a defect. Read the logs the job
+prints before deciding anything.
+
+Run it by hand on a machine with Docker (`docker compose`, `curl`, `openssl`), or trigger the workflow:
+
+```bash
+scripts/smoke-release.sh 0.1.0        # or: make release-smoke VER=0.1.0
+gh workflow run smoke.yml -f version=0.1.0
+```
 
 ## Using a release
 

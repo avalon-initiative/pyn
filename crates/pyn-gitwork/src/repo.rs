@@ -47,6 +47,63 @@ fn system_attributes_path() -> Option<PathBuf> {
     (!off).then(|| PathBuf::from("/etc/gitattributes"))
 }
 
+fn read_attribute_file(path: Option<PathBuf>) -> Result<Vec<u8>> {
+    match path.map(std::fs::read) {
+        Some(Ok(bytes)) => Ok(bytes),
+        Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(Error::Io {
+            path: "attributes".into(),
+            source: e,
+        }),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// `core.attributesFile`, else `$XDG_CONFIG_HOME/git/attributes`, else `~/.config/git/attributes`.
+fn global_attributes_path(
+    config: &Config,
+    home: Option<&Path>,
+    xdg: Option<&Path>,
+) -> Option<PathBuf> {
+    match config.get("core.attributesfile") {
+        Some(p) if !p.is_empty() => Some(match p.strip_prefix("~/") {
+            Some(rest) => home?.join(rest),
+            None => PathBuf::from(p),
+        }),
+        _ => {
+            let xdg = xdg
+                .map(Path::to_path_buf)
+                .or_else(|| home.map(|h| h.join(".config")))?;
+            Some(xdg.join("git/attributes"))
+        }
+    }
+}
+
+fn global_attribute_bytes(
+    system: Option<PathBuf>,
+    config: &Config,
+    home: Option<&Path>,
+    xdg: Option<&Path>,
+) -> Result<Vec<u8>> {
+    let mut global = read_attribute_file(system)?;
+    if !global.is_empty() && global.last() != Some(&b'\n') {
+        global.push(b'\n');
+    }
+    global.extend(read_attribute_file(global_attributes_path(
+        config, home, xdg,
+    ))?);
+    Ok(global)
+}
+
+/// The system and global attribute files only, for a comparison that has no repository.
+pub fn global_attributes(
+    config: &Config,
+    home: Option<&Path>,
+    xdg: Option<&Path>,
+) -> Result<Attributes> {
+    let bytes = global_attribute_bytes(system_attributes_path(), config, home, xdg)?;
+    Ok(Attributes::new(&bytes, &[], Box::new(|_| None), false))
+}
+
 /// The folder a `.gitattributes` path lives in (`""` for the root), or `None` for any other path.
 fn attribute_folder(path: &[u8]) -> Option<&[u8]> {
     if path == b".gitattributes" {
@@ -323,20 +380,13 @@ impl Repo {
         source: &AttrSource,
         system: Option<PathBuf>,
     ) -> Result<Attributes> {
-        let read = |path: Option<PathBuf>| match path.map(std::fs::read) {
-            Some(Ok(bytes)) => Ok(bytes),
-            Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(Error::Io {
-                path: "attributes".into(),
-                source: e,
-            }),
-            _ => Ok(Vec::new()),
-        };
-        let mut global = read(system)?;
-        if !global.is_empty() && global.last() != Some(&b'\n') {
-            global.push(b'\n');
-        }
-        global.extend(read(self.global_attributes_path())?);
-        let info = read(Some(self.git.common_dir().join("info/attributes")))?;
+        let global = global_attribute_bytes(
+            system,
+            &self.config,
+            self.home.as_deref(),
+            self.xdg.as_deref(),
+        )?;
+        let info = read_attribute_file(Some(self.git.common_dir().join("info/attributes")))?;
         let loader: crate::attributes::Loader = match source {
             AttrSource::WorkTree => {
                 let root = self.git.work_tree().map(Path::to_path_buf);
@@ -396,23 +446,6 @@ impl Repo {
             &self.attributes()?.for_path(path),
         )
         .with_filters(&self.config, &self.filters))
-    }
-
-    fn global_attributes_path(&self) -> Option<PathBuf> {
-        let home = self.home.as_deref();
-        match self.config.get("core.attributesfile") {
-            Some(p) if !p.is_empty() => Some(match p.strip_prefix("~/") {
-                Some(rest) => home?.join(rest),
-                None => PathBuf::from(p),
-            }),
-            _ => {
-                let xdg = self
-                    .xdg
-                    .clone()
-                    .or_else(|| home.map(|h| h.join(".config")))?;
-                Some(xdg.join("git/attributes"))
-            }
-        }
     }
 
     fn global_excludes_path(&self) -> Option<PathBuf> {

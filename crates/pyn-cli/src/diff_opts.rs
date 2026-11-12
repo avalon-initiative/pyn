@@ -53,9 +53,15 @@ pub struct PatchFlags {
     /// Spend extra time to find the smallest set of changes.
     #[arg(long)]
     minimal: bool,
-    /// Choose the algorithm that finds the changes: `default` (`myers`) or `minimal`.
+    /// Choose the algorithm that finds the changes: `default` (`myers`), `minimal`, `patience` or `histogram`.
     #[arg(long = "diff-algorithm", value_name = "ALGORITHM")]
     diff_algorithm: Option<String>,
+    /// Same as `--diff-algorithm=patience`.
+    #[arg(long, overrides_with = "histogram")]
+    patience: bool,
+    /// Same as `--diff-algorithm=histogram`.
+    #[arg(long, overrides_with = "patience")]
+    histogram: bool,
     /// Slide changed blocks to where they read best (the default).
     #[arg(long = "indent-heuristic", overrides_with = "no_indent_heuristic")]
     indent_heuristic: bool,
@@ -290,12 +296,17 @@ fn parse_filter(text: &str) -> (String, String) {
 }
 
 impl PatchFlags {
-    fn algorithm(&self) -> Option<&str> {
-        match self.diff_algorithm.as_deref() {
-            None | Some("default" | "myers" | "minimal") => self.diff_algorithm.as_deref(),
-            Some(other) => crate::usage_error(&format!(
-                "`--diff-algorithm={other}` is not built; only default, myers and minimal are"
-            )),
+    fn algorithm(&self) -> Option<(pyn_diff::Algorithm, bool)> {
+        if self.patience {
+            return Some((pyn_diff::Algorithm::Patience, false));
+        }
+        if self.histogram {
+            return Some((pyn_diff::Algorithm::Histogram, false));
+        }
+        let name = self.diff_algorithm.as_deref()?;
+        match pyn_diff::Algorithm::parse(name) {
+            Some(found) => Some(found),
+            None => crate::usage_error(&format!("option diff-algorithm does not accept `{name}`")),
         }
     }
 
@@ -402,6 +413,8 @@ impl PatchFlags {
             ("-a", self.text),
             ("--minimal", self.minimal),
             ("--diff-algorithm", self.diff_algorithm.is_some()),
+            ("--patience", self.patience),
+            ("--histogram", self.histogram),
             ("--indent-heuristic", self.indent_heuristic),
             ("--no-indent-heuristic", self.no_indent_heuristic),
             ("--no-ext-diff", self.no_ext_diff),
@@ -437,7 +450,8 @@ impl PatchFlags {
                 eol: self.space_at_eol,
                 cr: self.cr_at_eol,
                 blank_lines: self.blank_lines,
-                minimal: self.minimal || self.algorithm() == Some("minimal"),
+                minimal: self.minimal || self.algorithm().is_some_and(|(_, minimal)| minimal),
+                algorithm: self.algorithm().map_or_else(Default::default, |(a, _)| a),
                 no_indent_heuristic: self.no_indent_heuristic,
             },
             compact_summary: self.compact_summary,
@@ -455,7 +469,10 @@ impl PatchFlags {
                     self.no_prefix || self.dst_prefix.is_some()
                 },
                 indent_heuristic: self.indent_heuristic || self.no_indent_heuristic,
-                algorithm: self.minimal || self.diff_algorithm.is_some(),
+                algorithm: self.minimal
+                    || self.diff_algorithm.is_some()
+                    || self.patience
+                    || self.histogram,
             },
             reverse: self.swap_sides,
             filter: self.diff_filter.as_deref().map(parse_filter),
@@ -576,12 +593,16 @@ impl Opts {
         if !o.chosen.indent_heuristic && on("diff.indentheuristic") == Some(false) {
             o.ws.no_indent_heuristic = true;
         }
-        if !o.chosen.algorithm {
-            match setting("diff.algorithm").as_deref() {
-                None | Some("default" | "myers") => {}
-                Some("minimal") => o.ws.minimal = true,
-                Some(other) => crate::usage_error(&format!(
-                    "`diff.algorithm={other}` is not built; only default, myers and minimal are"
+        if !o.chosen.algorithm
+            && let Some(name) = setting("diff.algorithm")
+        {
+            match pyn_diff::Algorithm::parse(&name) {
+                Some((algorithm, minimal)) => {
+                    o.ws.algorithm = algorithm;
+                    o.ws.minimal = minimal;
+                }
+                None => crate::usage_error(&format!(
+                    "unknown value for config 'diff.algorithm': {name}"
                 )),
             }
         }

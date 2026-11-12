@@ -42,8 +42,9 @@ Options (a git repository only; output and exit status are git blame's):
   --color-lines         color repeated lines of an entry; --color-by-age colors by age (`blame.coloring`, `color.blame.*`)
   -S <file>             take parents from a graft file: a commit id and its parents per line
   --minimal             spend extra cycles to find better diffs
+  --diff-algorithm <a>  accepted and checked; blame always finds changes with Myers, as git does
 Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): -M, -C, --show-stats,
---score-debug, --diff-algorithm, -L :<funcname> with a built-in diff driver that is not ported and
+--score-debug, -L :<funcname> with a built-in diff driver that is not ported and
 other revision options.";
 
 #[derive(Args, Debug)]
@@ -171,9 +172,16 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                     None => fail(annotate, "option `contents' requires a value"),
                 },
                 ("incremental", None) => p.incremental = true,
-                ("show-stats" | "score-debug" | "diff-algorithm", _) => {
-                    not_built(annotate, &format!("--{name}"))
+                ("diff-algorithm", v) => {
+                    let value = value_of(&mut it, v, name, annotate);
+                    if pyn_diff::Algorithm::parse(&value).is_none() {
+                        fail(
+                            annotate,
+                            "option diff-algorithm accepts \"myers\", \"minimal\", \"patience\" and \"histogram\"",
+                        );
+                    }
                 }
+                ("show-stats" | "score-debug", _) => not_built(annotate, &format!("--{name}")),
                 _ => fail(annotate, &format!("unknown option `{arg}'")),
             }
         } else if arg.len() > 1 && arg.starts_with('-') {
@@ -258,11 +266,6 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     };
     if annotate {
         p.flags.annotate = true;
-    }
-    if let Some(algo) = git.config().get("diff.algorithm")
-        && !matches!(algo, "default" | "myers")
-    {
-        bail!("diff.algorithm={algo} is not supported by blame on a git repository yet");
     }
     let pre = prefix(git, cwd).unwrap_or_default();
     let resolver = Resolver { git, prefix: &pre };
