@@ -270,7 +270,7 @@ impl Repo {
             }
             row(&mut rows, path).staged = Some(kind);
         }
-        for (path, kind) in self.unstaged_changes_with_submodules(&index, &modules)? {
+        for (path, kind) in self.worktree_changes_with(&index, Some(&modules), true)? {
             row(&mut rows, path).unstaged = Some(kind);
         }
         for e in index
@@ -377,10 +377,25 @@ impl Repo {
         self.worktree_changes(index, None)
     }
 
+    /// Like [`Self::unstaged_changes`], but as `git ls-files -m` decides: a file whose size differs from the index
+    /// entry's is modified without comparing its converted content.
+    pub fn unstaged_changes_by_stat(&self, index: &Index) -> Result<BTreeMap<Vec<u8>, Kind>> {
+        self.worktree_changes_with(index, Some(&self.submodules()), true)
+    }
+
     fn worktree_changes(
         &self,
         index: &Index,
         modules: Option<&Submodules<'_>>,
+    ) -> Result<BTreeMap<Vec<u8>, Kind>> {
+        self.worktree_changes_with(index, modules, false)
+    }
+
+    fn worktree_changes_with(
+        &self,
+        index: &Index,
+        modules: Option<&Submodules<'_>>,
+        size_decides: bool,
     ) -> Result<BTreeMap<Vec<u8>, Kind>> {
         let root = self.root()?;
         let file_mode = self.bool_setting("core.filemode", true);
@@ -393,7 +408,16 @@ impl Repo {
         for e in &index.entries {
             if e.stage > 0 {
                 out.insert(e.path.clone(), Kind::Unmerged);
-            } else if let Some(kind) = self.check_entry(root, e, file_mode, index_time, modules)? {
+            } else if let Some(kind) = self.check_entry(
+                root,
+                e,
+                Scan {
+                    file_mode,
+                    index_time,
+                    size_decides,
+                },
+                modules,
+            )? {
                 out.insert(e.path.clone(), kind);
             }
         }
@@ -404,10 +428,14 @@ impl Repo {
         &self,
         root: &Path,
         e: &IndexEntry,
-        file_mode: bool,
-        index_time: Option<u64>,
+        scan: Scan,
         modules: Option<&Submodules<'_>>,
     ) -> Result<Option<Kind>> {
+        let Scan {
+            file_mode,
+            index_time,
+            size_decides,
+        } = scan;
         if e.assume_valid || e.skip_worktree {
             return Ok(None);
         }
@@ -457,6 +485,9 @@ impl Repo {
         if !mode_differs && !racy && stat_matches(&meta, e) {
             return Ok(None);
         }
+        if size_decides && !mode_differs && e.size != 0 && meta.len() as u32 != e.size {
+            return Ok(Some(Kind::Modified));
+        }
         let (_, id) = self.hash_worktree_entry(&e.path, &path, Some(e.id))?;
         Ok((id != e.id || mode_differs).then_some(Kind::Modified))
     }
@@ -499,6 +530,13 @@ impl Repo {
         out.sort();
         Ok(out)
     }
+}
+
+#[derive(Clone, Copy)]
+struct Scan {
+    file_mode: bool,
+    index_time: Option<u64>,
+    size_decides: bool,
 }
 
 struct Walk<'a> {

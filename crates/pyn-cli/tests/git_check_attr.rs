@@ -688,3 +688,131 @@ fn no_index_diff_applies_the_global_attributes_file() {
         }
     }
 }
+
+/// A repository with `*.t text` whose index git wrote: `size.t` is rewritten with CRLF, `same.t` with a new
+/// mtime only, `edit.t` with other bytes of the same size.
+fn stat_repo(rig: &Rig, format: &str, changed: &[&str]) -> PathBuf {
+    let files: [(&str, &[u8]); 4] = [
+        (".gitattributes", b"*.t text\n"),
+        ("size.t", b"a\nb\n"),
+        ("same.t", b"a\nb\n"),
+        ("edit.t", b"x\ny\n"),
+    ];
+    let repo = rig.work("r", format, &files, "");
+    // Old mtimes keep every entry from being racily clean, which makes git compare content.
+    let stamp = |name: &str, age: u64| {
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+        let file = fs::File::options()
+            .write(true)
+            .open(repo.join(name))
+            .unwrap();
+        file.set_modified(when).unwrap();
+    };
+    for (name, _) in files {
+        stamp(name, 7200);
+    }
+    run(&repo, &["add", "-A"]);
+    run(&repo, &["commit", "-q", "-m", "one"]);
+    for name in changed {
+        let bytes: &[u8] = match *name {
+            "size.t" => b"a\r\nb\r\n",
+            "same.t" => b"a\nb\n",
+            _ => b"x\nz\n",
+        };
+        fs::write(repo.join(name), bytes).unwrap();
+        stamp(name, 3600);
+    }
+    repo
+}
+
+#[test]
+fn ls_files_modified_lists_a_size_change_without_comparing_converted_content() {
+    for format in FORMATS {
+        let rig = Rig::new();
+        let repo = stat_repo(&rig, format, &["size.t", "same.t", "edit.t"]);
+        let out = rig.same(&repo, &["ls-files", "-m"], b"");
+        let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert_eq!(listed, "edit.t\nsize.t\n", "{format}");
+        rig.same(&repo, &["ls-files", "-m", "-t"], b"");
+        rig.same(&repo, &["status", "--short"], b"");
+    }
+}
+
+#[test]
+fn a_bad_attr_source_is_fatal_only_where_git_reads_attributes() {
+    for format in FORMATS {
+        let rig = Rig::new();
+        let size = stat_repo(&rig, format, &["size.t"]);
+        rig.var("GIT_ATTR_SOURCE", Some("nonesuch"));
+        for args in [vec!["ls-files", "-m"], vec!["status", "--short"]] {
+            let out = rig.same(&size, &args, b"");
+            assert_eq!(out.code, 0, "{args:?}");
+        }
+        let rig = Rig::new();
+        let repo = stat_repo(&rig, format, &["same.t"]);
+        rig.var("GIT_ATTR_SOURCE", Some("nonesuch"));
+        for args in [
+            vec!["ls-files", "-m"],
+            vec!["status", "--short"],
+            vec!["ls-files", "--eol"],
+            vec!["format-patch", "-1", "--stdout"],
+            vec!["grep", "-c", "a"],
+        ] {
+            let (got, want) = (rig.pyn(&repo, &args, b""), rig.git(&repo, &args, b""));
+            assert_eq!(
+                oracle::status_class(got.code),
+                oracle::status_class(want.code),
+                "{args:?} {format}"
+            );
+        }
+    }
+}
+
+#[test]
+fn no_index_diff_outside_the_work_tree_applies_global_line_ending_attributes() {
+    for format in FORMATS {
+        for attrs in [
+            "*.x text",
+            "*.x eol=crlf",
+            "*.x text=auto",
+            "*.x -text",
+            "*.x crlf",
+        ] {
+            let rig = Rig::new();
+            let global = rig.root.join("home/attrs");
+            fs::write(&global, format!("{attrs}\n")).unwrap();
+            fs::write(
+                rig.root.join("home/.gitconfig"),
+                format!(
+                    "[core]\n\tattributesFile = {}\n\tsafecrlf = false\n",
+                    global.display()
+                ),
+            )
+            .unwrap();
+            let outside = rig.root.join("out");
+            fs::create_dir_all(&outside).unwrap();
+            for (name, bytes) in [
+                ("a.x", &b"p\r\nq\r\n"[..]),
+                ("b.x", b"p\nq\n"),
+                ("c.x", b"p\nz\n"),
+            ] {
+                fs::write(outside.join(name), bytes).unwrap();
+            }
+            let repo = rig.work("r", format, &[("f", b"x\n")], "");
+            for (dir, prefix) in [(&outside, ""), (&repo, "../out/")] {
+                for (a, b) in [("a.x", "b.x"), ("a.x", "c.x")] {
+                    let (a, b) = (format!("{prefix}{a}"), format!("{prefix}{b}"));
+                    let args = ["diff", "--no-index", a.as_str(), b.as_str()];
+                    let (got, want) = (rig.pyn(dir, &args, b""), rig.git(dir, &args, b""));
+                    assert_eq!(got.code, want.code, "{args:?} {attrs}");
+                    assert_eq!(
+                        String::from_utf8_lossy(&got.stdout),
+                        String::from_utf8_lossy(&want.stdout),
+                        "{args:?} {attrs} in {}",
+                        dir.display()
+                    );
+                }
+            }
+        }
+    }
+}

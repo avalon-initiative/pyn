@@ -237,18 +237,21 @@ pub(crate) fn user_dirs() -> (Option<PathBuf>, Option<PathBuf>) {
     (dir("HOME"), dir("XDG_CONFIG_HOME"))
 }
 
-/// The conversion `core.autocrlf` and `core.eol` give a file no attribute applies to: from the repository's
-/// config, else the global one.
-pub(crate) fn config_conversion(git: Option<&GitHome>) -> pyn_gitwork::Conversion {
-    let settings = match git {
-        Some(g) => pyn_gitwork::Settings::from_config(g.repo.config()),
-        None => {
-            let (home, xdg) = user_dirs();
-            let config = home.and_then(|h| pyn_git::Config::global(&h, xdg.as_deref()).ok());
-            pyn_gitwork::Settings::from_config(&config.unwrap_or_default())
-        }
+/// The conversion settings (`core.autocrlf`, `core.eol`) and the global attributes file that apply to a file outside
+/// the work tree: from the repository's config, else the global one.
+pub(crate) fn outside_conversion(
+    git: Option<&GitHome>,
+) -> (pyn_gitwork::Settings, Option<pyn_gitwork::Attributes>) {
+    let (home, xdg) = user_dirs();
+    let global = home
+        .as_deref()
+        .and_then(|h| pyn_git::Config::global(h, xdg.as_deref()).ok());
+    let config = match git {
+        Some(g) => g.repo.config(),
+        None => &global.clone().unwrap_or_default(),
     };
-    pyn_gitwork::Conversion::new(settings, &pyn_gitwork::PathAttributes::default())
+    let attrs = pyn_gitwork::global_attributes(config, home.as_deref(), xdg.as_deref()).ok();
+    (pyn_gitwork::Settings::from_config(config), attrs)
 }
 
 /// The `.pyn` that belongs to folder `p`: `PYN_DIR` when it names one directly under `p`.
