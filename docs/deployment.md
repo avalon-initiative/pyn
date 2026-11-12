@@ -1,6 +1,6 @@
 # Deployment and backups
 
-New here? [Getting started](getting-started.md) is the step-by-step version, with an image-only Compose file in
+New here? [Getting started](getting-started.md) is the step-by-step version, with image-only Compose files in
 [`deploy/`](../deploy/docker-compose.yml). This page covers running a server you keep: one node with Docker Compose, TLS in front, upgrades, several copies, and backups with a
 tested restore. Provisional: written against the first pre-release, `v0.1.0-alpha`; the image-only Compose file in `deploy/` has not been run against a release yet.
 
@@ -39,6 +39,22 @@ Without `PYN_IMAGE` the Compose file builds the image from the checkout (`docker
 [configuration](configuration.md) can be added to `.env`. Keep `PYN_SECRET_KEY` with the backups: webhook secrets in the
 database cannot be decrypted without it.
 
+### Deployment shapes
+
+`deploy/` holds one self-contained Compose file per shape, each with its own env example, so there are no profiles or
+extra flags: download the pair, save them as `docker-compose.yml` and `.env`.
+
+| Shape | Compose file | Env example | Notes |
+| --- | --- | --- | --- |
+| Server and web app | `docker-compose.yml` | `.env.example` | The default; the web app proxies the API |
+| Server only | `docker-compose.server.yml` | `.env.server.example` | API published on `PYN_SERVER_PUBLISH` (default `127.0.0.1:7878`); no web app |
+| Web app only | `docker-compose.web.yml` | `.env.web.example` | Needs `PYN_API_URL`; no database or secrets |
+| Client only | none | none | Install the `pyn` command |
+
+For web-app-only, the server behind `PYN_API_URL` must list the web app's origin in `PYN_ALLOWED_ORIGINS` (see below).
+Healthchecks: the database and server files wait on PostgreSQL and the server image's check; `docker compose up --wait`
+on the web-only file waits on the web image's own check, if it has one. These files have not been run against a release yet.
+
 ### First run
 
 The easiest way is the browser: with the web app running (below), open its address and enter the setup token from the logs;
@@ -64,7 +80,7 @@ warns while it is still set.
 | `PYN_SECRET_KEY` | Encrypts webhook secrets at rest; compose refuses to start without it |
 | `PYN_REGISTRATION` | `invite` (default) or `closed` for a private server; `open` needs the [sign-up protections](concepts/access.md#protecting-open-registration) |
 | `PYN_TRUST_FORWARDED_FOR=true` | Only behind a proxy that sets `X-Forwarded-For`, so rate limits see client addresses |
-| `PYN_ALLOWED_ORIGINS` | Only for a web app served from another origin |
+| `PYN_ALLOWED_ORIGINS` | Required for a web app served from another origin, such as a web-only deployment pointing here (its address, no path) |
 | never `PYN_DEV_AUTH` | It accepts any user header with every permission |
 
 Logs go to standard error as plain text; read them with `docker compose logs`. The port is
