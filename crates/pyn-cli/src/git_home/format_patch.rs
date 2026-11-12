@@ -271,10 +271,15 @@ impl Context<'_> {
     }
 
     fn changes(&self, old: Option<&ObjectId>, new: &ObjectId) -> Result<Vec<Change>> {
-        Ok(self
+        let changes = self
             .git
             .repo
-            .diff_trees(old, Some(new), &Pathspec::default())?)
+            .diff_trees(old, Some(new), &Pathspec::default())?;
+        if !changes.is_empty() {
+            // the patch reads the diff attributes, so a bad source is fatal as in git
+            self.git.repo.attributes()?;
+        }
+        Ok(changes)
     }
 
     fn mail(

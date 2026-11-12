@@ -967,8 +967,10 @@ work tree root down to the path's folder (a deeper file wins, and a later line w
 environment variable, else the `attr.tree` setting, each naming a tree-ish whose `.gitattributes` files replace the work tree's;
 without one, the work tree, or `HEAD`'s tree in a bare repository (git versions differ on that default, an explicit source is the
 same everywhere). A bad `--source` or `GIT_ATTR_SOURCE` is fatal (`128`), a bad `attr.tree` is ignored, and a bare repository whose
-`HEAD` is unreadable is fatal as well. `--cached` still reads the index. A `diff` that prints a patch, `--stat` or `--check` is fatal too, as git's is; the
-attribute lookups that cannot report an error (`diff --color` whitespace marks) treat a bad `GIT_ATTR_SOURCE` as no attributes. Patterns follow git: a pattern without a slash matches names at any depth below its file,
+`HEAD` is unreadable is fatal as well. `--cached` still reads the index. A `diff` that prints a patch, `--stat` or `--check` is fatal too, as git's is, and so
+are `ls-files --eol`, `format-patch` of a commit with changes and `grep` of a file. git reads attributes only when a command needs them for a path: `status`
+and `ls-files -m` go on with a bad `GIT_ATTR_SOURCE` while no file needs a content comparison (see below). The attribute lookup of `diff --color` whitespace marks treats a bad
+source as no attributes, which no output shows, because the `diff` attribute lookup of the same file fails first. Patterns follow git: a pattern without a slash matches names at any depth below its file,
 others are anchored to it, `**` and character classes work, `core.ignoreCase` folds case, negative (`!`) and folder-only
 (`dir/`) patterns are ignored, and a symbolic link named `.gitattributes` is not read. Attribute states are set, unset
 (`-name`), reset (`!name`) and valued (`name=value`); `[attr]` macros are defined in the top-level `.gitattributes`,
@@ -991,16 +993,19 @@ comparison), `blame` (the work tree file, or `--contents`, is converted to the r
 and `diff --no-index` (a file inside the work tree of the repository you are in is converted by the attributes of its path), and to every command that writes work tree files (`switch`, `checkout`, `restore`, `reset --hard`, `merge`,
 `cherry-pick`, `revert`, `rebase`, `stash apply`, `clone`, `pull`), including conflict files. A `.gitattributes` that a checkout
 brings in applies to the files written after it, and to itself. `status` and `diff` compare the converted work tree file with the
-index, so a repository that relies on conversions shows no phantom changes. `-diff` makes a file binary in `diff` and `diff` forces text.
+index, so a repository that relies on conversions shows no phantom changes. `status` and `ls-files -m` decide as git does: a file whose size differs
+from its index entry's is modified without comparing converted content, so a CRLF file written outside git under `text` is listed (`diff` prints nothing for it) until
+it is added or restored; only a file with the same size and a changed stat time is compared by its converted content, and the attributes are read only then. `restore` of
+a path from the index refreshes that entry's stat data, as git does. `-diff` makes a file binary in `diff` and `diff` forces text.
 
 `pyn convert --home git` keeps a work tree file's stat data in the new index only when its converted form is the committed blob.
 
 Not built: `working-tree-encoding`,
 `export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.cachetextconv`,
 the `whitespace` attribute in `apply`. `diff --no-index` on a file outside the work tree of a repository (or with no
-repository) converts it by `core.autocrlf` and `core.eol` only, from the repository's config or the global one. The diff
+repository) converts it by `core.autocrlf` and `core.eol` and the line-ending attributes of the global attributes file (`text`, `eol`, `crlf`), from the repository's config or the global one. The diff
 attributes (`diff`, `whitespace`) there come from the system and global attributes files only, as in git; the per-folder
-files and `info/attributes` do not apply, and the global files' line-ending attributes are not applied to the conversion yet. Covered by
+files and `info/attributes` do not apply. Covered by
 `crates/pyn-cli/tests/git_attributes.rs`, which compares blob ids, work tree bytes and `status`
 and `diff` output with git (#273), `crates/pyn-cli/tests/git_check_attr.rs` (`check-attr`, `ls-files --eol`, attributes read
 from the index and trees, `blame` and `diff --no-index`), and `git_diff_attributes.rs` and `git_merge_attributes.rs` for

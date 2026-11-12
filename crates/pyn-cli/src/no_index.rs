@@ -98,7 +98,7 @@ struct Ctx<'a> {
     git: Option<&'a GitHome>,
     index: Option<pyn_git::Index>,
     /// Applies to files outside the repository's work tree, or with no repository.
-    outside: pyn_gitwork::Conversion,
+    outside: (pyn_gitwork::Settings, Option<pyn_gitwork::Attributes>),
 }
 
 impl<'a> Ctx<'a> {
@@ -107,7 +107,7 @@ impl<'a> Ctx<'a> {
             algorithm: git.map_or(Algorithm::Sha1, |g| g.algorithm()),
             git,
             index: git.and_then(GitHome::index),
-            outside: crate::git_home::config_conversion(git),
+            outside: crate::git_home::outside_conversion(git),
         }
     }
 
@@ -118,16 +118,22 @@ impl<'a> Ctx<'a> {
         {
             return git.cleaned_file(file, index);
         }
-        if self.outside.is_identity() {
+        let name = file.file_name()?.as_encoded_bytes();
+        let (settings, global) = &self.outside;
+        let attrs = global
+            .as_ref()
+            .map(|a| a.for_path(name))
+            .unwrap_or_default();
+        let conversion = pyn_gitwork::Conversion::new(*settings, &attrs);
+        if conversion.is_identity() {
             return None;
         }
-        let name = file.file_name()?.as_encoded_bytes();
         let opts = pyn_gitwork::ToGit {
             check_roundtrip: false,
             renormalize: false,
             index_blob: &|| None,
         };
-        let out = self.outside.to_git(name, bytes, &opts).ok()?;
+        let out = conversion.to_git(name, bytes, &opts).ok()?;
         Some(out.data.into_owned())
     }
 }
