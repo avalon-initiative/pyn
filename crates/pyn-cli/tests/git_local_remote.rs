@@ -291,9 +291,9 @@ fn fetch_and_clone_bring_new_commits_and_tags_and_the_log_matches() {
             commit(s, "n.txt", b"n\n", "n");
             run(s, &["push", "-q", "origin", "main", "v9"]);
         }
-        for i in 0..2 {
-            commit(&t.side[i], "extra.txt", b"e\n", "extra");
-            run(&t.side[i], &["push", "-q", "origin", "main"]);
+        for side in &t.side {
+            commit(side, "extra.txt", b"e\n", "extra");
+            run(side, &["push", "-q", "origin", "main"]);
         }
         let (git_dir, pyn_dir) = (t.root.join("c-git"), t.root.join("c-pyn"));
         let url = t.remote[1].display().to_string();
@@ -499,8 +499,8 @@ fn a_relative_remote_url_resolves_from_the_work_tree_root_in_a_subfolder() {
     t.commit_both("more.txt");
     let (_, p) = t.cmp_in("sub", &["push"]);
     assert_eq!(p.code, 0, "{}", p.stderr);
-    for i in 0..2 {
-        run(&t.remote[i], &["update-ref", "refs/heads/extra", "main"]);
+    for remote in &t.remote {
+        run(remote, &["update-ref", "refs/heads/extra", "main"]);
     }
     let (_, p) = t.cmp_in("sub", &["pull", "origin", "extra"]);
     assert_eq!(p.code, 0, "{}", p.stderr);
