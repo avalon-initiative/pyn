@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result, bail};
 use clap::{Args, Subcommand};
 use pyn_gitwork::lfs::{Pointer, Store};
-use pyn_gitwork::{Attributes, Pathspec, fs_path};
+use pyn_gitwork::{Attributes, Head, Pathspec, fs_path};
 use pyn_object::{FileMode, ObjectId};
 
 use super::GitHome;
@@ -46,6 +46,8 @@ enum Action {
     },
     /// Offer the objects of every commit reachable from the revisions (default `HEAD`) and upload those the server lacks.
     Push(FetchArgs),
+    /// List the Git LFS paths staged for commit and those changed in the work tree but not staged.
+    Status,
     /// Delete local objects that no recent or unpushed commit, `HEAD` or the index needs.
     Prune(PruneArgs),
 }
@@ -91,6 +93,7 @@ pub(super) fn lfs(git: &GitHome, args: LfsArgs) -> Result<()> {
         Action::Pull { remote } => pull(git, remote.as_deref()),
         Action::Push(a) => push(git, &a),
         Action::Prune(a) => prune(git, &a),
+        Action::Status => status(git),
     }
 }
 
@@ -259,6 +262,66 @@ fn ls_files(git: &GitHome, args: &LsFilesArgs) -> Result<()> {
         let oid = if args.long { &p.oid } else { &p.oid[..10] };
         let state = if store.has(&p) { '*' } else { '-' };
         println!("{oid} {state} {shown}");
+    }
+    Ok(())
+}
+
+/// `LFS` for a pointer, `Git` for plain content at a path `filter=lfs` applies to.
+fn describe(blob: &[u8]) -> String {
+    let short = |s: &str| s[..7.min(s.len())].to_owned();
+    match Pointer::parse(blob) {
+        Some(p) => format!("LFS: {}", short(&p.oid)),
+        None => format!("Git: {}", short(&pyn_gitwork::lfs::sha256_hex(blob))),
+    }
+}
+
+fn status(git: &GitHome) -> Result<()> {
+    git.need_work_tree()?;
+    let attrs = git.repo.attributes()?;
+    let lfs_path = |p: &[u8]| attrs.for_path(p).get("filter").as_str() == Some("lfs");
+    let head = match git.repo.head_commit()? {
+        Some(c) => git
+            .repo
+            .flatten(Some(&commit_tree(git, &c)?), &Pathspec::default())?,
+        None => Default::default(),
+    };
+    let root = git.repo.root()?;
+    let (mut staged, mut unstaged) = (Vec::new(), Vec::new());
+    for e in git.repo.read_index()?.entries {
+        if e.stage != 0 || e.mode & 0o170000 != 0o100000 || !lfs_path(&e.path) {
+            continue;
+        }
+        let shown = String::from_utf8_lossy(&e.path).into_owned();
+        let blob = git.repo.blob(&e.id)?;
+        if head.get(&e.path).map(|h| h.id) != Some(e.id) {
+            staged.push(format!("{shown} ({})", describe(&blob)));
+        }
+        let Ok(file) = std::fs::read(fs_path(root, &e.path)) else {
+            continue;
+        };
+        let pointer = Pointer::parse(&blob);
+        let unchanged = match (&pointer, Pointer::parse(&file)) {
+            (None, _) => file == blob,
+            (Some(p), Some(f)) => *p == f,
+            (Some(p), None) => p.oid == pyn_gitwork::lfs::sha256_hex(&file),
+        };
+        if !unchanged {
+            let now = Pointer::parse(&file).unwrap_or_else(|| Pointer::of(&file));
+            unstaged.push(format!("{shown} (LFS: {})", &now.oid[..7]));
+        }
+    }
+    if let Head::Branch { name, .. } = git.repo.head()? {
+        println!("On branch {name}");
+    }
+    for (title, lines) in [
+        ("Objects to be committed:", staged),
+        ("Objects not staged for commit:", unstaged),
+    ] {
+        println!("{title}\n");
+        for line in lines {
+            println!("\t{line}");
+        }
+        println!();
     }
     Ok(())
 }
