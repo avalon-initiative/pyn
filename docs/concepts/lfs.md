@@ -1,9 +1,9 @@
 # Git LFS API
 
-A pyn server speaks the Git LFS Locks API and the Batch API with the `basic` transfer adapter (decision #775). Stock
+A pyn server speaks the Git LFS Locks API and the Batch API with the `basic` and `tus` transfer adapters (decision #775). Stock
 `git lfs lock`, `unlock` and `locks` work against it, and the locks taken that way are the same locks the pyn CLI and web app
 see. Stock `git lfs push` and `fetch` store and retrieve large files through it, and so does the pyn CLI's own client on a git
-home (see [Git LFS](git-compatibility.md#git-lfs), whose `pyn lfs status` lists staged and unstaged pointers). The `tus` adapter is not served (#918), and the client transfers one object at a time (#919).
+home (see [Git LFS](git-compatibility.md#git-lfs), whose `pyn lfs status` lists staged and unstaged pointers). The client transfers one object at a time (#919).
 
 The routes are not in the generated OpenAPI document: LFS clients send and expect `application/vnd.git-lfs+json`, which the
 generated client contract does not model. This page is their contract.
@@ -93,7 +93,7 @@ not sent. A body that is not valid JSON is `422`. An unknown repository, or a pr
 ## Large files: the Batch API
 
 Large files are stored once per repository, by the sha256 `oid` and length of their content, and moved with the `basic`
-transfer adapter. Only objects uploaded through this API are served through it. A file checked in the pyn way is not an LFS
+transfer adapter, or for uploads the resumable [`tus`](#the-tus-transfer-adapter) one. Only objects uploaded through this API are served through it. A file checked in the pyn way is not an LFS
 object and is not found by `oid`, so the server never hashes native content on demand, and a native repository gains no pointer
 files: pointers exist only at this boundary (decision #775).
 
@@ -102,10 +102,10 @@ named `https://pyn.example/v1/repos/acme/game`.
 
 ### `POST .../objects/batch`
 
-Request `{"operation": "download" | "upload", "transfers": ["basic"], "ref": {...}, "objects": [{"oid", "size"}], "hash_algo": "sha256"}`.
+Request `{"operation": "download" | "upload", "transfers": ["tus", "basic"], "ref": {...}, "objects": [{"oid", "size"}], "hash_algo": "sha256"}`.
 `transfers` and `hash_algo` may be left out; `ref` is accepted and ignored. A batch names at most 1000 objects.
 
-`200` `{"transfer": "basic", "objects": [...], "hash_algo": "sha256"}`, one entry per requested object in order. An entry that has
+`200` `{"transfer": "basic" | "tus", "objects": [...], "hash_algo": "sha256"}`, one entry per requested object in order. An entry that has
 something to do carries `"authenticated": true` and `actions`, each `{"href"}` with an absolute URL; the client sends the same
 credentials to it, so no `header` is returned.
 
@@ -120,7 +120,8 @@ A problem with one object is reported in that object's `error` `{"code", "messag
 - `404`: a download of an object this repository does not have.
 - `413`: an upload of more than 16 GiB, or one that would take the owner or the repository past its [storage cap](limits.md#per-repository-storage-cap), counting revisions and LFS objects, the owner's across all of its repositories.
 
-Refusals of the whole request: `422` for an unknown `operation`, a body that is not valid JSON, or `transfers` without `basic`;
+The server answers `"transfer": "tus"` for an upload when `transfers` lists `tus`, and `basic` otherwise (also when `transfers` is
+left out). A download is always `basic`. Refusals of the whole request: `422` for an unknown `operation`, a body that is not valid JSON, `transfers` with neither `basic` nor `tus`, or a download whose `transfers` lacks `basic`;
 `409` for a `hash_algo` other than `sha256`; `403` for an upload by a caller without `checkin`, or while the owner is
 [frozen](limits.md); `415` for a content type that is neither `application/vnd.git-lfs+json` nor `application/json`.
 
@@ -152,6 +153,37 @@ has no LFS object for (an object another repository holds is not visible), `422`
 
 Request `{"oid", "size"}`; `200` when the repository has that object, `404` when it has not, `422` when the size differs. Needs
 `checkin`, like the upload it follows; the batch response names this action after every upload.
+
+### The tus transfer adapter
+
+When a batch upload offers `tus`, each entry's `actions.upload.href` is `.../objects/{oid}/tus` and the server speaks tus 1.0.0
+(core, with the `creation` and `termination` extensions) there, so an interrupted upload continues instead of restarting. A
+request carries `Tus-Resumable: 1.0.0` (`412` with `Tus-Version` otherwise, except for `HEAD` and `OPTIONS`) and needs `checkin`.
+There is one upload per oid and repository.
+
+| Request | Answer |
+| --- | --- |
+| `OPTIONS` | `204` with `Tus-Version` and `Tus-Extension: creation,termination` |
+| `POST` with `Upload-Length` | `201` with `Location` (the same URL), `Upload-Offset: 0` and `Upload-Expires`; the open upload when one exists with that length. `413` past 16 GiB or a [storage cap](limits.md#per-repository-storage-cap), `422` without `Upload-Length` or with another length than the open upload |
+| `HEAD` | `200` with `Upload-Offset`, `Upload-Length`, `Upload-Expires`; `404` when none is open (never started, finished, expired or terminated) |
+| `PATCH` with `Content-Type: application/offset+octet-stream`, `Upload-Offset`, `Content-Length` | `204` with the new `Upload-Offset`. `409` when the offset is not the upload's (or another request is appending), `413` when the body runs past `Upload-Length`, `415` for another content type, `404` for an upload that is not open or is another user's |
+| `DELETE` | `204`, and what the upload stored is removed |
+
+- The body of a `PATCH` is kept as it arrives. When the connection breaks, the bytes received so far count and `HEAD` reports the
+  new offset, so a client sends the rest from there.
+- The last byte completes the upload: the server joins the parts and stores the object as `PUT` does, checking the length and the
+  sha256 against the `oid` and the storage caps. A mismatch is `422` (`digest_mismatch`, `length_mismatch`) on that `PATCH`, keeps
+  nothing and closes the upload, so the client starts over. The batch's `verify` action applies as for `basic`.
+- An upload expires 24 hours after its last request; `HEAD` and the next `PATCH` then answer `404`, and the parts it stored are
+  removed.
+- A user may hold 32 open uploads (`429`, `uploads_busy`); a `PATCH` takes the same per-user upload slot as a `PUT`.
+- Upload sessions are held in the server's memory, so a restart drops them and clients start over (`404` on `HEAD`). The parts are
+  stored as chunks in the object store (shared with [chunked transfer](storage.md#chunked-transfer)); a part that outlives its upload
+  (after a crash) stays until [garbage collection](storage.md#planned-provisional) (#207). Provisional; durable sessions are #953.
+
+The client (`pyn lfs push`, a push on a git home) offers `["tus", "basic"]` for uploads, asks `HEAD` where the server stands
+(creating the upload on `404`), sends the rest in one `PATCH` and after an interruption asks again, up to four passes; with
+`lfs.tustransfers = false` it offers `basic` only. Stock git-lfs offers `tus` only when `lfs.tustransfers` is true.
 
 ### Limits and accounting
 

@@ -104,7 +104,8 @@ pub use service::{
     ChangeEntry, CommitPage, Deletion, FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES,
     FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit, FileEntry, LockLimit, PolicyPreview,
     PushObjects, Pushed, Recorded, RepoService, RepoServiceContext, ServiceConfig, Snapshot,
-    SnapshotEntry, VERIFY_BUDGET, is_lfs_oid,
+    SnapshotEntry, TUS_MAX_SESSIONS_PER_USER, TUS_SESSION_TTL_HOURS, TusAppended, TusError,
+    TusSessions, TusStatus, VERIFY_BUDGET, is_lfs_oid,
 };
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};

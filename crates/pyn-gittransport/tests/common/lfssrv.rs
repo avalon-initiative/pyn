@@ -39,6 +39,16 @@ pub struct Inner {
     pub href_host: Option<String>,
     /// Only the batch endpoint asks for credentials.
     pub open_objects: bool,
+    /// Chooses the `tus` adapter for uploads when the client offers it.
+    pub tus: bool,
+    /// The `transfers` of each batch request.
+    pub offered: Vec<Vec<String>>,
+    /// Bytes of uploads in progress, by oid; a test may seed one.
+    pub partial: HashMap<String, Vec<u8>>,
+    /// The most bytes one PATCH accepts.
+    pub tus_accept_limit: Option<usize>,
+    /// The declared length of each upload in progress.
+    pub tus_lengths: HashMap<String, usize>,
 }
 
 pub struct LfsServer {
@@ -162,13 +172,24 @@ async fn handle(State(state): State<Arc<Mutex<Inner>>>, req: Request) -> Respons
         }
         let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let upload = req["operation"] == "upload";
+        let offered: Vec<String> = req["transfers"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tus = upload && st.tus && offered.iter().any(|t| t == "tus");
+        st.offered.push(offered);
+        let suffix = if tus { "/tus" } else { "" };
         let objects: Vec<_> = req["objects"]
             .as_array()
             .unwrap()
             .iter()
             .map(|o| {
                 let oid = o["oid"].as_str().unwrap();
-                let href = format!("http://{host}{prefix}/objects/{oid}");
+                let href = format!("http://{host}{prefix}/objects/{oid}{suffix}");
                 let have = st.objects.contains_key(oid);
                 match (upload, have) {
                     (true, true) => serde_json::json!({"oid": oid, "size": o["size"]}),
@@ -192,7 +213,7 @@ async fn handle(State(state): State<Arc<Mutex<Inner>>>, req: Request) -> Respons
             .collect();
         return reply(
             200,
-            serde_json::json!({"transfer": "basic", "objects": objects, "hash_algo": "sha256"})
+            serde_json::json!({"transfer": if tus { "tus" } else { "basic" }, "objects": objects, "hash_algo": "sha256"})
                 .to_string(),
         );
     }
@@ -207,6 +228,9 @@ async fn handle(State(state): State<Arc<Mutex<Inner>>>, req: Request) -> Respons
     let Some(oid) = path.rsplit_once("/objects/").map(|(_, o)| o.to_owned()) else {
         return reply(404, r#"{"message":"not found"}"#);
     };
+    if let Some(oid) = oid.strip_suffix("/tus") {
+        return tus_route(&mut st, &parts, oid, body, &host, &prefix);
+    }
     match parts.method {
         Method::GET => {
             let Some(mut content) = st.objects.get(&oid).cloned() else {
@@ -254,6 +278,88 @@ async fn handle(State(state): State<Arc<Mutex<Inner>>>, req: Request) -> Respons
             st.objects.insert(oid, body);
             Response::builder()
                 .status(StatusCode::OK)
+                .body(Body::empty())
+                .unwrap()
+        }
+        _ => reply(405, "{}"),
+    }
+}
+
+fn tus_reply(status: u16) -> axum::http::response::Builder {
+    Response::builder()
+        .status(status)
+        .header("tus-resumable", "1.0.0")
+}
+
+/// One upload per oid; a test that seeds `partial` also seeds `tus_lengths`.
+fn tus_route(
+    st: &mut Inner,
+    parts: &axum::http::request::Parts,
+    oid: &str,
+    body: Vec<u8>,
+    host: &str,
+    prefix: &str,
+) -> Response {
+    let length = |st: &Inner| st.partial.get(oid).map(Vec::len);
+    match parts.method.as_str() {
+        "HEAD" => match length(st) {
+            None => tus_reply(404).body(Body::empty()).unwrap(),
+            Some(n) => tus_reply(200)
+                .header("upload-offset", n)
+                .header(
+                    "upload-length",
+                    st.tus_lengths.get(oid).copied().unwrap_or(0),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        },
+        "POST" => {
+            let size: usize = parts
+                .headers
+                .get("upload-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            st.tus_lengths.insert(oid.to_owned(), size);
+            st.partial.entry(oid.to_owned()).or_default();
+            tus_reply(201)
+                .header(
+                    "location",
+                    format!("http://{host}{prefix}/objects/{oid}/tus"),
+                )
+                .body(Body::empty())
+                .unwrap()
+        }
+        "PATCH" => {
+            let offset: usize = parts
+                .headers
+                .get("upload-offset")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(usize::MAX);
+            let Some(have) = st.partial.get(oid).map(Vec::len) else {
+                return tus_reply(404).body(Body::empty()).unwrap();
+            };
+            if offset != have {
+                return tus_reply(409).body(Body::empty()).unwrap();
+            }
+            let take = st
+                .tus_accept_limit
+                .map_or(body.len(), |l| l.min(body.len()));
+            st.partial
+                .get_mut(oid)
+                .unwrap()
+                .extend_from_slice(&body[..take]);
+            let now = have + take;
+            if now == st.tus_lengths.get(oid).copied().unwrap_or(usize::MAX) {
+                let done = st.partial.remove(oid).unwrap();
+                if sha256_hex(&done) != oid {
+                    return reply(422, r#"{"message":"digest mismatch"}"#);
+                }
+                st.objects.insert(oid.to_owned(), done);
+            }
+            tus_reply(204)
+                .header("upload-offset", now)
                 .body(Body::empty())
                 .unwrap()
         }

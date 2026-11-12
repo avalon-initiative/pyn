@@ -3059,12 +3059,16 @@ A server that answers `verify` with `404` or `501` is not checked; `lfs.locksver
 `lockable` files, or whose remote has no derivable LFS endpoint, makes no request.
 
 Covered by `crates/pyn-gittransport/tests/lfs.rs` (the client against a local Batch server: endpoints, verified and resumed
-downloads, uploads, credentials), `crates/pyn-cli/tests/git_lfs_remote.rs` (smudge, push, settings, `.lfsconfig`), `crates/pyn-cli/tests/git_lfs_commands.rs` (the `pyn lfs` commands),
+downloads, uploads, tus uploads and their resume, credentials), `crates/pyn-cli/tests/git_lfs_tus.rs` (the client's tus upload against a pyn server, including one cut off midway), `crates/pyn-cli/tests/git_lfs_remote.rs` (smudge, push, settings, `.lfsconfig`), `crates/pyn-cli/tests/git_lfs_commands.rs` (the `pyn lfs` commands),
 `crates/pyn-cli/tests/git_lfs_client.rs` (the pointer bytes are also compared with `git lfs pointer` when `git-lfs` is installed
 and skipped otherwise) `crates/pyn-gittransport/tests/lfs_locks.rs` (the Locks client against a local Locks server), `crates/pyn-cli/tests/git_lfs_locks.rs`
 (`lockable`, `lock`, `unlock`, `locks`, the pre-push check; #786) and `crates/pyn-cli/tests/git_lfs.rs` (#311, #628, #785).
 
-Not built on the git home: `ssh` remotes (`git-lfs-authenticate`, #917) and the other transfer adapters (`tus`, #918; custom),
+Uploads use the `tus` transfer adapter when the server picks it from `transfers: ["tus", "basic"]`, and continue from the server's offset
+after an interruption; `lfs.tustransfers = false` offers `basic` only. A pyn server serves it (see [Git LFS API](lfs.md#the-tus-transfer-adapter)).
+Downloads always use `basic`.
+
+Not built on the git home: `ssh` remotes (`git-lfs-authenticate`, #917) and custom transfer adapters,
 concurrent transfers (#919), `lfs.transfer.*` tuning, `lfs.extension.*` programs, and the `git lfs` commands not listed under
 [Git LFS commands](#git-lfs-commands) or the locking commands above (`migrate`, `env`, `install`, `fsck`).
 

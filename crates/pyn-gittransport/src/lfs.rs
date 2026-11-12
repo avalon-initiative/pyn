@@ -1,15 +1,16 @@
-//! A Git LFS Batch API client with the `basic` transfer: endpoint resolution, credentials through git's credential
+//! A Git LFS Batch API client with the `basic` and `tus` transfers: endpoint resolution, credentials through git's credential
 //! flow, verified resumable downloads and uploads. No LFS program is involved.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use pyn_git::Config;
 use reqwest::Url;
 use reqwest::blocking::{Body, Client as Http, RequestBuilder, Response};
-use reqwest::header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, RANGE};
+use reqwest::header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, RANGE};
 use reqwest::redirect::Policy;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
@@ -23,6 +24,9 @@ use crate::url::{RemoteUrl, redact_text, rewrite, scoped_values};
 pub(crate) const MEDIA: &str = "application/vnd.git-lfs+json";
 const BATCH_SIZE: usize = 100;
 const MAX_REDIRECTS: usize = 10;
+const TUS_VERSION: &str = "1.0.0";
+/// Passes at one object's upload (HEAD, then PATCH) before an interruption is reported.
+const TUS_ATTEMPTS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Object {
@@ -124,6 +128,7 @@ pub struct Client {
     auth: Option<Offer>,
     unconfirmed: bool,
     extra_headers: Vec<(String, String)>,
+    tus: bool,
 }
 
 impl Client {
@@ -135,6 +140,7 @@ impl Client {
             .filter_map(|h| h.split_once(':'))
             .map(|(n, v)| (n.trim().to_owned(), v.trim().to_owned()))
             .collect();
+        let tus = config.get_bool("lfs.tustransfers")?.unwrap_or(true);
         let flow = Flow::new(config.clone(), env.clone(), prompt, &base);
         let mut base = base;
         let _ = base.set_username("");
@@ -146,6 +152,7 @@ impl Client {
             auth: None,
             unconfirmed: false,
             extra_headers,
+            tus,
         })
     }
 
@@ -213,13 +220,14 @@ impl Client {
         }
     }
 
-    fn batch(&mut self, operation: &str, objects: &[Object]) -> Result<Vec<Entry>> {
+    /// Asks the server what to do with `objects`; the adapter it chose comes back with the entries.
+    fn batch(&mut self, operation: &str, objects: &[Object]) -> Result<(Transfer, Vec<Entry>)> {
         let mut url = self.base.clone();
         let path = format!("{}/objects/batch", url.path().trim_end_matches('/'));
         url.set_path(&path);
         let body = serde_json::json!({
             "operation": operation,
-            "transfers": ["basic"],
+            "transfers": if operation == "upload" && self.tus { vec!["tus", "basic"] } else { vec!["basic"] },
             "hash_algo": "sha256",
             "objects": objects.iter().map(|o| serde_json::json!({"oid": o.oid, "size": o.size})).collect::<Vec<_>>(),
         })
@@ -240,12 +248,16 @@ impl Client {
                 "the LFS server sent an unreadable batch response: {e}"
             ))
         })?;
-        if parsed.transfer.as_deref().is_some_and(|t| t != "basic") {
-            return Err(lfs(
-                "the LFS server chose a transfer adapter other than basic",
-            ));
-        }
-        Ok(parsed.objects)
+        let transfer = match parsed.transfer.as_deref() {
+            None | Some("basic") => Transfer::Basic,
+            Some("tus") if operation == "upload" && self.tus => Transfer::Tus,
+            Some(_) => {
+                return Err(lfs(
+                    "the LFS server chose a transfer adapter that was not offered",
+                ));
+            }
+        };
+        Ok((transfer, parsed.objects))
     }
 
     fn action_url(&self, action: &Action) -> Result<Url> {
@@ -273,7 +285,7 @@ impl Client {
         std::fs::create_dir_all(tmp)?;
         let mut failures = Vec::new();
         for chunk in objects.chunks(BATCH_SIZE) {
-            let entries = self.batch("download", chunk)?;
+            let (_, entries) = self.batch("download", chunk)?;
             for object in chunk {
                 let outcome = match entries.iter().find(|e| e.oid == object.oid) {
                     None => Err(lfs("the LFS server did not answer for it")),
@@ -344,7 +356,7 @@ impl Client {
     ) -> Result<usize> {
         let (mut failures, mut sent) = (Vec::new(), 0);
         for chunk in objects.chunks(BATCH_SIZE) {
-            let entries = self.batch("upload", chunk)?;
+            let (transfer, entries) = self.batch("upload", chunk)?;
             for object in chunk {
                 let Some(entry) = entries.iter().find(|e| e.oid == object.oid) else {
                     failures.push(format!(
@@ -360,7 +372,15 @@ impl Client {
                 let Some(put) = entry.actions.get("upload") else {
                     continue;
                 };
-                match self.put_one(object, put, entry.actions.get("verify"), open) {
+                let sent_one = match transfer {
+                    Transfer::Basic => self.put_one(object, put, open),
+                    Transfer::Tus => self.tus_one(object, put, open),
+                }
+                .and_then(|()| match entry.actions.get("verify") {
+                    Some(action) => self.verify_upload(object, action),
+                    None => Ok(()),
+                });
+                match sent_one {
                     Ok(()) => sent += 1,
                     Err(e) => failures.push(format!("{}: {e}", object.oid)),
                 }
@@ -373,7 +393,6 @@ impl Client {
         &mut self,
         object: &Object,
         put: &Action,
-        verify: Option<&Action>,
         open: &dyn Fn(&Object) -> io::Result<File>,
     ) -> Result<()> {
         let url = self.action_url(put)?;
@@ -389,25 +408,158 @@ impl Client {
             let text = resp.text().unwrap_or_default();
             return Err(status_error(code, &text, &RemoteUrl::Http(url).display()));
         }
-        if let Some(action) = verify {
-            let url = self.action_url(action)?;
-            let headers: Vec<_> = action.header.clone().into_iter().collect();
-            let body = serde_json::json!({"oid": object.oid, "size": object.size}).to_string();
-            let resp = self.send(&url, &headers, &|c| {
-                Ok(c.post(url.clone())
-                    .header(ACCEPT, MEDIA)
-                    .header(CONTENT_TYPE, MEDIA)
-                    .body(body.clone()))
-            })?;
-            if !resp.status().is_success() {
-                return Err(lfs(format!(
-                    "the LFS server could not verify the upload (HTTP {})",
-                    resp.status().as_u16()
-                )));
+        Ok(())
+    }
+
+    /// Uploads over tus: ask where the server stands (creating the upload if it is new), send the rest, and after an
+    /// interruption ask again and continue from there.
+    fn tus_one(
+        &mut self,
+        object: &Object,
+        put: &Action,
+        open: &dyn Fn(&Object) -> io::Result<File>,
+    ) -> Result<()> {
+        let mut url = self.action_url(put)?;
+        let mut headers: Vec<_> = put.header.clone().into_iter().collect();
+        headers.push(("Tus-Resumable".into(), TUS_VERSION.into()));
+        let mut interrupted = None;
+        for attempt in 0..TUS_ATTEMPTS {
+            if attempt > 0 {
+                // The server may still be finishing the request that broke off.
+                std::thread::sleep(Duration::from_millis(200 * attempt as u64));
             }
+            let offset = match self.tus_offset(&url, &headers, object)? {
+                Some(offset) => offset,
+                None => {
+                    url = self.tus_create(&url, &headers, object)?;
+                    0
+                }
+            };
+            if offset > object.size {
+                return Err(lfs("the LFS server holds more of the upload than its size"));
+            }
+            if offset == object.size && object.size > 0 {
+                return Ok(());
+            }
+            let patch = self.send(&url, &headers, &|c| {
+                let mut file = open(object)?;
+                file.seek(SeekFrom::Start(offset))?;
+                Ok(c.patch(url.clone())
+                    .header(CONTENT_TYPE, "application/offset+octet-stream")
+                    .header("Upload-Offset", offset)
+                    .header(CONTENT_LENGTH, object.size - offset)
+                    .body(Body::sized(file, object.size - offset)))
+            });
+            let resp = match patch {
+                Ok(resp) => resp,
+                Err(e) => {
+                    interrupted = Some(e);
+                    continue;
+                }
+            };
+            let code = resp.status().as_u16();
+            if matches!(code, 200 | 204) {
+                match header_u64(&resp, "upload-offset") {
+                    Some(n) if n >= object.size => return Ok(()),
+                    _ => continue,
+                }
+            }
+            if code == 409 {
+                continue;
+            }
+            let text = resp.text().unwrap_or_default();
+            return Err(status_error(code, &text, &RemoteUrl::Http(url).display()));
+        }
+        Err(interrupted.unwrap_or_else(|| lfs("the upload could not be completed")))
+    }
+
+    /// The offset the server holds for the upload, or `None` when it has none.
+    fn tus_offset(
+        &mut self,
+        url: &Url,
+        headers: &[(String, String)],
+        object: &Object,
+    ) -> Result<Option<u64>> {
+        let resp = self.send(url, headers, &|c| Ok(c.head(url.clone())))?;
+        match resp.status().as_u16() {
+            200 => {
+                if header_u64(&resp, "upload-length").is_some_and(|n| n != object.size) {
+                    return Err(lfs("the LFS server holds an upload of another length"));
+                }
+                header_u64(&resp, "upload-offset")
+                    .map(Some)
+                    .ok_or_else(|| lfs("the LFS server sent no Upload-Offset"))
+            }
+            404 | 410 => Ok(None),
+            code => Err(status_error(
+                code,
+                "",
+                &RemoteUrl::Http(url.clone()).display(),
+            )),
+        }
+    }
+
+    /// Creates the upload and returns the URL to patch.
+    fn tus_create(
+        &mut self,
+        url: &Url,
+        headers: &[(String, String)],
+        object: &Object,
+    ) -> Result<Url> {
+        let resp = self.send(url, headers, &|c| {
+            Ok(c.post(url.clone())
+                .header("Upload-Length", object.size)
+                .header(CONTENT_LENGTH, 0))
+        })?;
+        let code = resp.status().as_u16();
+        if code != 201 {
+            let text = resp.text().unwrap_or_default();
+            return Err(status_error(
+                code,
+                &text,
+                &RemoteUrl::Http(url.clone()).display(),
+            ));
+        }
+        let Some(location) = resp.headers().get(LOCATION).and_then(|v| v.to_str().ok()) else {
+            return Ok(url.clone());
+        };
+        let at = url
+            .join(location)
+            .map_err(|_| lfs("the LFS server sent an invalid upload location"))?;
+        self.action_url(&Action {
+            href: at.to_string(),
+            header: HashMap::new(),
+        })
+    }
+
+    fn verify_upload(&mut self, object: &Object, action: &Action) -> Result<()> {
+        let url = self.action_url(action)?;
+        let headers: Vec<_> = action.header.clone().into_iter().collect();
+        let body = serde_json::json!({"oid": object.oid, "size": object.size}).to_string();
+        let resp = self.send(&url, &headers, &|c| {
+            Ok(c.post(url.clone())
+                .header(ACCEPT, MEDIA)
+                .header(CONTENT_TYPE, MEDIA)
+                .body(body.clone()))
+        })?;
+        if !resp.status().is_success() {
+            return Err(lfs(format!(
+                "the LFS server could not verify the upload (HTTP {})",
+                resp.status().as_u16()
+            )));
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy)]
+enum Transfer {
+    Basic,
+    Tus,
+}
+
+fn header_u64(resp: &Response, name: &str) -> Option<u64> {
+    resp.headers().get(name)?.to_str().ok()?.trim().parse().ok()
 }
 
 fn write_body(mut resp: Response, part: &Path, append: bool) -> Result<()> {
