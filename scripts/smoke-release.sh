@@ -99,7 +99,7 @@ status=$(curl --silent --fail --max-time 10 "$server_url/v1/setup") || fail "GET
 [[ $status == *'"initialised":false'* ]] || fail "a fresh server should report initialised=false, got: $status"
 
 server_log=$(compose logs --no-log-prefix --no-color server 2>&1) || fail "could not read the server log"
-token=$(awk '/one-time setup token/ {getline; print; exit}' <<<"$server_log" | tr -d '[:space:]')
+token=$(awk '/----- pyn one-time setup token -----/ {getline; print; exit}' <<<"$server_log" | tr -d '[:space:][:cntrl:]')
 [[ -n $token ]] || fail "the setup token is not in the server log"
 
 step "completing first-run setup"
