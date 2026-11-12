@@ -560,8 +560,112 @@ fn what_cannot_be_honored_is_refused_before_anything_changes() {
     ] {
         each_format(CONFLICT, |p| p.refused(&["merge", "-X", opt, "side"], 129));
     }
+}
+
+/// `main` renamed `f` and conflicts in `c`; `side` edited both: the tree merge follows the rename, `resolve` does not.
+const RENAMED: &str = "printf 'a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\n' >f; printf 'a\\nb\\nc\\n' >c; git add .; git commit -qm base\n\
+    git checkout -q -b side\nprintf 'a\\nb\\nc\\nd\\ne\\nf\\ng\\nH\\n' >f; printf 'a\\nB2\\nc\\n' >c; git add .; git commit -qm side\n\
+    git checkout -q main\ngit mv f f2; printf 'a\\nB1\\nc\\n' >c; git add .; git commit -qm main\n";
+
+/// `main` renamed `f` and edited nothing else; `side` edited `f`: only `resolve` conflicts.
+const RENAMED_ONLY: &str = "printf 'a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\n' >f; git add .; git commit -qm base\n\
+    git checkout -q -b side\nprintf 'a\\nb\\nc\\nd\\ne\\nf\\ng\\nH\\n' >f; git add .; git commit -qm side\n\
+    git checkout -q main\ngit mv f f2; git commit -qm main\n";
+
+/// What git may differ in when `resolve` is one of several strategies tried.
+const SEVERAL: Skip = Skip {
+    auto_merge: true,
+    reflog: true,
+    markers: true,
+};
+
+#[test]
+fn several_strategies_stop_at_the_first_that_merges_cleanly() {
+    for order in [
+        ["ort", "ours"],
+        ["ours", "ort"],
+        ["resolve", "ort"],
+        ["ort", "resolve"],
+    ] {
+        let args = ["merge", "-s", order[0], "-s", order[1], "side"];
+        for script in [CLEAN, TRIVIAL, RENAMED_ONLY] {
+            each_format(script, |p| p.same(&args, SEVERAL));
+        }
+    }
     each_format(CONFLICT, |p| {
-        p.refused(&["merge", "-s", "ort", "-s", "ours", "side"], 129)
+        p.same(&["merge", "-s", "ort", "-s", "ours", "side"], SEVERAL)
+    });
+    each_format(CONFLICT, |p| {
+        p.same(
+            &["merge", "-s", "ort", "-s", "ours", "--no-commit", "side"],
+            SEVERAL,
+        )
+    });
+}
+
+#[test]
+fn when_every_strategy_conflicts_the_one_with_fewest_unmerged_paths_is_kept() {
+    for order in [["ort", "resolve"], ["resolve", "ort"]] {
+        let args = ["merge", "-s", order[0], "-s", order[1], "side"];
+        each_format(RENAMED, |p| p.same(&args, SEVERAL));
+    }
+}
+
+#[test]
+fn equal_conflicts_keep_the_strategy_tried_last() {
+    each_format(CONFLICT, |p| {
+        p.same(&["merge", "-s", "ort", "-s", "recursive", "side"], SEVERAL)
+    });
+    each_format(CONFLICT, |p| {
+        p.same(&["merge", "-s", "recursive", "-s", "ort", "side"], SEVERAL)
+    });
+}
+
+#[test]
+fn several_strategies_that_all_fail_leave_nothing_behind() {
+    for script in [CLEAN, CONFLICT] {
+        each_format(script, |p| {
+            p.same(
+                &["merge", "-s", "octopus", "-s", "octopus", "side"],
+                SEVERAL,
+            )
+        });
+    }
+    each_format(CLEAN, |p| {
+        p.same(
+            &["merge", "-s", "octopus", "-s", "resolve", "side"],
+            SEVERAL,
+        )
+    });
+}
+
+#[test]
+fn several_strategies_with_local_changes_and_options() {
+    each_format(TRIVIAL, |p| {
+        p.both_sh("echo more >>g");
+        p.same(&["merge", "-s", "resolve", "-s", "ort", "side"], SEVERAL)
+    });
+    each_format(CLEAN, |p| {
+        p.same(
+            &[
+                "merge",
+                "-s",
+                "ort",
+                "-s",
+                "recursive",
+                "-X",
+                "theirs",
+                "side",
+            ],
+            SEVERAL,
+        )
+    });
+}
+
+#[test]
+fn an_unknown_strategy_among_several_ends_the_command() {
+    each_format(CONFLICT, |p| {
+        p.refused(&["merge", "-s", "ort", "-s", "nope", "side"], 1)
     });
 }
 

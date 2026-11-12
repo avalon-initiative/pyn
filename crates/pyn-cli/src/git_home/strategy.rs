@@ -150,40 +150,40 @@ pub(super) struct Strategy {
 }
 
 impl Strategy {
-    /// Reads `-s` and `-X`: an unknown strategy ends the command as git does, and options the merge cannot honor are a
-    /// usage error before anything changes.
-    pub(super) fn parse(strategies: &[String], xopts: &[String]) -> Self {
-        if strategies.len() > 1 {
-            crate::usage_error(
-                "only one merge strategy can be given with `-s`; trying several is not built",
-            );
-        }
-        let kind = match strategies.first() {
-            None => Which::Ort,
-            Some(name) => match NAMES.iter().find(|(n, _)| n == name) {
-                Some((_, kind)) => *kind,
-                None => {
-                    eprintln!("Could not find merge strategy '{name}'.");
-                    let names: Vec<&str> = {
-                        let mut v: Vec<&str> = NAMES[..5].iter().map(|n| n.0).collect();
-                        v.sort_unstable();
-                        v
-                    };
-                    eprintln!("Available strategies are: {}.", names.join(" "));
-                    std::process::exit(1);
+    /// Reads each `-s` and the `-X` options: an unknown strategy ends the command as git does, and options the
+    /// merge cannot honor are a usage error before anything changes.
+    pub(super) fn parse_all(strategies: &[String], xopts: &[String]) -> Vec<Self> {
+        let kinds: Vec<Which> = if strategies.is_empty() {
+            vec![Which::Ort]
+        } else {
+            strategies.iter().map(|n| Self::kind_named(n)).collect()
+        };
+        kinds
+            .into_iter()
+            .map(|kind| {
+                let strategy = Self {
+                    kind,
+                    xopts: xopts.to_vec(),
+                };
+                if kind.is_tree_merge()
+                    && let Err(BadOption::Unsupported(opt, why)) = strategy.settings()
+                {
+                    crate::usage_error(&format!("`-X{opt}`: {why}"));
                 }
-            },
-        };
-        let strategy = Self {
-            kind,
-            xopts: xopts.to_vec(),
-        };
-        if kind.is_tree_merge()
-            && let Err(BadOption::Unsupported(opt, why)) = strategy.settings()
-        {
-            crate::usage_error(&format!("`-X{opt}`: {why}"));
+                strategy
+            })
+            .collect()
+    }
+
+    fn kind_named(name: &str) -> Which {
+        if let Some((_, kind)) = NAMES.iter().find(|(n, _)| *n == name) {
+            return *kind;
         }
-        strategy
+        eprintln!("Could not find merge strategy '{name}'.");
+        let mut names: Vec<&str> = NAMES[..5].iter().map(|n| n.0).collect();
+        names.sort_unstable();
+        eprintln!("Available strategies are: {}.", names.join(" "));
+        std::process::exit(1);
     }
 
     pub(super) fn first_option(&self) -> Option<&str> {
@@ -219,7 +219,7 @@ impl Replay {
     /// Reads and checks the options for `command`, ending it with git's or a usage error before anything changes.
     pub(super) fn parse(command: &str, name: Option<&str>, xopts: &[String]) -> Self {
         let names: Vec<String> = name.map(str::to_string).into_iter().collect();
-        let strategy = Strategy::parse(&names, xopts);
+        let strategy = Strategy::parse_all(&names, xopts).remove(0);
         if !matches!(strategy.kind, Which::Ort | Which::Recursive) {
             crate::usage_error(&format!(
                 "`pyn {command} --strategy={}`: a replay merges with ort or recursive only",
