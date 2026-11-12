@@ -2,7 +2,7 @@
 
 A release is a `v<MAJOR>.<MINOR>.<PATCH>[-title-slug]` tag on `main`. Pushing the tag starts the
 [release workflow](../.github/workflows/release.yml); nothing publishes without a `v*` tag, and there is no manual
-publish path. Provisional: no release has been cut yet.
+publish path. Provisional: one pre-release, `v0.1.0-alpha`, has been cut.
 
 The optional suffix is a free-text title slug (`v1.0.0-first-stable`). It does not change what is published, except that a
 suffix starting with `alpha`, `beta`, `rc` or `pre` (any case, then end, `.`, `-` or a digit; `v1.0.0-rc.1`,
