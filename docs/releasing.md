@@ -13,8 +13,8 @@ suffix starting with `alpha`, `beta`, `rc` or `pre` (any case, then end, `.`, `-
 `main` is protected, so the version bump goes through a pull request and the tag goes on the merged commit.
 
 1. On an up-to-date, clean `main`, run `make release` (optionally `VER=1.0.0 TITLE="First stable"`; `make release-skip-tests`
-   or `SKIP_CHECKS=1` skips the gate). [`scripts/release.sh`](../scripts/release.sh) requires `gh` to be logged in, runs
-   `make check`, asks for the version (it must be greater than the current one) and an optional title, and refuses a tag
+   or `SKIP_CHECKS=1` skips the gate, `FORCE_CHECKS=1` always runs it). [`scripts/release.sh`](../scripts/release.sh)
+   requires `gh` to be logged in, runs `make check` unless [CI already passed on this tree](#when-the-gate-is-skipped), asks for the version (it must be greater than the current one) and an optional title, and refuses a tag
    that already exists locally or on origin, and any existing tag for the same `X.Y.Z`, whatever its title, since the image tag would be overwritten.
 2. It creates `release-v<version>`, bumps the workspace version and the intra-workspace requirements, refreshes
    `Cargo.lock`, regenerates `docs/generated/openapi.json` (it embeds the version) and commits
@@ -29,13 +29,34 @@ suffix starting with `alpha`, `beta`, `rc` or `pre` (any case, then end, `.`, `-
 fails instead of prompting when there is no terminal. `make release-test` exercises the scripts against a throwaway
 repository with a stub `gh`; it is part of `make check`.
 
+### Both repositories at once
+
+Maintainers with a sibling `pyn-web` checkout can release both in one go: `make release-all VER=1.0.0 TITLE="First stable"`
+([`scripts/release-all.sh`](../scripts/release-all.sh); the checkout is `../pyn-web` unless `PYN_WEB_DIR` says otherwise).
+It refuses to start unless both repositories are on `main` with a clean tree and both are at the same current version
+(and `VER` is greater). It then runs `release.sh` in each (with `YES=1`), waits for both pull requests to turn green
+(`mergeStateStatus` is `CLEAN`; a failed check or a pull request that fell behind aborts, `RELEASE_WAIT_MAX` seconds at most),
+squash-merges both, checks that both versions on `main` equal `VER`, and tags pyn-web first and pyn second, since the
+pyn-web workflow builds the web image the pyn smoke test pulls.
+
+- **It publishes tags** (images, binaries, GitHub Releases), which cannot be undone, so it prints that and asks for
+  confirmation unless `YES=1`.
+- A failure part-way leaves what already happened in place (open or merged pull requests, a tag in one repository); finish
+  the rest by hand with the single-repository steps above.
+- pyn-common-ui is not released by it. It must be released first when it changed; the script only warns when its `origin/main`
+  version differs from the one pinned in pyn-web's `package.json` (and says so when it cannot look).
+- `SKIP_CHECKS` and `FORCE_CHECKS` pass through to both repositories' `release.sh`.
+
 ## What the pipeline does
 
-1. Refuses a tag whose commit is not on `main`.
-2. Checks the tag against the workspace version ([`scripts/verify-release-version.sh`](../scripts/verify-release-version.sh)).
-3. Runs the same checks CI runs: `make check` (fmt, clippy, docs links, public boundary, tests) and, against a Postgres 16
-   service, `make test-live`. Nothing below is built or pushed unless both pass.
-4. Builds release binaries and packs each program in its own archive (the program plus `LICENSE`), so people can
+The `preflight` job (cheap) refuses a tag whose commit is not on `main`, checks the tag against the workspace version
+([`scripts/verify-release-version.sh`](../scripts/verify-release-version.sh)) and decides whether the gate must run (see
+[below](#when-the-gate-is-skipped)). Everything after it starts at once, except the two public steps (4 and 5), which wait
+for the gate.
+
+1. `gate` (`make check`: fmt, clippy, docs links, public boundary, tests) and `live` (`make test-live` against a Postgres 16
+   service) run unless preflight found a passing CI run on the same tree; they are skipped or run together.
+2. Builds release binaries and packs each program in its own archive (the program plus `LICENSE`), so people can
    download only the CLI, only the server, or both:
 
    | Platform | CLI archive | Server archive |
@@ -46,19 +67,47 @@ repository with a stub `gh`; it is part of `make check`.
 
    Windows builds are not produced yet. A target that fails to build does not stop the release: the GitHub Release is
    created with the archives that did build, and the run shows the failed target.
-5. Builds the server image on a native runner per architecture and publishes the multi-arch manifest
+3. Builds the server image on a native runner per architecture and pushes each by digest, untagged: nothing can pull it
+   by a version yet.
+4. Once the image is built and the gate passed or was skipped, publishes the multi-arch manifest
    `ghcr.io/avalon-initiative/pyn-core:v<MAJOR>.<MINOR>.<PATCH>` (linux/amd64 and linux/arm64). The image tag is the plain
    version only, never the title (`v1.0.0-first-stable` publishes `pyn-core:v1.0.0`); there is no `latest` tag.
-6. Creates the GitHub Release with the archives, a `SHA256SUMS` file and generated notes; the title is the tag, and
+5. Once the same condition holds and the binaries are built, creates the GitHub Release with the archives, a `SHA256SUMS` file and generated notes; the title is the tag, and
    only an `alpha`, `beta`, `rc` or `pre` suffix marks it as a pre-release.
-7. In parallel with step 6, runs the [smoke test](#smoke-test) against the published images. It is not a dependency of the
+6. In parallel with step 5, after step 4, runs the [smoke test](#smoke-test) against the published images. It is not a dependency of the
    GitHub Release and never blocks it.
 
-The image and archives are built from the same tagged commit. A failed run publishes no release. If it fails after the
-image push in step 5, fix forward with a new patch version rather than re-tagging.
+Invariant: no public tag or Release exists unless the gate passed or was legitimately skipped. Only untagged digests
+(unreachable by version) are pushed before that. The image and archives are built from the same tagged commit. A failed run
+publishes no release. If it fails after the manifest in step 4, fix forward with a new patch version rather than re-tagging.
 
 After the first push, the org owner must set the `pyn-core` package on ghcr.io to public (GitHub Packages settings);
 it starts private, and pulls need a login until then.
+
+## When the gate is skipped
+
+The gate would repeat what CI already ran on the release pull request. [`scripts/ci-green-for-tree.sh`](../scripts/ci-green-for-tree.sh)
+`[<commit>]` exits 0 only when the commit came from a pull request whose head has the same git tree and whose latest `CI`
+run concluded `success` (the `ci` workflow covers the unit, Postgres and image jobs, so `gate` and `live` are skipped
+together). It prints one line saying which pull request and run satisfied it, or why not; any error is non-zero.
+
+- The tag workflow runs it on the tagged commit (the `preflight` job's `gated` output is `skip` or `run`).
+- `release.sh` runs it on `origin/main`, the commit the release branch is cut from, and skips the local `make check` with a message.
+  `FORCE_CHECKS=1` runs the gate regardless; `SKIP_CHECKS=1` skips it without looking; both together is refused.
+
+It fails safe: when the check cannot decide (another pull request merged in between so the tree differs, a failed or
+missing CI run, an API error), the gate simply runs. A squash merge of an unchanged release branch keeps the pull request's
+tree, which is the normal case.
+
+Outcomes of the tag workflow, with `gate` and `live` as one column (a gate that was skipped counts as success):
+
+| preflight | gate and live | image | `manifest` | `release` |
+| --- | --- | --- | --- | --- |
+| failed | skipped | skipped | skipped | skipped |
+| ok, `gated=skip` | skipped | ok | runs | runs (binaries need not all succeed) |
+| ok, `gated=run` | passed | ok | runs | runs |
+| ok | failed or cancelled | any | skipped | skipped |
+| ok | passed or skipped | failed | skipped | skipped |
 
 ## Smoke test
 

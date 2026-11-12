@@ -308,6 +308,71 @@ fn reports_whitespace_errors() {
     });
 }
 
+/// A patch to `a.txt` adding `added` after its first line.
+fn adding(added: &str) -> String {
+    format!("--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,3 @@\n line1\n+{added}\n line2\n")
+}
+
+const EOF_BLANK: &str = "--- a/a.txt\n+++ b/a.txt\n@@ -11,2 +11,3 @@\n line11\n line12\n+\n";
+
+#[test]
+fn core_whitespace_picks_the_rules() {
+    let cases = [
+        ("-trailing-space", adding("x  ")),
+        ("-trailing-space,tab-in-indent", adding("\tx")),
+        ("tab-in-indent", adding("\tx")),
+        ("tab-in-indent", adding("x")),
+        ("indent-with-non-tab", adding("        x")),
+        ("indent-with-non-tab,tabwidth=4", adding("    x")),
+        ("cr-at-eol", adding("x\r")),
+        ("-space-before-tab", adding(" \tx")),
+        ("-blank-at-eof", EOF_BLANK.to_string()),
+        ("blank-at-eof", EOF_BLANK.to_string()),
+    ];
+    for (rule, text) in cases {
+        each("c1", |t| {
+            t.both(&["config", "core.whitespace", rule]);
+            same(t, "", &[], text.as_bytes());
+        });
+        each("c1", |t| {
+            t.both(&["config", "core.whitespace", rule]);
+            same(t, "", &["--check"], text.as_bytes());
+            same(t, "", &["--whitespace=nowarn"], text.as_bytes());
+        });
+    }
+}
+
+#[test]
+fn the_whitespace_attribute_picks_the_rules_per_path() {
+    let cases = [
+        ("a.txt -whitespace", adding("x  ")),
+        ("a.txt whitespace", adding("        x")),
+        ("a.txt whitespace=indent-with-non-tab", adding("        x")),
+        ("a.txt whitespace=tab-in-indent", adding("\tx")),
+        ("a.txt whitespace=cr-at-eol", adding("x\r")),
+        ("a.txt whitespace=-trailing-space", adding("x  ")),
+        ("a.txt whitespace=nonsense", adding("x  ")),
+        ("a.txt whitespace=-blank-at-eof", EOF_BLANK.to_string()),
+        ("b.txt -whitespace", adding("x  ")),
+    ];
+    for (attrs, text) in cases {
+        each("c1", |t| {
+            for dir in [&t.git, &t.pyn] {
+                write(dir, ".gitattributes", &format!("{attrs}\n"));
+            }
+            same(t, "", &[], text.as_bytes());
+        });
+    }
+    each("c1", |t| {
+        for dir in [&t.git, &t.pyn] {
+            write(dir, ".gitattributes", "a.txt whitespace=tab-in-indent\n");
+        }
+        t.both(&["config", "core.whitespace", "-trailing-space"]);
+        same(t, "", &[], adding("x  ").as_bytes());
+        same(t, "", &[], adding("\tx").as_bytes());
+    });
+}
+
 #[test]
 fn rejects_broken_input_like_git() {
     each("c1", |t| {
@@ -462,6 +527,35 @@ fn three_way_conflicts_follow_the_conflict_style() {
 }
 
 #[test]
+fn three_way_follows_the_merge_attribute() {
+    let drivers: [(&str, Vec<(&str, &str)>); 8] = [
+        ("a.txt merge=binary", vec![]),
+        ("a.txt -merge", vec![]),
+        ("a.txt merge=union", vec![]),
+        ("a.txt merge=text", vec![]),
+        ("a.txt merge=keep", vec![("merge.keep.driver", "true")]),
+        ("a.txt merge=fail", vec![("merge.fail.driver", "false")]),
+        ("a.txt merge=cat", vec![("merge.cat.driver", "cat %B >%A")]),
+        ("a.txt merge=nodriver", vec![]),
+    ];
+    for (attrs, config) in drivers {
+        for (from, to) in [("line3\n", "mine3\n"), ("line5\n", "mine5\n")] {
+            each("c1", |t| {
+                for dir in [&t.git, &t.pyn] {
+                    write(dir, ".gitattributes", &format!("{attrs}\n"));
+                    write(dir, "a.txt", &lines("line", 12).replace(from, to));
+                    run(dir, &["add", "a.txt"]);
+                }
+                for (key, value) in &config {
+                    t.both(&["config", key, value]);
+                }
+                same(t, "", &["--3way", &patch(t, "a-only")], b"");
+            });
+        }
+    }
+}
+
+#[test]
 fn merges_with_three_way_like_git() {
     // A change within the hunk's context, away from the changed lines: the plain patch fails, the merge is clean.
     each("c1", |t| {
@@ -524,7 +618,7 @@ fn merges_with_three_way_like_git() {
 fn refuses_whitespace_settings_it_does_not_read() {
     for (key, value) in [
         ("apply.whitespace", "fix"),
-        ("core.whitespace", "tab-in-indent"),
+        ("apply.ignoreWhitespace", "change"),
     ] {
         each("c1", |t| {
             t.both(&["config", key, value]);

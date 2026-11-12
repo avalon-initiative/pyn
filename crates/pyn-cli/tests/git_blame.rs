@@ -1718,14 +1718,7 @@ fn function_ranges_follow_the_diff_driver() {
 fn what_is_not_built_is_a_usage_error() {
     each_format(|r| {
         linear(r);
-        for args in [
-            &["-M", "a.txt"][..],
-            &["-C", "a.txt"],
-            &["-C", "-C", "a.txt"],
-            &["-M20", "a.txt"],
-            &["--show-stats", "a.txt"],
-            &["--score-debug", "a.txt"],
-        ] {
+        for args in [&["--show-stats", "a.txt"][..], &["--score-debug", "a.txt"]] {
             let (code, out, err) = r.pyn(&r.dir, "blame", args);
             assert_eq!(code, 129, "{} blame {args:?}: {err}", r.format);
             assert!(out.is_empty(), "{args:?}");
@@ -2095,4 +2088,271 @@ fn many_authors_align_like_git() {
             r.same_annotate(&args);
         }
     });
+}
+
+/// Lines of enough letters and digits to clear the default move and copy scores in small blocks.
+fn prose(tag: &str, n: usize) -> Vec<String> {
+    (1..=n)
+        .map(|i| format!("{tag} statement number {i} computes value {}", i * 37 % 11))
+        .collect()
+}
+
+fn moved_block(r: &Repo) {
+    let mut l = prose("alpha", 24);
+    r.lines("m.txt", &refs(&l));
+    r.commit(ANN, "one");
+    let block: Vec<String> = l.drain(4..10).collect();
+    l.extend(block);
+    l[0] = "bob edited the first line of the file".into();
+    r.lines("m.txt", &refs(&l));
+    r.commit(BOB, "move a block to the end");
+    let short = l.remove(12);
+    l.insert(3, short);
+    let mut tiny = l.drain(14..16).collect::<Vec<_>>();
+    tiny.push("x".into());
+    l.splice(1..1, tiny);
+    r.lines("m.txt", &refs(&l));
+    r.commit(CY, "move a line up and two lines near the top");
+}
+
+const MOVE_ARGS: [&[&str]; 14] = [
+    &["-M"],
+    &["-M", "-f", "-n"],
+    &["-M", "-p"],
+    &["-M", "--line-porcelain"],
+    &["-M", "-w"],
+    &["-M", "--incremental"],
+    &["-M", "-s", "-L", "3,20"],
+    &["-M1"],
+    &["-M5"],
+    &["-M20"],
+    &["-M45"],
+    &["-M200"],
+    &["-M", "-M30"],
+    &["-Mx"],
+];
+
+#[test]
+fn moved_lines_are_blamed_where_they_came_from() {
+    each_format(|r| {
+        moved_block(r);
+        for opts in MOVE_ARGS {
+            let mut args = opts.to_vec();
+            args.push("m.txt");
+            r.same(&args);
+        }
+        r.same(&["-M", "HEAD~1", "m.txt"]);
+        r.same_annotate(&["-M", "m.txt"]);
+    });
+}
+
+/// Another file's lines copied in: from one the commit modified, from an untouched one, and into an existing file.
+fn copied_block(r: &Repo) {
+    let a = prose("alpha", 20);
+    let b = prose("bravo", 20);
+    r.lines("a.txt", &refs(&a));
+    r.lines("b.txt", &refs(&b));
+    r.lines("sub/c.txt", &refs(&prose("charlie", 16)));
+    r.commit(ANN, "one");
+    let mut a2 = a.clone();
+    let cut: Vec<String> = a2.drain(2..9).collect();
+    r.lines("a.txt", &refs(&a2));
+    let mut n = prose("new", 6);
+    n.splice(3..3, cut);
+    r.lines("n.txt", &refs(&n));
+    r.commit(BOB, "copy lines out of a modified file into a new one");
+    let mut p = prose("pad", 5);
+    p.splice(2..2, b[3..10].to_vec());
+    p.extend(prose("charlie", 16)[5..9].to_vec());
+    r.lines("p.txt", &refs(&p));
+    r.commit(CY, "copy from untouched files into a new one");
+    let mut a3 = a2.clone();
+    a3.splice(5..5, b[12..18].to_vec());
+    a3.push("closing line written by zoe alone".into());
+    r.lines("a.txt", &refs(&a3));
+    r.commit(ZOE, "copy from an untouched file into an old one");
+    let mut b2 = b.clone();
+    b2.drain(12..18);
+    r.lines("b.txt", &refs(&b2));
+    r.commit(ANN, "drop the copied lines from b");
+    r.git_ok(BOB, &["rm", "-q", "sub/c.txt"]);
+    r.git_ok(BOB, &["commit", "-q", "-m", "remove a file"]);
+    let mut d = prose("delta", 4);
+    d.extend(prose("charlie", 16)[0..6].to_vec());
+    r.lines("d.txt", &refs(&d));
+    r.commit(CY, "copy lines from a file removed earlier");
+}
+
+const COPY_ARGS: [&[&str]; 16] = [
+    &["-C"],
+    &["-C", "-C"],
+    &["-C", "-C", "-C"],
+    &["-CC"],
+    &["-C", "-f", "-n"],
+    &["-C", "-C", "-f", "-n"],
+    &["-C", "-C", "-C", "-p"],
+    &["-C", "--line-porcelain"],
+    &["-C", "-C", "-w"],
+    &["-C", "-C", "--incremental"],
+    &["-M", "-C", "-C"],
+    &["-C1"],
+    &["-C30", "-C30"],
+    &["-C100", "-C100"],
+    &["-M60", "-C30", "-C30"],
+    &["-M10", "-C70", "-C"],
+];
+
+#[test]
+fn copied_lines_are_blamed_where_they_came_from() {
+    each_format(|r| {
+        copied_block(r);
+        for file in ["n.txt", "p.txt", "a.txt", "d.txt"] {
+            for opts in COPY_ARGS {
+                let mut args = opts.to_vec();
+                args.push(file);
+                r.same(&args);
+            }
+        }
+        r.same(&["-C", "-C", "-C", "HEAD~3", "a.txt"]);
+        r.same_annotate(&["-C", "-C", "n.txt"]);
+    });
+}
+
+#[test]
+fn moves_and_copies_through_merges_match_git() {
+    each_format(|r| {
+        let a = prose("alpha", 16);
+        r.lines("a.txt", &refs(&a));
+        r.lines("b.txt", &refs(&prose("bravo", 16)));
+        r.commit(ANN, "base");
+        r.git_ok(ANN, &["checkout", "-q", "-b", "side"]);
+        let mut s = a.clone();
+        let cut: Vec<String> = s.drain(2..8).collect();
+        s.extend(cut);
+        r.lines("a.txt", &refs(&s));
+        r.commit(BOB, "side moves a block");
+        r.git_ok(ANN, &["checkout", "-q", "-"]);
+        let mut m = prose("bravo", 16);
+        m.splice(4..4, a[10..15].to_vec());
+        r.lines("b.txt", &refs(&m));
+        r.commit(CY, "main copies lines into b");
+        r.git_ok(ANN, &["merge", "-q", "--no-edit", "side"]);
+        r.lines("c.txt", &refs(&[&a[..3], &s[10..14], &m[4..8]].concat()));
+        r.commit(ZOE, "new file from both");
+        for file in ["a.txt", "b.txt", "c.txt"] {
+            for opts in [
+                &["-M"][..],
+                &["-C"],
+                &["-C", "-C"],
+                &["-C", "-C", "-C"],
+                &["-M", "-f", "-C", "-C", "-p"],
+            ] {
+                let mut args = opts.to_vec();
+                args.push(file);
+                r.same(&args);
+            }
+        }
+    });
+}
+
+#[test]
+fn a_dirty_work_tree_finds_moves_and_copies() {
+    each_format(|r| {
+        copied_block(r);
+        let mut l = prose("alpha", 20);
+        l.drain(2..9);
+        let cut: Vec<String> = l.drain(3..7).collect();
+        l.extend(cut);
+        l.extend(prose("bravo", 20)[2..7].to_vec());
+        r.lines("a.txt", &refs(&l));
+        for opts in [&["-M"][..], &["-C"], &["-C", "-C"], &["-C", "-C", "-C"]] {
+            let mut args = opts.to_vec();
+            args.push("a.txt");
+            r.same_masked(&args);
+        }
+        r.git_ok(ANN, &["add", "a.txt"]);
+        r.write("a.txt", b"");
+        r.lines("a.txt", &refs(&l[..9]));
+        for opts in [&["-M"][..], &["-C", "-C", "-C"]] {
+            let mut args = opts.to_vec();
+            args.push("a.txt");
+            r.same_masked(&args);
+        }
+    });
+}
+
+/// Histories that move blocks, copy them between files and edit, on several files.
+fn shuffled_history(r: &Repo, seed: u64) -> Vec<String> {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let who = [ANN, BOB, CY, ZOE];
+    let names = ["a.txt", "b.txt", "d/c.txt", "d/e.txt"];
+    let mut files: Vec<Vec<String>> = names
+        .iter()
+        .map(|n| prose(&n.replace(['/', '.'], ""), 8 + rng.below(16)))
+        .collect();
+    for (n, f) in names.iter().zip(&files) {
+        r.lines(n, &refs(f));
+    }
+    r.commit(ANN, "c0");
+    for step in 1..12 {
+        for _ in 0..1 + rng.below(3) {
+            let at = rng.below(files.len());
+            match rng.below(5) {
+                0 if files[at].len() > 4 => {
+                    let from = rng.below(files[at].len() - 2);
+                    let to = (from + 1 + rng.below(6)).min(files[at].len());
+                    let block: Vec<String> = files[at].drain(from..to).collect();
+                    let into = rng.below(files[at].len() + 1);
+                    files[at].splice(into..into, block);
+                }
+                1 | 2 => {
+                    let src = rng.below(files.len());
+                    if files[src].len() > 3 {
+                        let from = rng.below(files[src].len() - 2);
+                        let to = (from + 1 + rng.below(8)).min(files[src].len());
+                        let block = files[src][from..to].to_vec();
+                        let into = rng.below(files[at].len() + 1);
+                        files[at].splice(into..into, block);
+                    }
+                }
+                3 if files[at].len() > 2 => {
+                    let drop = rng.below(files[at].len());
+                    files[at].remove(drop);
+                }
+                _ => {
+                    let into = rng.below(files[at].len() + 1);
+                    files[at].insert(into, format!("fresh {step} text {}", rng.below(1000)));
+                }
+            }
+        }
+        for (n, f) in names.iter().zip(&files) {
+            r.lines(n, &refs(f));
+        }
+        r.commit(who[rng.below(who.len())], &format!("step {step}"));
+    }
+    names.iter().map(|n| n.to_string()).collect()
+}
+
+#[test]
+fn moves_and_copies_on_random_histories_match_git() {
+    for format in FORMATS {
+        for seed in 1..=25u64 {
+            let r = Repo::new(format);
+            let names = shuffled_history(&r, seed);
+            for name in &names {
+                for opts in [
+                    &["-M"][..],
+                    &["-C"],
+                    &["-C", "-C"],
+                    &["-C", "-C", "-C", "-p"],
+                    &["-M12", "-C25", "-C25"],
+                    &["-M70", "-C5"],
+                ] {
+                    let mut args = opts.to_vec();
+                    args.push(name);
+                    r.same(&args);
+                }
+            }
+        }
+    }
 }

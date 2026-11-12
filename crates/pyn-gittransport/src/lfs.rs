@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, mpsc};
 
 use pyn_git::Config;
 use reqwest::Url;
@@ -23,6 +25,7 @@ use crate::url::{RemoteUrl, redact_text, rewrite, scoped_values};
 pub(crate) const MEDIA: &str = "application/vnd.git-lfs+json";
 const BATCH_SIZE: usize = 100;
 const MAX_REDIRECTS: usize = 10;
+const DEFAULT_CONCURRENCY: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Object {
@@ -117,13 +120,73 @@ fn origin(u: &Url) -> Origin {
     )
 }
 
-pub struct Client {
-    http: Http,
-    pub(crate) base: Url,
+/// Credential state shared by the transfer threads; `generation` counts credential changes.
+struct Session {
     flow: Flow,
     auth: Option<Offer>,
     unconfirmed: bool,
+    generation: u64,
+}
+
+pub struct Client {
+    http: Http,
+    pub(crate) base: Url,
+    session: Mutex<Session>,
     extra_headers: Vec<(String, String)>,
+    concurrency: usize,
+}
+
+/// `lfs.concurrenttransfers`: a positive integer, 8 when unset.
+fn concurrency(config: &Config) -> Result<usize> {
+    match config.get("lfs.concurrenttransfers") {
+        None => Ok(DEFAULT_CONCURRENCY),
+        Some(v) => v
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| {
+                lfs(format!(
+                    "lfs.concurrenttransfers must be a positive integer, not '{v}'"
+                ))
+            }),
+    }
+}
+
+/// Runs `work` over `jobs` on up to `workers` scoped threads, handing each result to `done` on the calling thread
+/// as it arrives. One worker runs inline.
+fn pool<T: Sync, R: Send>(
+    jobs: &[T],
+    workers: usize,
+    work: &(dyn Fn(&T) -> R + Sync),
+    mut done: impl FnMut(usize, R),
+) {
+    if workers <= 1 || jobs.len() <= 1 {
+        for (i, job) in jobs.iter().enumerate() {
+            done(i, work(job));
+        }
+        return;
+    }
+    let next = &AtomicUsize::new(0);
+    let (tx, rx) = mpsc::channel();
+    std::thread::scope(|s| {
+        for _ in 0..workers.min(jobs.len()) {
+            let tx = tx.clone();
+            s.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(job) = jobs.get(i) else { break };
+                    if tx.send((i, work(job))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
+        for (i, r) in rx {
+            done(i, r);
+        }
+    });
 }
 
 impl Client {
@@ -135,6 +198,7 @@ impl Client {
             .filter_map(|h| h.split_once(':'))
             .map(|(n, v)| (n.trim().to_owned(), v.trim().to_owned()))
             .collect();
+        let concurrency = concurrency(config)?;
         let flow = Flow::new(config.clone(), env.clone(), prompt, &base);
         let mut base = base;
         let _ = base.set_username("");
@@ -142,11 +206,19 @@ impl Client {
         Ok(Self {
             http,
             base,
-            flow,
-            auth: None,
-            unconfirmed: false,
+            session: Mutex::new(Session {
+                flow,
+                auth: None,
+                unconfirmed: false,
+                generation: 0,
+            }),
             extra_headers,
+            concurrency,
         })
+    }
+
+    fn session(&self) -> MutexGuard<'_, Session> {
+        self.session.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn shown(&self) -> String {
@@ -155,7 +227,7 @@ impl Client {
 
     /// Sends the request `make` builds; credentials go only to the endpoint's host, and a 401 asks the next source.
     pub(crate) fn send(
-        &mut self,
+        &self,
         url: &Url,
         headers: &[(String, String)],
         make: &dyn Fn(&Http) -> io::Result<RequestBuilder>,
@@ -165,6 +237,10 @@ impl Client {
             .any(|(n, _)| n.eq_ignore_ascii_case("authorization"));
         let home = origin(url) == origin(&self.base);
         loop {
+            let (auth, generation) = {
+                let st = self.session();
+                (st.auth.clone(), st.generation)
+            };
             let mut req = make(&self.http)?;
             for (n, v) in headers {
                 req = req.header(n.as_str(), v.as_str());
@@ -173,7 +249,7 @@ impl Client {
                 for (n, v) in &self.extra_headers {
                     req = req.header(n.as_str(), v.as_str());
                 }
-                if let (false, Some(a)) = (own_auth, &self.auth) {
+                if let (false, Some(a)) = (own_auth, &auth) {
                     req = req.basic_auth(
                         a.cred.username.as_deref().unwrap_or(""),
                         a.cred.password.as_deref(),
@@ -189,31 +265,41 @@ impl Client {
             })?;
             let status = resp.status();
             if status.as_u16() == 401 && home && !own_auth {
-                if let Some(a) = self.auth.take() {
-                    self.flow.reject(&a, &self.base);
-                }
-                match self.flow.next(&self.base)? {
-                    Some(offer) => {
-                        self.auth = Some(offer);
-                        self.unconfirmed = true;
-                        continue;
+                let mut st = self.session();
+                if st.generation == generation {
+                    if let Some(a) = st.auth.take() {
+                        st.flow.reject(&a, &self.base);
                     }
-                    None => {
-                        return Err(lfs(format!("Authentication failed for '{}'", self.shown())));
+                    match st.flow.next(&self.base)? {
+                        Some(offer) => {
+                            st.auth = Some(offer);
+                            st.unconfirmed = true;
+                            st.generation += 1;
+                        }
+                        None => {
+                            return Err(lfs(format!(
+                                "Authentication failed for '{}'",
+                                self.shown()
+                            )));
+                        }
                     }
                 }
+                continue;
             }
-            if status.is_success() && self.unconfirmed {
-                self.unconfirmed = false;
-                if let Some(a) = &self.auth {
-                    self.flow.approve(a, &self.base);
+            if status.is_success() {
+                let mut st = self.session();
+                if st.unconfirmed && st.generation == generation {
+                    st.unconfirmed = false;
+                    if let Some(a) = st.auth.clone() {
+                        st.flow.approve(&a, &self.base);
+                    }
                 }
             }
             return Ok(resp);
         }
     }
 
-    fn batch(&mut self, operation: &str, objects: &[Object]) -> Result<Vec<Entry>> {
+    fn batch(&self, operation: &str, objects: &[Object]) -> Result<Vec<Entry>> {
         let mut url = self.base.clone();
         let path = format!("{}/objects/batch", url.path().trim_end_matches('/'));
         url.set_path(&path);
@@ -272,20 +358,33 @@ impl Client {
     ) -> Result<()> {
         std::fs::create_dir_all(tmp)?;
         let mut failures = Vec::new();
-        for chunk in objects.chunks(BATCH_SIZE) {
+        for chunk in unique(objects).chunks(BATCH_SIZE) {
             let entries = self.batch("download", chunk)?;
-            for object in chunk {
-                let outcome = match entries.iter().find(|e| e.oid == object.oid) {
-                    None => Err(lfs("the LFS server did not answer for it")),
+            let mut outcomes: Vec<Option<Error>> = chunk.iter().map(|_| None).collect();
+            let mut jobs = Vec::new();
+            for (i, object) in chunk.iter().enumerate() {
+                match entries.iter().find(|e| e.oid == object.oid) {
+                    None => outcomes[i] = Some(lfs("the LFS server did not answer for it")),
                     Some(e) => match (&e.error, e.actions.get("download")) {
-                        (Some(err), _) => Err(object_error(err)),
-                        (None, None) => Err(lfs("the LFS server offers no download for it")),
-                        (None, Some(action)) => self
-                            .fetch_one(object, action, tmp)
-                            .and_then(|path| install(object, &path)),
+                        (Some(err), _) => outcomes[i] = Some(object_error(err)),
+                        (None, None) => {
+                            outcomes[i] = Some(lfs("the LFS server offers no download for it"));
+                        }
+                        (None, Some(action)) => jobs.push((i, object, action)),
                     },
-                };
-                if let Err(e) = outcome {
+                }
+            }
+            pool(
+                &jobs,
+                self.concurrency,
+                &|(_, object, action)| self.fetch_one(object, action, tmp),
+                |n, fetched| {
+                    let (i, object, _) = jobs[n];
+                    outcomes[i] = fetched.and_then(|path| install(object, &path)).err();
+                },
+            );
+            for (object, outcome) in chunk.iter().zip(outcomes) {
+                if let Some(e) = outcome {
                     failures.push(format!("{}: {e}", object.oid));
                 }
             }
@@ -293,7 +392,7 @@ impl Client {
         summarize(failures)
     }
 
-    fn fetch_one(&mut self, object: &Object, action: &Action, tmp: &Path) -> Result<PathBuf> {
+    fn fetch_one(&self, object: &Object, action: &Action, tmp: &Path) -> Result<PathBuf> {
         let url = self.action_url(action)?;
         let headers: Vec<_> = action.header.clone().into_iter().collect();
         let part = tmp.join(format!("{}.part", object.oid));
@@ -340,29 +439,38 @@ impl Client {
     pub fn upload(
         &mut self,
         objects: &[Object],
-        open: &dyn Fn(&Object) -> io::Result<File>,
+        open: &(dyn Fn(&Object) -> io::Result<File> + Sync),
     ) -> Result<usize> {
         let (mut failures, mut sent) = (Vec::new(), 0);
-        for chunk in objects.chunks(BATCH_SIZE) {
+        for chunk in unique(objects).chunks(BATCH_SIZE) {
             let entries = self.batch("upload", chunk)?;
-            for object in chunk {
+            let mut outcomes: Vec<Option<Error>> = chunk.iter().map(|_| None).collect();
+            let mut jobs = Vec::new();
+            for (i, object) in chunk.iter().enumerate() {
                 let Some(entry) = entries.iter().find(|e| e.oid == object.oid) else {
-                    failures.push(format!(
-                        "{}: the LFS server did not answer for it",
-                        object.oid
-                    ));
+                    outcomes[i] = Some(lfs("the LFS server did not answer for it"));
                     continue;
                 };
                 if let Some(err) = &entry.error {
-                    failures.push(format!("{}: {}", object.oid, object_error(err)));
-                    continue;
+                    outcomes[i] = Some(object_error(err));
+                } else if let Some(put) = entry.actions.get("upload") {
+                    jobs.push((i, object, put, entry.actions.get("verify")));
                 }
-                let Some(put) = entry.actions.get("upload") else {
-                    continue;
-                };
-                match self.put_one(object, put, entry.actions.get("verify"), open) {
-                    Ok(()) => sent += 1,
-                    Err(e) => failures.push(format!("{}: {e}", object.oid)),
+            }
+            pool(
+                &jobs,
+                self.concurrency,
+                &|(_, object, put, verify)| self.put_one(object, put, *verify, open),
+                |n, put| {
+                    match put {
+                        Ok(()) => sent += 1,
+                        Err(e) => outcomes[jobs[n].0] = Some(e),
+                    };
+                },
+            );
+            for (object, outcome) in chunk.iter().zip(outcomes) {
+                if let Some(e) = outcome {
+                    failures.push(format!("{}: {e}", object.oid));
                 }
             }
         }
@@ -370,11 +478,11 @@ impl Client {
     }
 
     fn put_one(
-        &mut self,
+        &self,
         object: &Object,
         put: &Action,
         verify: Option<&Action>,
-        open: &dyn Fn(&Object) -> io::Result<File>,
+        open: &(dyn Fn(&Object) -> io::Result<File> + Sync),
     ) -> Result<()> {
         let url = self.action_url(put)?;
         let headers: Vec<_> = put.header.clone().into_iter().collect();
@@ -408,6 +516,16 @@ impl Client {
         }
         Ok(())
     }
+}
+
+/// `objects` without repeated ids, in order.
+fn unique(objects: &[Object]) -> Vec<Object> {
+    let mut seen = std::collections::HashSet::new();
+    objects
+        .iter()
+        .filter(|o| seen.insert(o.oid.clone()))
+        .cloned()
+        .collect()
 }
 
 fn write_body(mut resp: Response, part: &Path, append: bool) -> Result<()> {
