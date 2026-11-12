@@ -78,7 +78,16 @@ A new server serves only setup until the first administrator exists. To stop a s
 needs a one-time **setup token**, printed in the server's log at first start:
 
 ```bash
-docker compose logs server | grep -A3 "one-time setup token"
+docker compose logs server | grep -A4 "one-time setup token"
+```
+
+The block looks like this, followed by one line saying where to finish setup:
+
+```text
+----- pyn one-time setup token -----
+<the token>
+------------------------------------
+finish setup in the browser at https://pyn.example.com, or run: pyn setup <username>
 ```
 
 Copy the long string between the dashes. Then:

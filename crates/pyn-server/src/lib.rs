@@ -2133,6 +2133,17 @@ async fn audit(
     }))
 }
 
+/// The line printed after the setup token block; the web app shows its setup screen at the root address.
+pub fn setup_hint(configured_public_url: Option<&str>) -> String {
+    match configured_public_url {
+        Some(url) => format!(
+            "finish setup in the browser at {}, or run: pyn setup <username>",
+            url.trim_end_matches('/')
+        ),
+        None => "finish setup with the CLI: pyn setup <username>".into(),
+    }
+}
+
 /// A warning when session cookies would not be Secure on a server reachable beyond this machine.
 pub fn insecure_cookie_warning(addr: &str, public_url: &str) -> Option<&'static str> {
     if public_url.to_ascii_lowercase().starts_with("https://") {

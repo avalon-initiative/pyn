@@ -505,6 +505,10 @@ async fn main() -> anyhow::Result<()> {
         eprintln!(
             "----- pyn one-time setup token -----\n{setup_token}\n------------------------------------"
         );
+        eprintln!(
+            "{}",
+            pyn_server::setup_hint(std::env::var("PYN_PUBLIC_URL").ok().as_deref())
+        );
     }
     if let Some(warning) = pyn_server::insecure_cookie_warning(&addr, &access.public_url()) {
         tracing::warn!("{warning}");
