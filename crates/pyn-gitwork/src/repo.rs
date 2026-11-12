@@ -375,18 +375,28 @@ impl Repo {
         self.attributes_with_system(source, system_attributes_path())
     }
 
+    /// The attributes with the per-folder `.gitattributes` contents given by `files` (folder to bytes); not cached.
+    pub fn attributes_from_files(&self, files: HashMap<Vec<u8>, Vec<u8>>) -> Result<Attributes> {
+        self.attributes_with_loader(
+            system_attributes_path(),
+            Box::new(move |dir: &[u8]| files.get(dir).cloned()),
+        )
+    }
+
+    /// The line-ending, `ident` and filter conversion of `path` under `attributes`.
+    pub fn conversion_under(&self, attributes: &Attributes, path: &[u8]) -> Conversion {
+        Conversion::new(
+            Settings::from_config(&self.config),
+            &attributes.for_path(path),
+        )
+        .with_filters(&self.config, &self.filters)
+    }
+
     fn attributes_with_system(
         &self,
         source: &AttrSource,
         system: Option<PathBuf>,
     ) -> Result<Attributes> {
-        let global = global_attribute_bytes(
-            system,
-            &self.config,
-            self.home.as_deref(),
-            self.xdg.as_deref(),
-        )?;
-        let info = read_attribute_file(Some(self.git.common_dir().join("info/attributes")))?;
         let loader: crate::attributes::Loader = match source {
             AttrSource::WorkTree => {
                 let root = self.git.work_tree().map(Path::to_path_buf);
@@ -426,6 +436,21 @@ impl Repo {
             }
             AttrSource::Nowhere => Box::new(|_| None),
         };
+        self.attributes_with_loader(system, loader)
+    }
+
+    fn attributes_with_loader(
+        &self,
+        system: Option<PathBuf>,
+        loader: crate::attributes::Loader,
+    ) -> Result<Attributes> {
+        let global = global_attribute_bytes(
+            system,
+            &self.config,
+            self.home.as_deref(),
+            self.xdg.as_deref(),
+        )?;
+        let info = read_attribute_file(Some(self.git.common_dir().join("info/attributes")))?;
         Ok(Attributes::new(
             &global,
             &info,
@@ -441,11 +466,7 @@ impl Repo {
 
     /// The line-ending, `ident` and filter conversion that applies to `path`.
     pub fn conversion(&self, path: &[u8]) -> Result<Conversion> {
-        Ok(Conversion::new(
-            Settings::from_config(&self.config),
-            &self.attributes()?.for_path(path),
-        )
-        .with_filters(&self.config, &self.filters))
+        Ok(self.conversion_under(&*self.attributes()?, path))
     }
 
     fn global_excludes_path(&self) -> Option<PathBuf> {

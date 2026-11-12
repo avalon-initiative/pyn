@@ -476,3 +476,264 @@ mod ssh_endpoint {
         );
     }
 }
+
+fn tus_upload_fixture(dir: &Path, size: usize) -> (Vec<u8>, Object) {
+    let data: Vec<u8> = (0..size).map(|i| (i * 13 % 251) as u8).collect();
+    fs::write(dir.join(sha256_hex(&data)), &data).unwrap();
+    let object = object(&data);
+    (data, object)
+}
+
+fn upload_one(c: &mut Client, dir: &Path, o: &Object) -> pyn_gittransport::Result<usize> {
+    c.upload(std::slice::from_ref(o), &|o| {
+        fs::File::open(dir.join(&o.oid))
+    })
+}
+
+#[test]
+fn a_server_that_offers_tus_gets_a_resumable_upload() {
+    let srv = LfsServer::start();
+    srv.state.lock().unwrap().tus = true;
+    let dir = tempdir().unwrap();
+    let (data, o) = tus_upload_fixture(dir.path(), 70_000);
+    let mut c = client(&srv.url("/lfs"), "", &[], dir.path());
+    assert_eq!(upload_one(&mut c, dir.path(), &o).unwrap(), 1);
+    assert_eq!(srv.has(&o.oid).unwrap(), data);
+    assert_eq!(
+        srv.state.lock().unwrap().offered,
+        [["tus".to_string(), "basic".to_string()]]
+    );
+    let log = srv.log();
+    assert_eq!(log.len(), 5, "{log:?}");
+    assert!(
+        log[1].starts_with("HEAD ") && log[1].ends_with("/tus"),
+        "{log:?}"
+    );
+    assert!(log[2].starts_with("POST "), "{log:?}");
+    assert!(log[3].starts_with("PATCH "), "{log:?}");
+    assert!(log[4].starts_with("POST /lfs/objects/verify"), "{log:?}");
+    assert_eq!(srv.count("PUT"), 0);
+}
+
+#[test]
+fn an_interrupted_tus_upload_continues_from_the_servers_offset() {
+    let srv = LfsServer::start();
+    let dir = tempdir().unwrap();
+    let (data, o) = tus_upload_fixture(dir.path(), 50_000);
+    {
+        let mut st = srv.state.lock().unwrap();
+        st.tus = true;
+        st.partial.insert(o.oid.clone(), data[..20_000].to_vec());
+        st.tus_lengths.insert(o.oid.clone(), data.len());
+    }
+    let mut c = client(&srv.url("/lfs"), "", &[], dir.path());
+    assert_eq!(upload_one(&mut c, dir.path(), &o).unwrap(), 1);
+    assert_eq!(srv.has(&o.oid).unwrap(), data);
+    assert_eq!(
+        srv.count("POST /lfs/objects/"),
+        2,
+        "a batch and a verify, no creation"
+    );
+    assert_eq!(srv.count("PATCH"), 1);
+}
+
+#[test]
+fn a_server_that_accepts_part_of_a_patch_is_asked_again_from_its_new_offset() {
+    let srv = LfsServer::start();
+    let dir = tempdir().unwrap();
+    let (data, o) = tus_upload_fixture(dir.path(), 25_000);
+    {
+        let mut st = srv.state.lock().unwrap();
+        st.tus = true;
+        st.tus_accept_limit = Some(10_000);
+    }
+    let mut c = client(&srv.url("/lfs"), "", &[], dir.path());
+    assert_eq!(upload_one(&mut c, dir.path(), &o).unwrap(), 1);
+    assert_eq!(srv.has(&o.oid).unwrap(), data);
+    assert_eq!(srv.count("PATCH"), 3);
+    assert_eq!(srv.count("HEAD"), 3);
+}
+
+#[test]
+fn a_refused_tus_upload_is_reported_and_basic_is_used_when_tus_is_off() {
+    let srv = LfsServer::start();
+    let dir = tempdir().unwrap();
+    let (data, o) = tus_upload_fixture(dir.path(), 4_000);
+    srv.state.lock().unwrap().tus = true;
+    let mut corrupt = data.clone();
+    corrupt[0] ^= 1;
+    fs::write(dir.path().join(&o.oid), &corrupt).unwrap();
+    let mut c = client(&srv.url("/lfs"), "", &[], dir.path());
+    let err = upload_one(&mut c, dir.path(), &o).unwrap_err().to_string();
+    assert!(
+        err.contains("422") && err.contains("digest mismatch"),
+        "{err}"
+    );
+    assert!(srv.has(&o.oid).is_none());
+
+    let srv = LfsServer::start();
+    srv.state.lock().unwrap().tus = true;
+    fs::write(dir.path().join(&o.oid), &data).unwrap();
+    let mut c = client(
+        &srv.url("/lfs"),
+        "[lfs]\n\ttustransfers = false\n",
+        &[],
+        dir.path(),
+    );
+    assert_eq!(upload_one(&mut c, dir.path(), &o).unwrap(), 1);
+    assert_eq!(srv.state.lock().unwrap().offered, [["basic".to_string()]]);
+    assert_eq!(srv.count("PUT"), 1);
+    assert_eq!(srv.count("PATCH"), 0);
+}
+
+fn many(n: usize) -> Vec<Vec<u8>> {
+    (0..n)
+        .map(|i| format!("object number {i}\n").repeat(50).into_bytes())
+        .collect()
+}
+
+fn config_for(n: &str) -> String {
+    format!("[lfs]\n\tconcurrenttransfers = {n}\n")
+}
+
+/// Downloads `contents`, with the server failing those at the `fail` positions, and returns the error text, the installed ids and
+/// the most transfers the server saw at once.
+fn download_all(
+    contents: &[Vec<u8>],
+    setting: &str,
+    fail: &[usize],
+) -> (String, Vec<String>, usize) {
+    let srv = LfsServer::start();
+    let ids: Vec<String> = contents.iter().map(|c| srv.put(c)).collect();
+    {
+        let mut st = srv.state.lock().unwrap();
+        st.object_delay_ms = 150;
+        st.fail_objects = fail.iter().map(|i| ids[*i].clone()).collect();
+    }
+    let home = tempdir().unwrap();
+    let out = tempdir().unwrap();
+    let mut c = client(&srv.url("/lfs"), &config_for(setting), &[], home.path());
+    let objects: Vec<Object> = contents.iter().map(|c| object(c)).collect();
+    let err = c
+        .download(
+            &objects,
+            &out.path().join("tmp"),
+            &mut install_to(out.path()),
+        )
+        .err()
+        .map(|e| e.to_string().replace(&srv.addr.to_string(), "ADDR"))
+        .unwrap_or_default();
+    let mut got: Vec<String> = fs::read_dir(out.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.len() == 64)
+        .collect();
+    got.sort();
+    let peak = srv.state.lock().unwrap().max_in_flight;
+    (err, got, peak)
+}
+
+#[test]
+fn downloads_overlap_with_concurrent_transfers_and_match_a_sequential_run() {
+    let contents = many(12);
+    let (err1, got1, peak1) = download_all(&contents, "1", &[]);
+    let (err4, got4, peak4) = download_all(&contents, "4", &[]);
+    assert_eq!((err1.as_str(), err4.as_str()), ("", ""));
+    assert_eq!(got1.len(), 12);
+    assert_eq!(got1, got4);
+    assert_eq!(peak1, 1);
+    assert!((2..=4).contains(&peak4), "{peak4}");
+}
+
+#[test]
+fn a_failing_download_is_reported_the_same_at_any_concurrency() {
+    let contents = many(10);
+    let (err1, got1, _) = download_all(&contents, "1", &[2, 7]);
+    let (err8, got8, _) = download_all(&contents, "8", &[2, 7]);
+    assert!(
+        err1.contains("500") && err1.contains("(and 1 more failed)"),
+        "{err1}"
+    );
+    assert_eq!(err1, err8, "the first failure in object order is named");
+    assert_eq!(got1.len(), 8);
+    assert_eq!(got1, got8);
+}
+
+#[test]
+fn uploads_overlap_and_report_failures_in_object_order() {
+    for setting in ["1", "6"] {
+        let srv = LfsServer::start();
+        let contents = many(9);
+        let dir = tempdir().unwrap();
+        for c in &contents {
+            fs::write(dir.path().join(sha256_hex(c)), c).unwrap();
+        }
+        let bad = sha256_hex(&contents[4]);
+        {
+            let mut st = srv.state.lock().unwrap();
+            st.object_delay_ms = 150;
+            st.fail_objects = vec![bad.clone()];
+        }
+        let home = tempdir().unwrap();
+        let mut c = client(&srv.url("/lfs"), &config_for(setting), &[], home.path());
+        let objects: Vec<Object> = contents.iter().map(|c| object(c)).collect();
+        let err = c
+            .upload(&objects, &|o| fs::File::open(dir.path().join(&o.oid)))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with(&bad) && err.contains("500"),
+            "{setting}: {err}"
+        );
+        for (i, content) in contents.iter().enumerate() {
+            assert_eq!(srv.has(&sha256_hex(content)).is_some(), i != 4, "{setting}");
+        }
+        let peak = srv.state.lock().unwrap().max_in_flight;
+        assert_eq!(peak > 1, setting != "1", "{setting}: {peak}");
+        assert_eq!(srv.count("POST /lfs/objects/verify"), 8);
+    }
+}
+
+#[test]
+fn credentials_are_asked_once_for_concurrent_transfers() {
+    let srv = LfsServer::start();
+    srv.require("ann", "pw");
+    let contents = many(8);
+    for c in &contents {
+        srv.put(c);
+    }
+    srv.state.lock().unwrap().object_delay_ms = 100;
+    let home = tempdir().unwrap();
+    let out = tempdir().unwrap();
+    let mut c = client(
+        &srv.url("/lfs"),
+        &config_for("8"),
+        &["ann", "pw"],
+        home.path(),
+    );
+    let objects: Vec<Object> = contents.iter().map(|c| object(c)).collect();
+    c.download(
+        &objects,
+        &out.path().join("tmp"),
+        &mut install_to(out.path()),
+    )
+    .unwrap();
+    assert_eq!(fs::read_dir(out.path()).unwrap().count(), 9);
+}
+
+#[test]
+fn the_concurrency_setting_must_be_a_positive_integer() {
+    let home = tempdir().unwrap();
+    for bad in ["0", "-3", "many", "", "2.5"] {
+        let err = Client::new(
+            Url::parse("http://127.0.0.1:1/lfs").unwrap(),
+            &Config::parse(config_for(bad).as_bytes()).unwrap(),
+            &env(home.path()),
+            Box::new(Answers(vec![])),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(err.contains("lfs.concurrenttransfers"), "{bad}: {err}");
+    }
+}

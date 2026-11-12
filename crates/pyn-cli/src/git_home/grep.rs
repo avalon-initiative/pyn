@@ -510,6 +510,7 @@ struct Searcher<'a> {
     line_numbers: bool,
     out: BufWriter<std::io::StdoutLock<'static>>,
     matched: bool,
+    attrs: &'a pyn_gitwork::Repo,
 }
 
 impl Searcher<'_> {
@@ -528,6 +529,8 @@ impl Searcher<'_> {
     }
 
     fn file(&mut self, name: &[u8], data: &[u8]) -> Result<()> {
+        // git consults the attributes for every file searched, so a bad source is fatal.
+        self.attrs.attributes()?;
         let binary = !self.opts.text && data[..data.len().min(BINARY_SCAN)].contains(&0);
         if binary && self.opts.skip_binary {
             return Ok(());
@@ -641,6 +644,7 @@ pub fn grep(git: &GitHome, cwd: &Path) -> Result<bool> {
         line_numbers,
         out: BufWriter::new(std::io::stdout().lock()),
         matched: false,
+        attrs: &git.repo,
     };
     let quote_high = git.repo.bool_setting("core.quotepath", true);
     let shown = |path: &[u8]| {

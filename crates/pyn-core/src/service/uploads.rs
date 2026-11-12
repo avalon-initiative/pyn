@@ -219,7 +219,7 @@ impl Drop for Rollback {
 }
 
 /// Deletes each object no repository has recorded. A failed check leaves the object for garbage collection (#207).
-async fn remove_unrecorded(
+pub(super) async fn remove_unrecorded(
     meta: &Arc<dyn MetadataStore>,
     objects: &Arc<dyn ObjectStore>,
     ids: Vec<ObjectId>,

@@ -125,9 +125,12 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
             name(&mut out, &path, '?', None, None);
         }
     }
+    if args.eol && !index.entries.is_empty() {
+        git.repo.attributes()?;
+    }
     let stage_of = |e: &pyn_git::IndexEntry| Some((e.mode, e.id.to_hex(), e.stage));
     let unstaged = if args.deleted || args.modified {
-        git.repo.unstaged_changes(&index)?
+        git.repo.unstaged_changes_by_stat(&index)?
     } else {
         Default::default()
     };

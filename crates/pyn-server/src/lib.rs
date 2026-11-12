@@ -624,6 +624,14 @@ fn routes(state: AppState) -> Router {
             "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}",
             get(lfs_api::download).put(lfs_api::upload_object),
         )
+        .route(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
+            axum::routing::head(lfs_api::tus::head)
+                .post(lfs_api::tus::create)
+                .patch(lfs_api::tus::patch)
+                .delete(lfs_api::tus::terminate)
+                .options(lfs_api::tus::options),
+        )
         .route("/v1/repos/{owner}/{name}/files", get(list_files))
         .route("/v1/repos/{owner}/{name}/tree", get(tree))
         .route("/v1/repos/{owner}/{name}/summary", get(summary))

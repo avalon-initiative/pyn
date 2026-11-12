@@ -18,7 +18,7 @@ use crate::url::{RemoteUrl, SshUrl, rewrite};
 const RENEW_BEFORE: Duration = Duration::from_secs(5);
 
 /// Runs a command on the remote and returns its standard output.
-pub trait Exec {
+pub trait Exec: Send + Sync {
     fn exec(&self, command: &str) -> Result<Vec<u8>>;
 }
 
@@ -240,8 +240,7 @@ fn has_explicit(config: &Config, remote: Option<&str>, push: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
 
@@ -249,12 +248,12 @@ mod tests {
 
     struct Fake {
         answer: std::result::Result<String, String>,
-        log: Rc<RefCell<Vec<String>>>,
+        log: Arc<Mutex<Vec<String>>>,
     }
 
     impl Exec for Fake {
         fn exec(&self, command: &str) -> Result<Vec<u8>> {
-            self.log.borrow_mut().push(command.to_owned());
+            self.log.lock().unwrap().push(command.to_owned());
             self.answer.clone().map(String::into_bytes).map_err(lfs)
         }
     }
@@ -269,7 +268,7 @@ mod tests {
         push: bool,
         answer: std::result::Result<&str, &str>,
     ) -> (Result<Resolved>, Vec<String>, SshUrl) {
-        let log = Rc::new(RefCell::new(Vec::new()));
+        let log = Arc::new(Mutex::new(Vec::new()));
         let l = log.clone();
         let answer = answer.map(str::to_owned).map_err(str::to_owned);
         let op = if push { "upload" } else { "download" };
@@ -296,7 +295,7 @@ mod tests {
                 scp_like: false,
             },
         };
-        let calls = log.borrow().clone();
+        let calls = log.lock().unwrap().clone();
         (r, calls, u)
     }
 

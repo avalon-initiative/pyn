@@ -55,6 +55,7 @@ pub struct Repositories {
     unreferenced_cap: u64,
     uploads: crate::gate::UploadGate,
     merge_slots: Arc<tokio::sync::Semaphore>,
+    tus: Arc<crate::TusSessions>,
     services: Mutex<HashMap<crate::RepoId, (ServiceKey, Arc<RepoService>)>>,
 }
 
@@ -103,6 +104,7 @@ impl Repositories {
             merge_slots: Arc::new(tokio::sync::Semaphore::new(
                 crate::merge::default_concurrent_merges(),
             )),
+            tus: Arc::default(),
             services: Mutex::new(HashMap::new()),
         }
     }
@@ -205,7 +207,8 @@ impl Repositories {
                 .with_repo_storage_cap(record.address(), record.storage_cap)
                 .with_owner_writes(self.access.clone())
                 .with_unreferenced_cap(self.unreferenced_cap)
-                .with_merge_slots(self.merge_slots.clone()),
+                .with_merge_slots(self.merge_slots.clone())
+                .with_tus_sessions(self.tus.clone()),
         );
         svc.load_policy().await?;
         let mut services = self.services.lock().unwrap();

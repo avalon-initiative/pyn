@@ -1,6 +1,6 @@
 //! `merge.conflictStyle`: how a conflicted text merge is written to the work tree.
 
-use pyn_merge::{Chunk, render_markers_sized, render_two_way_sized, zealous_diff3};
+use pyn_merge::{Chunk, refine_two_way, render_markers_sized, render_two_way_sized, zealous_diff3};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Style {
@@ -25,7 +25,7 @@ impl Style {
     }
 
     /// Markers `size` wide labelled `(ours, base, theirs)`; the base label is used only by the diff3 styles. Lines both sides
-    /// share at the edges of a conflict stay out of it, except under `diff3`.
+    /// share at the edges of a conflict stay out of it, except under `diff3`; the default style also splits a conflict where the sides agree.
     pub fn render(
         self,
         chunks: Vec<Chunk<&[u8]>>,
@@ -33,7 +33,7 @@ impl Style {
         (ours, base, theirs): (&str, &str, &str),
     ) -> Vec<u8> {
         match self {
-            Self::Merge => render_two_way_sized(&zealous_diff3(chunks), size, ours, theirs),
+            Self::Merge => render_two_way_sized(&refine_two_way(chunks), size, ours, theirs),
             Self::Diff3 => render_markers_sized(&chunks, size, (ours, base, theirs)),
             Self::Zdiff3 => {
                 render_markers_sized(&zealous_diff3(chunks), size, (ours, base, theirs))

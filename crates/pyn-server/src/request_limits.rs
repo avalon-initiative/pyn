@@ -62,7 +62,11 @@ fn classify(method: &Method, path: &str) -> Class {
     let post = method == Method::POST;
     if (first, second) == (Some("info"), Some("lfs")) {
         return match (parts.next(), parts.next()) {
-            (Some("objects"), Some(_)) if get || method == Method::PUT => Class::Streaming,
+            (Some("objects"), Some(_))
+                if get || method == Method::PUT || method == Method::PATCH =>
+            {
+                Class::Streaming
+            }
             _ if get => Class::Timed,
             _ => Class::Plain,
         };
@@ -210,6 +214,7 @@ mod tests {
         assert!(at(Method::POST, "push") == Class::Streaming);
         assert!(at(Method::PUT, "info/lfs/objects/abc") == Class::Streaming);
         assert!(at(Method::GET, "info/lfs/objects/abc") == Class::Streaming);
+        assert!(at(Method::PATCH, "info/lfs/objects/abc/tus") == Class::Streaming);
         assert!(at(Method::POST, "info/lfs/objects/batch") == Class::Plain);
         assert!(at(Method::GET, "info/lfs/locks") == Class::Timed);
         assert!(at(Method::POST, "fetch") == Class::Expensive);

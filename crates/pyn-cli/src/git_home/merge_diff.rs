@@ -400,7 +400,7 @@ impl Shape<'_> {
             }
             for e in &elems {
                 if let Some(text) =
-                    combined_diff::patch(git, e, (dense, want.context), want.full_index)?
+                    combined_diff::patch(git, e, (dense, want.context), (want.full_index, false))?
                 {
                     out.push_str(&text);
                 }

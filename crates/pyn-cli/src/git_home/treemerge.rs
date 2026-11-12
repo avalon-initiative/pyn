@@ -14,7 +14,7 @@ use super::conflict_style::Style;
 use super::convert;
 use super::mergedrv::{self, Driver};
 use super::stage::write_leaves;
-use super::strategy::Settings;
+use super::strategy::{MergedAttrs, Settings};
 
 pub(super) struct Labels<'a> {
     pub ours: &'a str,
@@ -143,7 +143,7 @@ pub(super) fn both_present(
     };
     let (ours, theirs) = (git.repo.blob(&o.id)?, git.repo.blob(&t.id)?);
     let (base, ours, theirs) = if settings.renormalize {
-        let norm = |bytes: &[u8]| convert::renormalize(git, at.path, bytes);
+        let norm = |bytes: &[u8]| convert::renormalize(git, settings, at.path, bytes);
         (norm(&base)?, norm(&ours)?, norm(&theirs)?)
     } else {
         (base, ours, theirs)
@@ -196,6 +196,52 @@ pub(super) fn both_present(
     }
 }
 
+/// The attributes of the merged result, which `ort` converts by instead of the work tree's: each `.gitattributes` merged, and for
+/// a conflicted one the base's (ours when it was added on both sides).
+fn merged_attributes(git: &GitHome, [b, o, t]: [&Leaves; 3]) -> Result<MergedAttrs> {
+    let is_attr = |p: &&Vec<u8>| p.rsplit(|c| *c == b'/').next() == Some(b".gitattributes");
+    let paths: BTreeSet<&Vec<u8>> = b
+        .keys()
+        .chain(o.keys())
+        .chain(t.keys())
+        .filter(is_attr)
+        .collect();
+    let mut files = std::collections::HashMap::new();
+    for path in paths {
+        let (pb, po, pt) = (b.get(path), o.get(path), t.get(path));
+        let decided = if po == pt || pt == pb {
+            Some(po)
+        } else if po == pb {
+            Some(pt)
+        } else {
+            None
+        };
+        let bytes = match (decided, po.zip(pt)) {
+            (Some(Some(e)), _) => Some(git.repo.blob(&e.id)?),
+            (Some(None), _) => None,
+            (None, Some((eo, et))) => {
+                let base = pb.map_or(Ok(Vec::new()), |e| git.repo.blob(&e.id))?;
+                let (ours, theirs) = (git.repo.blob(&eo.id)?, git.repo.blob(&et.id)?);
+                match merge_text_with(&base, &ours, &theirs, Default::default()) {
+                    Text::Clean(bytes) => Some(bytes),
+                    _ if pb.is_some() => Some(base),
+                    _ => Some(ours),
+                }
+            }
+            (None, None) => match pb.or(po).or(pt) {
+                Some(e) => Some(git.repo.blob(&e.id)?),
+                None => None,
+            },
+        };
+        let Some(bytes) = bytes else { continue };
+        let dir = path[..path.len() - b".gitattributes".len()].strip_suffix(b"/");
+        files.insert(dir.unwrap_or_default().to_vec(), bytes);
+    }
+    Ok(MergedAttrs(std::sync::Arc::new(
+        git.repo.attributes_from_files(files)?,
+    )))
+}
+
 /// Whether `side` equals `base` once `-X renormalize` converts both, so a deletion on the other side wins.
 fn unchanged(
     git: &GitHome,
@@ -210,7 +256,7 @@ fn unchanged(
     if !settings.renormalize {
         return Ok(false);
     }
-    let norm = |e: &Entry| convert::renormalize(git, path, &git.repo.blob(&e.id)?);
+    let norm = |e: &Entry| convert::renormalize(git, settings, path, &git.repo.blob(&e.id)?);
     Ok(base.id == side.id || norm(base)? == norm(side)?)
 }
 
@@ -245,6 +291,16 @@ pub(super) fn merge_trees_with(
         git.repo.flatten(ours, &spec)?,
         git.repo.flatten(theirs, &spec)?,
     );
+    let with_attrs;
+    let settings = if settings.renormalize {
+        with_attrs = Settings {
+            attrs: Some(merged_attributes(git, [&b, &o, &t])?),
+            ..settings.clone()
+        };
+        &with_attrs
+    } else {
+        settings
+    };
     let paths: BTreeSet<&Vec<u8>> = b.keys().chain(o.keys()).chain(t.keys()).collect();
     let mut out = Merge {
         paths: BTreeMap::new(),

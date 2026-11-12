@@ -1,8 +1,8 @@
 //! Matching for `pyn log` filters: POSIX basic regular expressions (git's default) and the date forms `--since` takes.
 
-use super::approxidate::approxidate;
+use super::approxidate::{approxidate, parse_date_basic};
 use anyhow::{Result, bail};
-use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Local, TimeZone};
 use regex::{Regex, RegexBuilder};
 
 /// How `--grep`, `--author` and `--committer` read their patterns.
@@ -194,80 +194,14 @@ pub fn now() -> DateTime<Local> {
 
 /// Seconds since the epoch for a `--since` / `--until` value.
 pub fn parse_date(text: &str, now: DateTime<Local>) -> Result<i64> {
-    let text = text.trim();
-    let bad = || anyhow::anyhow!("unsupported date '{text}'");
-    let digits = text.strip_prefix('@').unwrap_or(text);
-    let (number, zone) = digits.split_once(' ').unwrap_or((digits, ""));
-    if number.len() >= 9
-        && number.bytes().all(|b| b.is_ascii_digit())
-        && (zone.is_empty() || zone.len() == 5 && zone.starts_with(['+', '-']))
-    {
-        return number.parse().map_err(|_| bad());
-    }
-    if let Ok(t) = DateTime::parse_from_rfc2822(text) {
-        return Ok(t.timestamp());
-    }
-    if let Some(secs) = iso(text, now) {
+    if let Some(secs) = parse_date_basic(text, now.timestamp()) {
         return Ok(secs);
     }
+    let bad = || anyhow::anyhow!("unsupported date '{text}'");
     match approxidate(text, now.timestamp()) {
         (secs, true) => Ok(secs),
         _ => Err(bad()),
     }
-}
-
-/// `YYYY-MM-DD`, optionally with `[T ]HH:MM[:SS]` and a zone (`Z`, `+hh:mm`, `+hhmm`); the local zone and, for
-/// a bare date, the current time of day otherwise (as git).
-fn iso(text: &str, now: DateTime<Local>) -> Option<i64> {
-    let (date, rest) = match text.find(['T', ' ']) {
-        Some(at) => (&text[..at], text[at + 1..].trim()),
-        None => (text, ""),
-    };
-    let mut parts = date.split('-');
-    let (y, m, d) = (parts.next()?, parts.next()?, parts.next()?);
-    if parts.next().is_some() || y.len() != 4 || m.len() > 2 || d.len() > 2 {
-        return None;
-    }
-    let year: i32 = y.parse().ok()?;
-    if !(1970..2100).contains(&year) {
-        return None;
-    }
-    let day = NaiveDate::from_ymd_opt(year, m.parse().ok()?, d.parse().ok()?)?;
-    if rest.is_empty() {
-        let at = day.and_time(now.time());
-        return Local
-            .from_local_datetime(&at)
-            .earliest()
-            .map(|t| t.timestamp());
-    }
-    let split = rest.find(['Z', '+', '-']).unwrap_or(rest.len());
-    let (clock, zone) = (rest[..split].trim(), rest[split..].trim());
-    let mut f = clock.split(':');
-    let (h, mi) = (f.next()?, f.next()?);
-    let s = f.next().unwrap_or("0");
-    if f.next().is_some() {
-        return None;
-    }
-    let at = day.and_hms_opt(h.parse().ok()?, mi.parse().ok()?, s.parse().ok()?)?;
-    if zone.is_empty() {
-        return Local
-            .from_local_datetime(&at)
-            .earliest()
-            .map(|t| t.timestamp());
-    }
-    let offset = if zone == "Z" {
-        0
-    } else {
-        let sign = if zone.starts_with('-') { -1 } else { 1 };
-        let digits: String = zone[1..].chars().filter(char::is_ascii_digit).collect();
-        let (hh, mm) = match digits.len() {
-            2 => (digits.as_str(), "00"),
-            4 => (&digits[..2], &digits[2..]),
-            _ => return None,
-        };
-        sign * (hh.parse::<i64>().ok()? * 3600 + mm.parse::<i64>().ok()? * 60)
-    };
-    Some(Utc.from_utc_datetime(&at).timestamp() - offset)
 }
 
 #[cfg(test)]

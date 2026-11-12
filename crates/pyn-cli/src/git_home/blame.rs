@@ -43,7 +43,10 @@ Options (a git repository only; output and exit status are git blame's):
   -S <file>             take parents from a graft file: a commit id and its parents per line
   --minimal             spend extra cycles to find better diffs
   --diff-algorithm <a>  accepted and checked; blame always finds changes with Myers, as git does
-Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): -M, -C, --show-stats,
+  -M[<num>]             find lines moved within a file; <num> is the least letters and digits (default 20), attached: -M30
+  -C[<num>]             also lines copied from files the commit changed; -C -C: from any file when the file is new;
+                        -C -C -C: from any file of the parent; default 40
+Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): --show-stats,
 --score-debug, -L :<funcname> with a built-in diff driver that is not ported and
 other revision options.";
 
@@ -72,6 +75,10 @@ struct Parsed {
     ignore_whitespace: bool,
     first_parent: bool,
     minimal: bool,
+    moves: bool,
+    move_score: usize,
+    copy_level: u8,
+    copy_score: usize,
     color_lines: bool,
     color_by_age: bool,
     revs_file: Option<String>,
@@ -95,6 +102,11 @@ fn fail(annotate: bool, message: &str) -> ! {
         }
     );
     std::process::exit(129);
+}
+
+/// A score as git reads it: digits only, anything else is 0 (the default).
+fn parse_score(text: &str) -> usize {
+    text.parse().unwrap_or(0)
 }
 
 fn not_built(annotate: bool, option: &str) -> ! {
@@ -225,7 +237,18 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                         p.revs_file = Some(value);
                         break;
                     }
-                    'M' | 'C' => not_built(annotate, &format!("-{}", cluster[i])),
+                    c @ ('M' | 'C') => {
+                        let rest: String = cluster[i + 1..].iter().collect();
+                        let score = (!rest.is_empty()).then(|| parse_score(&rest));
+                        p.moves = true;
+                        if c == 'M' {
+                            p.move_score = score.unwrap_or(p.move_score);
+                        } else {
+                            p.copy_level = (p.copy_level + 1).min(3);
+                            p.copy_score = score.unwrap_or(p.copy_score);
+                        }
+                        break;
+                    }
                     other => fail(annotate, &format!("unknown switch `{other}'")),
                 }
                 i += 1;
@@ -468,11 +491,16 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
         first_parent: p.first_parent,
         minimal: p.minimal,
         reverse: p.reverse,
+        moves: p.moves,
+        move_score: if p.move_score == 0 { 20 } else { p.move_score },
+        copy_level: p.copy_level,
+        copy_score: if p.copy_score == 0 { 40 } else { p.copy_score },
     };
     let ignore = ignore_list(git, cwd, &p, &resolver)?;
     let selected_lines: Vec<usize> = (0..lines.len()).filter(|l| selected[*l]).collect();
     let mut board = Board::new(git, &hidden, settings, fake.map(|f| (zero, f)), lines.len());
     board.ignoring(ignore);
+    board.with_final_text(content.clone());
     board.with_grafts(grafts.clone());
     if p.reverse {
         board.with_children(match first_parent_children {

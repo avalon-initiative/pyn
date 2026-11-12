@@ -795,7 +795,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
             write_bytes(git, path, mode, &bytes)?;
         }
     }
-    let mut cleared = false;
+    let (mut cleared, mut refreshed) = (false, false);
     for (path, entry) in &sources {
         let written = if r.to_worktree && in_spec(path) {
             Some(write_entry(git, path, entry)?)
@@ -804,7 +804,13 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
         };
         let was_skipped = r.ignore_skip && skipped.contains_key(path);
         cleared |= was_skipped && written.is_some();
-        if r.to_index || (was_skipped && written.is_some()) {
+        // A file written from the index's own content gets that entry's stat data refreshed, as in git.
+        let refresh = written.is_some()
+            && entries
+                .get(&(path.clone(), 0))
+                .is_some_and(|e| e.id == entry.id && !e.skip_worktree && !e.intent_to_add);
+        refreshed |= refresh;
+        if r.to_index || refresh || (was_skipped && written.is_some()) {
             let e = written
                 .unwrap_or_else(|| IndexEntry::new(path.clone(), raw_mode(entry.mode), entry.id));
             put_entry(&mut entries, e);
@@ -818,7 +824,7 @@ fn restore_paths(git: &GitHome, cwd: &Path, paths: &[String], r: Restore) -> Res
             remove_entry(&mut entries, path);
         }
     }
-    if r.to_index || cleared {
+    if r.to_index || cleared || refreshed {
         git.save_index(&opened, &index_of(opened.index.version, entries))?;
     }
     post_checkout_files(git)?;

@@ -77,11 +77,22 @@ impl Manifest {
 type Opening = Pin<Box<dyn Future<Output = Result<Option<ObjectRead>>> + Send>>;
 
 /// Reads a list of chunk pieces in order, opening one at a time.
-struct ChainReader {
+pub(crate) struct ChainReader {
     store: Arc<dyn ObjectStore>,
     pieces: std::vec::IntoIter<(ObjectId, Range<u64>)>,
     opening: Option<Opening>,
     current: Option<ObjectReader>,
+}
+
+impl ChainReader {
+    pub(crate) fn new(store: Arc<dyn ObjectStore>, pieces: Vec<(ObjectId, Range<u64>)>) -> Self {
+        Self {
+            store,
+            pieces: pieces.into_iter(),
+            opening: None,
+            current: None,
+        }
+    }
 }
 
 impl AsyncRead for ChainReader {
