@@ -2,6 +2,9 @@ name: Release
 
 # Pushing a v<MAJOR>.<MINOR>.<PATCH>[-title-slug] tag (created by `make release-publish`) publishes that
 # version: binaries, the pyn-core image on ghcr.io and a GitHub Release. See docs/releasing.md.
+#
+# `preflight` is cheap and decides whether `gate` and `live` must run: they are skipped when CI already passed on this
+# exact tree. Builds start at once; `manifest` (the public image tag) and `release` wait for the gate to pass or be skipped.
 on:
   push:
     tags: ['v*']
@@ -18,12 +21,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
+  preflight:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     outputs:
       version: ${{ steps.tag.outputs.version }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
+      gated: ${{ steps.tree.outputs.gated }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -41,6 +49,27 @@ jobs:
       - name: Verify the tag matches the workspace version
         id: tag
         run: scripts/verify-release-version.sh "${GITHUB_REF_NAME}"
+
+      # Any failure to decide counts as "run": gated=skip only when a passing CI run on the same tree was found.
+      - name: Look for a passing CI run on this tree
+        id: tree
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if note=$(scripts/ci-green-for-tree.sh "$GITHUB_SHA"); then gated=skip; else gated=run; fi
+          echo "$note"
+          echo "gated=$gated" >> "$GITHUB_OUTPUT"
+
+  gate:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.gated == 'run' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -66,6 +95,8 @@ jobs:
         run: make check
 
   live:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.gated == 'run' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -110,7 +141,7 @@ jobs:
         run: make test-live
 
   binaries:
-    needs: [verify, live]
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -150,7 +181,7 @@ jobs:
           if-no-files-found: error
 
   image:
-    needs: [verify, live]
+    needs: preflight
     strategy:
       matrix:
         include:
@@ -196,8 +227,10 @@ jobs:
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
 
+  # The first public step: pushes the image tag. The gate and live results must be success, or skipped by `preflight`.
   manifest:
-    needs: [verify, live, image]
+    needs: [preflight, gate, live, image]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.image.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.gate.result) && contains(fromJSON('["success","skipped"]'), needs.live.result) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -221,7 +254,7 @@ jobs:
       - name: Publish the multi-arch tag
         working-directory: ${{ runner.temp }}/digests
         env:
-          VERSION: ${{ needs.verify.outputs.version }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           # shellcheck disable=SC2046
           docker buildx imagetools create -t "${IMAGE}:v${VERSION}" \
@@ -229,15 +262,15 @@ jobs:
 
   # Runs beside `release` and is not a dependency of it: a failed smoke run never blocks the GitHub Release.
   smoke:
-    needs: [verify, manifest]
+    needs: [preflight, manifest]
     uses: ./.github/workflows/smoke.yml
     with:
-      version: ${{ needs.verify.outputs.version }}
+      version: ${{ needs.preflight.outputs.version }}
 
   release:
-    needs: [verify, live, binaries, manifest]
+    needs: [preflight, gate, live, binaries, manifest]
     # A binaries target that failed does not block the release; the checksum step fails when no archive built.
-    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.live.result == 'success' && needs.manifest.result == 'success' }}
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.manifest.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.gate.result) && contains(fromJSON('["success","skipped"]'), needs.live.result) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -259,5 +292,5 @@ jobs:
           if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes "${pre[@]}"
         env:
-          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
