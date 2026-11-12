@@ -180,6 +180,50 @@ fn ls_files_shows_pointers_and_whether_the_object_is_stored() {
 }
 
 #[test]
+fn status_lists_staged_and_unstaged_lfs_paths() {
+    let r = Repo::new();
+    r.write("a.bin", b"one");
+    r.write("plain.txt", b"text\n");
+    r.commit_all("one");
+    let clean = r.ok(&["lfs", "status"]);
+    assert!(clean.contains("Objects to be committed:"), "{clean}");
+    assert!(!clean.contains("a.bin"), "{clean}");
+
+    r.write("b.bin", b"two");
+    r.write("plain.txt", b"changed\n");
+    r.ok(&["add", "b.bin", "plain.txt"]);
+    r.write("a.bin", b"edited");
+    let out = r.ok(&["lfs", "status"]);
+    let (staged, unstaged) = out.split_once("Objects not staged for commit:").unwrap();
+    let b = sha256_hex(b"two");
+    let a = sha256_hex(b"edited");
+    assert!(
+        staged.contains(&format!("b.bin (LFS: {})", &b[..7])),
+        "{out}"
+    );
+    assert!(
+        !staged.contains("a.bin") && !out.contains("plain.txt"),
+        "{out}"
+    );
+    assert!(
+        unstaged.contains(&format!("a.bin (LFS: {})", &a[..7])),
+        "{out}"
+    );
+    assert!(!unstaged.contains("b.bin"), "{out}");
+}
+
+#[test]
+fn status_marks_a_tracked_path_stored_as_plain_git_content() {
+    let r = Repo::new();
+    fs::remove_file(r.dir.join(".gitattributes")).unwrap();
+    r.write("old.bin", b"raw");
+    r.ok(&["add", "old.bin"]);
+    r.write(".gitattributes", ATTRS);
+    let out = r.ok(&["lfs", "status"]);
+    assert!(out.contains("old.bin (Git: "), "{out}");
+}
+
+#[test]
 fn push_fetch_and_pull_move_objects() {
     let r = Repo::new();
     r.add_remote();
