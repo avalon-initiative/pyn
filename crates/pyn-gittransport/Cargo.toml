@@ -7,9 +7,9 @@ license.workspace = true
 
 [dependencies]
 flate2 = "1.1.10"
-pyn-git = { version = "0.1.1", path = "../pyn-git" }
-pyn-gitwire = { version = "0.1.1", path = "../pyn-gitwire" }
-pyn-object = { version = "0.1.1", path = "../pyn-object" }
+pyn-git = { version = "0.1.2", path = "../pyn-git" }
+pyn-gitwire = { version = "0.1.2", path = "../pyn-gitwire" }
+pyn-object = { version = "0.1.2", path = "../pyn-object" }
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
 rpassword = "7.5.4"
 serde = { version = "1.0.229", features = ["derive"] }
