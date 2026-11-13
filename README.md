@@ -53,6 +53,31 @@ Remotes (`push`, `pull`, `fetch`), tags, stash, per-branch policy and git import
 commit must be based on the revision its branch has, so a stale edit is rejected rather than silently overwriting someone
 else's work. Rows in the compatibility table marked *planned* are the roadmap.
 
+## Quickstart
+
+To run a release on a server (an Ubuntu or Debian host or LXC is easiest), fetch and run the installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/main/scripts/install.sh -o install.sh
+chmod +x install.sh && sudo ./install.sh
+```
+
+It asks what to install (the server with the web app, the server only, the web app only, or just the `pyn` command),
+how to run it (Docker, or the release binary under systemd), and which release (the latest stable one, the latest
+pre-release, or a tag). It installs missing tools after asking, or stops and lists what to install first, and it
+prints a one-time setup token. Open the address it shows, enter the token and create the first administrator.
+
+To use the server from your own machine, run the same installer there and choose "The pyn command only" (macOS: the
+`pyn` command on Apple silicon, and Docker deployments if Docker is installed; native hosting is Linux only), then:
+
+```bash
+pyn config set --global server http://<your-server>:8080
+pyn login <name>
+```
+
+Every answer is also a flag, so it runs unattended (`./install.sh --help`). The steps by hand are in
+[Getting started](docs/getting-started.md).
+
 ## Run it
 
 One command brings up a server with a seeded demo (in memory, so nothing to install):
