@@ -6,7 +6,7 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use sha2::{Digest, Sha256};
 
 use crate::error::{PynError, Result};
-use crate::webhook::{NewSecret, WebhookSecret};
+use crate::webhook::{NewSecret, WebhookSecret, WebhookStore};
 
 /// Prefix of a generated signing secret, so a leaked one is recognisable.
 pub const SECRET_PREFIX: &str = "whsec_";
@@ -134,6 +134,28 @@ pub fn reveal_secret(key: Option<&SecretKey>, stored: &WebhookSecret) -> Result<
             },
         )
         .map_err(|_| PynError::Storage("a webhook secret could not be decrypted".into()))
+}
+
+/// Re-encrypts every stored secret from `current` (plaintext rows included) to `new` in one atomic store step.
+/// Fails, changing nothing, when `current` cannot decrypt every row. Returns how many were rewritten.
+pub async fn rotate_secret_key(
+    store: &dyn WebhookStore,
+    current: Option<&SecretKey>,
+    new: &SecretKey,
+) -> Result<u64> {
+    if current.is_some_and(|c| c.key_id() == new.key_id()) {
+        return Err(PynError::InvalidRequest(
+            "the new secret key is the current one".into(),
+        ));
+    }
+    store
+        .reseal_secrets(&|row| {
+            let plain = reveal_secret(current, row)?;
+            let text = String::from_utf8(plain)
+                .map_err(|_| PynError::Storage("a webhook secret is not text".into()))?;
+            new.seal(&text)
+        })
+        .await
 }
 
 #[cfg(test)]

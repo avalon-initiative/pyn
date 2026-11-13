@@ -28,6 +28,7 @@ mod client;
 pub mod email;
 pub mod events;
 mod freeze_api;
+pub mod host_admin;
 mod lfs_api;
 mod limits_api;
 mod merge_api;

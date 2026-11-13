@@ -75,8 +75,10 @@ with its own random nonce; the stored row records `encrypted` and a `key_id` (th
 hex) that names the key without revealing it. An invalid value stops the server at start. Keep the key outside the
 database it protects.
 
-Changing the key does not re-encrypt existing secrets; one stored under a different key cannot be read, so rotate and
-retire secrets after changing it. Secrets created while no key was set stay plaintext.
+Changing `PYN_SECRET_KEY` alone does not re-encrypt existing secrets; one stored under a different key cannot be read.
+`pyn-server rotate-secret-key` re-encrypts every stored secret under a new key in one transaction, and a lost key is
+recovered by rotating each webhook's secret (see [recovery](../deployment.md#lost-secret-key)). Secrets created while no key
+was set stay plaintext until that command runs.
 
 ## Delivery
 

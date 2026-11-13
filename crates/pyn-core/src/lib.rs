@@ -52,7 +52,8 @@ pub use access_service::{
     SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp, TeamDetail, generate_setup_token,
 };
 pub use access_service::{
-    CreateWebhook, DeliveryPage, IssuedSecret, WebhookDetail, WebhookSecretInfo, WebhookSettings,
+    AdminRecovery, CreateWebhook, DeliveryPage, HOST_RECOVERY_ACTOR, IssuedSecret, WebhookDetail,
+    WebhookSecretInfo, WebhookSettings,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
@@ -121,4 +122,6 @@ pub use webhook::{
     MAX_ACTIVE_SECRETS, MAX_ATTEMPTS, NewSecret, NewSubscription, OutboxEvent, RETENTION_DAYS,
     RandomJitter, Subscription, SubscriptionUpdate, WebhookSecret, WebhookStore, retry_delay,
 };
-pub use webhook_secret::{SECRET_PREFIX, SecretKey, generate_secret, reveal_secret};
+pub use webhook_secret::{
+    SECRET_PREFIX, SecretKey, generate_secret, reveal_secret, rotate_secret_key,
+};

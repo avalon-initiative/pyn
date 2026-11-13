@@ -618,6 +618,90 @@ pub async fn a_subscription_holds_at_most_two_active_secrets(store: Webhooks) {
     assert_ne!(c.id, a.id);
 }
 
+fn key(byte: &str) -> crate::SecretKey {
+    crate::SecretKey::from_hex(&byte.repeat(32)).unwrap()
+}
+
+pub async fn rotating_the_secret_key_rewrites_every_secret_under_the_new_key(store: Webhooks) {
+    use crate::{reveal_secret, rotate_secret_key, webhook_secret::store_secret};
+
+    let (old, new) = (key("01"), key("02"));
+    let s = store
+        .create_subscription(sub("a", &[], true), t0())
+        .await
+        .unwrap();
+    let retired = store
+        .add_secret(s.id, store_secret(Some(&old), "whsec_one").unwrap(), t0())
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .add_secret(s.id, store_secret(Some(&old), "whsec_two").unwrap(), t0())
+        .await
+        .unwrap();
+    store.retire_secret(s.id, retired.id, t0()).await.unwrap();
+    let other = store
+        .create_subscription(sub("b", &[], true), t0())
+        .await
+        .unwrap();
+    let plain = store_secret(None, "whsec_plain").unwrap();
+    store.add_secret(other.id, plain, t0()).await.unwrap();
+
+    let rewritten = rotate_secret_key(store.as_ref(), Some(&old), &new)
+        .await
+        .unwrap();
+    assert_eq!(rewritten, 3, "retired and plaintext rows are included");
+    let active = store.list_active_secrets(s.id).await.unwrap();
+    assert_eq!(active[0].key_id.as_deref(), Some(new.key_id()));
+    assert_eq!(reveal_secret(Some(&new), &active[0]).unwrap(), b"whsec_two");
+    assert!(reveal_secret(Some(&old), &active[0]).is_err());
+    let moved = store.list_active_secrets(other.id).await.unwrap();
+    assert!(moved[0].encrypted);
+    assert_eq!(
+        reveal_secret(Some(&new), &moved[0]).unwrap(),
+        b"whsec_plain"
+    );
+}
+
+pub async fn a_rotation_that_cannot_open_every_secret_changes_nothing(store: Webhooks) {
+    use crate::{reveal_secret, rotate_secret_key, webhook_secret::store_secret};
+
+    let (old, new, stray) = (key("01"), key("02"), key("03"));
+    let a = store
+        .create_subscription(sub("a", &[], true), t0())
+        .await
+        .unwrap();
+    let b = store
+        .create_subscription(sub("b", &[], true), t0())
+        .await
+        .unwrap();
+    store
+        .add_secret(a.id, store_secret(Some(&old), "whsec_one").unwrap(), t0())
+        .await
+        .unwrap();
+    store
+        .add_secret(b.id, store_secret(Some(&stray), "whsec_two").unwrap(), t0())
+        .await
+        .unwrap();
+
+    let err = rotate_secret_key(store.as_ref(), Some(&old), &new)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "storage");
+    let first = store.list_active_secrets(a.id).await.unwrap();
+    assert_eq!(first[0].key_id.as_deref(), Some(old.key_id()));
+    assert_eq!(reveal_secret(Some(&old), &first[0]).unwrap(), b"whsec_one");
+
+    let err = rotate_secret_key(store.as_ref(), None, &new)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "storage", "encrypted rows need the current key");
+    let err = rotate_secret_key(store.as_ref(), Some(&old), &old)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "invalid_request");
+}
+
 pub async fn racing_secret_additions_never_exceed_two_active(store: Webhooks) {
     let s = store
         .create_subscription(sub("s", &[], true), t0())
@@ -897,6 +981,8 @@ macro_rules! webhook_contract_tests {
         $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; purge_removes_events_and_deliveries_past_retention);
         $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; a_subscription_holds_at_most_two_active_secrets);
         $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; racing_secret_additions_never_exceed_two_active);
+        $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; rotating_the_secret_key_rewrites_every_secret_under_the_new_key);
+        $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; a_rotation_that_cannot_open_every_secret_changes_nothing);
         $crate::webhook_contract_tests!(@one $factory; [$(#[$attr])*]; deliveries_list_newest_event_first_and_page);
         #[test]
         fn the_backoff_is_exponential_bounded_and_ends_after_eight_attempts() {

@@ -6196,6 +6196,154 @@ pub async fn revoking_admin_always_leaves_another_active_administrator(store: Ac
     assert!(store.account(&user("bob")).await.unwrap().unwrap().is_admin);
 }
 
+pub async fn the_active_administrator_count_skips_disabled_accounts_and_organizations(
+    store: Access,
+) {
+    assert_eq!(store.active_admin_count().await.unwrap(), 0);
+    for name in ["alice", "bob", "carol"] {
+        store.ensure_user(&user(name), at(0)).await.unwrap();
+    }
+    store.set_admin(&user("alice"), true).await.unwrap();
+    assert_eq!(store.active_admin_count().await.unwrap(), 1);
+    store.set_admin(&user("bob"), true).await.unwrap();
+    assert_eq!(store.active_admin_count().await.unwrap(), 2);
+    store
+        .set_disabled(&user("bob"), Some((at(1), None)))
+        .await
+        .unwrap();
+    assert_eq!(store.active_admin_count().await.unwrap(), 1);
+    store
+        .create_org(&user("acme"), &user("carol"), at(2))
+        .await
+        .unwrap();
+    assert_eq!(store.active_admin_count().await.unwrap(), 1);
+}
+
+pub async fn host_recovery_makes_an_administrator_and_ends_the_accounts_credentials(store: Access) {
+    const OLD: &str = "the old password";
+    const NEW: &str = "a brand new password";
+    let svc = AccessService::new(
+        store.clone(),
+        Arc::new(ManualClock::new(at(0))),
+        Arc::new(crate::MemoryLimitEvents::new()),
+    )
+    .with_audit(Arc::new(MemoryAuditStore::new()));
+    let host = user(crate::HOST_RECOVERY_ACTOR);
+
+    // A short password is refused before anything is created.
+    assert!(svc.recover_admin("alice", "short").await.is_err());
+    assert!(!store.user_exists(&user("alice")).await.unwrap());
+
+    // No such account: it is created as an active administrator who can sign in.
+    let done = svc.recover_admin("alice", NEW).await.unwrap();
+    assert!(done.created && !done.reenabled);
+    let alice = store.account(&user("alice")).await.unwrap().unwrap();
+    assert!(alice.is_admin);
+    assert_eq!(alice.status(), AccountStatus::Active);
+    svc.login("alice", NEW, None).await.unwrap();
+
+    // A disabled, unapproved account with credentials is repaired; others are left alone.
+    for name in ["bob", "carol"] {
+        let id = AccountId::generate(AccountKind::User).unwrap();
+        let account = NewAccount {
+            id,
+            user: user(name),
+            email: None,
+            password_hash: crate::access::account::hash_password(OLD).unwrap(),
+            signup: SignupStage::PendingApproval,
+            created_at: at(0),
+        };
+        assert!(store.create_account(account).await.unwrap());
+    }
+    let carol_before = store.account(&user("carol")).await.unwrap().unwrap();
+    let carol_hash = store.password_hash(&user("carol")).await.unwrap();
+    store
+        .set_disabled(&user("bob"), Some((at(1), Some("left".into()))))
+        .await
+        .unwrap();
+    store
+        .create_token(token("bob-token", "bob", 0))
+        .await
+        .unwrap();
+    store
+        .create_session(SessionRecord {
+            id_hash: "bob-session".into(),
+            user: user("bob"),
+            csrf_token: "csrf".into(),
+            created_at: at(0),
+            expires_at: at(600),
+        })
+        .await
+        .unwrap();
+
+    let done = svc.recover_admin("bob", NEW).await.unwrap();
+    assert!(!done.created && done.reenabled);
+    assert_eq!(done.tokens_revoked, 1);
+    let bob = store.account(&user("bob")).await.unwrap().unwrap();
+    assert!(bob.is_admin && bob.disabled_at.is_none());
+    assert_eq!(bob.status(), AccountStatus::Active);
+    assert!(store.get_session("bob-session").await.unwrap().is_none());
+    let tokens = store.list_tokens(&user("bob")).await.unwrap();
+    assert!(tokens.iter().all(|t| t.revoked_at.is_some()));
+    assert!(svc.login("bob", OLD, None).await.is_err());
+    svc.login("bob", NEW, None).await.unwrap();
+    assert_eq!(store.active_admin_count().await.unwrap(), 2);
+    assert_eq!(
+        store.account(&user("carol")).await.unwrap().unwrap(),
+        carol_before
+    );
+    assert_eq!(
+        store.password_hash(&user("carol")).await.unwrap(),
+        carol_hash
+    );
+
+    // Running it again for an active administrator only resets the password.
+    let again = svc
+        .recover_admin("bob", "yet another password")
+        .await
+        .unwrap();
+    assert!(!again.created && !again.reenabled);
+    assert!(svc.login("bob", NEW, None).await.is_err());
+
+    // An organization name is not a user account.
+    store
+        .create_org(&user("acme"), &user("alice"), at(3))
+        .await
+        .unwrap();
+    assert!(svc.recover_admin("acme", NEW).await.is_err());
+    assert!(
+        !store
+            .account(&user("acme"))
+            .await
+            .unwrap()
+            .unwrap()
+            .is_admin
+    );
+
+    // Each recovery is in the server audit log under the host actor.
+    let log = svc
+        .server_audit(
+            &Identity {
+                user: user("alice"),
+                credential: Credential::Unrestricted,
+            },
+            &AuditQuery {
+                actor: Some(host.clone()),
+                limit: 50,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(log.len(), 4, "{log:?}");
+    assert!(log.iter().all(|e| e.actor == host));
+    assert!(log.iter().any(|e| e.action == AuditAction::AccountEnabled));
+    assert!(
+        log.iter()
+            .any(|e| e.detail.contains("alice") && e.detail.contains("created"))
+    );
+}
+
 pub async fn racing_revokes_leave_one_administrator(store: Access) {
     use crate::AdminRevoke;
 
@@ -8000,6 +8148,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_can_be_approved_disabled_enabled_and_listed);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_admin_always_leaves_another_active_administrator);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; racing_revokes_leave_one_administrator);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_active_administrator_count_skips_disabled_accounts_and_organizations);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; host_recovery_makes_an_administrator_and_ends_the_accounts_credentials);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; disabling_an_administrator_keeps_another_active_one);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; racing_disable_and_revoke_leave_one_active_administrator);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; verifications_are_single_use_and_replace_earlier_ones);

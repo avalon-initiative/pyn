@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Back up a compose deployment: a pg_dump and a tar of the object store, then prune old backups.
+# It does not copy .env: keep that file, with PYN_SECRET_KEY, in a secret store apart from the backups.
 # Usage: scripts/backup.sh [backup-dir]   (BACKUP_DIR, RETENTION_DAYS=14, COMPOSE_FILE)
 set -euo pipefail
 
@@ -24,5 +25,6 @@ rc=0
 ( cd "$out" && sha256sum db.dump objects.tar >SHA256SUMS )
 trap - ERR
 echo "backup written to $out"
+echo "not included: .env and PYN_SECRET_KEY; without the key, webhook secrets in this dump cannot be read" >&2
 
 find "$dir" -maxdepth 1 -type d -name 'pyn-????????T??????Z' -mtime "+$keep" -exec rm -rf {} +

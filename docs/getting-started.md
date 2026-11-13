@@ -164,7 +164,8 @@ On macOS use `sed -i ''` instead of `sed -i`. Then edit `.env` for your network:
 | `PYN_WEB_PUBLISH` | Remove the `#` and set `0.0.0.0:8080` so other computers can reach it. Leave it commented to keep the server on this computer only. |
 
 `.env` holds secrets and must not be committed or shared. Copy `PYN_SECRET_KEY` somewhere safe: webhook secrets stored in
-the database cannot be read without it.
+the database cannot be read without it. Also keep a copy of `.env` itself, and add a second administrator after setup;
+if the only one is lost, [recovery](deployment.md#recovery) explains the way back.
 
 ## 4. Start it
 

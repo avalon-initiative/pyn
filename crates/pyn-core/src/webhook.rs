@@ -294,6 +294,13 @@ pub trait WebhookStore: Send + Sync {
     /// Active secrets, oldest first.
     async fn list_active_secrets(&self, subscription_id: i64) -> Result<Vec<WebhookSecret>>;
 
+    /// Replaces every stored secret, retired ones included, with what `reseal` returns for it, all or nothing:
+    /// an error from `reseal` leaves every secret as it was. Returns how many were replaced.
+    async fn reseal_secrets(
+        &self,
+        reseal: &(dyn for<'a> Fn(&'a WebhookSecret) -> Result<NewSecret> + Send + Sync),
+    ) -> Result<u64>;
+
     /// Queues the event and one pending delivery per enabled subscription whose filter matches, atomically.
     async fn append_event(
         &self,

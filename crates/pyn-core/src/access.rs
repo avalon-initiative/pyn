@@ -677,6 +677,11 @@ pub mod account {
         }
     }
 
+    /// A random password of 48 hex characters (192 bits) that passes `validate_password`.
+    pub fn generate_password() -> Result<String> {
+        super::token::random_hex(24)
+    }
+
     pub fn validate_password(password: &str) -> Result<()> {
         let length = password.chars().count();
         if length < MIN_PASSWORD_LENGTH {

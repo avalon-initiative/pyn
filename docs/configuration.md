@@ -32,6 +32,7 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_EMAIL_VERIFICATION` | On unless `false`: open sign-up needs an email address and the account stays inactive until its link is followed |
 | `PYN_REQUIRE_APPROVAL` | `true` holds new open sign-ups until a server administrator approves them |
 | `PYN_SECRET_KEY` | 32 random bytes as 64 hex characters (`openssl rand -hex 32`): encrypts webhook signing secrets at rest with AES-256-GCM. Unset, they are stored as plaintext and the server warns at start; an invalid value stops the server. See [webhooks](concepts/webhooks.md#encryption-at-rest) |
+| `PYN_NEW_SECRET_KEY` | Read only by `pyn-server rotate-secret-key`: the key to re-encrypt webhook secrets under. See [recovery](deployment.md#lost-secret-key) |
 | `PYN_WEBHOOKS_ALLOW_HTTP` | `true` lets webhook subscription URLs use `http` (development only); default `false`, https only; any other value stops the server |
 | `PYN_WEBHOOKS_ALLOW_LOOPBACK` | `true` lets the webhook sender reach loopback receivers (`127.0.0.0/8`, `::1`), for local development and end-to-end tests only; private, link-local and metadata ranges stay refused. The server refuses to start unless `PYN_WEBHOOKS_ALLOW_HTTP=true` is set too, and logs a warning at start. Default `false`; any other value stops the server |
 | `PYN_WEBHOOK_WORKER` | `false` stops this server copy from delivering queued webhooks; default `true`; any other value stops the server. See [delivery](concepts/webhooks.md#delivery) |
@@ -50,6 +51,8 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_REPO` | The repository (`owner/name`) the CLI acts on, unless a workspace or `--repo` says otherwise |
 
 `pyn-server --healthcheck` does not start a server: it requests `/healthz` on `PYN_ADDR` (an unspecified address such as `0.0.0.0` is probed on loopback) with a 3 second timeout and exits 0 if it answers, non-zero otherwise. It never touches the database, so a container image can use it as its healthcheck without `curl`.
+
+`pyn-server recover-admin <username> [--password-stdin]` and `pyn-server rotate-secret-key` are host-level recovery commands that work on the database in `PYN_DATABASE_URL` and exit; see [recovery](deployment.md#recovery).
 
 `make test-live` runs the tests that need a database (`PYN_DATABASE_URL`); each uses its own temporary schema.
 

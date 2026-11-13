@@ -193,7 +193,9 @@ never left without one; disabling the last active administrator is refused the s
 recorded with who and whom in the audit log. A disabled account cannot sign in, its sessions end at once, and its tokens
 and SSH keys stop working (403 `account_disabled`) until it is enabled; its email address stays reserved. Administrators
 cannot disable themselves. Approvals, disables and enables are recorded with the actor and reason in a server-wide audit
-log, read at `GET /v1/admin/audit`.
+log, read at `GET /v1/admin/audit`. The server warns once at start when only one active administrator exists. If none is
+reachable, `pyn-server recover-admin <username>` run on the host creates or repairs one; it needs host control and has no
+API route ([recovery](../deployment.md#lost-administrator)).
 
 **Password hashing** runs on a blocking thread pool, at most `PYN_PASSWORD_HASHES` at a time (default: the number of CPUs;
 each argon2id hash uses about 19 MiB), so heavy sign-in or sign-up traffic cannot stall other requests.

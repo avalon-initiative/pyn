@@ -39,6 +39,13 @@ impl WebhookStore for FailingWebhooks {
         panic!("unexpected WebhookStore::delete_subscription")
     }
 
+    async fn reseal_secrets(
+        &self,
+        _reseal: &(dyn for<'a> Fn(&'a WebhookSecret) -> Result<NewSecret> + Send + Sync),
+    ) -> Result<u64> {
+        panic!("unexpected WebhookStore::reseal_secrets")
+    }
+
     async fn add_secret(
         &self,
         _subscription_id: i64,

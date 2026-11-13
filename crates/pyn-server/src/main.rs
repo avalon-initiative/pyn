@@ -303,16 +303,26 @@ async fn healthcheck(addr: &str) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let host_command = pyn_server::host_admin::parse(&args)?;
     let addr = std::env::var("PYN_ADDR").unwrap_or_else(|_| "127.0.0.1:7878".into());
     if std::env::args().nth(1).as_deref() == Some("--healthcheck") {
         return healthcheck(&addr).await;
     }
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    if host_command.is_some() {
+        // Standard output carries a generated password and nothing else.
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
+    if let Some(command) = host_command {
+        return pyn_server::host_admin::run(command).await;
+    }
     let (clock, time) = dev_clock()?;
     let (rules, initial_policy) = match std::env::var("PYN_CONFIG") {
         Ok(path) => {
@@ -514,6 +524,9 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("{warning}");
     }
     for warning in access.startup_warnings() {
+        tracing::warn!("{warning}");
+    }
+    if let Some(warning) = access.single_admin_warning().await? {
         tracing::warn!("{warning}");
     }
     let mut repos = Repositories::new(

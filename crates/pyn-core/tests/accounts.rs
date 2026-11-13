@@ -682,3 +682,27 @@ async fn adding_accounts_as_a_non_admin_is_rate_limited() {
     }
     assert!(refused);
 }
+
+#[tokio::test]
+async fn one_active_administrator_draws_the_single_admin_warning() {
+    let w = world(RegistrationMode::Open);
+    assert!(w.svc.single_admin_warning().await.unwrap().is_none());
+    w.svc.admin_for_tests(&UserId::new("alice")).await.unwrap();
+    let warning = w.svc.single_admin_warning().await.unwrap().unwrap();
+    assert!(warning.contains("recover-admin"), "{warning}");
+
+    w.svc.admin_for_tests(&UserId::new("bob")).await.unwrap();
+    assert!(w.svc.single_admin_warning().await.unwrap().is_none());
+    w.store
+        .set_disabled(&UserId::new("bob"), Some((w.clock.now(), None)))
+        .await
+        .unwrap();
+    assert!(w.svc.single_admin_warning().await.unwrap().is_some());
+}
+
+#[test]
+fn a_generated_password_is_valid_and_different_each_time() {
+    let a = pyn_core::account::generate_password().unwrap();
+    pyn_core::account::validate_password(&a).unwrap();
+    assert_ne!(a, pyn_core::account::generate_password().unwrap());
+}
