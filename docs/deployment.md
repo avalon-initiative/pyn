@@ -184,7 +184,7 @@ WantedBy=multi-user.target
 This mirrors the Compose service: a non-root user, no capabilities, a read-only system and one writable directory. The
 setup token is in the journal at first start (`journalctl -u pyn | grep -A3 "one-time setup token"`) and
 `curl -fsS http://127.0.0.1:7878/healthz` checks the server. To upgrade, back up, replace the binary with the new
-release's (checksum verified), and `systemctl restart pyn`; the installer does exactly that when re-run. The web app is
+release's (checksum verified), and `systemctl restart pyn`; the installer does exactly that when re-run. The installer can also point the unit at an existing env file (`--env-file`), referenced in place through `EnvironmentFile=`; keep it mode `600`. The web app is
 Docker-only: its proxy configuration ships in the image. Provisional: not yet run against a release on a real host.
 
 ## Upgrading

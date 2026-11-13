@@ -6,7 +6,9 @@ it does, so you can also follow them by hand. Provisional: written against the f
 
 ## The installer script
 
-On an Ubuntu or Debian machine (a virtual machine or an LXC container is fine), as root or with `sudo`:
+On Ubuntu or Debian (a virtual machine or an LXC container is fine), as root or with `sudo`. Other Linux works when the
+tools are already installed (nothing is installed for you), and macOS can run Docker deployments and the `pyn` command
+(see [Which systems](#which-systems)):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/main/scripts/install.sh | bash
@@ -25,10 +27,16 @@ It asks:
    release `pyn-server` binary as a hardened systemd service with PostgreSQL, see
    [native install](deployment.md#native-install-systemd)). The web app is Docker-only for now, because its nginx proxy
    configuration ships in the image.
-3. **Which release**: the newest one, pre-releases included (default), or a version you type: a full tag such as
-   `v0.1.2-alpha`, or a bare `0.1.2`, which maps to the matching release tag. The entry is checked against the published
-   releases.
-4. **The address people will use** (`PYN_PUBLIC_URL`). The browser's address must match it exactly.
+3. **Which release**: the latest stable release, the latest pre-release (the newest release of all), or a specific
+   version you type: a full tag such as `v0.1.2-alpha`, or a bare `0.1.2`, which maps to the matching release tag. The
+   default is the latest stable release; while every release is still a pre-release the menu says so and defaults to the
+   pre-release. The entry is checked against the published releases, and the resolved tag is shown before anything starts.
+4. **Where it lives**: for Docker, the folder holding the Compose file and `.env` (default `/opt/pyn`); for native, the
+   env file (default `/etc/pyn/pyn.env`; the binary and unit stay at their system paths). It also asks for an existing env
+   file to reuse. If the folder already holds an install, it shows how the Compose file differs from the release's and asks:
+   **use** the files as they are, **refresh** the Compose file from the release and keep your env, or **start fresh**. Files
+   that get replaced are copied to `NAME.bak.<timestamp>` first; nothing is deleted.
+5. **The address people will use** (`PYN_PUBLIC_URL`). The browser's address must match it exactly.
 
 It first prints a checklist of the tools the choice needs (`curl`, `tar`, `sha256sum`, `openssl`, Docker with the Compose
 plugin, `systemctl`, PostgreSQL). On Ubuntu or Debian, as root or with `sudo`, it offers to install what is missing:
@@ -50,16 +58,34 @@ sudo bash install.sh --yes --shape server --method docker --version 0.1.2 --publ
 | --- | --- |
 | `--shape full\|server\|web\|cli` | What to install (`full`) |
 | `--method docker\|native` | How to run it (`docker`; `cli` is always a binary) |
-| `--version TAG` | A full tag or bare version (the newest release) |
+| `--channel stable\|pre` | Latest stable release, or the newest release of all (stable, or pre while none exists) |
+| `--version TAG` | A full tag or bare version (wins over `--channel`) |
 | `--dir DIR` | Where the Docker files live (`/opt/pyn`) |
+| `--env-file PATH` | An existing env file to reuse: copied to `DIR/.env` (Docker; an existing `.env` is backed up), or referenced by the unit's `EnvironmentFile` (native) |
+| `--reuse use\|refresh\|fresh` | What to do with an existing install (`refresh`) |
 | `--public-url URL` | `PYN_PUBLIC_URL` (`http://<this host>:8080`, `:7878` for a server only or native) |
 | `--api-url URL` | Web only: `PYN_API_URL`. CLI: the server to print the config step for |
 | `--database-url URL` | Native: an existing PostgreSQL (`postgres://...`) instead of a local one |
 | `--yes`, `--no-install`, `--help` | Never ask; never install; usage |
 
 Running it again on an existing install is an upgrade: `.env` (or `pyn.env`) and every secret are kept, only the version
-moves (Docker: `PYN_VERSION`; native: the binary is replaced and the service restarted), and it says what changed. It never
-drops a database and never prints a secret other than the setup token. Then go to
+moves after you confirm it (Docker: `PYN_VERSION`; native: the binary is replaced and the service restarted), and it says
+what changed. With a reused env file every existing value is kept, only missing required settings are filled (secrets are
+generated, never overwritten), and any that are still missing are reported before anything starts. It never drops a
+database and never prints a secret other than the setup token. A world-readable env file is warned about; one you own is
+tightened to mode 600, and one you do not own is only changed if you agree.
+
+### Which systems
+
+| Host | What works |
+| --- | --- |
+| Ubuntu or Debian (as root, or with `sudo`) | Everything; missing packages, Docker and PostgreSQL can be installed for you |
+| Other Linux | Everything when the tools are already there; missing tools are reported, never installed |
+| macOS | Docker deployments if `docker compose` works (install Docker Desktop yourself first) and the `pyn` command on Apple silicon (no Intel build yet). Hosting natively is not supported: macOS has no systemd |
+| Windows shells, BSD, anything else | Refused, with the reason; use WSL2 with Ubuntu, or a Linux host |
+
+The menus only offer what the host supports, and flags are checked the same way (`--method native` on macOS stops with the
+reason). Then go to
 [step 5](#5-set-up-the-server-first-administrator) (setup) and [step 7](#7-connect-and-try-it).
 
 ## By hand
