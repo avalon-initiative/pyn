@@ -62,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/main/scripts/
 chmod +x install.sh && sudo ./install.sh
 ```
 
-It asks what to install (the server with the web app, the server only, the web app only, or just the `pyn` command),
+It installs into the current folder by default (a `pyn` subfolder if that is your home folder or a source checkout). It asks what to install (the server with the web app, the server only, the web app only, or just the `pyn` command),
 how to run it (Docker, or the release binary under systemd), and which release (the latest stable one, the latest
 pre-release, or a tag). It installs missing tools after asking, or stops and lists what to install first, and it
 prints a one-time setup token. Open the address it shows, enter the token and create the first administrator.

@@ -188,6 +188,7 @@ case_start() {
   mkbin "$c/bin" "$@"
   : >"$c/log"
   tty_file=""
+  run_cwd=""
 }
 # run_install [flags...]: environment is cleared; FAKE_* in extra_env pass through. Sets out, err, rc.
 extra_env=()
@@ -196,6 +197,8 @@ run_install() {
   local ttyenv=()
   [ -z "$tty_file" ] || ttyenv=(PYN_INSTALL_TTY="$tty_file")
   rc=0
+  mkdir -p "$c/cwd" "${run_cwd:-$c/cwd}"
+  cd "${run_cwd:-$c/cwd}"
   env -i PATH="$c/bin" HOME="$c/home" LOG="$c/log" FIX="$fix" BIN="$c/bin" REAL_OPENSSL="$(command -v openssl)" \
     PYN_INSTALL_ROOT="$c/root" PYN_INSTALL_OS_RELEASE="$fix/os-debian" PYN_INSTALL_POLL=0 PYN_INSTALL_HEALTH_TRIES=3 \
     ${ttyenv[@]+"${ttyenv[@]}"} ${extra_env[@]+"${extra_env[@]}"} \
@@ -725,6 +728,82 @@ expect "native prompted: asks about the existing install" has "$out" "An install
 expect "native prompted: declining the replace keeps the old binary" has "$out" "keeping pyn-server v0.1.1-alpha"
 expect "native prompted: the recorded version is unchanged" has "$c/root/etc/pyn/version" "v0.1.1-alpha"
 
+
+# The current folder is the default
+case_start w_cwd1; extra_env=()
+run_install --yes --shape full
+expect "default folder is the current directory" ok_rc
+expect "Compose file lands in the current directory" test -f "$c/cwd/docker-compose.yml"
+expect ".env lands in the current directory" test -f "$c/cwd/.env"
+case_start w_cwd2; extra_env=(); tty_file="$c/answers"
+printf 'full\ndocker\n\n\n\n\n' >"$tty_file"
+run_install
+expect "the prompt shows the current directory as the default" has "$out" "Where should the deployment live (Compose and env files)? [$c/cwd]:"
+expect "accepting the default installs there" test -f "$c/cwd/.env"
+case_start w_cwd3; extra_env=()
+run_install --yes --shape full --version v0.1.1-alpha
+echo "PYN_REGISTRATION=closed" >>"$c/cwd/.env"; echo "# local edit" >>"$c/cwd/docker-compose.yml"
+cp "$c/cwd/.env" "$c/env.before"
+run_install --yes --shape full --reuse use
+expect "cwd install, use: env untouched" cmp -s "$c/env.before" "$c/cwd/.env"
+run_install --yes --shape full --reuse refresh
+expect "cwd install, refresh: Compose file refreshed" lacks "$c/cwd/docker-compose.yml" "# local edit"
+expect "cwd install, refresh: env kept" has "$c/cwd/.env" "PYN_REGISTRATION=closed"
+run_install --yes --shape full --reuse fresh
+expect "cwd install, fresh: env backed up" baks "$c/cwd/.env"
+case_start w_cwd4; extra_env=()
+run_install --yes --shape full --version v0.1.1-alpha
+echo "PYN_REGISTRATION=closed" >>"$c/cwd/.env"
+tty_file="$c/answers"; printf '\n\n\n\n\n\n\n\n' >"$tty_file"
+run_install
+expect "cwd install: all default answers refresh it" ok_rc
+expect "cwd install: the existing install is found without being told" has "$out" "An install already exists in $c/cwd"
+expect "cwd install: shape is inferred from the Compose file" has "$out" "plan: full via docker"
+expect "cwd install: env kept, version moved" bash -c 'grep -q PYN_REGISTRATION=closed "$0" && grep -q PYN_VERSION=v0.1.2 "$0"' "$c/cwd/.env"
+case_start w_home; extra_env=(); run_cwd="$c/home"
+run_install --yes --shape full
+expect "cwd = home falls back to ./pyn" test -f "$c/home/pyn/.env"
+expect "cwd = home warns and says why" has "$out" "itself, not a place to put a deployment"
+expect "cwd = home installs nothing in home itself" bash -c '[ ! -e "$0/.env" ]' "$c/home"
+case_start w_co; extra_env=(); run_cwd="$c/checkout"; mkdir -p "$run_cwd"; : >"$run_cwd/Cargo.toml"
+run_install --yes --shape full
+expect "cwd = source checkout (Cargo.toml) falls back to ./pyn" test -f "$c/checkout/pyn/.env"
+expect "cwd = source checkout warns" has "$out" "looks like a source checkout"
+case_start w_git; extra_env=(); run_cwd="$c/repo"; mkdir -p "$run_cwd/.git"
+run_install --yes --shape full
+expect "cwd with .git falls back to ./pyn" test -f "$c/repo/pyn/.env"
+case_start w_ov; extra_env=(); run_cwd="$c/repo"; mkdir -p "$run_cwd/.git"
+run_install --yes --shape full --dir "$c/elsewhere"
+expect "explicit --dir beats the current directory" test -f "$c/elsewhere/.env"
+expect "explicit --dir beats the checkout guard" lacks "$c/out" "source checkout"
+expect "explicit --dir leaves the current directory alone" bash -c '[ ! -e "$0/pyn" ]' "$c/repo"
+case_start w_env1; extra_env=(); tty_file="$c/answers"
+printf 'MY_CUSTOM=from-cwd\nPYN_PUBLIC_URL=http://cwd.example:8080\n' >"$work/cwd-env"
+mkdir -p "$c/cwd"; cp "$work/cwd-env" "$c/cwd/.env"
+printf 'full\ndocker\n%s\n\n\n\n' "$c/pyn" >"$tty_file"
+run_install
+expect "a .env in the current folder is the default env file" has "$out" "Existing env file to reuse [$c/cwd/.env] (type none to skip)"
+expect "and is reused" has "$c/pyn/.env" "MY_CUSTOM=from-cwd"
+case_start w_env2; extra_env=(); tty_file="$c/answers"
+mkdir -p "$c/cwd"; cp "$work/cwd-env" "$c/cwd/.env"
+printf 'full\ndocker\n%s\nnone\n\n\n\n' "$c/pyn" >"$tty_file"
+run_install
+expect "typing none skips the offered env file" lacks "$c/pyn/.env" "MY_CUSTOM=from-cwd"
+case_start w_env3; extra_env=(); tty_file="$c/answers"
+mkdir -p "$c/cwd"; cp "$work/cwd-env" "$c/cwd/.env"
+printf 'full\ndocker\n%s\n\n\n\n' "$c/pyn" >"$tty_file"
+run_install --env-file "$work/ext.env"
+expect "--env-file wins over the offered one" has "$c/pyn/.env" "MY_CUSTOM=1"
+case_start w_env4; extra_env=(FAKE_PG_ACTIVE=1); tty_file="$c/answers"
+mkdir -p "$c/cwd"; printf 'PYN_SECRET_KEY=abc\n' >"$c/cwd/.env"
+printf 'server\nnative\n\n' >"$tty_file"
+run_install
+expect "native offers a current-folder .env that holds a server secret" has "$out" "[$c/cwd/.env]"
+case_start w_env5; extra_env=(FAKE_PG_ACTIVE=1); tty_file="$c/answers"
+mkdir -p "$c/cwd"; printf 'MY_CUSTOM=1\n' >"$c/cwd/.env"
+printf 'server\nnative\n\n' >"$tty_file"
+run_install
+expect "native keeps /etc/pyn/pyn.env when the current .env has no server settings" has "$out" "[/etc/pyn/pyn.env]"
 
 # Flags
 case_start f1

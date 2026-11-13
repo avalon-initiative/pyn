@@ -5,7 +5,7 @@ set -euo pipefail
 
 repo=avalon-initiative/pyn
 shape="" method="" version_in="" dir="" public_url="" api_url="" database_url="" channel="" env_file="" reuse=""
-os_kind="" os_id="" arch="" native_env=""
+os_kind="" os_id="" arch="" native_env="" start_dir="" dir_default="" dir_warn=""
 yes=0 no_install=0 interactive=0 tmp=""
 root=${PYN_INSTALL_ROOT:-}
 bin_dir="$root/usr/local/bin" etc_dir="$root/etc/pyn" unit_dir="$root/etc/systemd/system" state_dir="$root/var/lib/pyn"
@@ -22,7 +22,8 @@ Every answer has a flag; with --yes (or no terminal) a missing answer takes its 
   --channel stable|pre          stable: the latest non-pre-release; pre: the newest release of all, pre-releases included
                                 (default: stable, or pre while no stable release exists)
   --version TAG                 a full tag such as v0.1.2-alpha, or a bare version such as 0.1.2 (wins over --channel)
-  --dir DIR                     where the Docker files live (default /opt/pyn)
+  --dir DIR                     where the Docker files live (default: the current folder; a subfolder pyn when that is / , your
+                                home or a source checkout)
   --env-file PATH               an existing env file to reuse: copied to DIR/.env for Docker, used in place as the service's
                                 EnvironmentFile for native (a native path that does not exist yet is where one is created)
   --reuse use|refresh|fresh     when DIR (or the native env file) already holds an install: use it as it is, refresh the
@@ -148,13 +149,29 @@ confirm() {
 
 # Files and settings
 
-ask_optional() { # ask_optional VAR label flag: an empty answer stays empty
-  local var=$1 label=$2 ans
+ask_optional() { # ask_optional VAR label flag [default]: Enter takes the default, or none when there is none; "none" skips
+  local var=$1 label=$2 def=${4:-} ans
   [ -z "${!var}" ] || return 0
   [ "$interactive" -eq 1 ] || return 0
-  printf '%s (Enter for none): ' "$label"
+  if [ -n "$def" ]; then printf '%s [%s] (type none to skip): ' "$label" "$def"; else printf '%s (Enter for none): ' "$label"; fi
   ans=$(read_answer "$label")
+  [ -n "$ans" ] || ans=$def
+  [ "$ans" != none ] || ans=""
   printf -v "$var" '%s' "$ans"
+}
+
+# The folder the script was started in is the default deployment folder, unless it is a place to avoid
+pick_default_dir() {
+  local home
+  start_dir=$(pwd -P)
+  dir_default=$start_dir
+  home=$(cd "${HOME:-/}" 2>/dev/null && pwd -P) || home=""
+  if [ "$start_dir" = / ] || [ "$start_dir" = "$home" ]; then
+    dir_warn="this is $start_dir itself, not a place to put a deployment"
+  elif [ -e "$start_dir/Cargo.toml" ] || [ -e "$start_dir/.git" ]; then
+    dir_warn="this looks like a source checkout (Cargo.toml or .git)"
+  fi
+  if [ -n "$dir_warn" ]; then dir_default="${start_dir%/}/pyn"; fi
 }
 
 timestamp() { date +%Y%m%d%H%M%S; }
@@ -832,9 +849,9 @@ EOF
 detect_existing() {
   local c
   if [ -z "$method" ]; then
-    if [ -f "$etc_dir/pyn.env" ]; then method_default=native; elif [ -f "${dir:-/opt/pyn}/.env" ]; then method_default=docker; fi
+    if [ -f "$etc_dir/pyn.env" ]; then method_default=native; elif [ -f "${dir:-$dir_default}/.env" ]; then method_default=docker; fi
   fi
-  c="${dir:-/opt/pyn}/docker-compose.yml"
+  c="${dir:-$dir_default}/docker-compose.yml"
   if [ -z "$shape" ] && [ -f "$c" ]; then
     if grep -q pyn-core "$c" && grep -q pyn-web "$c"; then shape_default=full
     elif grep -q pyn-core "$c"; then shape_default=server
@@ -856,6 +873,7 @@ main() {
   local method_default=docker shape_default=full platform="" tag="" ver="" newshape="" o ok=0 compose=""
   local shape_opts=()
   open_terminal
+  pick_default_dir
   detect_os
   case $channel in "" | stable | pre) ;; *) die "--channel must be stable or pre" ;; esac
   case $reuse in "" | use | refresh | fresh) ;; *) die "--reuse must be use, refresh or fresh" ;; esac
@@ -916,12 +934,22 @@ main() {
     full | server | web)
       case $shape in full) compose=docker-compose.yml ;; server) compose=docker-compose.server.yml ;; web) compose=docker-compose.web.yml ;; esac
       if [ "$method" = docker ]; then
-        ask dir "Where should the deployment live (Compose and env files)?" /opt/pyn --dir
-        ask_optional env_file "Existing env file to reuse" --env-file
+        if [ -z "$dir" ] && [ -n "$dir_warn" ]; then
+          say "warning: $dir_warn; defaulting to $dir_default instead"
+        fi
+        ask dir "Where should the deployment live (Compose and env files)?" "$dir_default" --dir
+        local env_default=""
+        if [ -f "$dir/.env" ]; then env_default=$dir/.env; elif [ -f "$start_dir/.env" ]; then env_default=$start_dir/.env; fi
+        ask_optional env_file "Existing env file to reuse" --env-file "$env_default"
         [ -z "$env_file" ] || [ -f "$env_file" ] || die "--env-file $env_file does not exist"
+        if [ -n "$env_file" ] && [ "$env_file" -ef "$dir/.env" ]; then env_file=""; fi
       else
         if [ -n "$env_file" ]; then native_env=$env_file; else
-          ask native_env "Env file for the service (an existing one is reused, else it is created there)" /etc/pyn/pyn.env --env-file
+          local env_default=/etc/pyn/pyn.env
+          if [ -f "$start_dir/.env" ] && { [ -n "$(get_env "$start_dir/.env" PYN_DATABASE_URL)" ] || [ -n "$(get_env "$start_dir/.env" PYN_SECRET_KEY)" ]; }; then
+            env_default=$start_dir/.env
+          fi
+          ask native_env "Env file for the service (an existing one is reused, else it is created there)" "$env_default" --env-file
         fi
         [[ $native_env =~ ^/[^[:space:]]+$ ]] || die "the env file must be an absolute path without spaces"
         native_prepare

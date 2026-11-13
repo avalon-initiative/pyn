@@ -31,9 +31,11 @@ It asks:
    version you type: a full tag such as `v0.1.2-alpha`, or a bare `0.1.2`, which maps to the matching release tag. The
    default is the latest stable release; while every release is still a pre-release the menu says so and defaults to the
    pre-release. The entry is checked against the published releases, and the resolved tag is shown before anything starts.
-4. **Where it lives**: for Docker, the folder holding the Compose file and `.env` (default `/opt/pyn`); for native, the
-   env file (default `/etc/pyn/pyn.env`; the binary and unit stay at their system paths). It also asks for an existing env
-   file to reuse. If the folder already holds an install, it shows how the Compose file differs from the release's and asks:
+4. **Where it lives**: for Docker, the folder holding the Compose file and `.env` (default: the folder you ran the script
+   from; if that is `/`, your home folder or a source checkout it warns and uses a `pyn` subfolder instead); for native,
+   the env file (default `/etc/pyn/pyn.env`, or a `.env` in the current folder that already holds `PYN_DATABASE_URL` or
+   `PYN_SECRET_KEY`; the binary and unit stay at their system paths). It also asks for an existing env file to reuse,
+   offering the `.env` of the chosen or current folder (type `none` to skip). If the folder already holds an install (so running the script inside an existing deployment folder just works), it shows how the Compose file differs from the release's and asks:
    **use** the files as they are, **refresh** the Compose file from the release and keep your env, or **start fresh**. Files
    that get replaced are copied to `NAME.bak.<timestamp>` first; nothing is deleted.
 5. **The address people will use** (`PYN_PUBLIC_URL`). The browser's address must match it exactly.
@@ -60,7 +62,7 @@ sudo bash install.sh --yes --shape server --method docker --version 0.1.2 --publ
 | `--method docker\|native` | How to run it (`docker`; `cli` is always a binary) |
 | `--channel stable\|pre` | Latest stable release, or the newest release of all (stable, or pre while none exists) |
 | `--version TAG` | A full tag or bare version (wins over `--channel`) |
-| `--dir DIR` | Where the Docker files live (`/opt/pyn`) |
+| `--dir DIR` | Where the Docker files live (the current folder; `./pyn` inside `/`, home or a checkout) |
 | `--env-file PATH` | An existing env file to reuse: copied to `DIR/.env` (Docker; an existing `.env` is backed up), or referenced by the unit's `EnvironmentFile` (native) |
 | `--reuse use\|refresh\|fresh` | What to do with an existing install (`refresh`) |
 | `--public-url URL` | `PYN_PUBLIC_URL` (`http://<this host>:8080`, `:7878` for a server only or native) |
