@@ -35,7 +35,7 @@ It asks:
    from; if that is `/`, your home folder or a source checkout it warns and uses a `pyn` subfolder instead); for native,
    the env file (default `/etc/pyn/pyn.env`, or a `.env` in the current folder that already holds `PYN_DATABASE_URL` or
    `PYN_SECRET_KEY`; the binary and unit stay at their system paths). It also asks for an existing env file to reuse,
-   offering the `.env` of the chosen or current folder (type `none` to skip). If the folder already holds an install (so running the script inside an existing deployment folder just works), it shows how the Compose file differs from the release's and asks:
+   offering the `.env` of the chosen or current folder (type `none` to skip). Every path, typed or passed as a flag (`--dir=~/pyn` works too), may start with `~` or be relative to the folder you ran the script from; the plan shows the resolved absolute path, and a native env file path cannot contain spaces. If the folder already holds an install (so running the script inside an existing deployment folder just works), it shows how the Compose file differs from the release's and asks:
    **use** the files as they are, **refresh** the Compose file from the release and keep your env, or **start fresh**. Files
    that get replaced are copied to `NAME.bak.<timestamp>` first; nothing is deleted.
 5. **The address people will use** (`PYN_PUBLIC_URL`). The browser's address must match it exactly.

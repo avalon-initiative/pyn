@@ -805,6 +805,77 @@ printf 'server\nnative\n\n' >"$tty_file"
 run_install
 expect "native keeps /etc/pyn/pyn.env when the current .env has no server settings" has "$out" "[/etc/pyn/pyn.env]"
 
+# Typed paths: ~, relative, messy
+pth() { # pth NAME flags...: Docker install from $c/cwd with HOME=$c/home
+  case_start "$1"; extra_env=(); shift
+  run_install --yes --shape full "$@"
+}
+pth q1 --dir '~/a/b/c'
+expect "--dir ~/a/b/c lives under HOME" test -f "$c/home/a/b/c/.env"
+expect "--dir ~/a/b/c creates no folder named ~" bash -c '[ ! -e "$0/~" ] && [ ! -e "$1/~" ]' "$c/cwd" "$c/home"
+expect "the plan echoes the resolved folder" has "$out" "deployment folder: $c/home/a/b/c"
+pth q2 --dir '~'
+expect "--dir ~ is HOME, which the guard moves to ~/pyn" test -f "$c/home/pyn/.env"
+expect "--dir ~ warns after resolving" has "$out" "itself, not a place to put a deployment"
+pth q3 --dir .
+expect "--dir . is the current folder" test -f "$c/cwd/.env"
+pth q4 --dir ./
+expect "--dir ./ is the current folder" test -f "$c/cwd/.env"
+pth q5 --dir ./sub
+expect "--dir ./sub is under the current folder" test -f "$c/cwd/sub/.env"
+pth q6 --dir ../sibling
+expect "--dir ../sibling is beside the current folder" test -f "$c/sibling/.env"
+pth q7 --dir a/b
+expect "--dir a/b is relative to the current folder" test -f "$c/cwd/a/b/.env"
+pth q8 --dir "$work/q8/x/"
+expect "a trailing slash is dropped" test -f "$c/x/.env"
+pth q9 --dir "$work/q9//x//y/./z/../w/"
+expect "double slashes, ./ and ../ collapse" test -f "$c/x/y/w/.env"
+pth q10 "--dir=~/eq"
+expect "--dir=~/x is expanded too" test -f "$c/home/eq/.env"
+pth q11 "--dir=$work/q11/eq2"
+expect "--dir=VALUE works" test -f "$c/eq2/.env"
+pth q12 --dir "$work/q12/with space/dep"
+expect "a Docker folder with spaces works" test -f "$c/with space/dep/.env"
+case_start q13; extra_env=(); run_cwd="$c/checkout"; mkdir -p "$run_cwd"; : >"$run_cwd/Cargo.toml"
+run_install --yes --shape full --dir .
+expect "--dir . inside a checkout is guarded after resolving" test -f "$c/checkout/pyn/.env"
+expect "the guard says so" has "$out" "using $c/checkout/pyn instead"
+case_start q14; extra_env=(); tty_file="$c/answers"
+printf 'full\ndocker\n~/typed/dir\n\n\n\n' >"$tty_file"
+run_install
+expect "~ typed at the folder prompt is expanded" test -f "$c/home/typed/dir/.env"
+expect "~ typed at the prompt creates no folder named ~" bash -c '[ ! -e "$0/~" ]' "$c/cwd"
+case_start q15; extra_env=(); tty_file="$c/answers"; cp "$work/ext.env" "$c/home/e.env"
+printf 'full\ndocker\n./d\n~/e.env\n\n\n' >"$tty_file"
+run_install
+expect "~ and ./ typed at the prompts work together" has "$c/cwd/d/.env" "MY_CUSTOM=1"
+case_start q16; extra_env=()
+cp "$work/ext.env" "$c/home/e2.env"
+run_install --yes --shape full --dir "$c/d" --env-file '~/e2.env'
+expect "--env-file ~/x is expanded" has "$c/d/.env" "MY_CUSTOM=1"
+cp "$work/ext.env" "$c/cwd/rel.env"
+run_install --yes --shape full --dir "$c/d2" --env-file ./rel.env
+expect "--env-file ./x is relative to the current folder" has "$c/d2/.env" "MY_CUSTOM=1"
+run_install --yes --shape full --dir "$c/d3" "--env-file=~/e2.env"
+expect "--env-file=~/x is expanded too" has "$c/d3/.env" "MY_CUSTOM=1"
+case_start q17; extra_env=(FAKE_PG_ACTIVE=1)
+run_install --yes --shape server --method native --env-file ./pyn.env
+expect "native: ./pyn.env is resolved against the current folder" test -f "$c/root$c/cwd/pyn.env"
+expect "native: the unit gets the absolute path" has "$c/root/etc/systemd/system/pyn.service" "EnvironmentFile=$c/cwd/pyn.env"
+case_start q18; extra_env=(FAKE_PG_ACTIVE=1)
+run_install --yes --shape server --method native --env-file '~/n.env'
+expect "native: ~/n.env is expanded" has "$c/root/etc/systemd/system/pyn.service" "EnvironmentFile=$c/home/n.env"
+case_start q19; extra_env=(FAKE_PG_ACTIVE=1)
+run_install --yes --shape server --method native --env-file "$c/with space/pyn.env"
+expect "native: a path with spaces is rejected" bad_rc
+expect "native: and the message says why" has "$err" "must not contain spaces"
+case_start q20; extra_env=()
+run_install --yes --shape full --dir '~nosuchuser_x/a'
+expect "~user for an unknown user is refused" bad_rc
+expect "~user refusal is clear" has "$err" "cannot expand"
+expect "nothing is created outside the resolved folder" bash -c '[ -z "$(ls -A "$0")" ]' "$c/cwd"
+
 # Flags
 case_start f1
 run_install --help

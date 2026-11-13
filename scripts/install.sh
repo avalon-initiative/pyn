@@ -22,7 +22,7 @@ Every answer has a flag; with --yes (or no terminal) a missing answer takes its 
   --channel stable|pre          stable: the latest non-pre-release; pre: the newest release of all, pre-releases included
                                 (default: stable, or pre while no stable release exists)
   --version TAG                 a full tag such as v0.1.2-alpha, or a bare version such as 0.1.2 (wins over --channel)
-  --dir DIR                     where the Docker files live (default: the current folder; a subfolder pyn when that is / , your
+  --dir DIR                     (paths may start with ~ or be relative to the current folder) where the Docker files live (default: the current folder; a subfolder pyn when that is / , your
                                 home or a source checkout)
   --env-file PATH               an existing env file to reuse: copied to DIR/.env for Docker, used in place as the service's
                                 EnvironmentFile for native (a native path that does not exist yet is where one is created)
@@ -57,6 +57,8 @@ while [ $# -gt 0 ]; do
     --reuse) reuse=${2:?--reuse needs a value}; shift 2 ;;
     --version) version_in=${2:?--version needs a value}; shift 2 ;;
     --dir) dir=${2:?--dir needs a value}; shift 2 ;;
+    --dir=*) dir=${1#--dir=}; [ -n "$dir" ] || die "--dir needs a value"; shift ;;
+    --env-file=*) env_file=${1#--env-file=}; [ -n "$env_file" ] || die "--env-file needs a value"; shift ;;
     --public-url) public_url=${2:?--public-url needs a value}; shift 2 ;;
     --api-url) api_url=${2:?--api-url needs a value}; shift 2 ;;
     --database-url) database_url=${2:?--database-url needs a value}; shift 2 ;;
@@ -160,18 +162,65 @@ ask_optional() { # ask_optional VAR label flag [default]: Enter takes the defaul
   printf -v "$var" '%s' "$ans"
 }
 
+# Why a folder is a poor place for a deployment (empty when it is fine)
+guard_reason() {
+  local home
+  home=$(cd "${HOME:-/}" 2>/dev/null && pwd -P) || home=""
+  if [ "$1" = / ] || [ "$1" = "$home" ]; then echo "this is $1 itself, not a place to put a deployment"
+  elif [ -e "$1/Cargo.toml" ] || [ -e "$1/.git" ]; then echo "$1 looks like a source checkout (Cargo.toml or .git)"
+  fi
+}
+
 # The folder the script was started in is the default deployment folder, unless it is a place to avoid
 pick_default_dir() {
-  local home
   start_dir=$(pwd -P)
   dir_default=$start_dir
-  home=$(cd "${HOME:-/}" 2>/dev/null && pwd -P) || home=""
-  if [ "$start_dir" = / ] || [ "$start_dir" = "$home" ]; then
-    dir_warn="this is $start_dir itself, not a place to put a deployment"
-  elif [ -e "$start_dir/Cargo.toml" ] || [ -e "$start_dir/.git" ]; then
-    dir_warn="this looks like a source checkout (Cargo.toml or .git)"
-  fi
+  dir_warn=$(guard_reason "$start_dir")
   if [ -n "$dir_warn" ]; then dir_default="${start_dir%/}/pyn"; fi
+}
+
+# normalize_path VALUE LABEL: an absolute path from ~, ~/x, ., ./x, ../x or a bare name; the path need not exist
+normalize_path() {
+  local p=$1 label=$2 user rest home anc tail="" part IFS
+  local -a out=()
+  [ -n "$p" ] || die "$label must not be empty"
+  case $p in
+    "~") p=${HOME:-} ;;
+    "~/"*) p=${HOME:-}/${p#"~/"} ;;
+    "~"*)
+      user=${p#"~"}
+      user=${user%%/*}
+      rest=${p#"~$user"}
+      [[ $user =~ ^[A-Za-z0-9._-]+$ ]] || die "cannot expand '~$user' in $label; use a full path"
+      home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6) || home=""
+      [ -n "$home" ] || die "cannot expand '~$user' in $label (unknown user, or no getent); use a full path"
+      p=$home$rest
+      ;;
+  esac
+  case $p in /*) ;; *) p=$start_dir/$p ;; esac
+  IFS=/
+  set -f
+  for part in $p; do
+    case $part in
+      "" | .) ;;
+      ..) [ "${#out[@]}" -eq 0 ] || unset "out[$((${#out[@]} - 1))]" ;;
+      *) out+=("$part") ;;
+    esac
+  done
+  set +f
+  p=/
+  if [ "${#out[@]}" -gt 0 ]; then p="/${out[*]}"; fi
+  IFS=$' \t\n'
+  anc=$p
+  while [ ! -d "$anc" ]; do
+    tail="/${anc##*/}$tail"
+    anc=${anc%/*}
+    [ -n "$anc" ] || anc=/
+  done
+  anc=$(cd "$anc" && pwd -P)
+  [ "$anc" != / ] || anc=""
+  p=$anc$tail
+  echo "${p:-/}"
 }
 
 timestamp() { date +%Y%m%d%H%M%S; }
@@ -870,10 +919,12 @@ choose_database() {
 }
 
 main() {
-  local method_default=docker shape_default=full platform="" tag="" ver="" newshape="" o ok=0 compose=""
-  local shape_opts=()
+  local method_default=docker shape_default=full platform="" tag="" ver="" newshape="" o ok=0 compose="" reason=""
+  local shape_opts=() env_default=""
   open_terminal
   pick_default_dir
+  [ -z "$dir" ] || dir=$(normalize_path "$dir" "--dir")
+  [ -z "$env_file" ] || env_file=$(normalize_path "$env_file" "--env-file")
   detect_os
   case $channel in "" | stable | pre) ;; *) die "--channel must be stable or pre" ;; esac
   case $reuse in "" | use | refresh | fresh) ;; *) die "--reuse must be use, refresh or fresh" ;; esac
@@ -938,20 +989,28 @@ main() {
           say "warning: $dir_warn; defaulting to $dir_default instead"
         fi
         ask dir "Where should the deployment live (Compose and env files)?" "$dir_default" --dir
-        local env_default=""
+        dir=$(normalize_path "$dir" "the deployment folder")
+        reason=$(guard_reason "$dir")
+        if [ -n "$reason" ]; then
+          say "warning: $reason; using $dir/pyn instead (name another folder to override)"
+          dir=${dir%/}/pyn
+        fi
+        env_default=""
         if [ -f "$dir/.env" ]; then env_default=$dir/.env; elif [ -f "$start_dir/.env" ]; then env_default=$start_dir/.env; fi
         ask_optional env_file "Existing env file to reuse" --env-file "$env_default"
+        [ -z "$env_file" ] || env_file=$(normalize_path "$env_file" "the env file")
         [ -z "$env_file" ] || [ -f "$env_file" ] || die "--env-file $env_file does not exist"
         if [ -n "$env_file" ] && [ "$env_file" -ef "$dir/.env" ]; then env_file=""; fi
       else
         if [ -n "$env_file" ]; then native_env=$env_file; else
-          local env_default=/etc/pyn/pyn.env
+          env_default=/etc/pyn/pyn.env
           if [ -f "$start_dir/.env" ] && { [ -n "$(get_env "$start_dir/.env" PYN_DATABASE_URL)" ] || [ -n "$(get_env "$start_dir/.env" PYN_SECRET_KEY)" ]; }; then
             env_default=$start_dir/.env
           fi
           ask native_env "Env file for the service (an existing one is reused, else it is created there)" "$env_default" --env-file
         fi
-        [[ $native_env =~ ^/[^[:space:]]+$ ]] || die "the env file must be an absolute path without spaces"
+        native_env=$(normalize_path "$native_env" "the env file")
+        [[ $native_env =~ ^/[^[:space:]]+$ ]] || die "the env file path must not contain spaces (systemd reads it as EnvironmentFile): $native_env"
         native_prepare
         choose_database
       fi
@@ -991,6 +1050,10 @@ main() {
 
   echo
   say "plan: $shape via $method, release $tag (image v$ver)${reuse:+, existing install: $reuse}"
+  case $shape in
+    cli) ;;
+    *) if [ "$method" = docker ]; then say "deployment folder: $dir"; [ -z "$env_file" ] || say "env file to reuse: $env_file"; else say "env file: $native_env"; fi ;;
+  esac
   confirm "Proceed?" y || die "stopped; nothing was changed"
 
   case $shape in
