@@ -274,7 +274,7 @@ container has `pyn-server` but no `pyn` command; sign in afterwards from any com
 The command creates `alice` as an administrator, or, if the account exists, enables it, completes its sign-up, grants the
 administrator flag and sets a new password. Without `--password-stdin` it generates a strong password and prints it once on
 standard output (messages go to standard error). The account's sessions and tokens end; its SSH keys and linked external
-identities are left as they are. Other accounts are not touched. It refuses an organization name, the in-memory store (no
+identities are left as they are. Other accounts are not touched. When the administrator who left may still hold credentials, recover into a new account name instead of reusing theirs, then disable the old account once you can sign in: recovery does not touch an account's SSH keys or linked identities. It refuses an organization name, the in-memory store (no
 `PYN_DATABASE_URL`), and a server that has not run [first-run setup](concepts/access.md#first-run-setup) yet.
 
 Each recovery is written to the server audit log (`GET /v1/admin/audit`) as `admin_granted`, plus `account_enabled` when
