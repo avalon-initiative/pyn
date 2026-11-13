@@ -3,7 +3,7 @@
 Concepts, architecture and specs for pyn: version control that merges what can be merged and locks what shouldn't be.
 Markdown, plus the generated OpenAPI document; `make docs-check` verifies relative links and anchors.
 
-- [Getting started: run a release, set it up in the browser, connect the CLI](getting-started.md)
+- [Getting started: the installer script, or run a release by hand, set it up in the browser, connect the CLI](getting-started.md)
 - [Concepts](concepts/README.md): the model, in the order to read it
 - [pyn.toml specification](concepts/pyn-toml.md)
 - [Repositories: owners, names, visibility and the API shape](concepts/repositories.md)
@@ -22,7 +22,7 @@ Markdown, plus the generated OpenAPI document; `make docs-check` verifies relati
 - [Merging: merge base, merge commits, conflicts and resolution](concepts/merging.md)
 - [Tamper-evident history: the frozen hash encoding, chained audit log, `pyn verify`](concepts/integrity.md)
 - [Configuration: every environment variable](configuration.md)
-- [Deployment and backups: Docker Compose, TLS, upgrades, backup and restore](deployment.md)
+- [Deployment and backups: Docker Compose, native systemd install, TLS, upgrades, backup and restore](deployment.md)
 - [Releasing: from `make release` to the published image and binaries](releasing.md)
 - [CI and the pinned git: how the oracle git version is built, cached and moved](ci.md)
 - [Phase 1 scope](phase-1.md)

@@ -1,6 +1,6 @@
 # Deployment and backups
 
-New here? [Getting started](getting-started.md) is the step-by-step version, with image-only Compose files in
+New here? [Getting started](getting-started.md) leads with an installer script (`scripts/install.sh`) and keeps the step-by-step version, with image-only Compose files in
 [`deploy/`](../deploy/docker-compose.yml). This page covers running a server you keep: one node with Docker Compose, TLS in front, upgrades, several copies, and backups with a
 tested restore. Provisional: written against the first pre-release, `v0.1.0-alpha`; the image-only Compose file in `deploy/` has not been run against a release yet.
 
@@ -129,6 +129,63 @@ pyn.example.com {
 `GET /healthz` answers 200 once the process is up, including before setup. Docker uses it for the container health
 (`docker compose ps`); point an uptime monitor at the public URL. Watch free space on the `pyn-objects` and `pyn-db`
 volumes: content is only added, and [limits](concepts/limits.md) are off by default on a self-hosted server.
+
+## Native install (systemd)
+
+`scripts/install.sh --method native --shape server` (see [Getting started](getting-started.md#the-installer-script)) runs
+the release `pyn-server` binary without Docker. To do it by hand, on a Linux host with systemd and PostgreSQL 16:
+
+1. Download `pyn-server-<tag>-linux-x86_64.tar.gz` (or `linux-arm64`) and `SHA256SUMS` from the release, run
+   `sha256sum --check --ignore-missing SHA256SUMS`, unpack it and `install -m 0755 pyn-server /usr/local/bin/`.
+2. Create the user and state directory: `useradd --system --user-group --home-dir /var/lib/pyn --no-create-home --shell /usr/sbin/nologin pyn`,
+   `install -d -m 0750 -o pyn -g pyn /var/lib/pyn`.
+3. Create a role and database in PostgreSQL (`create role pyn login password '...'; create database pyn owner pyn;`).
+4. Write `/etc/pyn/pyn.env`, mode `600`, with `PYN_ADDR` (`0.0.0.0:7878`, or `127.0.0.1:7878` behind a proxy),
+   `PYN_DATABASE_URL`, `PYN_SECRET_KEY` (`openssl rand -hex 32`), `PYN_PUBLIC_URL` and `PYN_DATA_DIR=/var/lib/pyn`; add
+   anything else from [configuration](configuration.md), such as `PYN_TRUST_FORWARDED_FOR=true` behind a proxy.
+5. Install the unit below as `/etc/systemd/system/pyn.service`, then `systemctl daemon-reload && systemctl enable --now pyn`.
+
+```ini
+[Unit]
+Description=pyn server
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=pyn
+Group=pyn
+EnvironmentFile=/etc/pyn/pyn.env
+ExecStart=/usr/local/bin/pyn-server
+Restart=on-failure
+RestartSec=2
+StateDirectory=pyn
+StateDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+```
+
+This mirrors the Compose service: a non-root user, no capabilities, a read-only system and one writable directory. The
+setup token is in the journal at first start (`journalctl -u pyn | grep -A3 "one-time setup token"`) and
+`curl -fsS http://127.0.0.1:7878/healthz` checks the server. To upgrade, back up, replace the binary with the new
+release's (checksum verified), and `systemctl restart pyn`; the installer does exactly that when re-run. The web app is
+Docker-only: its proxy configuration ships in the image. Provisional: not yet run against a release on a real host.
 
 ## Upgrading
 

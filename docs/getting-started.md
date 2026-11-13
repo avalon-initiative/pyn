@@ -1,8 +1,72 @@
 # Getting started
 
-Run a pyn server from a release, set it up in the browser and connect the `pyn` command to it. You need a computer or
-virtual machine with [Docker](https://docs.docker.com/engine/install/) (with the Compose plugin: `docker compose version`
-should print a version) and about 2 GB of free memory. Provisional: written against the first pre-release, `v0.1.0-alpha`.
+Run a pyn server from a release, set it up in the browser and connect the `pyn` command to it. The quickest way is the
+installer script, which asks what you want, checks the host and does the rest. The numbered steps further down are what
+it does, so you can also follow them by hand. Provisional: written against the first pre-releases (`v0.1.x-alpha`).
+
+## The installer script
+
+On an Ubuntu or Debian machine (a virtual machine or an LXC container is fine), as root or with `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/main/scripts/install.sh | bash
+```
+
+No network on that machine, or you would rather read it first? Copy [`scripts/install.sh`](../scripts/install.sh) over and
+run it: `scp scripts/install.sh host:` then `ssh -t host sudo bash install.sh`. It asks its questions on the terminal, so
+both routes work interactively.
+
+It asks:
+
+1. **What to install**: server and web app (default), server only, web app only (it asks for the server's address,
+   `PYN_API_URL`, and reminds you to add the web app's address to `PYN_ALLOWED_ORIGINS` on that server), or just the `pyn`
+   command.
+2. **How to run it**: Docker (default; the release images and the Compose files of the chosen release) or native (the
+   release `pyn-server` binary as a hardened systemd service with PostgreSQL, see
+   [native install](deployment.md#native-install-systemd)). The web app is Docker-only for now, because its nginx proxy
+   configuration ships in the image.
+3. **Which release**: the newest one, pre-releases included (default), or a version you type: a full tag such as
+   `v0.1.2-alpha`, or a bare `0.1.2`, which maps to the matching release tag. The entry is checked against the published
+   releases.
+4. **The address people will use** (`PYN_PUBLIC_URL`). The browser's address must match it exactly.
+
+It first prints a checklist of the tools the choice needs (`curl`, `tar`, `sha256sum`, `openssl`, Docker with the Compose
+plugin, `systemctl`, PostgreSQL). On Ubuntu or Debian, as root or with `sudo`, it offers to install what is missing:
+packages with `apt-get`, Docker with [get.docker.com](https://get.docker.com) (in an LXC container the container needs
+`security.nesting=true`), PostgreSQL with a role and database of its own. If you decline, pass `--no-install`, or the host is
+not Ubuntu or Debian, it stops and lists exactly what to install first. It generates the secrets, writes `.env` (or
+`/etc/pyn/pyn.env`) readable by its owner only, starts everything, waits for health and prints the one-time setup token
+(step 5 below). Native downloads are checked against the release's `SHA256SUMS` first, and a mismatch stops the install.
+
+Every answer is also a flag, so it runs unattended; `--yes` takes the default for anything not given (and installs missing
+tools without asking), and a required answer with no default (such as `--api-url` for a web-only install) is an error
+rather than a hang:
+
+```bash
+sudo bash install.sh --yes --shape server --method docker --version 0.1.2 --public-url https://pyn.example.com
+```
+
+| Flag | Meaning (default) |
+| --- | --- |
+| `--shape full\|server\|web\|cli` | What to install (`full`) |
+| `--method docker\|native` | How to run it (`docker`; `cli` is always a binary) |
+| `--version TAG` | A full tag or bare version (the newest release) |
+| `--dir DIR` | Where the Docker files live (`/opt/pyn`) |
+| `--public-url URL` | `PYN_PUBLIC_URL` (`http://<this host>:8080`, `:7878` for a server only or native) |
+| `--api-url URL` | Web only: `PYN_API_URL`. CLI: the server to print the config step for |
+| `--database-url URL` | Native: an existing PostgreSQL (`postgres://...`) instead of a local one |
+| `--yes`, `--no-install`, `--help` | Never ask; never install; usage |
+
+Running it again on an existing install is an upgrade: `.env` (or `pyn.env`) and every secret are kept, only the version
+moves (Docker: `PYN_VERSION`; native: the binary is replaced and the service restarted), and it says what changed. It never
+drops a database and never prints a secret other than the setup token. Then go to
+[step 5](#5-set-up-the-server-first-administrator) (setup) and [step 7](#7-connect-and-try-it).
+
+## By hand
+
+The rest of this page is what the script does, step by step. You need a computer or virtual machine with
+[Docker](https://docs.docker.com/engine/install/) (with the Compose plugin: `docker compose version` should print a
+version) and about 2 GB of free memory.
 
 What you end up with: by default the server, the web app and a PostgreSQL database, started by one Compose file that takes
 four settings. Pick the shape that fits (each is one self-contained Compose file, so no extra flags):

@@ -83,7 +83,7 @@ And in the browser, with the web app from the `pyn-web` repo (it proxies `/v1` t
 cd ../pyn-web && npm ci && npm run dev    # http://localhost:5173, sign in as alice or bob
 ```
 
-To run a release on your own machine, follow [Getting started](docs/getting-started.md). For your own server from a checkout instead of the demo: `cp .env.example .env`, then `make run` (foreground, reads `.env`). A new
+To run a release on your own machine, run the installer (`scripts/install.sh`) or follow [Getting started](docs/getting-started.md). For your own server from a checkout instead of the demo: `cp .env.example .env`, then `make run` (foreground, reads `.env`). A new
 server is uninitialised and prints a one-time setup token on stderr; `pyn setup <name> --setup-token <token>` (or
 `POST /v1/setup`) creates the first administrator, then `pyn login <name>`. See
 [first-run setup](docs/concepts/access.md#first-run-setup) and [configuration](docs/configuration.md) for every
