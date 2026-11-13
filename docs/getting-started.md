@@ -69,6 +69,9 @@ sudo bash install.sh --yes --shape server --method docker --version 0.1.2 --publ
 | `--api-url URL` | Web only: `PYN_API_URL`. CLI: the server to print the config step for |
 | `--database-url URL` | Native: an existing PostgreSQL (`postgres://...`) instead of a local one |
 | `--yes`, `--no-install`, `--help` | Never ask; never install; usage |
+| `--color`, `--no-color` | Force colour on or off. By default colour is used only on a terminal, and not with `NO_COLOR` set or `TERM=dumb` |
+
+The script prints only its own status lines: the output of the tools it runs (curl, apt, tar, systemctl and so on) is captured and shown only if a step fails, with the command and its exit status. Pulling images and installing packages stream as an indented block.
 
 Running it again on an existing install is an upgrade: `.env` (or `pyn.env`) and every secret are kept, only the version
 moves after you confirm it (Docker: `PYN_VERSION`; native: the binary is replaced and the service restarted), and it says

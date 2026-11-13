@@ -33,6 +33,7 @@ Every answer has a flag; with --yes (or no terminal) a missing answer takes its 
   --database-url URL            native: use this PostgreSQL (postgres://...) instead of creating a local database
   --yes                         never ask: take defaults, and install missing tools without asking
   --no-install                  never install anything; only report what is missing
+  --color, --no-color           force colour on, or off (default: on only for a terminal, off with NO_COLOR or TERM=dumb)
   -h, --help                    this text
 
 Re-running on an existing install upgrades it: settings and secrets are kept and only the version moves, after confirming.
@@ -41,8 +42,84 @@ macOS can run Docker deployments (Docker Desktop needed) and the CLI; native hos
 EOF
 }
 
-say() { echo "pyn-install: $*"; }
-die() { echo "pyn-install: $*" >&2; exit 1; }
+c_bold="" c_dim="" c_red="" c_green="" c_yellow="" c_cyan="" c_reset="" e_red="" e_reset="" color_flag=""
+
+# Colour only for a terminal (stdout and stderr judged separately), never with NO_COLOR or TERM=dumb; --color forces it
+setup_color() {
+  local mode=${PYN_INSTALL_COLOR:-auto} esc=$'\033' on=0 eon=0
+  case $color_flag in always | never) mode=$color_flag ;; esac
+  case $mode in
+    always)
+      on=1 eon=1
+      if [ -n "${NO_COLOR:-}" ] && [ "$color_flag" != always ]; then on=0 eon=0; fi
+      ;;
+    never) ;;
+    *)
+      if [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
+        [ ! -t 1 ] || on=1
+        [ ! -t 2 ] || eon=1
+      fi
+      ;;
+  esac
+  if [ "$on" -eq 1 ]; then
+    c_bold="${esc}[1m" c_dim="${esc}[2m" c_red="${esc}[31m" c_green="${esc}[32m" c_yellow="${esc}[33m" c_cyan="${esc}[36m" c_reset="${esc}[0m"
+  fi
+  if [ "$eon" -eq 1 ]; then e_red="${esc}[31m" e_reset="${esc}[0m"; fi
+}
+
+say() { echo "${c_dim}pyn-install:${c_reset} $*"; }
+ok() { echo "${c_dim}pyn-install:${c_reset} ${c_green}$*${c_reset}"; }
+warn() { echo "${c_dim}pyn-install:${c_reset} ${c_yellow}warning: $*${c_reset}"; }
+step() { echo "${c_bold}==> $*${c_reset}"; }
+die() { echo "${e_red}pyn-install: $*${e_reset}" >&2; exit 1; }
+
+# Prints the failure block for a step: what ran, its exit status and the captured output
+step_failed() { # step_failed LABEL STATUS LOGFILE cmd...
+  local label=$1 rc=$2 log=$3
+  shift 3
+  {
+    echo "${e_red}pyn-install: failed: $label${e_reset}"
+    echo "  command: $*"
+    echo "  exit status: $rc"
+    if [ -s "$log" ]; then
+      echo "  output (last 40 lines):"
+      tail -n 40 "$log" | sed 's/^/    /'
+    fi
+  } >&2
+}
+
+# run_step LABEL cmd...: output is captured and shown only when the command fails
+run_step() {
+  local label=$1 log rc=0
+  shift
+  log=$(mktemp "$tmp/step.XXXXXX")
+  "$@" >"$log" 2>&1 </dev/null || rc=$?
+  [ "$rc" -eq 0 ] || { step_failed "$label" "$rc" "$log" "$@"; return 1; }
+}
+
+# run_val LABEL cmd...: like run_step, but standard output is the result and only standard error is captured
+run_val() {
+  local label=$1 log rc=0
+  shift
+  log=$(mktemp "$tmp/step.XXXXXX")
+  "$@" 2>"$log" </dev/null || rc=$?
+  [ "$rc" -eq 0 ] || { step_failed "$label" "$rc" "$log" "$@"; return 1; }
+}
+
+# run_stream LABEL cmd...: live output as an indented dim block under a step header
+run_stream() {
+  local label=$1 rc=0
+  shift
+  step "$label"
+  if "$@" 2>&1 </dev/null | sed "s/^/    ${c_dim}/; s/\$/${c_reset}/"; then :; else rc=${PIPESTATUS[0]}; fi
+  [ "$rc" -eq 0 ] || {
+    { echo "${e_red}pyn-install: failed: $label${e_reset}"; echo "  command: $*"; echo "  exit status: $rc"; } >&2
+    return 1
+  }
+}
+
+# try_quiet cmd...: for failures the script expects and handles itself; prints nothing
+try_quiet() { "$@" >/dev/null 2>&1 </dev/null; }
 
 cleanup() { [ -z "$tmp" ] || rm -rf "$tmp"; }
 trap cleanup EXIT
@@ -64,6 +141,8 @@ while [ $# -gt 0 ]; do
     --database-url) database_url=${2:?--database-url needs a value}; shift 2 ;;
     --yes | -y) yes=1; shift ;;
     --no-install) no_install=1; shift ;;
+    --color) color_flag=always; shift ;;
+    --no-color) color_flag=never; shift ;;
     -h | --help) usage; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
@@ -96,7 +175,7 @@ ask() {
     return 0
   fi
   while :; do
-    if [ -n "$def" ]; then printf '%s [%s]: ' "$label" "$def"; else printf '%s: ' "$label"; fi
+    if [ -n "$def" ]; then printf '%s [%s]: ' "${c_cyan}$label${c_reset}" "${c_green}$def${c_reset}"; else printf '%s: ' "${c_cyan}$label${c_reset}"; fi
     ans=$(read_answer "$label")
     [ -n "$ans" ] || ans=$def
     if [ -n "$ans" ]; then printf -v "$var" '%s' "$ans"; return 0; fi
@@ -113,15 +192,15 @@ menu() {
     printf -v "$var" '%s' "$def"
     return 0
   fi
-  echo "$title"
+  echo "${c_bold}${c_cyan}$title${c_reset}"
   i=1
   for opt in "$@"; do
     v=${opt%%|*}
-    if [ "$v" = "$def" ]; then echo "  $i) ${opt#*|} (default)"; else echo "  $i) ${opt#*|}"; fi
+    if [ "$v" = "$def" ]; then echo "  $i) ${opt#*|} ${c_green}(default)${c_reset}"; else echo "  $i) ${opt#*|}"; fi
     i=$((i + 1))
   done
   while :; do
-    printf 'Choice: '
+    printf '%s ' "${c_cyan}Choice:${c_reset}"
     ans=$(read_answer "$title")
     [ -n "$ans" ] || ans=$def
     i=1
@@ -130,7 +209,7 @@ menu() {
       if [ "$ans" = "$v" ] || [ "$ans" = "$i" ]; then printf -v "$var" '%s' "$v"; return 0; fi
       i=$((i + 1))
     done
-    echo "Enter a number or one of the names above."
+    echo "${c_yellow}Enter a number or one of the names above.${c_reset}"
   done
 }
 
@@ -139,7 +218,7 @@ confirm() {
   local ans
   [ "$interactive" -eq 1 ] || { [ "$2" = y ]; return; }
   while :; do
-    printf '%s [%s]: ' "$1" "$([ "$2" = y ] && echo Y/n || echo y/N)"
+    printf '%s [%s]: ' "${c_cyan}$1${c_reset}" "${c_green}$([ "$2" = y ] && echo Y/n || echo y/N)${c_reset}"
     ans=$(read_answer "$1")
     case $ans in
       "") [ "$2" = y ]; return ;;
@@ -155,7 +234,7 @@ ask_optional() { # ask_optional VAR label flag [default]: Enter takes the defaul
   local var=$1 label=$2 def=${4:-} ans
   [ -z "${!var}" ] || return 0
   [ "$interactive" -eq 1 ] || return 0
-  if [ -n "$def" ]; then printf '%s [%s] (type none to skip): ' "$label" "$def"; else printf '%s (Enter for none): ' "$label"; fi
+  if [ -n "$def" ]; then printf '%s [%s] (type none to skip): ' "${c_cyan}$label${c_reset}" "${c_green}$def${c_reset}"; else printf '%s (Enter for none): ' "${c_cyan}$label${c_reset}"; fi
   ans=$(read_answer "$label")
   [ -n "$ans" ] || ans=$def
   [ "$ans" != none ] || ans=""
@@ -241,7 +320,7 @@ check_env_perms() {
   mode=$(file_mode "$1") || return 0
   last=${mode#"${mode%?}"}
   case $last in 4 | 5 | 6 | 7) ;; *) return 0 ;; esac
-  say "warning: $1 is readable by everyone (mode $mode) and holds secrets"
+  warn "$1 is readable by everyone (mode $mode) and holds secrets"
   if [ -O "$1" ]; then
     chmod 600 "$1"
     say "set $1 to mode 600"
@@ -285,11 +364,16 @@ set_env() { # set_env FILE KEY VALUE: replaces the active line, else the first c
 get_env() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1 || true; }
 
 fill_secret() { # fill_secret FILE KEY BYTES: only when the value is empty
-  [ -n "$(get_env "$1" "$2")" ] || set_env "$1" "$2" "$(openssl rand -hex "$3")"
+  local v
+  [ -n "$(get_env "$1" "$2")" ] || { v=$(rand_hex "$3"); set_env "$1" "$2" "$v"; }
 }
 
+rand_hex() { run_val "generating a secret" openssl rand -hex "$1"; }
+
 sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
+  local sum
+  if command -v sha256sum >/dev/null 2>&1; then sum=$(run_val "checksum" sha256sum "$1"); else sum=$(run_val "checksum" shasum -a 256 "$1"); fi
+  echo "${sum%% *}"
 }
 
 default_host() {
@@ -405,13 +489,13 @@ needed_tools() {
 
 check_tools() {
   local t missing="" label
-  echo "Checking this host:"
+  echo "${c_bold}Checking this host:${c_reset}"
   for t in $(needed_tools); do
     label=$(tool_label "$t")
     if have_tool "$t"; then
-      echo "  ok       $label"
+      echo "  ${c_green}ok${c_reset}       $label"
     else
-      echo "  missing  $label"
+      echo "  ${c_red}missing${c_reset}  $label"
       missing="$missing $t"
     fi
   done
@@ -430,6 +514,10 @@ stop_missing() { # stop_missing "<tools>" reason
     fi
   } >&2
   exit 1
+}
+
+apt_install() {
+  as_root apt-get update -qq && as_root apt-get install -y -qq "$@"
 }
 
 install_missing() {
@@ -455,15 +543,13 @@ install_missing() {
   [ -z "$why" ] || stop_missing "$missing" "$why"
   confirm "Install the missing tools now?" y || stop_missing "$missing" "installation declined"
   if [ -n "$pkgs" ]; then
-    say "installing packages:$pkgs"
-    as_root apt-get update -qq
     # shellcheck disable=SC2086
-    as_root apt-get install -y -qq $pkgs
+    run_stream "Installing packages:$pkgs" apt_install $pkgs
   fi
   if [ "$docker" -eq 1 ]; then
-    say "installing Docker with get.docker.com; in an LXC container the container needs security.nesting=true"
-    curl -fsSL https://get.docker.com -o "$tmp/get-docker.sh" || die "could not download https://get.docker.com"
-    as_root sh "$tmp/get-docker.sh"
+    say "in an LXC container, Docker needs security.nesting=true on the container"
+    run_step "downloading https://get.docker.com" curl -fsSL https://get.docker.com -o "$tmp/get-docker.sh"
+    run_stream "Installing Docker (get.docker.com)" as_root sh "$tmp/get-docker.sh"
   fi
   for t in $missing; do
     have_tool "$t" || die "$(tool_label "$t") is still missing after the install"
@@ -475,7 +561,8 @@ install_missing() {
 api_get() { # api_get PATH: saves the answer in $tmp/api.json and prints 200 or 404; stops on anything else
   local code
   code=$(curl -sSL -H 'Accept: application/vnd.github+json' -o "$tmp/api.json" -w '%{http_code}' \
-    "https://api.github.com/repos/$repo/$1") || code=000
+    "https://api.github.com/repos/$repo/$1" 2>"$tmp/curl.err" </dev/null) || code=000
+  code=${code: -3}
   case $code in
     200 | 404) echo "$code" ;;
     403 | 429) die "GitHub's release API refused the request (rate limit: 60 an hour without a token); try again later" ;;
@@ -512,6 +599,7 @@ match_tag() { # match_tag INPUT: a full tag, or a bare version mapped to its rel
 
 resolve_version() {
   local stable newest default=pre choice stable_text
+  step "Resolving the release"
   if [ -n "$version_in" ]; then
     [ -z "$channel" ] || say "--version given; --channel is ignored"
     tag=$(match_tag "$version_in")
@@ -554,7 +642,7 @@ resolve_version() {
 
 # Downloads and checksums
 
-fetch() { curl -fsSL -o "$2" "$1" || die "download failed: $1"; }
+fetch() { run_step "downloading $1" curl -fsSL -o "$2" "$1"; }
 
 platform_for() { # platform_for shape
   local os arch
@@ -584,20 +672,20 @@ fetch_verified() {
   [ -n "$want" ] || die "SHA256SUMS has no entry for $name.tar.gz; nothing was installed"
   got=$(sha256_of "$tmp/dl/$name.tar.gz")
   [ "$got" = "$want" ] || die "checksum mismatch for $name.tar.gz (expected $want, got $got); nothing was installed"
-  say "checksum verified" >&2
-  tar -xzf "$tmp/dl/$name.tar.gz" -C "$tmp/dl"
+  ok "checksum verified" >&2
+  run_step "unpacking $name.tar.gz" tar -xzf "$tmp/dl/$name.tar.gz" -C "$tmp/dl"
   [ -d "$tmp/dl/$name" ] || die "unexpected archive layout in $name.tar.gz"
   echo "$tmp/dl/$name"
 }
 
 install_binary() { # install_binary SRC DEST
-  install -m 0755 "$1" "$2.new"
-  mv -f "$2.new" "$2"
+  run_step "installing $2" install -m 0755 "$1" "$2.new"
+  run_step "installing $2" mv -f "$2.new" "$2"
 }
 
 wait_health() {
   local i=0 max=${PYN_INSTALL_HEALTH_TRIES:-60}
-  until curl -fsS -o /dev/null "http://127.0.0.1:$1/healthz" 2>/dev/null; do
+  until try_quiet curl -fsS -o /dev/null "http://127.0.0.1:$1/healthz"; do
     i=$((i + 1))
     [ "$i" -lt "$max" ] || return 1
     sleep "${PYN_INSTALL_POLL:-1}"
@@ -654,6 +742,8 @@ native_prepare() {
   if [ "$reuse" != fresh ]; then preload_from_env "$root$native_env"; fi
 }
 
+compose_in() { ( cd "$dir" && docker compose "$@" ); }
+
 docker_flow() {
   local env_path="$dir/.env" dc="$dir/docker-compose.yml" envfile old new_env=1 first_run=1 bind="" base
   case $shape in
@@ -687,9 +777,9 @@ docker_flow() {
       backup_file "$env_path"
       say "a new .env gets new secrets; an existing database volume keeps the old password, so copy POSTGRES_PASSWORD from the backup if you keep its data"
     fi
-    if ! curl -fsSL -o "$tmp/env" "$base/$envfile" 2>/dev/null; then
+    if ! try_quiet curl -fsSL -o "$tmp/env" "$base/$envfile"; then
       say "$envfile is not in release $tag; using the one from main"
-      if ! curl -fsSL -o "$tmp/env" "https://raw.githubusercontent.com/$repo/main/deploy/$envfile" 2>/dev/null; then
+      if ! try_quiet curl -fsSL -o "$tmp/env" "https://raw.githubusercontent.com/$repo/main/deploy/$envfile"; then
         say "no $envfile found; starting from an empty .env"
         : >"$tmp/env"
       fi
@@ -734,15 +824,15 @@ docker_flow() {
   else
     check_required "$env_path" PYN_VERSION POSTGRES_PASSWORD PYN_SECRET_KEY PYN_PUBLIC_URL
   fi
-  say "starting the stack"
-  ( cd "$dir" && docker compose pull && docker compose up --detach --wait ) ||
+  run_stream "Pulling the images" compose_in pull || die "the images could not be pulled; see the output above"
+  run_stream "Starting the stack" compose_in up --detach --wait ||
     die "the stack did not come up; see: cd $dir && docker compose logs"
-  say "up. Files are in $dir"
+  ok "up. Files are in $dir"
   if [ "$shape" = web ]; then
     say "add this web address to PYN_ALLOWED_ORIGINS on the server at $(get_env "$env_path" PYN_API_URL), then restart it: $public_url"
   elif [ "$first_run" -eq 1 ]; then
     say "one-time setup token (finish setup in the browser, or run: pyn setup <username>):"
-    ( cd "$dir" && docker compose logs server 2>&1 ) | token_block
+    compose_in logs server 2>&1 | token_block
   fi
 }
 
@@ -786,17 +876,22 @@ WantedBy=multi-user.target
 EOF
 }
 
-pg_sql() { su postgres -c 'psql -v ON_ERROR_STOP=1 -tA'; }
+pg_sql() { printf '%s\n' "$1" | su postgres -c 'psql -v ON_ERROR_STOP=1 -tA'; }
+
+# The password stays in $pg_pw so a failure report never prints it
+pg_create_role_and_database() {
+  pg_sql "create role pyn login password '$pg_pw'; create database pyn owner pyn;"
+}
 
 create_local_database() { # prints the database URL
-  local pw
-  [ "$(printf "select 1 from pg_roles where rolname='pyn';\n" | pg_sql)" != 1 ] ||
-    die "a PostgreSQL role named pyn already exists; pass --database-url, or remove it yourself first"
-  [ "$(printf "select 1 from pg_database where datname='pyn';\n" | pg_sql)" != 1 ] ||
-    die "a PostgreSQL database named pyn already exists; pass --database-url, or remove it yourself first"
-  pw=$(openssl rand -hex 24)
-  printf "create role pyn login password '%s';\ncreate database pyn owner pyn;\n" "$pw" | pg_sql >/dev/null
-  echo "postgres://pyn:$pw@127.0.0.1:5432/pyn"
+  local found pg_pw
+  found=$(run_val "checking for a pyn role" pg_sql "select 1 from pg_roles where rolname='pyn';")
+  [ "$found" != 1 ] || die "a PostgreSQL role named pyn already exists; pass --database-url, or remove it yourself first"
+  found=$(run_val "checking for a pyn database" pg_sql "select 1 from pg_database where datname='pyn';")
+  [ "$found" != 1 ] || die "a PostgreSQL database named pyn already exists; pass --database-url, or remove it yourself first"
+  pg_pw=$(rand_hex 24)
+  run_step "creating the pyn role and database" pg_create_role_and_database
+  echo "postgres://pyn:$pg_pw@127.0.0.1:5432/pyn"
 }
 
 native_flow() {
@@ -816,12 +911,12 @@ native_flow() {
 
   if ! id pyn >/dev/null 2>&1; then
     say "creating the system user pyn"
-    useradd --system --user-group --home-dir /var/lib/pyn --no-create-home --shell /usr/sbin/nologin pyn
+    run_step "creating the user pyn" useradd --system --user-group --home-dir /var/lib/pyn --no-create-home --shell /usr/sbin/nologin pyn
   fi
   mkdir -p "$bin_dir" "$state_dir" "$etc_dir" "$unit_dir" "$(dirname "$env_real")"
   chmod 0755 "$etc_dir"
   chmod 0750 "$state_dir"
-  chown pyn:pyn "$state_dir"
+  run_step "setting the owner of $state_dir" chown pyn:pyn "$state_dir"
   [ "$need_bin" -eq 0 ] || install_binary "$src/pyn-server" "$bin_dir/pyn-server"
 
   if [ -f "$env_real" ] && [ "$reuse" = fresh ]; then
@@ -858,12 +953,12 @@ native_flow() {
 
   port=$(get_env "$env_real" PYN_ADDR)
   port=${port##*:}
-  systemctl daemon-reload
-  systemctl enable pyn
-  systemctl restart pyn
+  run_step "reloading systemd" systemctl daemon-reload
+  run_step "enabling the pyn service" systemctl enable pyn
+  run_step "starting the pyn service" systemctl restart pyn
   say "waiting for http://127.0.0.1:${port:-7878}/healthz"
   wait_health "${port:-7878}" || die "the server did not become healthy; see: journalctl -u pyn -n 50"
-  say "up (pyn ${tag:-installed}, systemd unit pyn)"
+  ok "up (pyn ${tag:-installed}, systemd unit pyn)"
   if [ "$first_run" -eq 1 ]; then
     say "one-time setup token (finish setup with: pyn setup <username>, or in the browser if a web app is attached):"
     journalctl -u pyn --no-pager -o cat 2>&1 | token_block
@@ -879,7 +974,7 @@ cli_flow() {
   if [ "$(id -u)" -eq 0 ]; then dest=$bin_dir; else dest=$HOME/.local/bin; fi
   mkdir -p "$dest"
   install_binary "$src/pyn" "$dest/pyn"
-  say "installed $dest/pyn ($tag)"
+  ok "installed $dest/pyn ($tag)"
   case ":$PATH:" in *":$dest:"*) ;; *) say "add $dest to your PATH" ;; esac
   say "next: pyn config set --global server ${api_url:-<server-url>}"
   say "      pyn login <username>"
@@ -921,6 +1016,7 @@ choose_database() {
 main() {
   local method_default=docker shape_default=full platform="" tag="" ver="" newshape="" o ok=0 compose="" reason=""
   local shape_opts=() env_default=""
+  setup_color
   open_terminal
   pick_default_dir
   [ -z "$dir" ] || dir=$(normalize_path "$dir" "--dir")
@@ -986,13 +1082,13 @@ main() {
       case $shape in full) compose=docker-compose.yml ;; server) compose=docker-compose.server.yml ;; web) compose=docker-compose.web.yml ;; esac
       if [ "$method" = docker ]; then
         if [ -z "$dir" ] && [ -n "$dir_warn" ]; then
-          say "warning: $dir_warn; defaulting to $dir_default instead"
+          warn "$dir_warn; defaulting to $dir_default instead"
         fi
         ask dir "Where should the deployment live (Compose and env files)?" "$dir_default" --dir
         dir=$(normalize_path "$dir" "the deployment folder")
         reason=$(guard_reason "$dir")
         if [ -n "$reason" ]; then
-          say "warning: $reason; using $dir/pyn instead (name another folder to override)"
+          warn "$reason; using $dir/pyn instead (name another folder to override)"
           dir=${dir%/}/pyn
         fi
         env_default=""
@@ -1057,10 +1153,10 @@ main() {
   confirm "Proceed?" y || die "stopped; nothing was changed"
 
   case $shape in
-    cli) cli_flow ;;
-    *) if [ "$method" = docker ]; then docker_flow; else native_flow; fi ;;
+    cli) step "Installing the pyn command"; cli_flow ;;
+    *) if [ "$method" = docker ]; then step "Setting up the Docker deployment"; docker_flow; else step "Installing the native pyn server"; native_flow; fi ;;
   esac
-  say "done"
+  ok "done"
 }
 
 main

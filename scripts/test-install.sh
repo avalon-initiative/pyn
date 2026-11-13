@@ -83,6 +83,7 @@ echo "docker[$PWD] $*" >>"$LOG"
 case "$*" in
   "compose version") [ -z "${FAKE_NO_COMPOSE:-}" ] ;;
   "compose logs server") bash "$FIX/token.sh" ;;
+  "compose pull") echo PULL-PROGRESS; [ -z "${FAKE_DOCKER_EXIT:-}" ] || { echo "pull denied" >&2; exit "$FAKE_DOCKER_EXIT"; } ;;
   *) exit "${FAKE_DOCKER_EXIT:-0}" ;;
 esac
 EOF
@@ -100,6 +101,8 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+if [ -n "${FAKE_CURL_NOISE:-}" ]; then echo NOISE-OUT; echo NOISE-ERR >&2; fi
+if [ -n "${FAKE_CURL_FAIL:-}" ] && [[ $url == *"$FAKE_CURL_FAIL"* ]]; then exit 22; fi
 if [ -n "${FAKE_NET_DOWN:-}" ]; then [ -z "$wfmt" ] || printf 000; exit 6; fi
 code=200
 case $url in
@@ -136,6 +139,7 @@ cat >"$fix/stub-systemctl" <<'EOF'
 echo "systemctl $*" >>"$LOG"
 case "$*" in
   "is-active --quiet postgresql") [ -f "$BIN/.pg-active" ] || [ -n "${FAKE_PG_ACTIVE:-}" ] ;;
+  "restart pyn") [ -z "${FAKE_SYSTEMCTL_FAIL:-}" ] || { echo "boom: unit failed" >&2; exit 5; } ;;
 esac
 EOF
 cat >"$fix/stub-su" <<'EOF'
@@ -189,6 +193,7 @@ case_start() {
   : >"$c/log"
   tty_file=""
   run_cwd=""
+  piped=""
 }
 # run_install [flags...]: environment is cleared; FAKE_* in extra_env pass through. Sets out, err, rc.
 extra_env=()
@@ -197,12 +202,14 @@ run_install() {
   local ttyenv=()
   [ -z "$tty_file" ] || ttyenv=(PYN_INSTALL_TTY="$tty_file")
   rc=0
+  local cmd=("$src/scripts/install.sh") stdin=/dev/null
+  if [ -n "$piped" ]; then cmd=(-s --); stdin=$src/scripts/install.sh; fi
   mkdir -p "$c/cwd" "${run_cwd:-$c/cwd}"
   cd "${run_cwd:-$c/cwd}"
   env -i PATH="$c/bin" HOME="$c/home" LOG="$c/log" FIX="$fix" BIN="$c/bin" REAL_OPENSSL="$(command -v openssl)" \
     PYN_INSTALL_ROOT="$c/root" PYN_INSTALL_OS_RELEASE="$fix/os-debian" PYN_INSTALL_POLL=0 PYN_INSTALL_HEALTH_TRIES=3 \
     ${ttyenv[@]+"${ttyenv[@]}"} ${extra_env[@]+"${extra_env[@]}"} \
-    "$real_bash" "$src/scripts/install.sh" "$@" </dev/null >"$out" 2>"$err" || rc=$?
+    "$real_bash" "${cmd[@]}" "$@" <"$stdin" >"$out" 2>"$err" || rc=$?
 }
 ok_rc() { [ "$rc" -eq 0 ]; }
 bad_rc() { [ "$rc" -ne 0 ]; }
@@ -875,6 +882,90 @@ run_install --yes --shape full --dir '~nosuchuser_x/a'
 expect "~user for an unknown user is refused" bad_rc
 expect "~user refusal is clear" has "$err" "cannot expand"
 expect "nothing is created outside the resolved folder" bash -c '[ -z "$(ls -A "$0")" ]' "$c/cwd"
+
+# Colour
+esc=$'\033'
+case_start z1; extra_env=()
+run_install --yes --shape full --dir "$c/pyn"
+expect "piped output carries no escapes" bash -c '! grep -q "$1" "$2" "$3"' _ "$esc" "$c/out" "$c/err"
+case_start z2; extra_env=()
+run_install --color --yes --shape full --dir "$c/pyn"
+expect "--color forces escapes into the output" bash -c 'grep -q "$1" "$2"' _ "$esc" "$c/out"
+expect "--color: step headers are bold" has "$c/out" "${esc}[1m==> Resolving the release"
+expect "--color: success lines are green" has "$c/out" "${esc}[32mdone"
+expect "--color: the checklist marks ok in green" has "$c/out" "${esc}[32mok${esc}[0m"
+case_start z3; extra_env=(PYN_INSTALL_COLOR=always NO_COLOR=1)
+run_install --yes --shape full --dir "$c/pyn"
+expect "NO_COLOR beats PYN_INSTALL_COLOR=always" bash -c '! grep -q "$1" "$2" "$3"' _ "$esc" "$c/out" "$c/err"
+case_start z4; extra_env=(PYN_INSTALL_COLOR=always)
+run_install --no-color --yes --shape full --dir "$c/pyn"
+expect "--no-color beats PYN_INSTALL_COLOR=always" bash -c '! grep -q "$1" "$2" "$3"' _ "$esc" "$c/out" "$c/err"
+case_start z5; extra_env=(PYN_INSTALL_COLOR=always)
+run_install --yes --shape full --dir "$c/pyn"
+expect "PYN_INSTALL_COLOR=always colours" bash -c 'grep -q "$1" "$2"' _ "$esc" "$c/out"
+case_start z6; extra_env=(PYN_INSTALL_COLOR=never)
+run_install --yes --shape full --dir "$c/pyn"
+expect "PYN_INSTALL_COLOR=never stays plain" bash -c '! grep -q "$1" "$2"' _ "$esc" "$c/out"
+case_start z7; extra_env=(NO_COLOR=1)
+run_install --color --yes --shape full --dir "$c/pyn"
+expect "an explicit --color overrides NO_COLOR" bash -c 'grep -q "$1" "$2"' _ "$esc" "$c/out"
+case_start z8; extra_env=()
+run_install --color --yes --shape full --version 9.9.9
+expect "errors are red on stderr" has "$c/err" "${esc}[31mpyn-install:"
+run_install --yes --shape full --version 9.9.9
+expect "errors are plain when piped" lacks "$c/err" "$esc"
+case_start z9; extra_env=(); tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
+run_install --color
+expect "--color: questions are cyan" has "$c/out" "${esc}[36mWhere should the deployment live"
+expect "--color: the default answer is green" has "$c/out" "[${esc}[32m$c/cwd${esc}[0m]"
+expect "--color: the menu default marker is green" has "$c/out" "${esc}[32m(default)${esc}[0m"
+
+# Quiet commands
+case_start n_q1; extra_env=(FAKE_CURL_NOISE=1)
+run_install --yes --shape server --dir "$c/pyn"
+expect "noisy curl on the 404 and success paths: the run succeeds" ok_rc
+expect "no curl stdout reaches the terminal output" lacks "$c/out" "NOISE-OUT"
+expect "no curl stderr reaches the terminal output" lacks "$c/out" "NOISE-ERR"
+expect "no curl stdout reaches the error output" lacks "$c/err" "NOISE-OUT"
+expect "no curl stderr reaches the error output" lacks "$c/err" "NOISE-ERR"
+expect "the expected 404 and the main fallback happened" has "$c/out" "using the one from main"
+case_start n_q2; extra_env=(FAKE_CURL_NOISE=1)
+run_install --yes --channel pre --version 0.1.1 --shape full --dir "$c/pyn"
+expect "noisy curl with a typed version stays quiet" lacks "$c/out" "NOISE"
+expect "noisy curl with a typed version succeeds" ok_rc
+case_start n_q3; extra_env=(FAKE_CURL_NOISE=1 FAKE_STABLE=1)
+run_install --yes --channel stable --shape full --dir "$c/pyn"
+expect "noisy curl on the stable path stays quiet" lacks "$c/out" "NOISE"
+case_start n_q4; extra_env=(FAKE_CURL_NOISE=1 FAKE_CURL_FAIL=docker-compose.yml)
+run_install --yes --shape full --dir "$c/pyn"
+expect "a failing download fails the install" bad_rc
+expect "the failure block names the step" has "$c/err" "failed: downloading"
+expect "the failure block shows the command" has "$c/err" "command: curl"
+expect "the failure block shows the exit status" has "$c/err" "exit status: 22"
+expect "the captured output is shown on failure" has "$c/err" "NOISE-ERR"
+expect "nothing was started after the failure" lacks "$c/log" "compose up"
+case_start n_q5; extra_env=()
+run_install --yes --shape full --dir "$c/pyn"
+expect "docker compose pull streams as an indented block" has "$c/out" "    PULL-PROGRESS"
+expect "under its step header" has "$c/out" "==> Pulling the images"
+case_start n_q6; extra_env=(FAKE_DOCKER_EXIT=3)
+run_install --yes --shape full --dir "$c/pyn"
+expect "a failing pull fails the install" bad_rc
+expect "and reports the status" has "$c/err" "exit status: 3"
+case_start n_q7; extra_env=(FAKE_PG_ACTIVE=1 FAKE_SYSTEMCTL_FAIL=1)
+run_install --yes --shape server --method native --database-url postgres://u:p@h/d
+expect "a failing systemctl fails the install" bad_rc
+expect "its captured output is shown" has "$c/err" "boom: unit failed"
+expect "its status is shown" has "$c/err" "exit status: 5"
+case_start n_q8; extra_env=(FAKE_PG_ACTIVE=1 FAKE_CURL_NOISE=1)
+run_install --yes --shape server --method native --database-url postgres://u:p@h/d
+expect "a native install with noisy curl succeeds" ok_rc
+expect "a native install prints no raw curl output" bash -c '! grep -q NOISE "$0" "$1"' "$c/out" "$c/err"
+case_start n_p1; extra_env=(); tty_file="$c/answers"; piped=1
+printf 'full\ndocker\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
+run_install
+expect "piping the script into bash still reads prompts from the terminal file" ok_rc
+expect "and completes the install" test -f "$c/pyn/.env"
 
 # Flags
 case_start f1
