@@ -142,7 +142,7 @@ pub(crate) async fn sign_in(
 }
 
 #[utoipa::path(get, path = "/v1/session", responses(
-    (status = 200, body = api::SessionInfo),
+    (status = 200, body = api::SessionInfo, description = "also answers while the account is scheduled for deletion, so it can be restored"),
     (status = 401, body = api::ErrorBody, description = "not signed in"),
 ))]
 pub(crate) async fn current(
@@ -151,7 +151,10 @@ pub(crate) async fn current(
 ) -> ApiResult<Json<api::SessionInfo>> {
     let cookie = session_cookie(&headers)
         .ok_or_else(|| PynError::Unauthenticated("not signed in".into()))?;
-    let (_, record) = s.access.authenticate_session(cookie).await?;
+    let (_, record) = s
+        .access
+        .authenticate_session_allowing_pending(cookie)
+        .await?;
     Ok(Json(info(&record)))
 }
 

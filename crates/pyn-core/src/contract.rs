@@ -77,6 +77,8 @@ mod frozen;
 pub use frozen::*;
 mod repo_cap;
 pub use repo_cap::*;
+mod account_deletion;
+pub use account_deletion::*;
 
 struct Harness {
     store: Store,
@@ -4449,6 +4451,10 @@ impl MetadataStore for HookedMeta {
 
     async fn repo_breakdown(&self, repo: &RepoId) -> crate::Result<crate::RepoBreakdown> {
         self.inner.repo_breakdown(repo).await
+    }
+
+    async fn author_appears(&self, author: &UserId) -> crate::Result<bool> {
+        self.inner.author_appears(author).await
     }
 }
 

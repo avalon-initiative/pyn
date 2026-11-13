@@ -238,7 +238,7 @@ impl AccessService {
             .await?;
         let (user, created) = match found {
             Some(identity) => {
-                self.require_active(&identity.user).await?;
+                self.require_may_sign_in(&identity.user).await?;
                 self.store
                     .touch_external_identity(
                         &identity.id,
@@ -278,6 +278,11 @@ impl AccessService {
             let Ok(user) = account::validate_username(&name) else {
                 continue;
             };
+            match self.ensure_name_free(&user).await {
+                Ok(()) => {}
+                Err(PynError::NameReserved(_)) => continue,
+                Err(e) => return Err(e),
+            }
             loop {
                 let mut identity = self.new_identity(&user, claims)?;
                 identity.last_sign_in_at = Some(identity.created_at);

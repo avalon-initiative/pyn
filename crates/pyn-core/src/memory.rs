@@ -19,6 +19,7 @@ use crate::access_service::{
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent, brief};
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts};
 use crate::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
+use crate::deletion::{AccountDeletion, AccountPurge, DeletionSchedule, NameReservation};
 use crate::error::{PynError, Result};
 use crate::history::{HistoryCursor, HistoryScan};
 use crate::limit_events::{LimitsEvent, LockChange, LockEventBuilder};
@@ -1706,6 +1707,16 @@ impl MetadataStore for MemoryMetadataStore {
         })
     }
 
+    async fn author_appears(&self, author: &UserId) -> Result<bool> {
+        let wanted = author.as_str().to_lowercase();
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .revisions
+            .values()
+            .flatten()
+            .any(|r| r.author.as_str().to_lowercase() == wanted))
+    }
+
     async fn repo_breakdown(&self, repo: &RepoId) -> Result<RepoBreakdown> {
         let st = self.state.lock().unwrap();
         let mut folders: HashMap<String, (HashMap<ObjectId, u64>, u64)> = HashMap::new();
@@ -1869,6 +1880,8 @@ struct AccessState {
     oidc_flows: HashMap<String, OidcFlow>,
     settings: Option<ServerSettings>,
     limits: BTreeMap<UserId, Limits>,
+    deletions: BTreeMap<UserId, AccountDeletion>,
+    name_reservations: BTreeMap<String, NameReservation>,
 }
 
 impl AccessState {
@@ -2951,6 +2964,191 @@ impl AccessStore for MemoryAccessStore {
         Ok(())
     }
 
+    async fn account_deletion(&self, user: &UserId) -> Result<Option<AccountDeletion>> {
+        Ok(self.state.lock().unwrap().deletions.get(user).cloned())
+    }
+
+    async fn schedule_account_deletion_with_events(
+        &self,
+        deletion: AccountDeletion,
+        disable: bool,
+        events: &[EventDraft],
+    ) -> Result<DeletionSchedule> {
+        let mut st = self.state.lock().unwrap();
+        let Some(target) = st.accounts.get(&deletion.user) else {
+            return Ok(DeletionSchedule::NoAccount);
+        };
+        if disable && target.is_admin && target.disabled_at.is_none() {
+            let others = st.accounts.values().any(|a| {
+                a.user != deletion.user
+                    && a.kind == AccountKind::User
+                    && a.is_admin
+                    && a.disabled_at.is_none()
+            });
+            if !others {
+                return Ok(DeletionSchedule::LastAdmin);
+            }
+        }
+        self.outbox.queue(events)?;
+        if disable {
+            let account = st.accounts.get_mut(&deletion.user).unwrap();
+            account.disabled_at = Some(deletion.scheduled_at);
+            account.disabled_reason = Some("account deletion requested".into());
+        }
+        st.deletions.insert(deletion.user.clone(), deletion);
+        Ok(DeletionSchedule::Scheduled)
+    }
+
+    async fn restore_account_with_events(
+        &self,
+        user: &UserId,
+        events: &[EventDraft],
+    ) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        if !st.deletions.contains_key(user) || !st.accounts.contains_key(user) {
+            return Ok(false);
+        }
+        self.outbox.queue(events)?;
+        st.deletions.remove(user);
+        let account = st.accounts.get_mut(user).unwrap();
+        (account.disabled_at, account.disabled_reason) = (None, None);
+        Ok(true)
+    }
+
+    async fn clear_account_deletion(&self, user: &UserId) -> Result<bool> {
+        Ok(self.state.lock().unwrap().deletions.remove(user).is_some())
+    }
+
+    async fn deletions_due(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<AccountDeletion>> {
+        let st = self.state.lock().unwrap();
+        let mut due: Vec<_> = st
+            .deletions
+            .values()
+            .filter(|d| d.purge_at <= now)
+            .cloned()
+            .collect();
+        due.sort_by(|a, b| {
+            a.purge_at
+                .cmp(&b.purge_at)
+                .then_with(|| a.user.cmp(&b.user))
+        });
+        due.truncate(limit);
+        Ok(due)
+    }
+
+    async fn disabled_accounts_before(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<AccountRecord>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .accounts
+            .values()
+            .filter(|a| a.kind == AccountKind::User && !st.deletions.contains_key(&a.user))
+            .filter(|a| a.disabled_at.is_some_and(|at| at <= cutoff))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            a.disabled_at
+                .cmp(&b.disabled_at)
+                .then_with(|| a.user.cmp(&b.user))
+        });
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    async fn purge_account_with_events(
+        &self,
+        user: &UserId,
+        now: DateTime<Utc>,
+        reserved_until: DateTime<Utc>,
+        events: &[EventDraft],
+    ) -> Result<AccountPurge> {
+        let mut st = self.state.lock().unwrap();
+        let Some(account) = st
+            .accounts
+            .get(user)
+            .filter(|a| a.kind == AccountKind::User)
+        else {
+            return Ok(AccountPurge::NoAccount);
+        };
+        if account.disabled_at.is_none() {
+            return Ok(AccountPurge::NotDisabled);
+        }
+        self.outbox.queue(events)?;
+        let record = st.accounts.remove(user).expect("checked above");
+        st.passwords.remove(user);
+        st.verifications.retain(|_, v| &v.user != user);
+        st.invites.retain(|_, i| &i.created_by != user);
+        st.ssh_keys.retain(|k| &k.user != user);
+        st.roles.retain(|(_, u), _| u != user);
+        st.org_roles.retain(|(_, u), _| u != user);
+        st.org_invitations.retain(|(_, u), _| u != user);
+        st.team_members.retain(|(_, _, u)| u != user);
+        st.creation_rules
+            .retain(|(_, s, _), _| *s != CreationSubject::User(user.clone()));
+        st.tokens.retain(|_, t| &t.user != user);
+        st.sessions.retain(|_, s| &s.user != user);
+        st.identities.retain(|i| &i.user != user);
+        st.oidc_flows
+            .retain(|_, f| f.link_user.as_ref() != Some(user));
+        st.limits.remove(user);
+        st.deletions.remove(user);
+        let name = user.as_str().to_lowercase();
+        st.name_reservations.insert(
+            name.clone(),
+            NameReservation {
+                name,
+                reserved_at: now,
+                until: Some(reserved_until),
+            },
+        );
+        Ok(AccountPurge::Purged(record))
+    }
+
+    async fn name_reservation(&self, name: &str) -> Result<Option<NameReservation>> {
+        let st = self.state.lock().unwrap();
+        Ok(st.name_reservations.get(&name.to_lowercase()).cloned())
+    }
+
+    async fn expired_name_reservations(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<NameReservation>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .name_reservations
+            .values()
+            .filter(|r| r.until.is_some_and(|until| until <= now))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.until.cmp(&b.until).then_with(|| a.name.cmp(&b.name)));
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    async fn make_name_reservation_permanent(&self, name: &str) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        match st.name_reservations.get_mut(&name.to_lowercase()) {
+            Some(r) => {
+                r.until = None;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn release_name_reservation(&self, name: &str) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st.name_reservations.remove(&name.to_lowercase()).is_some())
+    }
+
     async fn server_settings(&self) -> Result<Option<ServerSettings>> {
         Ok(self.state.lock().unwrap().settings.clone())
     }
@@ -3303,6 +3501,14 @@ impl AuditStore for MemoryAuditStore {
             },
         ));
         Ok(())
+    }
+
+    async fn actor_appears(&self, actor: &UserId) -> Result<bool> {
+        let wanted = actor.as_str().to_lowercase();
+        let events = self.events.lock().unwrap();
+        Ok(events
+            .iter()
+            .any(|(_, e)| e.actor.as_str().to_lowercase() == wanted))
     }
 
     async fn list(&self, scope: &AuditScope, query: &AuditQuery) -> Result<Vec<AuditEvent>> {

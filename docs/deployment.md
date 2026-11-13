@@ -84,6 +84,7 @@ warns while it is still set.
 | `PYN_REGISTRATION` | `invite` (default) or `closed` for a private server; `open` needs the [sign-up protections](concepts/access.md#protecting-open-registration) |
 | `PYN_TRUST_FORWARDED_FOR=true` | Only behind a proxy that sets `X-Forwarded-For`, so rate limits see client addresses |
 | `PYN_ALLOWED_ORIGINS` | Required for a web app served from another origin, such as a web-only deployment pointing here (its address, no path) |
+| `PYN_DISABLED_ACCOUNT_RETENTION_DAYS` | Disabled accounts are [deleted](concepts/access.md#deleting-an-account) after 90 days by default (`0` keeps them forever); the server runs the task itself (hourly), so nothing is scheduled outside it |
 | never `PYN_DEV_AUTH` | It accepts any user header with every permission |
 
 Logs go to standard error as plain text; read them with `docker compose logs`. The port is

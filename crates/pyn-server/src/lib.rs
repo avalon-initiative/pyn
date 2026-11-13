@@ -21,10 +21,12 @@ use utoipa::openapi::schema::{KnownFormat, ObjectBuilder, Schema, SchemaFormat, 
 use utoipa::{IntoParams, OpenApi, PartialSchema, ToSchema};
 
 mod access_api;
+pub mod account_deletion;
 mod admin_api;
 pub mod auth;
 mod branch_api;
 mod client;
+mod deletion_api;
 pub mod email;
 pub mod events;
 mod freeze_api;
@@ -104,6 +106,10 @@ struct RepoAddress {
         admin_api::approve,
         admin_api::disable,
         admin_api::enable,
+        deletion_api::admin_delete_account,
+        deletion_api::account_deletion_status,
+        deletion_api::schedule_account_deletion,
+        deletion_api::restore_account_deletion,
         admin_api::grant_admin,
         admin_api::revoke_admin,
         admin_api::audit,
@@ -352,6 +358,13 @@ struct RepoAddress {
         api::AccountApprovedData,
         api::AccountDisabledData,
         api::AccountEnabledData,
+        api::DeleteOwnAccountRequest,
+        api::AccountDeletionStatus,
+        api::AdminDeleteAccountRequest,
+        api::AdminDeleteAccountResult,
+        api::AccountDeletionScheduledData,
+        api::AccountDeletionRestoredData,
+        api::AccountDeletedData,
         api::OrganizationCreatedData,
         api::OrganizationDeletedData,
         api::RepositoryCreatedData,
@@ -404,6 +417,19 @@ fn routes(state: AppState) -> Router {
         .route("/v1/admin/users/{user}/approve", post(admin_api::approve))
         .route("/v1/admin/users/{user}/disable", post(admin_api::disable))
         .route("/v1/admin/users/{user}/enable", post(admin_api::enable))
+        .route(
+            "/v1/admin/users/{user}/delete",
+            post(deletion_api::admin_delete_account),
+        )
+        .route(
+            "/v1/account/deletion",
+            get(deletion_api::account_deletion_status)
+                .post(deletion_api::schedule_account_deletion),
+        )
+        .route(
+            "/v1/account/deletion/restore",
+            post(deletion_api::restore_account_deletion),
+        )
         .route(
             "/v1/admin/users/{user}/admin",
             put(admin_api::grant_admin).delete(admin_api::revoke_admin),
@@ -740,6 +766,10 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::TeamExists { .. }
         | PynError::LastOrgOwner(_)
         | PynError::LastServerAdmin
+        | PynError::NameReserved(_)
+        | PynError::AccountNotDisabled(_)
+        | PynError::AccountFrozen(_)
+        | PynError::AccountOwnsResources { .. }
         | PynError::KeyInUse
         | PynError::ExternalIdentityTaken
         | PynError::LastSignInMethod
@@ -759,6 +789,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::RegistrationClosed
         | PynError::InvalidSetupToken
         | PynError::AccountInactive(_)
+        | PynError::AccountPendingDeletion { .. }
         | PynError::ServerAdminRequired
         | PynError::ServiceScopeRequired(_)
         | PynError::ServiceCredentialNotAllowed

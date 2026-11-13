@@ -1181,4 +1181,8 @@ impl MetadataStore for BudgetGateStore {
     async fn repo_breakdown(&self, repo: &RepoId) -> crate::Result<crate::RepoBreakdown> {
         self.inner.repo_breakdown(repo).await
     }
+
+    async fn author_appears(&self, author: &UserId) -> crate::Result<bool> {
+        self.inner.author_appears(author).await
+    }
 }

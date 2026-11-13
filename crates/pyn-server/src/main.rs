@@ -109,6 +109,15 @@ fn dev_clock() -> anyhow::Result<(Arc<dyn Clock>, TimeSource)> {
 }
 
 /// A limit that stays unset, meaning unlimited, unless the variable is present.
+/// A whole number of days, 0 or more.
+fn day_count(name: &str, default: i64) -> anyhow::Result<i64> {
+    match std::env::var(name) {
+        Ok(v) => i64::try_from(whole_number(name, &v)?)
+            .map_err(|_| anyhow::anyhow!("{name} is too large")),
+        Err(_) => Ok(default),
+    }
+}
+
 fn optional_number(name: &str) -> anyhow::Result<Option<u64>> {
     std::env::var(name)
         .ok()
@@ -452,6 +461,14 @@ async fn main() -> anyhow::Result<()> {
             password_sign_in: flag_or("PYN_PASSWORD_SIGN_IN", true),
             redirect_url: std::env::var("PYN_OIDC_REDIRECT_URL").ok(),
         },
+        deletion_window_days: day_count(
+            "PYN_ACCOUNT_DELETION_WINDOW_DAYS",
+            defaults.deletion_window_days,
+        )?,
+        disabled_retention_days: day_count(
+            "PYN_DISABLED_ACCOUNT_RETENTION_DAYS",
+            defaults.disabled_retention_days,
+        )?,
     };
     let oidc = oidc_provider()?;
     anyhow::ensure!(
@@ -561,6 +578,7 @@ async fn main() -> anyhow::Result<()> {
     let repos = Arc::new(repos);
 
     start_webhook_delivery(webhooks, clock, &hook_settings, access.public_url())?;
+    pyn_server::account_deletion::spawn(access.clone(), std::time::Duration::from_secs(3600));
 
     let dev_auth: Option<Arc<dyn AuthProvider>> = if flag("PYN_DEV_AUTH") {
         tracing::warn!("PYN_DEV_AUTH is on: anyone who can reach this server can act as any user");

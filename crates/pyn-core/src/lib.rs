@@ -10,6 +10,7 @@ pub mod clock;
 pub mod commit_record;
 #[cfg(feature = "contract")]
 pub mod contract;
+pub mod deletion;
 pub mod email;
 pub mod error;
 pub mod freeze;
@@ -46,10 +47,11 @@ pub use access::{
     account, invite, service_credential, session, ssh, team, token, verification,
 };
 pub use access_service::{
-    AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke, ExternalPolicy,
-    ExternalSignIn, MAX_INVITE_HOURS, OidcBegin, OidcFinish, OidcStart, OrgAdd, OrgDeleteMark,
-    OrgMemberChange, OwnerFreezeState, OwnerLimits, RateLimits, Registration, RepoMember,
-    SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp, TeamDetail, generate_setup_token,
+    ACCOUNT_DELETION_ACTOR, AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke,
+    ExternalPolicy, ExternalSignIn, MAX_INVITE_HOURS, OidcBegin, OidcFinish, OidcStart, OrgAdd,
+    OrgDeleteMark, OrgMemberChange, OwnerFreezeState, OwnerLimits, RateLimits, Registration,
+    RepoMember, SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp, TeamDetail,
+    generate_setup_token,
 };
 pub use access_service::{
     AdminRecovery, CreateWebhook, DeliveryPage, HOST_RECOVERY_ACTOR, IssuedSecret, WebhookDetail,
@@ -60,6 +62,10 @@ pub use auth::AuthProvider;
 pub use branch::{Branch, DEFAULT_BRANCH, validate_branch_name};
 pub use chunking::ChunkedStore;
 pub use clock::{Clock, ManualClock, ScaledClock, SystemClock};
+pub use deletion::{
+    AccountDeletion, AccountPurge, DeletionSchedule, DeletionSweep, NAME_RESERVATION_DAYS,
+    NameReservation, PurgeBlockers,
+};
 pub use email::{EmailMessage, EmailSender, MemoryEmailSender, NullEmailSender};
 pub use error::{PynError, Result};
 pub use freeze::{FREEZE_REASON_BYTES, MemoryOwnerWrites, OwnerWrites};

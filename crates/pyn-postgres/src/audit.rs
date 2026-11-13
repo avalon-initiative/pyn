@@ -11,6 +11,14 @@ use crate::{PgMetadataStore, db};
 
 #[async_trait]
 impl AuditStore for PgMetadataStore {
+    async fn actor_appears(&self, actor: &UserId) -> Result<bool> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM audit_events WHERE lower(actor) = $1)")
+            .bind(actor.as_str().to_lowercase())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db)
+    }
+
     async fn record(&self, scope: &AuditScope, event: NewAuditEvent) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         // Serializes appends to one log so each event chains to the one before it.

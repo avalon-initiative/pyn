@@ -55,6 +55,7 @@ impl AccessService {
             self.require_server_admin(actor).await?;
         }
         let org = account::validate_org_name(name)?;
+        self.ensure_name_free(&org).await?;
         let now = self.clock.now();
         let owner_id = self.account_id(&actor.user).await?;
         let id = AccountId::generate(AccountKind::Org)?;
@@ -94,6 +95,7 @@ impl AccessService {
         self.require_admin_scope(actor, ServiceScope::ManageOrganizations)
             .await?;
         let org = account::validate_org_name(name)?;
+        self.ensure_name_free(&org).await?;
         self.existing_account(owner).await?;
         self.require_active(owner).await?;
         let owner_id = self.account_id(owner).await?;

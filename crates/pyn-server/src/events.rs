@@ -7,12 +7,12 @@ use pyn_core::{
     Visibility, WebhookStore,
 };
 use pyn_proto::{
-    AccountApprovedData, AccountCreatedData, AccountDisabledData, AccountEnabledData, Event,
-    EventData, LimitKind as WireLimitKind, Limits, LockAcquiredData, LockExpiredData,
-    LockForcedData, LockReleasedData, OrganizationCreatedData, OrganizationDeletedData,
-    OwnerFrozenData, OwnerKind, OwnerLimitReachedData, OwnerLimitsChangedData, OwnerUnfrozenData,
-    RepositoryCreatedData, RepositoryDeletedData, RepositoryRenamedData,
-    RepositoryStorageCapChangedData,
+    AccountApprovedData, AccountCreatedData, AccountDeletedData, AccountDeletionRestoredData,
+    AccountDeletionScheduledData, AccountDisabledData, AccountEnabledData, Event, EventData,
+    LimitKind as WireLimitKind, Limits, LockAcquiredData, LockExpiredData, LockForcedData,
+    LockReleasedData, OrganizationCreatedData, OrganizationDeletedData, OwnerFrozenData, OwnerKind,
+    OwnerLimitReachedData, OwnerLimitsChangedData, OwnerUnfrozenData, RepositoryCreatedData,
+    RepositoryDeletedData, RepositoryRenamedData, RepositoryStorageCapChangedData,
 };
 
 /// Builds webhook envelopes for the domain's limit refusals.
@@ -115,6 +115,38 @@ impl LimitEvents for WebhookLimitEvents {
                 user: name(user),
                 user_id: user_id.to_string(),
                 actor: name(actor),
+            }),
+            DomainEvent::AccountDeletionScheduled {
+                user,
+                user_id,
+                actor,
+                by_owner,
+                reason,
+                purge_at,
+            } => EventData::AccountDeletionScheduled(AccountDeletionScheduledData {
+                user: name(user),
+                user_id: user_id.to_string(),
+                actor: name(actor),
+                by_owner,
+                reason,
+                purge_at,
+            }),
+            DomainEvent::AccountDeletionRestored { user, user_id } => {
+                EventData::AccountDeletionRestored(AccountDeletionRestoredData {
+                    user: name(user),
+                    user_id: user_id.to_string(),
+                })
+            }
+            DomainEvent::AccountDeleted {
+                user,
+                user_id,
+                actor,
+                reason,
+            } => EventData::AccountDeleted(AccountDeletedData {
+                user: name(user),
+                user_id: user_id.to_string(),
+                actor: name(actor),
+                reason,
             }),
             DomainEvent::OrganizationCreated {
                 name: org,

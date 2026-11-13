@@ -2593,6 +2593,14 @@ impl MetadataStore for PgMetadataStore {
         }
     }
 
+    async fn author_appears(&self, author: &UserId) -> Result<bool> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM revisions WHERE lower(author) = $1)")
+            .bind(author.as_str().to_lowercase())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db)
+    }
+
     async fn owner_usage(&self, owner: &UserId) -> Result<Usage> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let repositories: i64 =

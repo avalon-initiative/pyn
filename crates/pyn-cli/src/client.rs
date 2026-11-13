@@ -123,12 +123,19 @@ pub fn ok(resp: Reply) -> Result<Reply> {
     }
     let status = resp.status;
     match resp.json::<api::ErrorBody>() {
-        Ok(e) => Err(ApiError {
-            code: crate::sanitize::text(&e.code).into_owned(),
-            status,
-            message: crate::sanitize::text(&crate::time::localize(&e.message)).into_owned(),
+        Ok(e) => {
+            let mut message =
+                crate::sanitize::text(&crate::time::localize(&e.message)).into_owned();
+            if e.code == "account_pending_deletion" {
+                message.push_str(" (run `pyn account restore`)");
+            }
+            Err(ApiError {
+                code: crate::sanitize::text(&e.code).into_owned(),
+                status,
+                message,
+            }
+            .into())
         }
-        .into()),
         Err(_) => bail!("server returned {}", status_line(status)),
     }
 }

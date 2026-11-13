@@ -639,4 +639,9 @@ impl MetadataStore for CountingStore {
         self.count();
         self.inner.repo_breakdown(repo).await
     }
+
+    async fn author_appears(&self, author: &UserId) -> crate::Result<bool> {
+        self.count();
+        self.inner.author_appears(author).await
+    }
 }

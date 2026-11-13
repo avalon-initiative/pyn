@@ -59,6 +59,7 @@ impl AccessService {
             self.store
                 .set_disabled_with_events(&user, None, &[event])
                 .await?;
+            self.store.clear_account_deletion(&user).await?;
             reenabled = true;
         }
         if existing.signup != SignupStage::Complete {

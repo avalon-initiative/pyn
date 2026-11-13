@@ -73,6 +73,60 @@ credential helper would; the CLI uses it when no token is given, and `pyn logout
 session is a token that reaches every repository you belong to, with your role there as its limit, and it lasts 30 days by
 default (`PYN_SESSION_DAYS`). Signing in needs no role anywhere: a new account with no repository can sign in and create its own.
 
+## Deleting an account
+
+An account can be deleted three ways (decisions #975 and #976). All three end in one **purge**.
+
+**Self-service.** `pyn account delete` (`POST /v1/account/deletion {password}`) asks for the password again, then disables the account
+and schedules its purge after a **recovery window** of 30 days (`PYN_ACCOUNT_DELETION_WINDOW_DAYS`); the answer carries `purge_at`.
+An account with no password (external sign-in only) is deleted from a signed-in web session, which needs no password. While the
+window runs the account is *pending deletion*:
+
+- Signing in still works (`POST /v1/login`, `POST /v1/session`, external sign-in), so the owner can come back.
+- The credentials of a pending account reach only `GET /v1/account/deletion` (status: `{user, pending, scheduled_at, purge_at}`),
+  `POST /v1/account/deletion/restore` and `GET /v1/session` (so a web app can load the session and its CSRF token). Every other route,
+  Git/SSH access included, answers `403 account_pending_deletion` with the deadline in the message.
+- `pyn account restore` (`POST /v1/account/deletion/restore`) cancels the deletion and enables the account again; it is refused once
+  `purge_at` has passed. `pyn account status` shows the deadline.
+- An administrator's disable is not a pending deletion: that account cannot sign in (`account_disabled`) and only an administrator
+  enables it.
+
+**Administrators** delete a *disabled* account (`409 account_not_disabled` otherwise) with a reason that goes to the audit log:
+`pyn admin user delete <user> --reason <text>` (`POST /v1/admin/users/{user}/delete {reason, immediately?}`) schedules the purge after
+the same window and `--now` (`immediately`) purges at once. An administrator cannot delete their own account this way, and
+`pyn admin user enable <user>` cancels a scheduled deletion. A service credential with `manage_accounts` may do the same.
+
+**Automatic deletion.** An account disabled for `PYN_DISABLED_ACCOUNT_RETENTION_DAYS` days (default 90, `0` turns it off) is purged
+by the server. A background task runs at start and then hourly; it keeps no state of its own (schedules and disable times are in the
+database), so a restart loses nothing, a pass can run twice, and an account it cannot purge is logged and tried again on the next pass.
+The same pass purges accounts whose recovery window ended, drops a schedule left behind by an account that is enabled again, and
+settles name reservations. Automatic purges are audited under the actor `@account-deletion`.
+
+**What a purge does.** It removes the account's sessions, tokens, SSH keys, linked identities, invitations (those it created and those
+addressed to it), memberships, team seats and per-user creation rules, and releases its email address. The server refuses (`409`) while:
+
+- the account owns repositories, or is the only owner of an organization: `account_owns_resources`, the message lists them; transfer
+  or delete each first (an organization with another owner does not block, the account just leaves it);
+- the account is the last active administrator (`last_server_admin`; an administrator account is also kept while no other active
+  administrator exists);
+- the account is a frozen owner (`account_frozen`): unfreeze it first.
+
+Self-service deletion is refused for the same reasons when requested. A refusal changes nothing.
+
+**Names and history.** History and audit entries keep the user name they were written with; there is no tombstone name, and authors are
+identified by account id internally. So a purged name is **reserved** and nobody can register, create, or be renamed to it
+(`409 name_reserved`; registration, administrator creation, organization creation and the name picked for an external sign-in all check it):
+
+- for 90 days after the purge, whatever the name appears in;
+- after that, for as long as it appears as the author of a revision or the actor of an audit entry (the reservation then becomes
+  permanent); a name found in neither is released, by the first check that needs it or by the background task.
+
+Because deleting an account is itself audited under the account's name (self-service) the name of anyone who deleted themself, or ever
+acted on the server, stays reserved; an account an administrator removed that never acted is free again after 90 days.
+
+Webhook events: `account.deletion_scheduled`, `account.deletion_restored` and `account.deleted` ([events](events.md)). Audit actions
+(`GET /v1/admin/audit`): `account_deletion_scheduled`, `account_deletion_restored`, `account_deleted`.
+
 ## Web sessions
 
 The web signs in with `POST /v1/session` (user name and password, throttled like `pyn login`). The server keeps the session
@@ -191,7 +245,8 @@ acts as one only if it is a [full-scope credential](#full-scope-credentials) of 
 any account, their own included; the last active administrator cannot be revoked (`409 last_server_admin`), so the server is
 never left without one; disabling the last active administrator is refused the same way. A service credential cannot grant or revoke (`403 server_admin_required`). Grants and revokes are
 recorded with who and whom in the audit log. A disabled account cannot sign in, its sessions end at once, and its tokens
-and SSH keys stop working (403 `account_disabled`) until it is enabled; its email address stays reserved. Administrators
+and SSH keys stop working (403 `account_disabled`) until it is enabled; its email address stays reserved until the account is [deleted](#deleting-an-account), which happens on its own after
+`PYN_DISABLED_ACCOUNT_RETENTION_DAYS` (default 90). Administrators
 cannot disable themselves. Approvals, disables and enables are recorded with the actor and reason in a server-wide audit
 log, read at `GET /v1/admin/audit`. The server warns once at start when only one active administrator exists. If none is
 reachable, `pyn-server recover-admin <username>` run on the host creates or repairs one; it needs host control and has no
@@ -213,21 +268,25 @@ is off, or on but nothing is delivered.
 | `POST /v1/register` | `{username, password, email?, invite?}` gives `201 {user, status}`; `status` is `active`, `pending_verification` or `pending_approval` |
 | `POST /v1/register/verify` | `{token}` gives `200 {user, status}`; `400 invalid_verification` for an unknown, used or expired link |
 | `POST /v1/register/resend` | `{email}` gives `202`, always |
-| `POST /v1/login`, `POST /v1/session` | `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password |
+| `POST /v1/login`, `POST /v1/session` | `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password; an account scheduled for deletion by its owner signs in, with a credential that reaches only the deletion routes |
 | `GET /v1/me` | `{id, user, admin}` |
 | `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{id, user, email, email_verified, status, disabled_at, disabled_reason, admin, created_at}` |
 | `POST /v1/admin/users/{user}/approve` | `{}`; the updated account |
 | `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account. `409 last_server_admin` if the account is the only active administrator |
-| `POST /v1/admin/users/{user}/enable` | the updated account |
+| `POST /v1/admin/users/{user}/enable` | the updated account; also cancels a scheduled deletion |
+| `POST /v1/admin/users/{user}/delete` | `{reason, immediately?}` for a disabled account: `{user, deleted, purge_at}`; see [deleting an account](#deleting-an-account). `409` `account_not_disabled`, `account_owns_resources`, `account_frozen`, `last_server_admin` |
+| `GET /v1/account/deletion`, `POST /v1/account/deletion`, `POST /v1/account/deletion/restore` | the signed-in account's own deletion: status, schedule (`{password}`) and restore; they also answer for a pending account |
 | `PUT /v1/admin/users/{user}/admin` | grants the flag; the updated account. `400 invalid_request` if the account is not active; granting again changes nothing |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_deletion_scheduled`, `account_deletion_restored`, `account_deleted`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
 
 On the command line (server administrators; each listing is an aligned table with the name last):
 
 | Command | Does |
 | --- | --- |
 | `pyn admin user list [--status S] [--limit N]` | columns `STATUS ROLE CREATED EMAIL USER` |
+| `pyn admin user delete <user> [--now] --reason <text>` | deletes a disabled account after the recovery window, or at once with `--now` |
+| `pyn account delete [--password-stdin]`, `pyn account restore`, `pyn account status` | your own account: schedule its deletion (password again), cancel it, show the deadline |
 | `pyn admin user approve <user>`, `disable <user> [--reason R]`, `enable <user>` | the account routes above |
 | `pyn admin grant <user>`, `pyn admin revoke <user>` | grant or revoke the administrator flag |
 | `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations,manage_limits,manage_webhooks,manage_freeze` | prints the secret alone on stdout; it is shown once |

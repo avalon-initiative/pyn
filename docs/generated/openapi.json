@@ -27,6 +27,144 @@
         }
       }
     },
+    "/v1/account/deletion": {
+      "get": {
+        "tags": [
+          "deletion_api"
+        ],
+        "operationId": "account_deletion_status",
+        "responses": {
+          "200": {
+            "description": "works while the account is scheduled for deletion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "deletion_api"
+        ],
+        "operationId": "schedule_account_deletion",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteOwnAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the account is disabled and will be deleted at purge_at unless restored; other credentials of the account now answer account_pending_deletion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the account is already scheduled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthenticated: the password is wrong",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "account_owns_resources (the message lists the repositories and organizations to transfer or delete), account_frozen or last_server_admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/account/deletion/restore": {
+      "post": {
+        "tags": [
+          "deletion_api"
+        ],
+        "operationId": "restore_account_deletion",
+        "responses": {
+          "200": {
+            "description": "the account is enabled again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: nothing is scheduled, or the recovery window has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/audit": {
       "get": {
         "tags": [
@@ -782,6 +920,86 @@
           },
           "404": {
             "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{user}/delete": {
+      "post": {
+        "tags": [
+          "deletion_api"
+        ],
+        "operationId": "admin_delete_account",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's user name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminDeleteAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminDeleteAccountResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: no reason, or one's own account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_accounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "account_not_disabled, account_owns_resources (the message lists the repositories and organizations), account_frozen or last_server_admin",
             "content": {
               "application/json": {
                 "schema": {
@@ -1676,6 +1894,7 @@
         },
         "responses": {
           "200": {
+            "description": "an account its owner scheduled for deletion signs in too, but the token works only on /v1/account/deletion until the account is restored; every other route answers account_pending_deletion",
             "content": {
               "application/json": {
                 "schema": {
@@ -7700,6 +7919,7 @@
         "operationId": "current",
         "responses": {
           "200": {
+            "description": "also answers while the account is scheduled for deletion, so it can be restored",
             "content": {
               "application/json": {
                 "schema": {
@@ -8084,6 +8304,125 @@
           }
         }
       },
+      "AccountDeletedData": {
+        "type": "object",
+        "description": "`account.deleted`: the account was purged. Its name stays reserved; history keeps it.",
+        "required": [
+          "user",
+          "user_id",
+          "actor",
+          "reason"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string",
+            "description": "The administrator that deleted it, or `@account-deletion` for the server's timers."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountDeletionRestoredData": {
+        "type": "object",
+        "description": "`account.deletion_restored`: the account holder cancelled a scheduled deletion.",
+        "required": [
+          "user",
+          "user_id"
+        ],
+        "properties": {
+          "user": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountDeletionScheduledData": {
+        "type": "object",
+        "description": "`account.deletion_scheduled`.",
+        "required": [
+          "user",
+          "user_id",
+          "actor",
+          "by_owner",
+          "reason",
+          "purge_at"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string",
+            "description": "The account itself (self-service) or the administrator that scheduled it."
+          },
+          "by_owner": {
+            "type": "boolean",
+            "description": "True when the account holder scheduled it and may restore it until `purge_at`."
+          },
+          "purge_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the account is deleted unless restored."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An administrator's reason; null for self-service."
+          },
+          "user": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountDeletionStatus": {
+        "type": "object",
+        "description": "Whether the signed-in account is scheduled for deletion.",
+        "required": [
+          "user",
+          "pending",
+          "scheduled_at",
+          "purge_at"
+        ],
+        "properties": {
+          "pending": {
+            "type": "boolean",
+            "description": "True while the account is disabled and waiting to be deleted."
+          },
+          "purge_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the account is deleted unless it is restored first; null while nothing is scheduled."
+          },
+          "scheduled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the deletion was requested; null while nothing is scheduled."
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
       "AccountDisabledData": {
         "type": "object",
         "description": "`account.disabled`.",
@@ -8304,6 +8643,49 @@
           "owner": {
             "type": "string",
             "description": "An existing active user, who becomes the organization's first owner."
+          }
+        }
+      },
+      "AdminDeleteAccountRequest": {
+        "type": "object",
+        "description": "Deletes a disabled account.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "immediately": {
+            "type": "boolean",
+            "description": "Delete now instead of after the recovery window."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Recorded in the audit log; required."
+          }
+        }
+      },
+      "AdminDeleteAccountResult": {
+        "type": "object",
+        "description": "What an administrator's deletion did.",
+        "required": [
+          "user",
+          "deleted",
+          "purge_at"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "description": "True when the account is gone; false when its deletion is scheduled."
+          },
+          "purge_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When a scheduled account is deleted; null once it is gone."
+          },
+          "user": {
+            "type": "string"
           }
         }
       },
@@ -9041,6 +9423,16 @@
           "user",
           "role"
         ]
+      },
+      "DeleteOwnAccountRequest": {
+        "type": "object",
+        "description": "Schedules the deletion of the signed-in account after the recovery window.",
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The account's password, entered again. An account with no password needs a web session and may leave it empty."
+          }
+        }
       },
       "DisableAccountRequest": {
         "type": "object",

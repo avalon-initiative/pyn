@@ -14,6 +14,10 @@ use crate::access::{
 };
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
+use crate::deletion::{
+    AccountDeletion, AccountPurge, DeletionSchedule, DeletionSweep, NAME_RESERVATION_DAYS,
+    NameReservation, PurgeBlockers,
+};
 use crate::email::{EmailMessage, EmailSender, NullEmailSender};
 use crate::error::{PynError, Result};
 use crate::limit_events::{DomainEvent, LimitsEvent};
@@ -36,6 +40,7 @@ use crate::webhook::{EventDraft, WebhookStore};
 /// no repository can have.
 pub const SERVER_AUDIT_ID: &str = "@server";
 
+mod deletion;
 mod external;
 mod freeze;
 mod invitations;
@@ -47,6 +52,7 @@ mod setup;
 mod teams;
 mod webhooks;
 
+pub use deletion::ACCOUNT_DELETION_ACTOR;
 pub use external::{ExternalSignIn, OidcBegin, OidcFinish, OidcStart};
 pub use freeze::OwnerFreezeState;
 pub use invitations::OrgAdd;
@@ -591,6 +597,65 @@ pub trait AccessStore: Send + Sync {
     /// Removes every flow that expired at or before `now`.
     async fn delete_expired_oidc_flows(&self, now: DateTime<Utc>) -> Result<()>;
 
+    /// The deletion scheduled for the account, if any.
+    async fn account_deletion(&self, user: &UserId) -> Result<Option<AccountDeletion>>;
+
+    /// Stores the schedule and, when `disable` is set, disables the account at `scheduled_at` with the schedule's
+    /// reason in the same step, unless it is the only active administrator. Replaces an earlier schedule.
+    async fn schedule_account_deletion_with_events(
+        &self,
+        deletion: AccountDeletion,
+        disable: bool,
+        events: &[EventDraft],
+    ) -> Result<DeletionSchedule>;
+
+    /// Drops the schedule and the disable it came with, as one step; false if the account has no schedule.
+    async fn restore_account_with_events(
+        &self,
+        user: &UserId,
+        events: &[EventDraft],
+    ) -> Result<bool>;
+
+    /// Drops the schedule alone; false if there was none.
+    async fn clear_account_deletion(&self, user: &UserId) -> Result<bool>;
+
+    /// Schedules due at `now`, earliest first.
+    async fn deletions_due(&self, now: DateTime<Utc>, limit: usize)
+    -> Result<Vec<AccountDeletion>>;
+
+    /// User accounts disabled at or before `cutoff` that have no schedule, longest disabled first.
+    async fn disabled_accounts_before(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<AccountRecord>>;
+
+    /// Removes a disabled user account with its sessions, tokens, keys, linked identities, invitations, memberships,
+    /// team seats and schedule, and reserves its name until `reserved_until`, all or nothing.
+    async fn purge_account_with_events(
+        &self,
+        user: &UserId,
+        now: DateTime<Utc>,
+        reserved_until: DateTime<Utc>,
+        events: &[EventDraft],
+    ) -> Result<AccountPurge>;
+
+    /// The reservation on `name` (any case), if one exists.
+    async fn name_reservation(&self, name: &str) -> Result<Option<NameReservation>>;
+
+    /// Reservations whose time ran out at or before `now`, oldest first.
+    async fn expired_name_reservations(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<NameReservation>>;
+
+    /// Keeps the reservation for good; false if there is none.
+    async fn make_name_reservation_permanent(&self, name: &str) -> Result<bool>;
+
+    /// Removes the reservation; false if there was none.
+    async fn release_name_reservation(&self, name: &str) -> Result<bool>;
+
     /// What setup recorded; `None` while the server is uninitialised.
     async fn server_settings(&self) -> Result<Option<ServerSettings>>;
 
@@ -676,6 +741,10 @@ pub struct AccessConfig {
     pub default_limits: Limits,
     /// How external sign-in behaves; applies only when a provider is configured.
     pub external: ExternalPolicy,
+    /// How long a self-service deletion can be undone, in days.
+    pub deletion_window_days: i64,
+    /// Days a disabled account is kept before the server deletes it; `0` turns that off.
+    pub disabled_retention_days: i64,
 }
 
 /// The operator's choices about external (OpenID Connect) sign-in.
@@ -717,6 +786,8 @@ impl Default for AccessConfig {
             org_invitation_ttl: Duration::days(30),
             default_limits: Limits::default(),
             external: ExternalPolicy::default(),
+            deletion_window_days: 30,
+            disabled_retention_days: 90,
         }
     }
 }
@@ -1024,6 +1095,15 @@ impl AccessService {
 
     /// Checks a bearer token and names its owner; the token's limits apply once a repository is chosen.
     pub async fn identify(&self, raw: &str) -> Result<Identity> {
+        self.identify_with(raw, false).await
+    }
+
+    /// Like `identify`, but an account scheduled for deletion by its owner is accepted, for restoring it.
+    pub async fn identify_allowing_pending(&self, raw: &str) -> Result<Identity> {
+        self.identify_with(raw, true).await
+    }
+
+    async fn identify_with(&self, raw: &str, allow_pending: bool) -> Result<Identity> {
         if service_credential::is_service(raw) {
             return self.identify_service(raw).await;
         }
@@ -1046,7 +1126,11 @@ impl AccessService {
         if record.expires_at.is_some_and(|t| t <= now) {
             return Err(unauthenticated("token expired"));
         }
-        self.require_active(&record.user).await?;
+        if allow_pending {
+            self.require_may_sign_in(&record.user).await?;
+        } else {
+            self.require_active(&record.user).await?;
+        }
         self.store.touch_token(&id, now).await?;
         Ok(Identity {
             user: record.user.clone(),
@@ -1530,10 +1614,32 @@ impl AccessService {
     async fn require_active(&self, user: &UserId) -> Result<()> {
         match self.store.account(user).await? {
             Some(account) if account.kind == AccountKind::Org => Err(org_cannot_sign_in()),
+            Some(account) if account.status() == AccountStatus::Disabled => {
+                match self.owner_deletion(&account).await? {
+                    Some(d) => Err(PynError::AccountPendingDeletion {
+                        purge_at: d.purge_at.to_rfc3339(),
+                    }),
+                    None => Err(PynError::AccountInactive(account.status())),
+                }
+            }
             Some(account) if account.status() != AccountStatus::Active => {
                 Err(PynError::AccountInactive(account.status()))
             }
             _ => Ok(()),
+        }
+    }
+
+    /// Like `require_active`, but an account its owner scheduled for deletion passes: it may sign in to restore.
+    async fn require_may_sign_in(&self, user: &UserId) -> Result<()> {
+        match self.store.account(user).await? {
+            Some(account)
+                if account.kind == AccountKind::User
+                    && account.status() == AccountStatus::Disabled
+                    && self.owner_deletion(&account).await?.is_some() =>
+            {
+                Ok(())
+            }
+            _ => self.require_active(user).await,
         }
     }
 
@@ -1597,7 +1703,7 @@ impl AccessService {
         if let Some(key) = &client_key {
             self.limits.refund(key, self.clock.now()).await?;
         }
-        self.require_active(&user).await?;
+        self.require_may_sign_in(&user).await?;
         self.require_password_sign_in(&user).await?;
         Ok(user)
     }
@@ -1659,11 +1765,31 @@ impl AccessService {
 
     /// Resolves a session cookie to its account; roles are read per repository on each request, so a change applies at once.
     pub async fn authenticate_session(&self, cookie: &str) -> Result<(Identity, SessionRecord)> {
+        self.authenticate_session_with(cookie, false).await
+    }
+
+    /// Like `authenticate_session`, but an account scheduled for deletion by its owner is accepted, for restoring it.
+    pub async fn authenticate_session_allowing_pending(
+        &self,
+        cookie: &str,
+    ) -> Result<(Identity, SessionRecord)> {
+        self.authenticate_session_with(cookie, true).await
+    }
+
+    async fn authenticate_session_with(
+        &self,
+        cookie: &str,
+        allow_pending: bool,
+    ) -> Result<(Identity, SessionRecord)> {
         let record = self
             .find_session(cookie)
             .await?
             .ok_or_else(|| unauthenticated("not signed in"))?;
-        self.require_active(&record.user).await?;
+        if allow_pending {
+            self.require_may_sign_in(&record.user).await?;
+        } else {
+            self.require_active(&record.user).await?;
+        }
         let who = Identity {
             user: record.user.clone(),
             credential: Credential::Session,
@@ -1721,6 +1847,7 @@ impl AccessService {
         if self.store.user_exists(&user).await? {
             return Err(PynError::UserExists(user));
         }
+        self.ensure_name_free(&user).await?;
         let password_hash = self.passwords.hash(request.password).await?;
 
         if verify {
@@ -1999,6 +2126,7 @@ impl AccessService {
         }
         let user = account::validate_username(username)?;
         account::validate_password(password)?;
+        self.ensure_name_free(&user).await?;
         self.require_grantable(repo, &user).await?;
         let hash = self.passwords.hash(password).await?;
         let id = AccountId::generate(AccountKind::User)?;
@@ -2455,6 +2583,7 @@ impl AccessService {
         self.store
             .set_disabled_with_events(user, None, &[enabled])
             .await?;
+        self.store.clear_account_deletion(user).await?;
         self.record_server(
             &actor.user,
             AuditAction::AccountEnabled,

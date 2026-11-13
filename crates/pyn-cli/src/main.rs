@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use pyn_proto as api;
 
+mod account;
 mod address;
 mod admin;
 mod backend;
@@ -342,6 +343,9 @@ enum Command {
     External(Vec<OsString>),
     /// Show who you are signed in as and, in a repository, what you may do there.
     Whoami,
+    /// Delete your account, restore it during the recovery window, or see its deletion status.
+    #[command(subcommand)]
+    Account(account::AccountCommand),
     /// Link SSH public keys to your account.
     #[command(subcommand)]
     Key(KeyCommand),
@@ -1516,6 +1520,7 @@ fn runs_anywhere(command: &Command) -> bool {
             | Command::Logout
             | Command::Register { .. }
             | Command::Password { .. }
+            | Command::Account(_)
             | Command::Key(_)
             | Command::Token(_)
             | Command::User(_)
@@ -2056,6 +2061,7 @@ fn run(cli: Cli) -> Result<()> {
                 println!("{}", me.user);
             }
         }
+        Command::Account(cmd) => account::run(backend.pyn_server("account")?, cmd)?,
         Command::Repo(cmd) => repo_command(backend.pyn_server("repo")?, cmd)?,
         Command::Org(cmd) => org_command(backend.pyn_server("org")?, cmd)?,
         Command::Invitation(cmd) => invitation_command(backend.pyn_server("invitation")?, cmd)?,
