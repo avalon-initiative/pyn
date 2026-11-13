@@ -93,7 +93,7 @@ release() {
   # The published OpenAPI document embeds the workspace version.
   make openapi
   git add Cargo.toml Cargo.lock crates/*/Cargo.toml docs/generated/openapi.json
-  local subject="[noissue] - Release $tag"
+  local subject="[RELEASE] - $tag"
   git commit --quiet -m "$subject"
 
   echo "release: tag $tag, version $ver, branch $branch"
@@ -114,10 +114,11 @@ publish() {
   preconditions
   local subject tag ver bad
   subject=$(git log -1 --format=%s)
-  [[ $subject =~ ^\[noissue\]\ -\ Release\ (v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z._-]+)?)\ \(#[0-9]+\)$ ]] ||
-    die "HEAD is not a merged release commit ('[noissue] - Release v<version>[-title] (#N)'): $subject"
-  tag="${BASH_REMATCH[1]}"
-  ver="${BASH_REMATCH[2]}"
+  # The earlier "[noissue] - Release" form still publishes.
+  [[ $subject =~ ^(\[RELEASE\]\ -\ |\[noissue\]\ -\ Release\ )(v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z._-]+)?)\ \(#[0-9]+\)$ ]] ||
+    die "HEAD is not a merged release commit ('[RELEASE] - v<version>[-title] (#N)'): $subject"
+  tag="${BASH_REMATCH[2]}"
+  ver="${BASH_REMATCH[3]}"
   scripts/verify-release-version.sh "$tag" >/dev/null || die "the workspace version at HEAD is not $ver"
   bad=$(grep -Hn "^pyn-[a-z-]* = { version = " crates/*/Cargo.toml | grep -v "version = \"$ver\"" || true)
   [ -z "$bad" ] || die "intra-workspace pins are not $ver:"$'\n'"$bad"
