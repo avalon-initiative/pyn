@@ -118,7 +118,7 @@ expect "SKIP_CHECKS skips the gate" bash -c 'cd "$0" && PATH="$0/bin:$PATH" GATE
 # The branch from the SKIP_CHECKS run: a title is slugged, every version file is bumped, the PR is opened.
 tag=v0.1.0-First-stable
 expect "release makes the branch" git -C "$r" rev-parse --verify -q release-v0.1.0
-expect "commit subject names the tag" test "$(git -C "$r" log -1 --format=%s release-v0.1.0)" = "[noissue] - Release $tag"
+expect "commit subject names the tag" test "$(git -C "$r" log -1 --format=%s release-v0.1.0)" = "[RELEASE] - $tag"
 changed=$(git -C "$r" diff --name-only main release-v0.1.0 | tr '\n' ' ')
 expect "release changes exactly the version files" test "$changed" = "Cargo.lock Cargo.toml crates/pyn-a/Cargo.toml docs/generated/openapi.json "
 expect "release bumps the workspace version" git -C "$r" grep -q '^version = "0.1.0"' release-v0.1.0 -- Cargo.toml
@@ -128,7 +128,7 @@ expect "release bumps the openapi document" git -C "$r" grep -q '"version": "0.1
 expect "release pushes the branch" git -C "$r" ls-remote --exit-code --heads origin release-v0.1.0 >/dev/null
 expect "release pushes no tag" test -z "$(git -C "$r" ls-remote --tags origin)"
 expect "release does not move origin main" test "$(git -C "$r" rev-parse origin/main)" = "$(git -C "$r" rev-parse main)"
-expect "release opens the pull request" grep -q -- "pr create --base main --head release-v0.1.0 --title \[noissue\] - Release $tag" "$GH_LOG"
+expect "release opens the pull request" grep -q -- "pr create --base main --head release-v0.1.0 --title \[RELEASE\] - $tag" "$GH_LOG"
 expect "release leaves no tag" test -z "$(git -C "$r" tag)"
 expect "release stays on its branch" test "$(git -C "$r" rev-parse --abbrev-ref HEAD)" = release-v0.1.0
 
@@ -152,7 +152,7 @@ merge() { # merge <subject>: squash-merge the release branch into main and publi
 expect_refused "publish refuses a branch other than main" "not on main" publish YES=1
 git -C "$r" switch -q main
 expect_refused "publish refuses a non-release HEAD" "not a merged release commit" publish YES=1
-merge "[noissue] - Release v0.1.0-first-stable (#7)"
+merge "[RELEASE] - v0.1.0-first-stable (#7)"
 expect_refused "publish needs a terminal or YES" "no terminal" publish
 expect_refused "publish refuses an unauthenticated gh" "not authenticated" publish GH_AUTH_EXIT=1 YES=1
 git -C "$r" tag -a v0.1.0-first-stable -m x
@@ -163,10 +163,25 @@ expect "publish tags the merged commit" test "$(git -C "$r" rev-parse 'v0.1.0-fi
 expect "publish makes an annotated tag" test "$(git -C "$r" cat-file -t v0.1.0-first-stable)" = tag
 expect "publish pushes only the tag" test "$(git -C "$r" ls-remote --tags origin | grep -c 'v0.1.0-first-stable$')" = 1
 
+# publish still accepts the earlier "[noissue] - Release" subject, and refuses lookalikes.
+new_repo "$r"
+release VER=0.1.0 TITLE=first-stable YES=1 >/dev/null
+merge "[noissue] - Release v0.1.0-first-stable (#7)"
+publish YES=1 >/dev/null
+expect "publish accepts the earlier subject form" test "$(git -C "$r" rev-parse 'v0.1.0-first-stable^{commit}')" = "$(git -C "$r" rev-parse HEAD)"
+new_repo "$r"
+release VER=0.1.0 TITLE= YES=1 >/dev/null
+merge "[RELEASE] - Release v0.1.0 (#7)"
+expect_refused "publish refuses a subject with the old word after the new prefix" "not a merged release commit" publish YES=1
+new_repo "$r"
+release VER=0.1.0 TITLE= YES=1 >/dev/null
+merge "[release] - v0.1.0 (#7)"
+expect_refused "publish refuses a lower-case prefix" "not a merged release commit" publish YES=1
+
 # publish refuses a merge whose subject disagrees with the files.
 new_repo "$r"
 release VER=0.1.0 TITLE= YES=1 >/dev/null
-merge "[noissue] - Release v0.2.0 (#8)"
+merge "[RELEASE] - v0.2.0 (#8)"
 expect_refused "publish refuses a version that differs from the files" "workspace version" publish YES=1
 
 # ci-green-for-tree.sh: a passing CI run on a PR head with the same tree, else non-zero with a reason.

@@ -18,11 +18,11 @@ suffix starting with `alpha`, `beta`, `rc` or `pre` (any case, then end, `.`, `-
    that already exists locally or on origin, and any existing tag for the same `X.Y.Z`, whatever its title, since the image tag would be overwritten.
 2. It creates `release-v<version>`, bumps the workspace version and the intra-workspace requirements, refreshes
    `Cargo.lock`, regenerates `docs/generated/openapi.json` (it embeds the version) and commits
-   `[noissue] - Release v<version>[-slug]`. After a confirmation it pushes the branch and opens the pull request; declining
+   `[RELEASE] - v<version>[-slug]`, which is also the pull request title. After a confirmation it pushes the branch and opens the pull request; declining
    prints the two commands to run later. Nothing is pushed to `main`, and a failure after the branch exists prints how to
    remove it.
-3. Merge the pull request (squash).
-4. On the updated `main`, run `make release-publish`. It checks that HEAD is the squash-merged release commit and that the
+3. Merge the pull request (squash); the commit subject becomes `[RELEASE] - v<version>[-slug] (#N)`.
+4. On the updated `main`, run `make release-publish`. It checks that HEAD is the squash-merged release commit (the earlier `[noissue] - Release v<version>[-slug] (#N)` subject is still accepted) and that the
    version files match, asks for confirmation, then creates the annotated tag on that commit and pushes only the tag.
 
 `YES=1` answers the confirmation questions for scripted use; the other checks still apply, and a missing `VER` or `TITLE`
