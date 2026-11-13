@@ -2772,7 +2772,7 @@ mod tests {
         let store = PgMetadataStore::connect_in_scratch_schema(&url)
             .await
             .unwrap();
-        sqlx::query("DROP TABLE repositories")
+        sqlx::query("DROP TABLE repositories CASCADE")
             .execute(&store.pool)
             .await
             .unwrap();
