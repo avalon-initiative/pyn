@@ -4,7 +4,8 @@
 set -euo pipefail
 
 repo=avalon-initiative/pyn
-shape="" method="" version_in="" dir="" public_url="" api_url="" database_url=""
+shape="" method="" version_in="" dir="" public_url="" api_url="" database_url="" channel="" env_file="" reuse=""
+os_kind="" os_id="" arch="" native_env="" start_dir="" dir_default="" dir_warn=""
 yes=0 no_install=0 interactive=0 tmp=""
 root=${PYN_INSTALL_ROOT:-}
 bin_dir="$root/usr/local/bin" etc_dir="$root/etc/pyn" unit_dir="$root/etc/systemd/system" state_dir="$root/var/lib/pyn"
@@ -18,9 +19,15 @@ Every answer has a flag; with --yes (or no terminal) a missing answer takes its 
 
   --shape full|server|web|cli   full: server and web app (default); server; web: web app only; cli: the pyn command only
   --method docker|native        docker (default); native runs the release pyn-server binary under systemd (server and cli only)
-  --version TAG                 a full tag such as v0.1.2-alpha, or a bare version such as 0.1.2 (default: the newest release,
-                                pre-releases included)
-  --dir DIR                     where the Docker files live (default /opt/pyn)
+  --channel stable|pre          stable: the latest non-pre-release; pre: the newest release of all, pre-releases included
+                                (default: stable, or pre while no stable release exists)
+  --version TAG                 a full tag such as v0.1.2-alpha, or a bare version such as 0.1.2 (wins over --channel)
+  --dir DIR                     (paths may start with ~ or be relative to the current folder) where the Docker files live (default: the current folder; a subfolder pyn when that is / , your
+                                home or a source checkout)
+  --env-file PATH               an existing env file to reuse: copied to DIR/.env for Docker, used in place as the service's
+                                EnvironmentFile for native (a native path that does not exist yet is where one is created)
+  --reuse use|refresh|fresh     when DIR (or the native env file) already holds an install: use it as it is, refresh the
+                                Compose file or binary from the release and keep the env (default), or start fresh (backs up)
   --public-url URL              the address people type in the browser (default http://<this host>:8080, or :7878 for a server)
   --api-url URL                 web: the pyn server the web app talks to (PYN_API_URL); cli: the server to point the command at
   --database-url URL            native: use this PostgreSQL (postgres://...) instead of creating a local database
@@ -28,7 +35,9 @@ Every answer has a flag; with --yes (or no terminal) a missing answer takes its 
   --no-install                  never install anything; only report what is missing
   -h, --help                    this text
 
-Re-running on an existing install upgrades it: settings and secrets are kept and only the version moves.
+Re-running on an existing install upgrades it: settings and secrets are kept and only the version moves, after confirming.
+Nothing is deleted: files that are replaced are copied to NAME.bak.<timestamp> first.
+macOS can run Docker deployments (Docker Desktop needed) and the CLI; native hosting needs Linux with systemd.
 EOF
 }
 
@@ -43,8 +52,13 @@ while [ $# -gt 0 ]; do
   case $1 in
     --shape) shape=${2:?--shape needs a value}; shift 2 ;;
     --method) method=${2:?--method needs a value}; shift 2 ;;
+    --channel) channel=${2:?--channel needs a value}; shift 2 ;;
+    --env-file) env_file=${2:?--env-file needs a value}; shift 2 ;;
+    --reuse) reuse=${2:?--reuse needs a value}; shift 2 ;;
     --version) version_in=${2:?--version needs a value}; shift 2 ;;
     --dir) dir=${2:?--dir needs a value}; shift 2 ;;
+    --dir=*) dir=${1#--dir=}; [ -n "$dir" ] || die "--dir needs a value"; shift ;;
+    --env-file=*) env_file=${1#--env-file=}; [ -n "$env_file" ] || die "--env-file needs a value"; shift ;;
     --public-url) public_url=${2:?--public-url needs a value}; shift 2 ;;
     --api-url) api_url=${2:?--api-url needs a value}; shift 2 ;;
     --database-url) database_url=${2:?--database-url needs a value}; shift 2 ;;
@@ -137,6 +151,118 @@ confirm() {
 
 # Files and settings
 
+ask_optional() { # ask_optional VAR label flag [default]: Enter takes the default, or none when there is none; "none" skips
+  local var=$1 label=$2 def=${4:-} ans
+  [ -z "${!var}" ] || return 0
+  [ "$interactive" -eq 1 ] || return 0
+  if [ -n "$def" ]; then printf '%s [%s] (type none to skip): ' "$label" "$def"; else printf '%s (Enter for none): ' "$label"; fi
+  ans=$(read_answer "$label")
+  [ -n "$ans" ] || ans=$def
+  [ "$ans" != none ] || ans=""
+  printf -v "$var" '%s' "$ans"
+}
+
+# Why a folder is a poor place for a deployment (empty when it is fine)
+guard_reason() {
+  local home
+  home=$(cd "${HOME:-/}" 2>/dev/null && pwd -P) || home=""
+  if [ "$1" = / ] || [ "$1" = "$home" ]; then echo "this is $1 itself, not a place to put a deployment"
+  elif [ -e "$1/Cargo.toml" ] || [ -e "$1/.git" ]; then echo "$1 looks like a source checkout (Cargo.toml or .git)"
+  fi
+}
+
+# The folder the script was started in is the default deployment folder, unless it is a place to avoid
+pick_default_dir() {
+  start_dir=$(pwd -P)
+  dir_default=$start_dir
+  dir_warn=$(guard_reason "$start_dir")
+  if [ -n "$dir_warn" ]; then dir_default="${start_dir%/}/pyn"; fi
+}
+
+# normalize_path VALUE LABEL: an absolute path from ~, ~/x, ., ./x, ../x or a bare name; the path need not exist
+normalize_path() {
+  local p=$1 label=$2 user rest home anc tail="" part IFS
+  local -a out=()
+  [ -n "$p" ] || die "$label must not be empty"
+  case $p in
+    "~") p=${HOME:-} ;;
+    "~/"*) p=${HOME:-}/${p#"~/"} ;;
+    "~"*)
+      user=${p#"~"}
+      user=${user%%/*}
+      rest=${p#"~$user"}
+      [[ $user =~ ^[A-Za-z0-9._-]+$ ]] || die "cannot expand '~$user' in $label; use a full path"
+      home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6) || home=""
+      [ -n "$home" ] || die "cannot expand '~$user' in $label (unknown user, or no getent); use a full path"
+      p=$home$rest
+      ;;
+  esac
+  case $p in /*) ;; *) p=$start_dir/$p ;; esac
+  IFS=/
+  set -f
+  for part in $p; do
+    case $part in
+      "" | .) ;;
+      ..) [ "${#out[@]}" -eq 0 ] || unset "out[$((${#out[@]} - 1))]" ;;
+      *) out+=("$part") ;;
+    esac
+  done
+  set +f
+  p=/
+  if [ "${#out[@]}" -gt 0 ]; then p="/${out[*]}"; fi
+  IFS=$' \t\n'
+  anc=$p
+  while [ ! -d "$anc" ]; do
+    tail="/${anc##*/}$tail"
+    anc=${anc%/*}
+    [ -n "$anc" ] || anc=/
+  done
+  anc=$(cd "$anc" && pwd -P)
+  [ "$anc" != / ] || anc=""
+  p=$anc$tail
+  echo "${p:-/}"
+}
+
+timestamp() { date +%Y%m%d%H%M%S; }
+
+backup_file() { # copies FILE to FILE.bak.<timestamp>, owner-only
+  local b n=0
+  b="$1.bak.$(timestamp)"
+  while [ -e "$b" ]; do n=$((n + 1)); b="$1.bak.$(timestamp).$n"; done
+  ( umask 077; cp "$1" "$b" )
+  say "backed up $1 as $b"
+}
+
+file_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+
+# Warns about a world-readable env file; fixes it only when owned, or when asked and agreed
+check_env_perms() {
+  local mode last
+  mode=$(file_mode "$1") || return 0
+  last=${mode#"${mode%?}"}
+  case $last in 4 | 5 | 6 | 7) ;; *) return 0 ;; esac
+  say "warning: $1 is readable by everyone (mode $mode) and holds secrets"
+  if [ -O "$1" ]; then
+    chmod 600 "$1"
+    say "set $1 to mode 600"
+  elif confirm "Run chmod 600 on $1 (not owned by you)?" n; then
+    chmod 600 "$1"
+  else
+    say "left $1 as it is; run: chmod 600 $1"
+  fi
+}
+
+fill_key() { # fill_key FILE KEY VALUE: only when the key is missing or empty
+  [ -n "$(get_env "$1" "$2")" ] || [ -z "$3" ] || set_env "$1" "$2" "$3"
+}
+
+check_required() { # check_required FILE KEY...: stops, naming the keys still missing
+  local f=$1 k missing=""
+  shift
+  for k in "$@"; do [ -n "$(get_env "$f" "$k")" ] || missing="$missing $k"; done
+  [ -z "$missing" ] || die "$f is missing:$missing; set them and re-run (nothing was started)"
+}
+
 set_env() { # set_env FILE KEY VALUE: replaces the active line, else the first commented one, else appends
   local f=$1 t="$1.tmp"
   K=$2 V=$3 awk '
@@ -182,6 +308,44 @@ is_local_url() {
 
 # Host and tools
 
+detect_os() {
+  local kernel f
+  kernel=$(uname -s)
+  arch=$(uname -m)
+  case $kernel in
+    Linux)
+      f=${PYN_INSTALL_OS_RELEASE:-/etc/os-release}
+      os_id=linux
+      if [ -r "$f" ]; then os_id=$(sed -n 's/^ID=//p' "$f" | head -n1 | tr -d '"'); fi
+      if is_debian; then
+        os_kind=debian
+        say "host: Linux ($os_id); missing packages and Docker can be installed for you"
+      else
+        os_kind=linux
+        say "host: Linux (${os_id:-unknown}); everything works when the tools are present, nothing is installed for you"
+      fi
+      ;;
+    Darwin)
+      os_kind=darwin
+      say "host: macOS. Hosting a server natively is not supported here (macOS has no systemd)."
+      say "Offered: Docker deployments if 'docker compose' works (Docker Desktop), and the pyn command on Apple silicon."
+      ;;
+    MINGW* | MSYS* | CYGWIN*) die "Windows shells ($kernel) are not supported; use WSL2 with Ubuntu, or a Linux host" ;;
+    *) die "$kernel is not supported; releases cover Linux (x86_64, arm64) and macOS (arm64, the pyn command only)" ;;
+  esac
+}
+
+# On macOS only Docker deployments and the CLI work; says why anything else is refused
+darwin_guard() {
+  [ "$os_kind" = darwin ] || return 0
+  if [ "$shape" = cli ]; then
+    [ "$arch" = arm64 ] || die "there is no pyn command build for Intel Macs yet (Apple silicon only)"
+    return 0
+  fi
+  [ "$method" != native ] || die "hosting natively is not supported on macOS (no systemd); use --method docker with Docker Desktop, or --shape cli"
+  have_tool compose || die "a server or web app on macOS needs Docker: install Docker Desktop, start it, and re-run (this script does not install it)"
+}
+
 is_debian() {
   local f=${PYN_INSTALL_OS_RELEASE:-/etc/os-release}
   [ -r "$f" ] && command -v apt-get >/dev/null 2>&1 && grep -Eq '^(ID|ID_LIKE)=.*(debian|ubuntu)' "$f"
@@ -214,6 +378,13 @@ tool_label() {
   esac
 }
 
+# A local database is needed when no URL was given and the env file does not already name one
+needs_local_db() {
+  [ -z "$database_url" ] || return 1
+  [ "$reuse" != fresh ] || return 0
+  [ -z "$(get_env "$root$native_env" PYN_DATABASE_URL)" ]
+}
+
 needed_tools() {
   local t="curl"
   case $method in
@@ -225,7 +396,7 @@ needed_tools() {
       t="$t tar sha256"
       if [ "$shape" != cli ]; then
         t="$t openssl systemctl"
-        [ -n "$database_url" ] || [ -f "$etc_dir/pyn.env" ] || t="$t postgres"
+        needs_local_db && t="$t postgres"
       fi
       ;;
   esac
@@ -252,7 +423,11 @@ stop_missing() { # stop_missing "<tools>" reason
   {
     echo "pyn-install: these must be installed first ($2):"
     for t in $1; do echo "  - $(tool_label "$t")"; done
-    echo "On Ubuntu or Debian: apt-get install curl tar coreutils openssl postgresql; Docker: https://docs.docker.com/engine/install/"
+    if [ "$os_kind" = darwin ]; then
+      echo "On macOS install Docker Desktop (https://docs.docker.com/desktop/setup/install/mac-install/), start it, then re-run."
+    else
+      echo "On Ubuntu or Debian: apt-get install curl tar coreutils openssl postgresql; Docker: https://docs.docker.com/engine/install/"
+    fi
   } >&2
   exit 1
 }
@@ -272,6 +447,7 @@ install_missing() {
   done
   if [ -n "$why" ]; then stop_missing "$missing" "$why"; fi
   if [ "$no_install" -eq 1 ]; then why="--no-install"
+  elif [ "$os_kind" = darwin ]; then why="nothing is installed for you on macOS"
   elif ! is_debian; then why="this host is not Ubuntu or Debian, so nothing is installed for you"
   elif [ "$(id -u)" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then why="run as root or with sudo so packages can be installed"
   elif [ "$interactive" -eq 0 ] && [ "$yes" -eq 0 ]; then why="no terminal to ask on; pass --yes to install"
@@ -296,18 +472,29 @@ install_missing() {
 
 # Releases
 
-api_tags() { # api_tags COUNT: tag names, newest first
-  local out code
-  out="$tmp/releases.json"
-  code=$(curl -sSL -H 'Accept: application/vnd.github+json' -o "$out" -w '%{http_code}' \
-    "https://api.github.com/repos/$repo/releases?per_page=$1") || code=000
+api_get() { # api_get PATH: saves the answer in $tmp/api.json and prints 200 or 404; stops on anything else
+  local code
+  code=$(curl -sSL -H 'Accept: application/vnd.github+json' -o "$tmp/api.json" -w '%{http_code}' \
+    "https://api.github.com/repos/$repo/$1") || code=000
   case $code in
-    200) ;;
+    200 | 404) echo "$code" ;;
     403 | 429) die "GitHub's release API refused the request (rate limit: 60 an hour without a token); try again later" ;;
     000) die "could not reach api.github.com; check the network connection" ;;
     *) die "GitHub's release API answered HTTP $code" ;;
   esac
-  grep -o '"tag_name": *"[^"]*"' "$out" | sed 's/.*"\([^"]*\)"$/\1/'
+}
+
+api_tags() { # api_tags COUNT: tag names, newest first
+  local code
+  code=$(api_get "releases?per_page=$1")
+  [ "$code" = 200 ] || die "GitHub's release API found no releases"
+  grep -o '"tag_name": *"[^"]*"' "$tmp/api.json" | sed 's/.*"\([^"]*\)"$/\1/'
+}
+
+latest_stable() { # the newest non-pre-release tag; empty when none exists
+  local code
+  code=$(api_get releases/latest)
+  [ "$code" != 200 ] || grep -o '"tag_name": *"[^"]*"' "$tmp/api.json" | head -n1 | sed 's/.*"\([^"]*\)"$/\1/'
 }
 
 match_tag() { # match_tag INPUT: a full tag, or a bare version mapped to its release tag
@@ -324,23 +511,45 @@ match_tag() { # match_tag INPUT: a full tag, or a bare version mapped to its rel
 }
 
 resolve_version() {
-  local newest
-  if [ -z "$version_in" ]; then
+  local stable newest default=pre choice stable_text
+  if [ -n "$version_in" ]; then
+    [ -z "$channel" ] || say "--version given; --channel is ignored"
+    tag=$(match_tag "$version_in")
+  else
+    stable=$(latest_stable)
     newest=$(api_tags 1 | head -n1)
     [ -n "$newest" ] || die "GitHub lists no releases for $repo"
-    if [ "$interactive" -eq 1 ]; then
-      echo "Which release? Enter for the newest, or type a full tag (v0.1.1-alpha) or a version (0.1.1)."
-      ask version_in "Version" "$newest" --version
-    else
-      version_in=$newest
+    [ -z "$stable" ] || default=stable
+    case $channel in
+      stable) [ -n "$stable" ] || die "no stable release exists yet (every release so far is a pre-release); use --channel pre" ;;
+      pre) default=pre ;;
+    esac
+    choice=$channel
+    if [ -z "$choice" ] && [ "$interactive" -eq 1 ]; then
+      stable_text="Latest stable release (none yet: every release so far is a pre-release)"
+      [ -z "$stable" ] || stable_text="Latest stable release ($stable)"
+      while :; do
+        choice=""
+        menu choice "Which release?" "$default" --channel "stable|$stable_text" \
+          "pre|Latest pre-release, the newest release of all ($newest)" "tag|A specific tag or version"
+        [ "$choice" != stable ] || [ -n "$stable" ] || { echo "There is no stable release yet; pick 2 or 3."; continue; }
+        break
+      done
     fi
-    if [ "$version_in" = "$newest" ]; then tag=$newest; else tag=$(match_tag "$version_in"); fi
-  else
-    tag=$(match_tag "$version_in")
+    [ -n "$choice" ] || { choice=$default; [ -n "$stable" ] || say "no stable release exists yet (every release so far is a pre-release); using the latest pre-release"; }
+    case $choice in
+      stable) tag=$stable ;;
+      pre) tag=$newest ;;
+      tag)
+        ask version_in "Tag (v0.1.2-alpha) or version (0.1.2)" "" --version
+        tag=$(match_tag "$version_in")
+        ;;
+    esac
   fi
   [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$ ]] || die "unexpected release tag '$tag'"
   ver=${tag#v}
   ver=${ver%%-*}
+  say "resolved release: $tag (image tag v$ver)"
 }
 
 # Downloads and checksums
@@ -353,6 +562,7 @@ platform_for() { # platform_for shape
   case "$os $arch" in
     "Linux x86_64" | "Linux amd64") echo linux-x86_64 ;;
     "Linux aarch64" | "Linux arm64") echo linux-arm64 ;;
+    "Darwin x86_64") die "there is no pyn command build for Intel Macs yet (Apple silicon only)" ;;
     "Darwin arm64")
       [ "$1" = cli ] || die "the native server has no macOS build; use Docker, or run it on Linux"
       echo macos-arm64
@@ -387,7 +597,7 @@ install_binary() { # install_binary SRC DEST
 
 wait_health() {
   local i=0 max=${PYN_INSTALL_HEALTH_TRIES:-60}
-  until curl -fsS -o /dev/null "http://127.0.0.1:7878/healthz" 2>/dev/null; do
+  until curl -fsS -o /dev/null "http://127.0.0.1:$1/healthz" 2>/dev/null; do
     i=$((i + 1))
     [ "$i" -lt "$max" ] || return 1
     sleep "${PYN_INSTALL_POLL:-1}"
@@ -398,28 +608,85 @@ token_block() { grep -A3 "one-time setup token" | tail -n 4 || true; }
 
 # Docker
 
+choose_reuse() { # choose_reuse docker|native: asks what to do with an install that is already there
+  if [ "$1" = docker ]; then
+    menu reuse "An install already exists in $dir. What now?" refresh --reuse \
+      "use|Use the files as they are" \
+      "refresh|Refresh the Compose file from the release, keep my env" \
+      "fresh|Start fresh (the old files are backed up first, never deleted)"
+  else
+    menu reuse "An install already exists (env file $native_env). What now?" refresh --reuse \
+      "use|Use it as it is (binary, unit and env untouched)" \
+      "refresh|Replace the binary with the release, keep my env" \
+      "fresh|Start fresh (the env file is backed up first, never deleted)"
+  fi
+}
+
+# Takes the address answers from an env file that is being reused
+preload_from_env() {
+  [ -f "$1" ] || return 0
+  [ -n "$public_url" ] || public_url=$(get_env "$1" PYN_PUBLIC_URL)
+  [ "$shape" != web ] || [ -n "$api_url" ] || api_url=$(get_env "$1" PYN_API_URL)
+}
+
+docker_prepare() {
+  local dc="$dir/docker-compose.yml" have=""
+  fetch "https://raw.githubusercontent.com/$repo/$tag/deploy/$compose" "$tmp/compose.yml"
+  [ ! -f "$dc" ] || have="docker-compose.yml"
+  [ ! -f "$dir/.env" ] || have="$have .env"
+  if [ -n "$have" ]; then
+    say "$dir already holds: $have"
+    if [ -f "$dc" ] && ! cmp -s "$dc" "$tmp/compose.yml"; then
+      echo "docker-compose.yml differs from the one in $tag (diff -u, first lines):"
+      if command -v diff >/dev/null 2>&1; then diff -u "$dc" "$tmp/compose.yml" | head -n 20 || true; fi
+    fi
+    choose_reuse docker
+  else
+    reuse=""
+  fi
+  if [ -n "$env_file" ]; then preload_from_env "$env_file"
+  elif [ "$reuse" != fresh ]; then preload_from_env "$dir/.env"
+  fi
+}
+
+native_prepare() {
+  if [ -f "$root$native_env" ]; then choose_reuse native; else reuse=""; fi
+  if [ "$reuse" != fresh ]; then preload_from_env "$root$native_env"; fi
+}
+
 docker_flow() {
-  local compose envfile old="" env_path base fresh=1 bind="" file
+  local env_path="$dir/.env" dc="$dir/docker-compose.yml" envfile old new_env=1 first_run=1 bind="" base
   case $shape in
-    full) compose=docker-compose.yml envfile=.env.example ;;
-    server) compose=docker-compose.server.yml envfile=.env.server.example ;;
-    web) compose=docker-compose.web.yml envfile=.env.web.example ;;
+    full) envfile=.env.example ;;
+    server) envfile=.env.server.example ;;
+    web) envfile=.env.web.example ;;
   esac
   mkdir -p "$dir" 2>/dev/null || die "cannot create $dir; run with sudo or pass --dir"
   [ -w "$dir" ] || die "cannot write to $dir; run with sudo or pass --dir"
-  env_path="$dir/.env"
   base="https://raw.githubusercontent.com/$repo/$tag/deploy"
-  [ ! -f "$env_path" ] || fresh=0
+  [ ! -f "$env_path" ] || first_run=0
 
-  file="$tmp/compose.yml"
-  fetch "$base/$compose" "$file"
-  if [ -f "$dir/docker-compose.yml" ] && ! cmp -s "$file" "$dir/docker-compose.yml"; then
-    cp "$dir/docker-compose.yml" "$dir/docker-compose.yml.bak"
-    say "docker-compose.yml changed in $tag; the old one is saved as docker-compose.yml.bak"
+  if [ -f "$dc" ] && [ "$reuse" = use ]; then
+    say "keeping the existing docker-compose.yml"
+  else
+    if [ -f "$dc" ] && ! cmp -s "$tmp/compose.yml" "$dc"; then backup_file "$dc"; fi
+    cat "$tmp/compose.yml" >"$dc"
   fi
-  cat "$file" >"$dir/docker-compose.yml"
 
-  if [ "$fresh" -eq 1 ]; then
+  if [ -n "$env_file" ]; then
+    check_env_perms "$env_file"
+    if [ -f "$env_path" ] && ! cmp -s "$env_file" "$env_path"; then backup_file "$env_path"; fi
+    ( umask 077; cat "$env_file" >"$env_path" )
+    new_env=0
+    say "copied $env_file to $env_path"
+  elif [ -f "$env_path" ] && [ "$reuse" != fresh ]; then
+    new_env=0
+    check_env_perms "$env_path"
+  else
+    if [ -f "$env_path" ]; then
+      backup_file "$env_path"
+      say "a new .env gets new secrets; an existing database volume keeps the old password, so copy POSTGRES_PASSWORD from the backup if you keep its data"
+    fi
     if ! curl -fsSL -o "$tmp/env" "$base/$envfile" 2>/dev/null; then
       say "$envfile is not in release $tag; using the one from main"
       if ! curl -fsSL -o "$tmp/env" "https://raw.githubusercontent.com/$repo/main/deploy/$envfile" 2>/dev/null; then
@@ -428,16 +695,17 @@ docker_flow() {
       fi
     fi
     ( umask 077; cat "$tmp/env" >"$env_path" )
-  else
-    old=$(get_env "$env_path" PYN_VERSION)
   fi
   chmod 600 "$env_path"
-  set_env "$env_path" PYN_VERSION "v$ver"
+
   if [ "$shape" != web ]; then
     fill_secret "$env_path" POSTGRES_PASSWORD 24
     fill_secret "$env_path" PYN_SECRET_KEY 32
+    fill_key "$env_path" PYN_PUBLIC_URL "$public_url"
+  else
+    fill_key "$env_path" PYN_API_URL "$api_url"
   fi
-  if [ "$fresh" -eq 1 ]; then
+  if [ "$new_env" -eq 1 ]; then
     if ! is_local_url "$public_url" && [ "${public_url#https://}" = "$public_url" ]; then bind=0.0.0.0; fi
     case $shape in
       full) set_env "$env_path" PYN_PUBLIC_URL "$public_url"; [ -z "$bind" ] || set_env "$env_path" PYN_WEB_PUBLISH "$bind:8080" ;;
@@ -446,18 +714,33 @@ docker_flow() {
     esac
   fi
 
-  if [ "$fresh" -eq 0 ]; then
-    say "upgrade: keeping $env_path, PYN_VERSION ${old:-unset} -> v$ver"
+  old=$(get_env "$env_path" PYN_VERSION)
+  if [ -z "$old" ]; then
+    set_env "$env_path" PYN_VERSION "v$ver"
+    say "wrote $env_path (mode 600); PYN_VERSION v$ver"
+  elif [ "$old" = "v$ver" ]; then
+    say "keeping $env_path; PYN_VERSION is already v$ver"
+  elif [ "$reuse" = use ]; then
+    say "keeping $env_path as it is; PYN_VERSION stays $old"
+  elif confirm "Move PYN_VERSION in $env_path from $old to v$ver?" y; then
+    set_env "$env_path" PYN_VERSION "v$ver"
+    say "upgrade: keeping $env_path, PYN_VERSION $old -> v$ver"
   else
-    say "wrote $env_path (mode 600) with generated secrets; PYN_VERSION v$ver"
+    say "keeping $env_path; PYN_VERSION stays $old"
+  fi
+
+  if [ "$shape" = web ]; then
+    check_required "$env_path" PYN_VERSION PYN_API_URL
+  else
+    check_required "$env_path" PYN_VERSION POSTGRES_PASSWORD PYN_SECRET_KEY PYN_PUBLIC_URL
   fi
   say "starting the stack"
   ( cd "$dir" && docker compose pull && docker compose up --detach --wait ) ||
     die "the stack did not come up; see: cd $dir && docker compose logs"
   say "up. Files are in $dir"
   if [ "$shape" = web ]; then
-    say "add this web address to PYN_ALLOWED_ORIGINS on the server at $api_url, then restart it: $public_url"
-  elif [ "$fresh" -eq 1 ]; then
+    say "add this web address to PYN_ALLOWED_ORIGINS on the server at $(get_env "$env_path" PYN_API_URL), then restart it: $public_url"
+  elif [ "$first_run" -eq 1 ]; then
     say "one-time setup token (finish setup in the browser, or run: pyn setup <username>):"
     ( cd "$dir" && docker compose logs server 2>&1 ) | token_block
   fi
@@ -466,7 +749,7 @@ docker_flow() {
 # Native
 
 native_unit() {
-  cat <<'EOF'
+  cat <<EOF
 [Unit]
 Description=pyn server
 After=network-online.target postgresql.service
@@ -475,7 +758,7 @@ Wants=network-online.target
 [Service]
 User=pyn
 Group=pyn
-EnvironmentFile=/etc/pyn/pyn.env
+EnvironmentFile=$native_env
 ExecStart=/usr/local/bin/pyn-server
 Restart=on-failure
 RestartSec=2
@@ -517,53 +800,71 @@ create_local_database() { # prints the database URL
 }
 
 native_flow() {
-  local env_path="$etc_dir/pyn.env" old="" src fresh=1 addr
+  local env_real="$root$native_env" unit="$unit_dir/pyn.service" old="" src="" first_run=1 need_bin=1 addr port
   [ "$(id -u)" -eq 0 ] || die "the native install needs root: re-run with sudo"
-  [ ! -f "$env_path" ] || fresh=0
+  [ ! -f "$env_real" ] || first_run=0
   [ ! -f "$etc_dir/version" ] || old=$(cat "$etc_dir/version")
-
-  src=$(fetch_verified server)
+  if [ -x "$bin_dir/pyn-server" ] && [ "$reuse" = use ]; then
+    need_bin=0
+    say "using the installed pyn-server ${old:-} as it is"
+  elif [ -x "$bin_dir/pyn-server" ] && [ -n "$old" ] && [ "$old" != "$tag" ] && ! confirm "Replace pyn-server $old with $tag?" y; then
+    need_bin=0
+    tag=$old
+    say "keeping pyn-server $old"
+  fi
+  [ "$need_bin" -eq 0 ] || src=$(fetch_verified server)
 
   if ! id pyn >/dev/null 2>&1; then
     say "creating the system user pyn"
     useradd --system --user-group --home-dir /var/lib/pyn --no-create-home --shell /usr/sbin/nologin pyn
   fi
-  mkdir -p "$bin_dir" "$state_dir" "$etc_dir" "$unit_dir"
+  mkdir -p "$bin_dir" "$state_dir" "$etc_dir" "$unit_dir" "$(dirname "$env_real")"
   chmod 0755 "$etc_dir"
   chmod 0750 "$state_dir"
   chown pyn:pyn "$state_dir"
-  install_binary "$src/pyn-server" "$bin_dir/pyn-server"
+  [ "$need_bin" -eq 0 ] || install_binary "$src/pyn-server" "$bin_dir/pyn-server"
 
-  if [ "$fresh" -eq 1 ]; then
-    [ -n "$database_url" ] || database_url=$(create_local_database)
-    addr=0.0.0.0:7878
-    ! is_local_url "$public_url" || addr=127.0.0.1:7878
-    ( umask 077
-      {
-        echo "PYN_ADDR=$addr"
-        echo "PYN_DATABASE_URL=$database_url"
-        echo "PYN_SECRET_KEY=$(openssl rand -hex 32)"
-        echo "PYN_PUBLIC_URL=$public_url"
-        echo "PYN_DATA_DIR=/var/lib/pyn"
-      } >"$env_path" )
-    chmod 600 "$env_path"
-    say "wrote $env_path (mode 600) with generated secrets"
+  if [ -f "$env_real" ] && [ "$reuse" = fresh ]; then
+    backup_file "$env_real"
+    ( umask 077; : >"$env_real" )
+  fi
+  if [ -f "$env_real" ]; then
+    check_env_perms "$env_real"
+    say "keeping the existing $native_env; only missing settings are filled in"
   else
-    say "upgrade: keeping $env_path, ${old:-unknown version} -> $tag"
+    ( umask 077; : >"$env_real" )
+    chmod 600 "$env_real"
   fi
-  if [ ! -f "$unit_dir/pyn.service" ]; then
-    native_unit >"$unit_dir/pyn.service"
-    say "wrote $unit_dir/pyn.service"
+  addr=0.0.0.0:7878
+  ! is_local_url "$public_url" || addr=127.0.0.1:7878
+  fill_key "$env_real" PYN_ADDR "$addr"
+  if [ -z "$(get_env "$env_real" PYN_DATABASE_URL)" ]; then
+    [ -n "$database_url" ] || database_url=$(create_local_database)
+    set_env "$env_real" PYN_DATABASE_URL "$database_url"
   fi
-  echo "$tag" >"$etc_dir/version"
+  fill_secret "$env_real" PYN_SECRET_KEY 32
+  fill_key "$env_real" PYN_PUBLIC_URL "$public_url"
+  fill_key "$env_real" PYN_DATA_DIR /var/lib/pyn
+  check_required "$env_real" PYN_DATABASE_URL PYN_SECRET_KEY PYN_PUBLIC_URL PYN_DATA_DIR
+  if [ "$first_run" -eq 1 ]; then say "wrote $env_real (mode 600) with generated secrets"; fi
 
+  if [ ! -f "$unit" ] || ! grep -qxF "EnvironmentFile=$native_env" "$unit"; then
+    if [ -f "$unit" ]; then backup_file "$unit"; fi
+    native_unit >"$unit"
+    say "wrote $unit"
+  fi
+  [ "$need_bin" -eq 0 ] || echo "$tag" >"$etc_dir/version"
+  if [ "$need_bin" -eq 1 ] && [ -n "$old" ] && [ "$old" != "$tag" ]; then say "upgrade: $old -> $tag"; fi
+
+  port=$(get_env "$env_real" PYN_ADDR)
+  port=${port##*:}
   systemctl daemon-reload
   systemctl enable pyn
   systemctl restart pyn
-  say "waiting for http://127.0.0.1:7878/healthz"
-  wait_health || die "the server did not become healthy; see: journalctl -u pyn -n 50"
-  say "up (pyn $tag, systemd unit pyn)"
-  if [ "$fresh" -eq 1 ]; then
+  say "waiting for http://127.0.0.1:${port:-7878}/healthz"
+  wait_health "${port:-7878}" || die "the server did not become healthy; see: journalctl -u pyn -n 50"
+  say "up (pyn ${tag:-installed}, systemd unit pyn)"
+  if [ "$first_run" -eq 1 ]; then
     say "one-time setup token (finish setup with: pyn setup <username>, or in the browser if a web app is attached):"
     journalctl -u pyn --no-pager -o cat 2>&1 | token_block
     say "setup from the pyn command: PYN_SETUP_TOKEN=<token> pyn --server $public_url setup <username> --public-url $public_url"
@@ -597,9 +898,9 @@ EOF
 detect_existing() {
   local c
   if [ -z "$method" ]; then
-    if [ -f "$etc_dir/pyn.env" ]; then method_default=native; elif [ -f "${dir:-/opt/pyn}/.env" ]; then method_default=docker; fi
+    if [ -f "$etc_dir/pyn.env" ]; then method_default=native; elif [ -f "${dir:-$dir_default}/.env" ]; then method_default=docker; fi
   fi
-  c="${dir:-/opt/pyn}/docker-compose.yml"
+  c="${dir:-$dir_default}/docker-compose.yml"
   if [ -z "$shape" ] && [ -f "$c" ]; then
     if grep -q pyn-core "$c" && grep -q pyn-web "$c"; then shape_default=full
     elif grep -q pyn-core "$c"; then shape_default=server
@@ -610,7 +911,7 @@ detect_existing() {
 
 choose_database() {
   local choice=""
-  [ -z "$database_url" ] && [ ! -f "$etc_dir/pyn.env" ] || return 0
+  needs_local_db || return 0
   menu choice "PostgreSQL for the server: how should the database be set up?" local --database-url \
     "local|Create a role and database on this host, with a generated password" \
     "url|Use an existing PostgreSQL I will give the address of"
@@ -618,22 +919,47 @@ choose_database() {
 }
 
 main() {
-  local method_default=docker shape_default=full platform="" tag="" ver="" newshape=""
+  local method_default=docker shape_default=full platform="" tag="" ver="" newshape="" o ok=0 compose="" reason=""
+  local shape_opts=() env_default=""
   open_terminal
+  pick_default_dir
+  [ -z "$dir" ] || dir=$(normalize_path "$dir" "--dir")
+  [ -z "$env_file" ] || env_file=$(normalize_path "$env_file" "--env-file")
+  detect_os
+  case $channel in "" | stable | pre) ;; *) die "--channel must be stable or pre" ;; esac
+  case $reuse in "" | use | refresh | fresh) ;; *) die "--reuse must be use, refresh or fresh" ;; esac
   detect_existing
 
-  menu shape "What do you want to install?" "$shape_default" --shape \
-    "full|Server and web app" "server|Server only" \
-    "web|Web app only, for a server running elsewhere" "cli|The pyn command only"
+  if [ "$os_kind" = darwin ]; then
+    if have_tool compose; then
+      shape_opts=("full|Server and web app (Docker)" "server|Server only (Docker)" "web|Web app only (Docker), for a server running elsewhere")
+    else
+      say "Docker (docker compose) was not found: install Docker Desktop first to run a server or web app."
+    fi
+    if [ "$arch" = arm64 ]; then shape_opts+=("cli|The pyn command only"); else say "There is no pyn command build for Intel Macs yet."; fi
+    [ "${#shape_opts[@]}" -gt 0 ] || die "nothing can be installed on this Mac yet: install Docker Desktop to run a server or web app (the pyn command has no Intel build)"
+  else
+    shape_opts=("full|Server and web app" "server|Server only" "web|Web app only, for a server running elsewhere" "cli|The pyn command only")
+  fi
+  for o in "${shape_opts[@]}"; do [ "${o%%|*}" != "$shape_default" ] || ok=1; done
+  [ "$ok" -eq 1 ] || shape_default=${shape_opts[0]%%|*}
+
+  menu shape "What do you want to install?" "$shape_default" --shape "${shape_opts[@]}"
   case $shape in full | server | web | cli) ;; *) die "--shape must be full, server, web or cli" ;; esac
   if [ "$shape" = cli ]; then
     method=native
+  elif [ "$os_kind" = darwin ]; then
+    [ -n "$method" ] || method=docker
+  elif [ -z "$method" ] && ! command -v systemctl >/dev/null 2>&1; then
+    say "native needs systemd, which this host does not have; using Docker"
+    method=docker
   else
     menu method "How do you want to run it?" "$method_default" --method \
       "docker|Docker (release images and Compose files)" \
       "native|Native: the release pyn-server binary as a systemd service, with PostgreSQL"
   fi
   case $method in docker | native) ;; *) die "--method must be docker or native" ;; esac
+  darwin_guard
 
   if [ "$method" = native ] && { [ "$shape" = full ] || [ "$shape" = web ]; }; then
     explain_web_native
@@ -655,13 +981,47 @@ main() {
     die "--database-url must look like postgres://user:password@host:5432/database"
   fi
   if [ "$method" = native ]; then platform=$(platform_for "$shape"); fi
-  if [ "$method" = native ] && [ "$shape" = server ]; then choose_database; fi
-  [ -n "$dir" ] || dir=/opt/pyn
+  case $shape in
+    full | server | web)
+      case $shape in full) compose=docker-compose.yml ;; server) compose=docker-compose.server.yml ;; web) compose=docker-compose.web.yml ;; esac
+      if [ "$method" = docker ]; then
+        if [ -z "$dir" ] && [ -n "$dir_warn" ]; then
+          say "warning: $dir_warn; defaulting to $dir_default instead"
+        fi
+        ask dir "Where should the deployment live (Compose and env files)?" "$dir_default" --dir
+        dir=$(normalize_path "$dir" "the deployment folder")
+        reason=$(guard_reason "$dir")
+        if [ -n "$reason" ]; then
+          say "warning: $reason; using $dir/pyn instead (name another folder to override)"
+          dir=${dir%/}/pyn
+        fi
+        env_default=""
+        if [ -f "$dir/.env" ]; then env_default=$dir/.env; elif [ -f "$start_dir/.env" ]; then env_default=$start_dir/.env; fi
+        ask_optional env_file "Existing env file to reuse" --env-file "$env_default"
+        [ -z "$env_file" ] || env_file=$(normalize_path "$env_file" "the env file")
+        [ -z "$env_file" ] || [ -f "$env_file" ] || die "--env-file $env_file does not exist"
+        if [ -n "$env_file" ] && [ "$env_file" -ef "$dir/.env" ]; then env_file=""; fi
+      else
+        if [ -n "$env_file" ]; then native_env=$env_file; else
+          env_default=/etc/pyn/pyn.env
+          if [ -f "$start_dir/.env" ] && { [ -n "$(get_env "$start_dir/.env" PYN_DATABASE_URL)" ] || [ -n "$(get_env "$start_dir/.env" PYN_SECRET_KEY)" ]; }; then
+            env_default=$start_dir/.env
+          fi
+          ask native_env "Env file for the service (an existing one is reused, else it is created there)" "$env_default" --env-file
+        fi
+        native_env=$(normalize_path "$native_env" "the env file")
+        [[ $native_env =~ ^/[^[:space:]]+$ ]] || die "the env file path must not contain spaces (systemd reads it as EnvironmentFile): $native_env"
+        native_prepare
+        choose_database
+      fi
+      ;;
+  esac
 
   echo
   check_tools
   echo
   resolve_version
+  if [ "$method" = docker ] && [ "$shape" != cli ]; then docker_prepare; fi
 
   case $shape in
     web)
@@ -689,7 +1049,11 @@ main() {
   esac
 
   echo
-  say "plan: $shape via $method, release $tag${ver:+ (image v$ver)}"
+  say "plan: $shape via $method, release $tag (image v$ver)${reuse:+, existing install: $reuse}"
+  case $shape in
+    cli) ;;
+    *) if [ "$method" = docker ]; then say "deployment folder: $dir"; [ -z "$env_file" ] || say "env file to reuse: $env_file"; else say "env file: $native_env"; fi ;;
+  esac
   confirm "Proceed?" y || die "stopped; nothing was changed"
 
   case $shape in
