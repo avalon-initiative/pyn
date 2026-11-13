@@ -1745,6 +1745,134 @@
         }
       }
     },
+    "/v1/me/avatar": {
+      "put": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "put_avatar",
+        "requestBody": {
+          "description": "the image bytes (png, jpeg or webp, at most 1 MiB); the type is judged from the bytes, not the `Content-Type` header",
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the profile with the new `avatar_url`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: an empty body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "object_too_large: over 1 MiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "unsupported_image: not a png, jpeg or webp",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: too many avatar changes in an hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "delete_avatar",
+        "responses": {
+          "200": {
+            "description": "the profile without an avatar; removing none is not an error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/me/identities": {
       "get": {
         "tags": [
@@ -2070,6 +2198,65 @@
           },
           "429": {
             "description": "too_many_attempts; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/profile": {
+      "put": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "update_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the stored profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a field is too long, has control characters, or a link is not an http(s) URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "a token that is not full-scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -8016,6 +8203,111 @@
           }
         }
       }
+    },
+    "/v1/users/{user}": {
+      "get": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "get_profile",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "readable signed out; never includes an email address, and lists only the repositories and organizations the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicProfile"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "credentials were sent but are not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found: no such user, or an organization, or an account that is disabled or not yet approved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{user}/avatar": {
+      "get": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "get_avatar",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "v",
+            "in": "query",
+            "description": "the version from `avatar_url`; when it is the current one the image is cached for a year",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the image, as `image/png`, `image/jpeg` or `image/webp` according to its bytes; readable signed out, with an `ETag` and `Cache-Control`",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "`If-None-Match` matches the current image"
+          },
+          "404": {
+            "description": "user_not_found, or avatar_not_found when the user has none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -8032,9 +8324,17 @@
             "type": "boolean",
             "description": "Runs the server: may approve and disable accounts under `/v1/admin`."
           },
+          "has_password": {
+            "type": "boolean",
+            "description": "Whether the account has a password. False for an account created through external sign-in until it sets\none, in which case `PUT /v1/me/password` takes no current password."
+          },
           "id": {
             "type": "string",
             "description": "Stable, never reused: the name can be recycled after a delete, the id cannot."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/Profile",
+            "description": "The account's profile; the email address is never part of it."
           },
           "user": {
             "type": "string"
@@ -10779,6 +11079,103 @@
           }
         }
       },
+      "Profile": {
+        "type": "object",
+        "description": "The optional, user-edited part of an account: what others see on its profile page.",
+        "properties": {
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the avatar image is served, with a `v` parameter that changes when the image does; absent when the\naccount has none."
+          },
+          "bio": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 160 characters; may span lines."
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 64 characters."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 64 characters, trimmed, no control characters."
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to 5 `http` or `https` URLs."
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 64 characters."
+          }
+        }
+      },
+      "PublicProfile": {
+        "type": "object",
+        "description": "An account's public profile as the caller may see it: no email address, and only the repositories and\norganizations the caller may know about.",
+        "required": [
+          "id",
+          "user",
+          "created_at",
+          "profile",
+          "repositories",
+          "repository_count",
+          "organizations"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable, never reused."
+          },
+          "organizations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrgInfo"
+            },
+            "description": "The organizations the user belongs to that the caller belongs to as well, with the caller's role; always\nempty when signed out."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/Profile"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoInfo"
+            },
+            "description": "The repositories the user owns that the caller may see: public ones, and private ones where the caller has\na role. `role` is the caller's."
+          },
+          "repository_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many repositories are listed.",
+            "minimum": 0
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
       "PushObject": {
         "type": "object",
         "description": "One git object of a push: its id and its body (the bytes after git's `<kind> <length>` header), base64.",
@@ -12343,6 +12740,42 @@
           "exclusive",
           "mixed"
         ]
+      },
+      "UpdateProfileRequest": {
+        "type": "object",
+        "description": "The new profile text: every field is replaced, and one left out or blank is cleared.",
+        "properties": {
+          "bio": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "UpdateRepoRequest": {
         "type": "object",

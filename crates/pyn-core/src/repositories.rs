@@ -22,6 +22,8 @@ use crate::service::{DEFAULT_UNREFERENCED_UPLOAD_BYTES, LockLimit, RepoService, 
 use crate::store::MetadataStore;
 use crate::types::{Lock, UserId};
 
+mod visible;
+
 fn limit_detail(settings: &RepoSettings) -> String {
     settings
         .max_locks

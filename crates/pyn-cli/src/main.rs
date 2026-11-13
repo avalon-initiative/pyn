@@ -48,6 +48,7 @@ mod pathspec;
 mod policy;
 mod policy_lint;
 mod probe;
+mod profile;
 mod pyn_server;
 mod quiet;
 mod rename;
@@ -342,6 +343,9 @@ enum Command {
     External(Vec<OsString>),
     /// Show who you are signed in as and, in a repository, what you may do there.
     Whoami,
+    /// Show profiles, and edit your own display name, bio, links and avatar.
+    #[command(subcommand)]
+    Profile(profile::ProfileCommand),
     /// Link SSH public keys to your account.
     #[command(subcommand)]
     Key(KeyCommand),
@@ -1517,6 +1521,7 @@ fn runs_anywhere(command: &Command) -> bool {
             | Command::Register { .. }
             | Command::Password { .. }
             | Command::Key(_)
+            | Command::Profile(_)
             | Command::Token(_)
             | Command::User(_)
             | Command::Org(_)
@@ -2053,7 +2058,10 @@ fn run(cli: Cli) -> Result<()> {
                 println!("{}\t{}", me.user, me.permissions.join(","));
             } else {
                 let me: api::Account = api.send(api.get("/v1/me"))?.json()?;
-                println!("{}", me.user);
+                match me.profile.display_name {
+                    Some(name) => println!("{} ({})", me.user, sanitize::text(&name)),
+                    None => println!("{}", me.user),
+                }
             }
         }
         Command::Repo(cmd) => repo_command(backend.pyn_server("repo")?, cmd)?,
@@ -2943,6 +2951,7 @@ fn run(cli: Cli) -> Result<()> {
                 eprintln!("more: --before {next}");
             }
         }
+        Command::Profile(cmd) => profile::run(backend.pyn_server("profile")?, cmd)?,
         Command::Token(cmd) => token_command(backend.pyn_server("token")?, cmd)?,
         Command::Member(MemberCommand::List) => {
             let api = backend.pyn_server("member")?;

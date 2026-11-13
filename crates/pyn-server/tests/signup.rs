@@ -550,7 +550,9 @@ async fn disabling_an_account_ends_its_access_and_enabling_restores_it() {
         api::Account {
             id: account.id.clone(),
             user: "alice".into(),
-            admin: false
+            admin: false,
+            has_password: true,
+            profile: api::Profile::default(),
         }
     );
 
