@@ -5026,3 +5026,22 @@ async fn capabilities_say_the_server_takes_pushed_commits() {
     assert_eq!(r.status(), StatusCode::OK);
     assert!(body_json::<api::ServerCapabilities>(r).await.local_commits);
 }
+
+#[tokio::test]
+async fn capabilities_report_the_server_version_and_revision() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let r = app
+        .oneshot(
+            Request::get("/v1/capabilities")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let c = body_json::<api::ServerCapabilities>(r).await;
+    assert_eq!(c.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        c.revision.as_deref(),
+        option_env!("PYN_REVISION").filter(|r| !r.is_empty())
+    );
+}

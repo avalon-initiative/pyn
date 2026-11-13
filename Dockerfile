@@ -4,9 +4,11 @@ ARG RUST_IMAGE=rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7
 ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 
 FROM ${RUST_IMAGE} AS build
+ARG REVISION=
 WORKDIR /src
 COPY . .
 # --locked and a fixed path prefix keep the binaries independent of the build host
+ENV PYN_REVISION=${REVISION}
 ENV RUSTFLAGS="--remap-path-prefix=/src=/pyn --remap-path-prefix=/usr/local/cargo=/cargo"
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \

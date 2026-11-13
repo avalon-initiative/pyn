@@ -1147,6 +1147,13 @@ pub struct AuditPage {
 pub struct ServerCapabilities {
     /// The server accepts pushed commits and serves fetches (`/push`, `/fetch`), so a client may keep commits locally.
     pub local_commits: bool,
+    /// The server's release version; empty when an older server did not report one.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub version: String,
+    /// The commit the server binary was built from; null when the build did not record one.
+    #[serde(default)]
+    pub revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1606,4 +1613,29 @@ pub struct VerifyReport {
     /// check in one request.
     #[serde(default)]
     pub next_cursor: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capabilities_revision_is_null_without_one() {
+        let c = ServerCapabilities {
+            local_commits: true,
+            version: "0.1.2".into(),
+            revision: None,
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["version"], "0.1.2");
+        assert!(v["revision"].is_null());
+    }
+
+    #[test]
+    fn capabilities_from_an_older_server_still_parse() {
+        let c: ServerCapabilities = serde_json::from_str(r#"{"local_commits":true}"#).unwrap();
+        assert!(c.local_commits);
+        assert_eq!(c.version, "");
+        assert_eq!(c.revision, None);
+    }
 }
