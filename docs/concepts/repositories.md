@@ -29,6 +29,22 @@ see [events](events.md#stable-ids) for the format and for how integrations shoul
 `400 reserved_name`. (A repository name cannot be `-` either, since it must start with a letter or digit, which is what
 lets the web app keep `/:owner/-/...` for organization pages.)
 
+### Renamed owners and address redirects
+
+A user can [rename their account](access.md#changing-your-username) (decisions #983 and #986). The account's repositories move to the
+new owner name and each old `owner/name` address keeps resolving to its repository:
+
+- A **redirect** is recorded per repository, keyed by the old owner name and the repository name (matched ignoring case). It points at
+  the repository itself, so it also follows later renames of the account.
+- A lookup of `owner/name` looks for a **live** repository first and falls back to the redirect only when there is none. A redirect
+  entry is removed when a live repository with that name appears under the old owner (created, or another repository renamed to
+  it), and when its repository is deleted. The old name is not reserved, so someone else can take it and create repositories
+  there; the redirects of the repositories they have not recreated keep working.
+- API routes answer through a redirect transparently (`/v1/repos/{old-owner}/{name}/...` serves the renamed repository, with the
+  same visibility rules, so a private repository stays hidden) and add `X-Pyn-Moved-To: new-owner/name` to a successful response so a client can
+  update its remote. The CLI prints a note to update the remote when it sees the header.
+- Only repository addresses redirect: not the old profile address, not `@mentions`, and organization names cannot be renamed.
+
 ## Organizations
 
 An organization is a namespace that owns repositories, so a team can own a repository rather than one person's account.

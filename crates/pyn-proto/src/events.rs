@@ -61,6 +61,16 @@ pub struct AccountEnabledData {
     pub actor: String,
 }
 
+/// `account.renamed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AccountRenamedData {
+    pub old_name: String,
+    pub new_name: String,
+    pub user_id: String,
+    /// Who renamed it: the account itself.
+    pub actor: String,
+}
+
 /// `organization.created`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OrganizationCreatedData {
@@ -231,6 +241,7 @@ pub enum EventData {
     AccountApproved(AccountApprovedData),
     AccountDisabled(AccountDisabledData),
     AccountEnabled(AccountEnabledData),
+    AccountRenamed(AccountRenamedData),
     OrganizationCreated(OrganizationCreatedData),
     OrganizationDeleted(OrganizationDeletedData),
     RepositoryCreated(RepositoryCreatedData),
@@ -253,11 +264,12 @@ pub enum EventData {
 }
 
 /// Every event type this build knows.
-pub const KNOWN_EVENT_TYPES: [&str; 18] = [
+pub const KNOWN_EVENT_TYPES: [&str; 19] = [
     "account.created",
     "account.approved",
     "account.disabled",
     "account.enabled",
+    "account.renamed",
     "organization.created",
     "organization.deleted",
     "repository.created",
@@ -282,6 +294,7 @@ impl EventData {
             Self::AccountApproved(_) => "account.approved",
             Self::AccountDisabled(_) => "account.disabled",
             Self::AccountEnabled(_) => "account.enabled",
+            Self::AccountRenamed(_) => "account.renamed",
             Self::OrganizationCreated(_) => "organization.created",
             Self::OrganizationDeleted(_) => "organization.deleted",
             Self::RepositoryCreated(_) => "repository.created",
@@ -306,6 +319,7 @@ impl EventData {
             Self::AccountApproved(d) => serde_json::to_value(d),
             Self::AccountDisabled(d) => serde_json::to_value(d),
             Self::AccountEnabled(d) => serde_json::to_value(d),
+            Self::AccountRenamed(d) => serde_json::to_value(d),
             Self::OrganizationCreated(d) => serde_json::to_value(d),
             Self::OrganizationDeleted(d) => serde_json::to_value(d),
             Self::RepositoryCreated(d) => serde_json::to_value(d),
@@ -330,6 +344,7 @@ impl EventData {
             "account.approved" => Self::AccountApproved(serde_json::from_value(data)?),
             "account.disabled" => Self::AccountDisabled(serde_json::from_value(data)?),
             "account.enabled" => Self::AccountEnabled(serde_json::from_value(data)?),
+            "account.renamed" => Self::AccountRenamed(serde_json::from_value(data)?),
             "organization.created" => Self::OrganizationCreated(serde_json::from_value(data)?),
             "organization.deleted" => Self::OrganizationDeleted(serde_json::from_value(data)?),
             "repository.created" => Self::RepositoryCreated(serde_json::from_value(data)?),

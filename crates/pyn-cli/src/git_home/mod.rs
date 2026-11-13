@@ -423,6 +423,7 @@ impl GitHome {
             parents: c.parents.iter().map(ObjectId::to_hex).collect(),
             tree: c.tree.to_hex(),
             author: person(&c.author),
+            author_current: None,
             committer: person(&c.committer),
             created_at: DateTime::<Utc>::from_timestamp(c.author.time, 0).unwrap_or_default(),
             authored_at: DateTime::<Utc>::from_timestamp(c.author.time, 0),

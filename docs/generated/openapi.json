@@ -1745,6 +1745,213 @@
         }
       }
     },
+    "/v1/me/emails": {
+      "get": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "list_emails",
+        "responses": {
+          "200": {
+            "description": "the caller's addresses, the primary first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountEmail"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "add_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "added unverified; a link was mailed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountEmail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "not a valid address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "email_unavailable (held by or pending for another account, never says whose), or email_refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/emails/{address}": {
+      "delete": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "delete_email",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "description": "an address of the caller",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "email_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "email_refused: the last verified address, on a server that requires one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/emails/{address}/primary": {
+      "put": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "set_primary_email",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "description": "a verified address of the caller",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "email_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "email_refused: the address is not verified",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/emails/{address}/resend": {
+      "post": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "resend_email",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "description": "an unverified address of the caller",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {},
+          "404": {
+            "description": "email_not_found (not held, or already verified)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/me/identities": {
       "get": {
         "tags": [
@@ -2070,6 +2277,86 @@
           },
           "429": {
             "description": "too_many_attempts; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/username": {
+      "put": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "rename_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "renamed; the old name is free for anyone, and each repository's old address redirects until a live repository takes it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Renamed"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request or reserved_name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "the password is wrong",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "owner_frozen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "user_exists: a user or organization holds the name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts",
             "content": {
               "application/json": {
                 "schema": {
@@ -8112,6 +8399,41 @@
           }
         }
       },
+      "AccountEmail": {
+        "type": "object",
+        "description": "One address an account holds. Only the account's owner ever sees these.",
+        "required": [
+          "address",
+          "verified",
+          "primary",
+          "added_at"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "address": {
+            "type": "string",
+            "description": "Lowercase."
+          },
+          "primary": {
+            "type": "boolean",
+            "description": "The address the server uses for the account; always verified."
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "False until the link mailed to the address is used; a pending address cannot be the primary."
+          },
+          "verified_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
       "AccountEnabledData": {
         "type": "object",
         "description": "`account.enabled`.",
@@ -8185,6 +8507,31 @@
           }
         }
       },
+      "AccountRenamedData": {
+        "type": "object",
+        "description": "`account.renamed`.",
+        "required": [
+          "old_name",
+          "new_name",
+          "user_id",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string",
+            "description": "Who renamed it: the account itself."
+          },
+          "new_name": {
+            "type": "string"
+          },
+          "old_name": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
+      },
       "AccountStatus": {
         "type": "string",
         "description": "An account's state.",
@@ -8225,6 +8572,17 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "AddEmailRequest": {
+        "type": "object",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string"
           }
         }
       },
@@ -8644,6 +9002,13 @@
         "properties": {
           "author": {
             "$ref": "#/components/schemas/Person"
+          },
+          "author_current": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The author's account name now, when it was renamed after the commit (decision #986); `author.name` stays as\nwritten because the commit id covers it."
           },
           "authored_at": {
             "type": [
@@ -10975,6 +11340,50 @@
           }
         }
       },
+      "RenameRequest": {
+        "type": "object",
+        "description": "A username change; the old name is free for anyone to take afterwards.",
+        "required": [
+          "username"
+        ],
+        "properties": {
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account's current password; omitted only by an account with none, from a web session."
+          },
+          "username": {
+            "type": "string",
+            "description": "The new name: 2 to 39 lowercase letters, digits, `-` or `_`."
+          }
+        }
+      },
+      "Renamed": {
+        "type": "object",
+        "description": "The answer to a username change.",
+        "required": [
+          "old_name",
+          "new_name",
+          "repositories"
+        ],
+        "properties": {
+          "new_name": {
+            "type": "string"
+          },
+          "old_name": {
+            "type": "string"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The account's repositories; their old addresses now redirect (`X-Pyn-Moved-To`)."
+          }
+        }
+      },
       "RepoInfo": {
         "type": "object",
         "required": [
@@ -11517,6 +11926,13 @@
         "properties": {
           "author": {
             "type": "string"
+          },
+          "author_current": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The author's name now, when the account was renamed after writing this revision (decision #986). `author`\nstays as written because the hash covers it; show this one."
           },
           "author_identity": {
             "oneOf": [

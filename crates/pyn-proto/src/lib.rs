@@ -69,6 +69,10 @@ pub struct Revision {
     #[serde(default)]
     pub legacy_content: Option<String>,
     pub author: String,
+    /// The author's name now, when the account was renamed after writing this revision (decision #986). `author`
+    /// stays as written because the hash covers it; show this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_current: Option<String>,
     /// The structured author the v2 hash covers; absent for a v1 revision, whose hash predates it.
     #[serde(default)]
     pub author_identity: Option<Person>,
@@ -134,6 +138,10 @@ pub struct Commit {
     /// The id of the root git tree of the repository as of this commit.
     pub tree: String,
     pub author: Person,
+    /// The author's account name now, when it was renamed after the commit (decision #986); `author.name` stays as
+    /// written because the commit id covers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_current: Option<String>,
     pub committer: Person,
     /// The committer time, in whole seconds.
     pub created_at: DateTime<Utc>,
@@ -1268,6 +1276,42 @@ pub struct ChangePasswordRequest {
     pub new: String,
 }
 
+/// One address an account holds. Only the account's owner ever sees these.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AccountEmail {
+    /// Lowercase.
+    pub address: String,
+    /// False until the link mailed to the address is used; a pending address cannot be the primary.
+    pub verified: bool,
+    pub verified_at: Option<DateTime<Utc>>,
+    /// The address the server uses for the account; always verified.
+    pub primary: bool,
+    pub added_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AddEmailRequest {
+    pub address: String,
+}
+
+/// A username change; the old name is free for anyone to take afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RenameRequest {
+    /// The new name: 2 to 39 lowercase letters, digits, `-` or `_`.
+    pub username: String,
+    /// The account's current password; omitted only by an account with none, from a web session.
+    pub password: Option<String>,
+}
+
+/// The answer to a username change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Renamed {
+    pub old_name: String,
+    pub new_name: String,
+    /// The account's repositories; their old addresses now redirect (`X-Pyn-Moved-To`).
+    pub repositories: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AddUserRequest {
     pub username: String,
@@ -1332,6 +1376,10 @@ pub struct ErrorBody {
 pub const REVISION_HEADER: &str = "x-pyn-revision";
 /// Carries the content's git blob id on `GET .../content`, so a client can verify what it downloaded.
 pub const CONTENT_HASH_HEADER: &str = "x-pyn-content";
+
+/// Set on a successful response for a repository address that only a rename keeps alive; its value is the
+/// repository's current `owner/name`, so a client can update its remote.
+pub const MOVED_TO_HEADER: &str = "x-pyn-moved-to";
 
 /// Dev-only identity header.
 pub const DEV_USER_HEADER: &str = "x-pyn-user";

@@ -587,6 +587,25 @@ impl MetadataStore for CountingStore {
         self.inner.find_repo(owner, name).await
     }
 
+    async fn find_repo_redirect(
+        &self,
+        owner: &UserId,
+        name: &str,
+    ) -> crate::Result<Option<RepoRecord>> {
+        self.count();
+        self.inner.find_repo_redirect(owner, name).await
+    }
+
+    async fn rename_owner(
+        &self,
+        old: &UserId,
+        new: &UserId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> crate::Result<Vec<RepoRecord>> {
+        self.count();
+        self.inner.rename_owner(old, new, now).await
+    }
+
     async fn get_repo(&self, id: &RepoId) -> crate::Result<Option<RepoRecord>> {
         self.count();
         self.inner.get_repo(id).await

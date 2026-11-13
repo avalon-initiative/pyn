@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod access_service;
+pub mod account_self;
 pub mod audit;
 pub mod auth;
 pub mod branch;
@@ -54,6 +55,9 @@ pub use access_service::{
 pub use access_service::{
     AdminRecovery, CreateWebhook, DeliveryPage, HOST_RECOVERY_ACTOR, IssuedSecret, WebhookDetail,
     WebhookSecretInfo, WebhookSettings,
+};
+pub use account_self::{
+    AccountEmail, EmailAdd, EmailRemove, NameSpan, PrimaryChange, RenameOutcome,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;

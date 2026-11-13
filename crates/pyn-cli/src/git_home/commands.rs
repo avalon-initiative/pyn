@@ -352,6 +352,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         | Command::Logout
         | Command::Register { .. }
         | Command::Password { .. }
+        | Command::Account(_)
         | Command::Key(_)
         | Command::Invite(_)
         | Command::User(_)

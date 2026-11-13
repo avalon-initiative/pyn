@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use pyn_proto as api;
 
+mod account;
 mod address;
 mod admin;
 mod backend;
@@ -120,6 +121,9 @@ enum Command {
         #[arg(long)]
         password_stdin: bool,
     },
+    /// Manage your own account: email addresses and username.
+    #[command(subcommand)]
+    Account(account::AccountCommand),
     /// Change your own password.
     Password {
         /// Read the current password, then the new one, from standard input.
@@ -1516,6 +1520,7 @@ fn runs_anywhere(command: &Command) -> bool {
             | Command::Logout
             | Command::Register { .. }
             | Command::Password { .. }
+            | Command::Account(_)
             | Command::Key(_)
             | Command::Token(_)
             | Command::User(_)
@@ -1944,6 +1949,7 @@ fn run(cli: Cli) -> Result<()> {
             println!("password changed");
             report_ended_sign_in(api)?;
         }
+        Command::Account(cmd) => account::run(backend.pyn_server("account")?, cmd)?,
         Command::Key(KeyCommand::Add { file, title }) => {
             let api = backend.pyn_server("key")?;
             let file = file.map_or_else(default_public_key, Ok)?;

@@ -35,6 +35,7 @@ mod content_ids;
 mod counts;
 mod hashing;
 mod history_migration;
+mod self_service;
 mod webhook;
 
 /// Which clock judges lease expiry and rate-limit windows.
@@ -2482,6 +2483,14 @@ impl MetadataStore for PgMetadataStore {
         .await;
         match inserted {
             Ok(_) => {
+                sqlx::query(
+                    "DELETE FROM repo_redirects WHERE owner = $1 AND name_lower = lower($2)",
+                )
+                .bind(repo.owner.as_str())
+                .bind(&repo.name)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
                 ensure_default_branch(&mut tx, &repo.id, &repo.owner, repo.created_at).await?;
                 self.queue_events(&mut tx, events).await?;
                 tx.commit().await.map_err(db)?;
@@ -2503,6 +2512,37 @@ impl MetadataStore for PgMetadataStore {
         .await
         .map_err(db)?;
         row.as_ref().map(repo_from).transpose()
+    }
+
+    async fn find_repo_redirect(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
+        let row = sqlx::query(
+            "SELECT r.id, r.owner, r.name, r.visibility, r.lease_hours, r.max_locks, r.max_storage_bytes, r.initial_policy, r.created_at
+               FROM repo_redirects d JOIN repositories r ON r.id = d.repo_id
+              WHERE d.owner = $1 AND d.name_lower = lower($2)",
+        )
+        .bind(owner.as_str())
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(repo_from).transpose()
+    }
+
+    async fn rename_owner(
+        &self,
+        old: &UserId,
+        new: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<RepoRecord>> {
+        let ids = self.rename_owner_rows(old, new, now).await?;
+        let mut moved = Vec::new();
+        for id in ids {
+            if let Some(r) = self.get_repo(&RepoId::new(id)).await? {
+                moved.push(r);
+            }
+        }
+        moved.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(moved)
     }
 
     async fn get_repo(&self, id: &RepoId) -> Result<Option<RepoRecord>> {
@@ -2579,9 +2619,18 @@ impl MetadataStore for PgMetadataStore {
         .await;
         match updated {
             Ok(Some(row)) => {
+                let moved = repo_from(&row)?;
+                sqlx::query(
+                    "DELETE FROM repo_redirects WHERE owner = $1 AND name_lower = lower($2)",
+                )
+                .bind(moved.owner.as_str())
+                .bind(&moved.name)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
                 self.queue_events(&mut tx, events).await?;
                 tx.commit().await.map_err(db)?;
-                repo_from(&row)
+                Ok(moved)
             }
             Ok(None) => Err(PynError::RepoNotFound(id.to_string())),
             Err(e) if is_unique_violation(&e) => Err(PynError::RepoExists(format!(

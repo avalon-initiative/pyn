@@ -140,6 +140,12 @@ pub enum PynError {
     InvalidVerification(String),
     #[error("no account {0}")]
     UserNotFound(String),
+    #[error("that email address cannot be added")]
+    EmailUnavailable,
+    #[error("that address is not on this account")]
+    EmailNotFound,
+    #[error("{0}")]
+    EmailRefused(String),
     #[error("only a server administrator can do that")]
     ServerAdminRequired,
     #[error("the server must keep at least one active administrator")]
@@ -329,6 +335,9 @@ impl PynError {
             Self::UserNotFound(_) => "user_not_found",
             Self::ServerAdminRequired => "server_admin_required",
             Self::LastServerAdmin => "last_server_admin",
+            Self::EmailUnavailable => "email_unavailable",
+            Self::EmailNotFound => "email_not_found",
+            Self::EmailRefused(_) => "email_refused",
             Self::ServiceScopeRequired(_) => "service_scope_required",
             Self::ServiceCredentialNotAllowed => "service_credential_not_allowed",
             Self::ServiceCredentialNotFound(_) => "service_credential_not_found",
