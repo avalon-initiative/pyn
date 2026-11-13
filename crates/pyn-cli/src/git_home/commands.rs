@@ -354,6 +354,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         | Command::Password { .. }
         | Command::Account(_)
         | Command::Key(_)
+        | Command::Profile(_)
         | Command::Invite(_)
         | Command::User(_)
         | Command::Whoami

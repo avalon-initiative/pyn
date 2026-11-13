@@ -149,7 +149,7 @@ A cookie write with neither header, or with `Origin: null`, is refused too. A si
 because browsers always send one on a cross-site POST and a header-less sign-in is a script such as the CLI, which holds
 no cookie to abuse. Requests authenticated by a bearer token or the development header are not checked, and `GET`
 requests never are. Origins compare by scheme, host and port, ignoring case and a default port.
-The account pages (SSH keys, personal access tokens, password) are the same endpoints used with a session.
+The account pages (SSH keys, personal access tokens, password, [profile](profiles.md)) are the same endpoints used with a session.
 
 Failed sign-ins are throttled twice: five wrong passwords for a user name (which need not exist) lock that name out for
 15 minutes, and 30 failures from one client address lock that address out for the same time, whatever names it tries.

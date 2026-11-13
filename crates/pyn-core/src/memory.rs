@@ -30,6 +30,7 @@ use crate::limits::{
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
 use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
+use crate::profile::{Avatar, Profile, ProfileFields};
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate, Visibility};
 use crate::repo_policy::{
@@ -1898,6 +1899,7 @@ struct AccessState {
     accounts: BTreeMap<UserId, AccountRecord>,
     verifications: HashMap<String, VerificationRecord>,
     passwords: HashMap<UserId, String>,
+    profiles: HashMap<UserId, Profile>,
     invites: HashMap<InviteId, InviteRecord>,
     ssh_keys: Vec<SshKeyRecord>,
     roles: HashMap<(RepoId, UserId), Role>,
@@ -1975,6 +1977,33 @@ impl AccessStore for MemoryAccessStore {
             .accounts
             .entry(user.clone())
             .or_insert_with(|| plain_account(user, now));
+        Ok(())
+    }
+
+    async fn profile(&self, user: &UserId) -> Result<Profile> {
+        let st = self.state.lock().unwrap();
+        Ok(st.profiles.get(user).cloned().unwrap_or_default())
+    }
+
+    async fn set_profile(
+        &self,
+        user: &UserId,
+        fields: &ProfileFields,
+        _now: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.profiles.entry(user.clone()).or_default().fields = fields.clone();
+        Ok(())
+    }
+
+    async fn set_avatar(
+        &self,
+        user: &UserId,
+        avatar: Option<&Avatar>,
+        _now: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.profiles.entry(user.clone()).or_default().avatar = avatar.cloned();
         Ok(())
     }
 

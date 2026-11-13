@@ -5,15 +5,15 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
     AccessStore, AccountDisable, AccountEmail, AccountId, AccountKind, AccountRecord,
-    AccountStatus, AdminRevoke, CreationEffect, CreationRule, CreationScope, CreationSubject,
-    EmailAdd, EmailRemove, EventDraft, ExternalCreate, ExternalIdentity, IdentityUnlink,
-    InvitationAccept, InvitationCreate, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent,
-    MemberCreation, NewAccount, NewExternalAccount, OidcFlow, OrgDeleteMark, OrgInvitation,
-    OrgMemberChange, OrgRole, Permission, PrimaryChange, PynError, RateLimitStore, RateState,
-    RegistrationMode, RenameOutcome, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
-    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
-    SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord, UserId,
-    VerificationRecord,
+    AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule, CreationScope,
+    CreationSubject, EmailAdd, EmailRemove, EventDraft, ExternalCreate, ExternalIdentity,
+    IdentityUnlink, InvitationAccept, InvitationCreate, InviteId, InviteRecord, Limits,
+    LimitsChange, LimitsEvent, MemberCreation, NewAccount, NewExternalAccount, OidcFlow,
+    OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgRole, Permission, PrimaryChange, Profile,
+    ProfileFields, PynError, RateLimitStore, RateState, RegistrationMode, RenameOutcome, RepoId,
+    RepoPolicy, Result, Role, RoleDefinitions, ServerSettings, ServiceCredentialRecord,
+    ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind, TeamId, TeamRecord,
+    TokenId, TokenRecord, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -694,6 +694,28 @@ impl AccessStore for PgMetadataStore {
             .await
             .map_err(db)?;
         Ok(())
+    }
+
+    async fn profile(&self, user: &UserId) -> Result<Profile> {
+        self.profile_row(user).await
+    }
+
+    async fn set_profile(
+        &self,
+        user: &UserId,
+        fields: &ProfileFields,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.put_profile_fields(user, fields, now).await
+    }
+
+    async fn set_avatar(
+        &self,
+        user: &UserId,
+        avatar: Option<&Avatar>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.put_avatar(user, avatar, now).await
     }
 
     async fn password_hash(&self, user: &UserId) -> Result<Option<String>> {

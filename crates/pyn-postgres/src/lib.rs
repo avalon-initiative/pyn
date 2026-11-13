@@ -35,6 +35,7 @@ mod content_ids;
 mod counts;
 mod hashing;
 mod history_migration;
+mod profile;
 mod self_service;
 mod webhook;
 

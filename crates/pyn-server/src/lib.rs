@@ -36,6 +36,7 @@ mod oidc_api;
 mod org_api;
 pub mod origin;
 pub mod passwords;
+mod profile_api;
 mod push_api;
 mod repo_api;
 mod repo_policy_api;
@@ -106,6 +107,11 @@ struct RepoAddress {
         access_api::list_keys,
         access_api::delete_key,
         access_api::me,
+        profile_api::get_profile,
+        profile_api::update_profile,
+        profile_api::put_avatar,
+        profile_api::delete_avatar,
+        profile_api::get_avatar,
         repo_api::my_locks,
         admin_api::list_accounts,
         admin_api::approve,
@@ -311,6 +317,9 @@ struct RepoAddress {
         api::AddKeyRequest,
         api::SshKeyInfo,
         api::Account,
+        api::Profile,
+        api::UpdateProfileRequest,
+        api::PublicProfile,
         api::MyLock,
         api::Me,
         api::OrgInfo,
@@ -524,6 +533,13 @@ fn routes(state: AppState) -> Router {
             axum::routing::delete(access_api::delete_key),
         )
         .route("/v1/me", get(access_api::me))
+        .route("/v1/me/profile", put(profile_api::update_profile))
+        .route(
+            "/v1/me/avatar",
+            put(profile_api::put_avatar).delete(profile_api::delete_avatar),
+        )
+        .route("/v1/users/{user}", get(profile_api::get_profile))
+        .route("/v1/users/{user}/avatar", get(profile_api::get_avatar))
         .route("/v1/me/locks", get(repo_api::my_locks))
         .route(
             "/v1/tokens",
@@ -815,6 +831,7 @@ fn status_for(e: &PynError) -> StatusCode {
         PynError::ObjectTooLarge { .. } | PynError::PushTooLarge(_) => {
             StatusCode::PAYLOAD_TOO_LARGE
         }
+        PynError::UnsupportedImage(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
         PynError::Unauthenticated(_) | PynError::ExternalSignInFailed(_) => {
             StatusCode::UNAUTHORIZED
@@ -827,6 +844,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::WebhookDeliveryNotFound { .. }
         | PynError::UserNotFound(_)
         | PynError::EmailNotFound
+        | PynError::AvatarNotFound(_)
         | PynError::KeyNotFound(_)
         | PynError::OidcNotConfigured
         | PynError::ExternalIdentityNotFound(_)

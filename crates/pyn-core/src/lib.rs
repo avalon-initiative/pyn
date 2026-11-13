@@ -24,6 +24,8 @@ pub mod merge;
 pub mod object;
 pub mod oidc;
 pub mod passwords;
+pub mod profile;
+pub mod profiles;
 pub mod ratelimit;
 pub mod repo;
 pub mod repo_policy;
@@ -92,6 +94,8 @@ pub use oidc::{
     IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider, pkce_challenge,
 };
 pub use passwords::{InlinePasswords, PasswordWorker};
+pub use profile::{Avatar, ImageKind, Profile, ProfileFields};
+pub use profiles::{Profiles, PublicProfile};
 pub use pyn_gitattr::lockable::Disagreement;
 pub use pyn_object::{FileMode, ObjectId};
 pub use ratelimit::{RateLimitStore, RateState};

@@ -24,6 +24,7 @@ use crate::oidc::{
     ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider,
 };
 use crate::passwords::{InlinePasswords, PasswordWorker};
+use crate::profile::{Avatar, Profile, ProfileFields};
 use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
@@ -42,6 +43,7 @@ mod freeze;
 mod invitations;
 mod limits;
 mod organizations;
+mod profile;
 mod recovery;
 mod repo_policy;
 mod self_service;
@@ -350,6 +352,25 @@ pub trait AccessStore: Send + Sync {
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()>;
 
     async fn password_hash(&self, user: &UserId) -> Result<Option<String>>;
+
+    /// The account's profile; empty when none was saved.
+    async fn profile(&self, user: &UserId) -> Result<Profile>;
+
+    /// Replaces the profile's text fields, keeping the avatar. The account must exist.
+    async fn set_profile(
+        &self,
+        user: &UserId,
+        fields: &ProfileFields,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+
+    /// Sets or clears the avatar, keeping the text fields. The account must exist.
+    async fn set_avatar(
+        &self,
+        user: &UserId,
+        avatar: Option<&Avatar>,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
 
     async fn create_invite(&self, invite: InviteRecord) -> Result<()>;
 
