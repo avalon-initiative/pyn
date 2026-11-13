@@ -429,6 +429,18 @@ const EXEMPT: &[(&str, &str)] = &[
     ("unlink_identity", "credentials stay manageable"),
     ("link", "credentials stay manageable"),
     ("change_password", "credentials stay manageable"),
+    (
+        "update_profile",
+        "the account's own settings, not content under an owner",
+    ),
+    (
+        "put_avatar",
+        "the account's own settings, not content under an owner",
+    ),
+    (
+        "delete_avatar",
+        "the account's own settings, not content under an owner",
+    ),
     ("login", "sign-in is unchanged"),
     ("sign_in", "sign-in is unchanged"),
     ("sign_out", "sign-in is unchanged"),
