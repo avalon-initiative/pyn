@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e docker-build docker-build-cli fmt fmt-check clippy lint check release release-skip-tests release-publish release-all release-test release-smoke clean
+.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e docker-build docker-build-cli fmt fmt-check clippy lint check release release-skip-tests release-publish release-all release-test install-test release-smoke clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -36,6 +36,7 @@ help:
 	@echo "  make release-publish  tag the merged release commit on main and push the tag"
 	@echo "  make release-all VER=x.y.z TITLE=...  release pyn and the sibling pyn-web together and tag both (publishes tags)"
 	@echo "  make release-test  test the release scripts against a throwaway repository"
+	@echo "  make install-test  test scripts/install.sh against stubbed tools (offline)"
 	@echo "  make release-smoke VER=x.y.z  run the published images of a release through deploy/docker-compose.yml (needs docker)"
 	@echo "  make clean         remove build artifacts and PID/log files"
 
@@ -137,7 +138,7 @@ boundary-check:
 openapi:
 	PYN_UPDATE_OPENAPI=1 cargo test -p pyn-server --test openapi
 
-check: fmt-check lint test release-test
+check: fmt-check lint test release-test install-test
 
 # VER, TITLE, SKIP_CHECKS, FORCE_CHECKS and YES reach the script through the environment.
 release:
@@ -154,6 +155,9 @@ release-all:
 
 release-test:
 	@scripts/test-release.sh
+
+install-test:
+	@scripts/test-install.sh
 
 release-smoke:
 	@scripts/smoke-release.sh "$(VER)"
