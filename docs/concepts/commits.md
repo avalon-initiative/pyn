@@ -117,7 +117,7 @@ A `branch` the server does not have is created by the push, atomically with the 
 
 The route is additive: `changesets` and `checkin` remain the direct route (decision #300), and no existing field changed.
 
-`GET /v1/capabilities` needs no credentials and answers `{local_commits: true}` on a server with these routes. A client checks it before it keeps commits locally (`pyn clone`, `pyn migrate`); a server without the route (404) or with `local_commits` false is too old, and the client refuses with a message to upgrade or opt out. The direct routes stay for the web app and for use without a workspace.
+`GET /v1/capabilities` needs no credentials and answers `{local_commits: true, version, revision}` on a server with these routes. `version` is the server's release version and `revision` the commit it was built from (null when the build did not record one: `PYN_REVISION` at compile time, set by the Docker `REVISION` build arg and the release binaries). A response without `version` comes from an older server, and the CLI still reads `local_commits` from it. A client checks it before it keeps commits locally (`pyn clone`, `pyn migrate`); a server without the route (404) or with `local_commits` false is too old, and the client refuses with a message to upgrade or opt out. The direct routes stay for the web app and for use without a workspace.
 
 Errors, as `{code, message}`: `not_fast_forward` (409), `lock_required` and `lock_held` (409), `stale_base` (409),
 `storage_limit_reached` (409), `push_invalid` (400, an id that does not hash, bytes that are not a git object, a missing tree, a merge of a commit the

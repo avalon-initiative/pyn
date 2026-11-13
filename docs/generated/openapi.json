@@ -11673,12 +11673,24 @@
         "type": "object",
         "description": "What this server supports beyond the base API; a client checks it before it relies on a newer route.",
         "required": [
-          "local_commits"
+          "local_commits",
+          "version"
         ],
         "properties": {
           "local_commits": {
             "type": "boolean",
             "description": "The server accepts pushed commits and serves fetches (`/push`, `/fetch`), so a client may keep commits locally."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit the server binary was built from; null when the build did not record one."
+          },
+          "version": {
+            "type": "string",
+            "description": "The server's release version; empty when an older server did not report one."
           }
         }
       },

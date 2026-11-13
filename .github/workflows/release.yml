@@ -158,6 +158,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build
+        env:
+          PYN_REVISION: ${{ github.sha }}
         run: cargo build --locked --release ${{ matrix.packages }}
 
       - name: Package

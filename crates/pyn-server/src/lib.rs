@@ -1083,6 +1083,10 @@ async fn health() -> &'static str {
 async fn capabilities() -> Json<api::ServerCapabilities> {
     Json(api::ServerCapabilities {
         local_commits: true,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        revision: option_env!("PYN_REVISION")
+            .filter(|r| !r.is_empty())
+            .map(str::to_string),
     })
 }
 
