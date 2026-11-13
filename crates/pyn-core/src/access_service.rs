@@ -41,6 +41,7 @@ mod freeze;
 mod invitations;
 mod limits;
 mod organizations;
+mod recovery;
 mod repo_policy;
 mod setup;
 mod teams;
@@ -50,6 +51,7 @@ pub use external::{ExternalSignIn, OidcBegin, OidcFinish, OidcStart};
 pub use freeze::OwnerFreezeState;
 pub use invitations::OrgAdd;
 pub use limits::OwnerLimits;
+pub use recovery::{AdminRecovery, HOST_RECOVERY_ACTOR};
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
 pub use webhooks::{
@@ -512,6 +514,9 @@ pub trait AccessStore: Send + Sync {
     ) -> Result<bool>;
 
     async fn set_admin(&self, user: &UserId, admin: bool) -> Result<()>;
+
+    /// Enabled administrator accounts: the ones the last-admin guards count.
+    async fn active_admin_count(&self) -> Result<u64>;
 
     /// Removes the flag unless that leaves no other active administrator. Atomic against concurrent revokes.
     async fn revoke_admin(&self, user: &UserId) -> Result<AdminRevoke>;

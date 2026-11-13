@@ -2723,6 +2723,15 @@ impl AccessStore for MemoryAccessStore {
         Ok(())
     }
 
+    async fn active_admin_count(&self) -> Result<u64> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .accounts
+            .values()
+            .filter(|a| a.kind == AccountKind::User && a.is_admin && a.disabled_at.is_none())
+            .count() as u64)
+    }
+
     async fn revoke_admin(&self, user: &UserId) -> Result<AdminRevoke> {
         let mut st = self.state.lock().unwrap();
         if !st.accounts.get(user).is_some_and(|a| a.is_admin) {
@@ -3580,6 +3589,24 @@ impl WebhookStore for MemoryWebhookStore {
             .filter(|x| x.subscription_id == subscription_id && x.retired_at.is_none())
             .cloned()
             .collect())
+    }
+
+    async fn reseal_secrets(
+        &self,
+        reseal: &(dyn for<'a> Fn(&'a WebhookSecret) -> Result<NewSecret> + Send + Sync),
+    ) -> Result<u64> {
+        let mut guard = self.state.lock().unwrap();
+        let s = &mut *guard;
+        let sealed = s
+            .secrets
+            .iter()
+            .map(reseal)
+            .collect::<Result<Vec<NewSecret>>>()?;
+        let count = sealed.len() as u64;
+        for (row, new) in s.secrets.iter_mut().zip(sealed) {
+            (row.secret, row.encrypted, row.key_id) = (new.secret, new.encrypted, new.key_id);
+        }
+        Ok(count)
     }
 
     async fn append_event(

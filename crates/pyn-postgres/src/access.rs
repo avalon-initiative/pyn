@@ -1721,6 +1721,16 @@ impl AccessStore for PgMetadataStore {
         Ok(())
     }
 
+    async fn active_admin_count(&self) -> Result<u64> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM users WHERE is_admin AND kind = 'user' AND disabled_at IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(count as u64)
+    }
+
     async fn revoke_admin(&self, user: &UserId) -> Result<AdminRevoke> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         // Locking every administrator row (in id order) serialises concurrent revokes.

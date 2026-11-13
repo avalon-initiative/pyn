@@ -12,6 +12,7 @@ compose=(docker compose)
 [ -n "${COMPOSE_FILE:-}" ] || compose+=(-f "$(dirname "$0")/../docker-compose.yml")
 
 ( cd "$src" && sha256sum --check --quiet SHA256SUMS )
+# The backup holds no .env: the server must run with the PYN_SECRET_KEY the dump was made under.
 
 "${compose[@]}" stop server
 "${compose[@]}" up --detach --wait db

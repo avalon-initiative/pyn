@@ -216,7 +216,9 @@ volume mounted at `/data`.
 ## Backups
 
 State is the PostgreSQL database plus the object store directory, and `PYN_SECRET_KEY`. Back up all three; the database
-alone is not enough, since file content lives only in the object store.
+alone is not enough, since file content lives only in the object store. Keep the `.env` file (or `/etc/pyn/pyn.env` on a
+native install) too, in a secret store: it holds the secret key and the database password, and `scripts/backup.sh` never
+copies it, on purpose, so it does not sit next to the dump. See [Recovery](#recovery) for what each loss costs.
 
 [`scripts/backup.sh`](../scripts/backup.sh) writes `pyn-<UTC timestamp>/` containing `db.dump` (`pg_dump --format custom`),
 `objects.tar` and `SHA256SUMS`, then removes backups older than `RETENTION_DAYS` (default 14).
@@ -231,7 +233,7 @@ may hold a few unreferenced uploads, which the server sweeps later). Taking them
 without its content.
 
 Schedule it (for example a daily cron entry or systemd timer), copy the backup directory off the host, and keep
-`PYN_SECRET_KEY` in a password manager or secret store, never next to the dump. A backup that has not been restored is not
+`PYN_SECRET_KEY` and the `.env` file in a password manager or secret store, never next to the dump. A backup that has not been restored is not
 a backup: restore into a throwaway deployment now and then.
 
 ### Restore
@@ -249,3 +251,72 @@ a repository to check history integrity ([integrity](concepts/integrity.md)).
 
 The scripts target the Compose deployment; for another setup the same two parts apply: `pg_dump --format custom` of the
 database and an archive of `PYN_DATA_DIR`, dump first.
+
+## Recovery
+
+Recovery needs control of the host, the same trust level as the one-time setup token. No HTTP route does any of it, so
+there is no remote back door; whoever can run commands on the server host (or in its container) can recover it.
+
+### Lost administrator
+
+The server never removes or disables its last active administrator, so if that person leaves or loses their credentials,
+nobody can administer it through the API. On the host, run `recover-admin` with the same database settings the server
+uses (`PYN_DATABASE_URL`; with Compose the container already has them):
+
+```bash
+docker compose exec server pyn-server recover-admin alice
+echo 'a long new password' | docker compose exec -T server pyn-server recover-admin alice --password-stdin
+```
+
+Natively, run `pyn-server recover-admin alice` as the `pyn` user with the variables from `/etc/pyn/pyn.env` loaded. The
+container has `pyn-server` but no `pyn` command; sign in afterwards from any computer that has it, or on the web.
+
+The command creates `alice` as an administrator, or, if the account exists, enables it, completes its sign-up, grants the
+administrator flag and sets a new password. Without `--password-stdin` it generates a strong password and prints it once on
+standard output (messages go to standard error). The account's sessions and tokens end; its SSH keys and linked external
+identities are left as they are. Other accounts are not touched. It refuses an organization name, the in-memory store (no
+`PYN_DATABASE_URL`), and a server that has not run [first-run setup](concepts/access.md#first-run-setup) yet.
+
+Each recovery is written to the server audit log (`GET /v1/admin/audit`) as `admin_granted`, plus `account_enabled` when
+it lifted a disable, with the actor `@host-recovery`, and to the server log as a `host recovery` warning.
+
+The server warns once at start when exactly one active administrator exists. Add a second one so a single lost account does
+not need this.
+
+### Lost secret key
+
+`PYN_SECRET_KEY` encrypts one thing: the signing secrets of [webhooks](concepts/webhooks.md#encryption-at-rest), at rest in
+the database. Losing it loses only those secrets; accounts, passwords, tokens, history and files do not depend on it. Without
+the key the server still starts, but deliveries to webhooks whose secrets were encrypted fail until they are replaced. To
+recover: set a new `PYN_SECRET_KEY` (`openssl rand -hex 32`), then for each webhook run `pyn admin webhook rotate <id>`
+(or use the web app), which stores a new secret under the new key; hand it to the receiver and retire the unreadable one
+(`pyn admin webhook retire`). Deleting and re-creating the webhook works too.
+
+To change the key while you still have it, stop the server and run, with the current key in `PYN_SECRET_KEY` and the new
+one in `PYN_NEW_SECRET_KEY`:
+
+```bash
+docker compose stop server
+new=$(openssl rand -hex 32)
+docker compose run --rm -e PYN_NEW_SECRET_KEY="$new" server rotate-secret-key
+sed -i "s/^PYN_SECRET_KEY=.*/PYN_SECRET_KEY=$new/" .env && docker compose up --detach --wait
+```
+
+Store the new key in your secret store as well. The command
+re-encrypts every stored secret, retired ones and plaintext ones included, in one database transaction: either all are
+rewritten or, if any cannot be decrypted with the current key, none, and it says so. Run it once; afterwards the old key no
+longer opens anything.
+
+### Lost database password
+
+The password is in the host's `.env` (`POSTGRES_PASSWORD`, and inside `PYN_DATABASE_URL` for a native install) and in the
+running container's environment: `docker compose exec server printenv PYN_DATABASE_URL`. If you only need to set a new one,
+`docker compose exec db psql --username pyn -c "ALTER USER pyn PASSWORD '...'"` (the Compose database trusts local
+connections inside its container) and update `.env`, then restart the server.
+
+### Lost `.env`
+
+Rebuildable: `PYN_PUBLIC_URL`, `PYN_IMAGE` and every tuning setting (see [configuration](configuration.md)), and the database
+password, which can be reset as above while the database volume survives. Not rebuildable: `PYN_SECRET_KEY`. Recover it from
+your secret store; if it is gone, follow [Lost secret key](#lost-secret-key). Accounts and history live in the database and
+the object store, so a lost `.env` alone loses neither.

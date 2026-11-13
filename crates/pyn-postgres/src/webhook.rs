@@ -289,6 +289,40 @@ impl WebhookStore for PgMetadataStore {
         Ok(rows.iter().map(secret_from).collect())
     }
 
+    async fn reseal_secrets(
+        &self,
+        reseal: &(dyn for<'a> Fn(&'a WebhookSecret) -> Result<NewSecret> + Send + Sync),
+    ) -> Result<u64> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        // Blocks concurrent additions, so no secret slips in under the old key mid-rotation.
+        sqlx::query("LOCK TABLE webhook_secrets IN EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {SECRET} FROM webhook_secrets ORDER BY id"
+        )))
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+        for row in &rows {
+            let current = secret_from(row);
+            let new = reseal(&current)?;
+            sqlx::query(
+                "UPDATE webhook_secrets SET secret = $2, encrypted = $3, key_id = $4 WHERE id = $1",
+            )
+            .bind(current.id)
+            .bind(&new.secret)
+            .bind(new.encrypted)
+            .bind(&new.key_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(rows.len() as u64)
+    }
+
     async fn append_event(
         &self,
         event_type: &str,
