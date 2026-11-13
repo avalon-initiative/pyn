@@ -51,6 +51,8 @@ pub(crate) async fn me(
         id: s.access.account_id(&who.user).await?.to_string(),
         user: who.user.to_string(),
         admin: s.access.is_server_admin(&who).await?,
+        has_password: s.access.has_password(&who.user).await?,
+        profile: crate::profile_api::profile_dto(&who.user, s.access.profile_of(&who.user).await?),
     }))
 }
 

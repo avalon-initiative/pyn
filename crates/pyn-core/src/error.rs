@@ -140,6 +140,10 @@ pub enum PynError {
     InvalidVerification(String),
     #[error("no account {0}")]
     UserNotFound(String),
+    #[error("{0}")]
+    UnsupportedImage(String),
+    #[error("{0} has no avatar")]
+    AvatarNotFound(String),
     #[error("only a server administrator can do that")]
     ServerAdminRequired,
     #[error("the server must keep at least one active administrator")]
@@ -327,6 +331,8 @@ impl PynError {
             },
             Self::InvalidVerification(_) => "invalid_verification",
             Self::UserNotFound(_) => "user_not_found",
+            Self::UnsupportedImage(_) => "unsupported_image",
+            Self::AvatarNotFound(_) => "avatar_not_found",
             Self::ServerAdminRequired => "server_admin_required",
             Self::LastServerAdmin => "last_server_admin",
             Self::ServiceScopeRequired(_) => "service_scope_required",

@@ -77,6 +77,8 @@ mod frozen;
 pub use frozen::*;
 mod repo_cap;
 pub use repo_cap::*;
+mod profiles;
+pub use profiles::*;
 
 struct Harness {
     store: Store,
@@ -8178,6 +8180,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_last_way_to_sign_in_cannot_be_unlinked);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; racing_unlinks_leave_one_way_to_sign_in);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sign_in_flows_are_taken_once_and_swept_when_expired);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profiles_store_text_fields_and_an_avatar_apart);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profiles_belong_to_one_account_each);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

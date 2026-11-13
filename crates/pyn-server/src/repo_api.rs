@@ -32,7 +32,7 @@ fn visibility_from(v: api::Visibility) -> pyn_core::Visibility {
     }
 }
 
-async fn repo_info(
+pub(crate) async fn repo_info(
     s: &AppState,
     r: RepoRecord,
     role: Option<Role>,

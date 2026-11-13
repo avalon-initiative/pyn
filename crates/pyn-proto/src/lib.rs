@@ -641,6 +641,62 @@ pub struct Account {
     /// Runs the server: may approve and disable accounts under `/v1/admin`.
     #[serde(default)]
     pub admin: bool,
+    /// Whether the account has a password. False for an account created through external sign-in until it sets
+    /// one, in which case `PUT /v1/me/password` takes no current password.
+    #[serde(default)]
+    pub has_password: bool,
+    /// The account's profile; the email address is never part of it.
+    #[serde(default)]
+    pub profile: Profile,
+}
+
+/// The optional, user-edited part of an account: what others see on its profile page.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Profile {
+    /// At most 64 characters, trimmed, no control characters.
+    pub display_name: Option<String>,
+    /// At most 160 characters; may span lines.
+    pub bio: Option<String>,
+    /// At most 64 characters.
+    pub location: Option<String>,
+    /// At most 64 characters.
+    pub company: Option<String>,
+    /// Up to 5 `http` or `https` URLs.
+    #[serde(default)]
+    pub links: Vec<String>,
+    /// Where the avatar image is served, with a `v` parameter that changes when the image does; absent when the
+    /// account has none.
+    pub avatar_url: Option<String>,
+}
+
+/// The new profile text: every field is replaced, and one left out or blank is cleared.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UpdateProfileRequest {
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub location: Option<String>,
+    pub company: Option<String>,
+    #[serde(default)]
+    pub links: Vec<String>,
+}
+
+/// An account's public profile as the caller may see it: no email address, and only the repositories and
+/// organizations the caller may know about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PublicProfile {
+    /// Stable, never reused.
+    pub id: String,
+    pub user: String,
+    pub created_at: DateTime<Utc>,
+    pub profile: Profile,
+    /// The repositories the user owns that the caller may see: public ones, and private ones where the caller has
+    /// a role. `role` is the caller's.
+    pub repositories: Vec<RepoInfo>,
+    /// How many repositories are listed.
+    pub repository_count: u64,
+    /// The organizations the user belongs to that the caller belongs to as well, with the caller's role; always
+    /// empty when signed out.
+    pub organizations: Vec<OrgInfo>,
 }
 
 /// An organization: a namespace that owns repositories.
