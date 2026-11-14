@@ -63,6 +63,15 @@ pub enum AdminUserCommand {
     },
     /// Enable a disabled account.
     Enable { user: String },
+    /// Delete a disabled account after the recovery window, or with --now at once. The reason goes in the audit log.
+    Delete {
+        user: String,
+        /// Delete at once instead of after the recovery window.
+        #[arg(long)]
+        now: bool,
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -205,6 +214,27 @@ fn user(api: &Api, cmd: AdminUserCommand) -> Result<()> {
         AdminUserCommand::Enable { user } => {
             let who = account_action(api, &user, "enable", None)?;
             println!("enabled {}", who.user);
+        }
+        AdminUserCommand::Delete { user, now, reason } => {
+            let body = api::AdminDeleteAccountRequest {
+                reason,
+                immediately: now,
+            };
+            let done: api::AdminDeleteAccountResult = api
+                .send(
+                    api.request(Method::POST, &format!("/v1/admin/users/{user}/delete"))
+                        .json(&body),
+                )?
+                .json()?;
+            match done.purge_at {
+                Some(at) if !done.deleted => println!(
+                    "{} is scheduled for deletion on {}; `pyn admin user enable {}` cancels it",
+                    done.user,
+                    time::local(at),
+                    done.user
+                ),
+                _ => println!("deleted {}", done.user),
+            }
         }
     }
     Ok(())

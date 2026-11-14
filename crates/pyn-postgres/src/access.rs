@@ -4,16 +4,17 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
-    AccessStore, AccountDisable, AccountEmail, AccountId, AccountKind, AccountRecord,
-    AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule, CreationScope,
-    CreationSubject, EmailAdd, EmailRemove, EventDraft, ExternalCreate, ExternalIdentity,
-    IdentityUnlink, InvitationAccept, InvitationCreate, InviteId, InviteRecord, Limits,
-    LimitsChange, LimitsEvent, MemberCreation, NewAccount, NewExternalAccount, OidcFlow,
-    OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgRole, Permission, PrimaryChange, Profile,
-    ProfileFields, PynError, RateLimitStore, RateState, RegistrationMode, RenameOutcome, RepoId,
-    RepoPolicy, Result, Role, RoleDefinitions, ServerSettings, ServiceCredentialRecord,
-    ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind, TeamId, TeamRecord,
-    TokenId, TokenRecord, UserId, VerificationRecord,
+    AccessStore, AccountDeletion, AccountDisable, AccountEmail, AccountId, AccountKind,
+    AccountPurge, AccountRecord, AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule,
+    CreationScope, CreationSubject, DeletionSchedule, EmailAdd, EmailRemove, EventDraft,
+    ExternalCreate, ExternalIdentity, IdentityUnlink, InvitationAccept, InvitationCreate, InviteId,
+    InviteRecord, Limits, LimitsChange, LimitsEvent, MemberCreation, NameReservation, NewAccount,
+    NewExternalAccount, OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgRole,
+    Permission, PrimaryChange, Profile, ProfileFields, PynError, RateLimitStore, RateState,
+    RegistrationMode, RenameOutcome, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
+    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
+    SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord, UserId,
+    VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -228,6 +229,25 @@ fn account_from(row: &PgRow) -> Result<AccountRecord> {
         frozen_at: row.get("frozen_at"),
         frozen_reason: row.get("frozen_reason"),
     })
+}
+
+fn deletion_from(row: &PgRow) -> AccountDeletion {
+    AccountDeletion {
+        user: UserId::new(row.get::<String, _>("user_id")),
+        requested_by: UserId::new(row.get::<String, _>("requested_by")),
+        by_owner: row.get("by_owner"),
+        reason: row.get("reason"),
+        scheduled_at: row.get("scheduled_at"),
+        purge_at: row.get("purge_at"),
+    }
+}
+
+fn reservation_from(row: &PgRow) -> NameReservation {
+    NameReservation {
+        name: row.get("name"),
+        reserved_at: row.get("reserved_at"),
+        until: row.get("reserved_until"),
+    }
 }
 
 fn token_from(row: &PgRow) -> Result<TokenRecord> {
@@ -2114,6 +2134,245 @@ impl AccessStore for PgMetadataStore {
             .await
             .map_err(db)?;
         Ok(())
+    }
+
+    async fn account_deletion(&self, user: &UserId) -> Result<Option<AccountDeletion>> {
+        let row = sqlx::query("SELECT * FROM account_deletions WHERE user_id = $1")
+            .bind(user.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(row.as_ref().map(deletion_from))
+    }
+
+    async fn schedule_account_deletion_with_events(
+        &self,
+        deletion: AccountDeletion,
+        disable: bool,
+        events: &[EventDraft],
+    ) -> Result<DeletionSchedule> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        // Same lock order as `disable_account_with_events` and `revoke_admin`.
+        let rows = sqlx::query(
+            "SELECT id, disabled_at IS NULL AS active FROM users
+             WHERE is_admin AND kind = 'user' ORDER BY id FOR UPDATE",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+        let is_target = |r: &PgRow| r.get::<String, _>("id") == deletion.user.as_str();
+        let target_active = rows
+            .iter()
+            .any(|r| is_target(r) && r.get::<bool, _>("active"));
+        if disable
+            && target_active
+            && !rows
+                .iter()
+                .any(|r| !is_target(r) && r.get::<bool, _>("active"))
+        {
+            return Ok(DeletionSchedule::LastAdmin);
+        }
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND kind = 'user')",
+        )
+        .bind(deletion.user.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+        if !exists {
+            return Ok(DeletionSchedule::NoAccount);
+        }
+        if disable {
+            sqlx::query(
+                "UPDATE users SET disabled_at = $2, disabled_reason = 'account deletion requested' WHERE id = $1",
+            )
+            .bind(deletion.user.as_str())
+            .bind(deletion.scheduled_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        }
+        sqlx::query(
+            "INSERT INTO account_deletions (user_id, requested_by, by_owner, reason, scheduled_at, purge_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (user_id) DO UPDATE SET requested_by = $2, by_owner = $3, reason = $4,
+                 scheduled_at = $5, purge_at = $6",
+        )
+        .bind(deletion.user.as_str())
+        .bind(deletion.requested_by.as_str())
+        .bind(deletion.by_owner)
+        .bind(&deletion.reason)
+        .bind(deletion.scheduled_at)
+        .bind(deletion.purge_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        self.queue_events(&mut tx, events).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(DeletionSchedule::Scheduled)
+    }
+
+    async fn restore_account_with_events(
+        &self,
+        user: &UserId,
+        events: &[EventDraft],
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let removed = sqlx::query("DELETE FROM account_deletions WHERE user_id = $1")
+            .bind(user.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        if removed.rows_affected() == 0 {
+            return Ok(false);
+        }
+        sqlx::query("UPDATE users SET disabled_at = NULL, disabled_reason = NULL WHERE id = $1")
+            .bind(user.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        self.queue_events(&mut tx, events).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(true)
+    }
+
+    async fn clear_account_deletion(&self, user: &UserId) -> Result<bool> {
+        let removed = sqlx::query("DELETE FROM account_deletions WHERE user_id = $1")
+            .bind(user.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(removed.rows_affected() > 0)
+    }
+
+    async fn deletions_due(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<AccountDeletion>> {
+        let rows = sqlx::query(
+            "SELECT * FROM account_deletions WHERE purge_at <= $1 ORDER BY purge_at, user_id LIMIT $2",
+        )
+        .bind(now)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.iter().map(deletion_from).collect())
+    }
+
+    async fn disabled_accounts_before(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<AccountRecord>> {
+        let rows = sqlx::query(
+            "SELECT * FROM users u
+             WHERE u.kind = 'user' AND u.disabled_at IS NOT NULL AND u.disabled_at <= $1
+               AND NOT EXISTS (SELECT 1 FROM account_deletions d WHERE d.user_id = u.id)
+             ORDER BY u.disabled_at, u.id LIMIT $2",
+        )
+        .bind(cutoff)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(account_from).collect()
+    }
+
+    async fn purge_account_with_events(
+        &self,
+        user: &UserId,
+        now: DateTime<Utc>,
+        reserved_until: DateTime<Utc>,
+        events: &[EventDraft],
+    ) -> Result<AccountPurge> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let row = sqlx::query("SELECT * FROM users WHERE id = $1 AND kind = 'user' FOR UPDATE")
+            .bind(user.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+        let Some(row) = row else {
+            return Ok(AccountPurge::NoAccount);
+        };
+        let record = account_from(&row)?;
+        if record.disabled_at.is_none() {
+            return Ok(AccountPurge::NotDisabled);
+        }
+        for statement in [
+            "DELETE FROM memberships WHERE user_id = $1",
+            "DELETE FROM tokens WHERE user_id = $1",
+            "DELETE FROM invites WHERE created_by = $1",
+            "DELETE FROM ssh_keys WHERE user_id = $1",
+            "DELETE FROM sessions WHERE user_id = $1",
+            "DELETE FROM org_repo_creation_rules WHERE kind = 'user' AND subject = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(user.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        sqlx::query(
+            "INSERT INTO name_reservations (name, reserved_at, reserved_until) VALUES ($1, $2, $3)
+             ON CONFLICT (name) DO UPDATE SET reserved_at = $2, reserved_until = $3",
+        )
+        .bind(user.as_str().to_lowercase())
+        .bind(now)
+        .bind(reserved_until)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        self.queue_events(&mut tx, events).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(AccountPurge::Purged(record))
+    }
+
+    async fn name_reservation(&self, name: &str) -> Result<Option<NameReservation>> {
+        let row = sqlx::query("SELECT * FROM name_reservations WHERE name = $1")
+            .bind(name.to_lowercase())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(row.as_ref().map(reservation_from))
+    }
+
+    async fn expired_name_reservations(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<NameReservation>> {
+        let rows = sqlx::query(
+            "SELECT * FROM name_reservations WHERE reserved_until <= $1
+             ORDER BY reserved_until, name LIMIT $2",
+        )
+        .bind(now)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.iter().map(reservation_from).collect())
+    }
+
+    async fn make_name_reservation_permanent(&self, name: &str) -> Result<bool> {
+        let done =
+            sqlx::query("UPDATE name_reservations SET reserved_until = NULL WHERE name = $1")
+                .bind(name.to_lowercase())
+                .execute(&self.pool)
+                .await
+                .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn release_name_reservation(&self, name: &str) -> Result<bool> {
+        let done = sqlx::query("DELETE FROM name_reservations WHERE name = $1")
+            .bind(name.to_lowercase())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected() > 0)
     }
 
     async fn server_settings(&self) -> Result<Option<ServerSettings>> {

@@ -136,6 +136,22 @@ pub enum PynError {
     TooManyAttempts { retry_after_secs: i64 },
     #[error("{}", inactive_message(*.0))]
     AccountInactive(AccountStatus),
+    #[error(
+        "this account is scheduled for deletion on {purge_at}; sign in and restore it to keep it, nothing else is available until then"
+    )]
+    AccountPendingDeletion { purge_at: String },
+    #[error("{0} is reserved and cannot be used as a name yet")]
+    NameReserved(String),
+    #[error("{0} is not disabled; only a disabled account can be deleted by an administrator")]
+    AccountNotDisabled(String),
+    #[error("{0} is frozen; unfreeze it before deleting the account")]
+    AccountFrozen(String),
+    #[error("{user} cannot be deleted yet: {}", blockers_message(.repos, .orgs))]
+    AccountOwnsResources {
+        user: String,
+        repos: Vec<String>,
+        orgs: Vec<String>,
+    },
     #[error("invalid verification: {0}")]
     InvalidVerification(String),
     #[error("no account {0}")]
@@ -264,6 +280,20 @@ pub enum PynError {
     HistoryCorrupt(String),
 }
 
+fn blockers_message(repos: &[String], orgs: &[String]) -> String {
+    let mut parts = Vec::new();
+    if !repos.is_empty() {
+        parts.push(format!("it owns repositories ({})", repos.join(", ")));
+    }
+    if !orgs.is_empty() {
+        parts.push(format!(
+            "it is the only owner of organizations ({})",
+            orgs.join(", ")
+        ));
+    }
+    format!("{}; transfer or delete them first", parts.join(" and "))
+}
+
 fn paths_list(paths: &[RepoPath]) -> String {
     paths
         .iter()
@@ -335,6 +365,11 @@ impl PynError {
                 AccountStatus::Disabled => "account_disabled",
                 AccountStatus::Active => "account_active",
             },
+            Self::AccountPendingDeletion { .. } => "account_pending_deletion",
+            Self::NameReserved(_) => "name_reserved",
+            Self::AccountNotDisabled(_) => "account_not_disabled",
+            Self::AccountFrozen(_) => "account_frozen",
+            Self::AccountOwnsResources { .. } => "account_owns_resources",
             Self::InvalidVerification(_) => "invalid_verification",
             Self::UserNotFound(_) => "user_not_found",
             Self::UnsupportedImage(_) => "unsupported_image",

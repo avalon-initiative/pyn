@@ -188,7 +188,7 @@ pub(crate) async fn resend_verification(
 }
 
 #[utoipa::path(post, path = "/v1/login", request_body = api::LoginRequest, responses(
-    (status = 200, body = api::CreatedToken),
+    (status = 200, body = api::CreatedToken, description = "an account its owner scheduled for deletion signs in too, but the token works only on /v1/account/deletion until the account is restored; every other route answers account_pending_deletion"),
     (status = 401, body = api::ErrorBody, description = "unauthenticated"),
     (status = 403, body = api::ErrorBody, description = "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled"),
     (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),

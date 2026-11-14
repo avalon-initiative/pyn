@@ -46,6 +46,8 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_TRUST_FORWARDED_FOR` | `true` takes the client address from the last `X-Forwarded-For` entry; only behind a proxy that sets it; also trusts `X-Forwarded-Host` and `X-Forwarded-Proto` for the [LFS](concepts/lfs.md) URLs |
 | `PYN_PASSWORD_HASHES` | Most password hashes at once, default the number of CPUs |
 | `PYN_SESSION_DAYS` | How long a `pyn login` lasts, default 30 |
+| `PYN_ACCOUNT_DELETION_WINDOW_DAYS` | Days a self-service (or scheduled) [account deletion](concepts/access.md#deleting-an-account) can be undone, default 30; `0` purges at the next pass |
+| `PYN_DISABLED_ACCOUNT_RETENTION_DAYS` | Days a disabled account is kept before the server deletes it, default 90; `0` turns automatic deletion off |
 | `PYN_CONFIG_DIR` | Where the CLI keeps `credentials.toml`, default `~/.config/pyn`; the directory is made `0700` and the file `0600`, and a file that cannot be parsed is an error, never replaced |
 | `PYN_CLI_CONFIG` | The CLI's user settings file, default `~/.config/pyn/config.toml` (not the server's `PYN_CONFIG`); `pyn config init` creates it, and the first command in a terminal offers to |
 | `PYN_REPO` | The repository (`owner/name`) the CLI acts on, unless a workspace or `--repo` says otherwise |

@@ -188,8 +188,9 @@ impl AccessService {
             .await
     }
 
-    /// Whether `name` can be given to an account. Every way a name becomes taken is checked here.
+    /// Whether `name` can be given to an account; `NameReserved` while a purged account's name is held.
     pub(crate) async fn name_is_free(&self, name: &UserId) -> Result<bool> {
+        self.ensure_name_free(name).await?;
         Ok(self.store.account(name).await?.is_none())
     }
 

@@ -45,6 +45,9 @@ pub enum AuditAction {
     AccountApproved,
     AccountDisabled,
     AccountEnabled,
+    AccountDeletionScheduled,
+    AccountDeletionRestored,
+    AccountDeleted,
     OrgCreated,
     OrgDeleted,
     OrgMemberAdded,
@@ -99,7 +102,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 69] = [
+    pub const ALL: [AuditAction; 72] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -118,6 +121,9 @@ impl AuditAction {
         AuditAction::AccountApproved,
         AuditAction::AccountDisabled,
         AuditAction::AccountEnabled,
+        AuditAction::AccountDeletionScheduled,
+        AuditAction::AccountDeletionRestored,
+        AuditAction::AccountDeleted,
         AuditAction::OrgCreated,
         AuditAction::OrgDeleted,
         AuditAction::OrgMemberAdded,
@@ -191,6 +197,9 @@ impl AuditAction {
             Self::AccountApproved => "account_approved",
             Self::AccountDisabled => "account_disabled",
             Self::AccountEnabled => "account_enabled",
+            Self::AccountDeletionScheduled => "account_deletion_scheduled",
+            Self::AccountDeletionRestored => "account_deletion_restored",
+            Self::AccountDeleted => "account_deleted",
             Self::OrgCreated => "org_created",
             Self::OrgDeleted => "org_deleted",
             Self::OrgMemberAdded => "org_member_added",
@@ -339,4 +348,7 @@ pub trait AuditStore: Send + Sync {
     async fn record(&self, scope: &AuditScope, event: NewAuditEvent) -> Result<()>;
 
     async fn list(&self, scope: &AuditScope, query: &AuditQuery) -> Result<Vec<AuditEvent>>;
+
+    /// Whether any log holds an event whose actor is `actor`; the comparison ignores case.
+    async fn actor_appears(&self, actor: &UserId) -> Result<bool>;
 }

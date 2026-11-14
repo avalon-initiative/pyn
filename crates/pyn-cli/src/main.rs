@@ -122,7 +122,7 @@ enum Command {
         #[arg(long)]
         password_stdin: bool,
     },
-    /// Manage your own account: email addresses and username.
+    /// Manage your own account: email addresses, username and deletion.
     #[command(subcommand)]
     Account(account::AccountCommand),
     /// Change your own password.

@@ -187,6 +187,72 @@ An administrator lifted a disable.
 }
 ```
 
+### `account.deletion_scheduled`
+
+An account was disabled and scheduled for deletion: by its holder (`by_owner` true, who can restore it until `purge_at`) or by an administrator, who gives a reason.
+
+`data`: `user`, `user_id`, `actor`, `by_owner`, `reason` (null for self-service) and `purge_at`.
+
+```json
+{
+  "id": "evt_01J9ZX3K5V8Q2M7R4T6N0B1C2D",
+  "type": "account.deletion_scheduled",
+  "created_at": "2026-03-04T05:06:07Z",
+  "server": "https://pyn.example.com",
+  "version": 1,
+  "data": {
+    "user": "alice",
+    "user_id": "u3f9c1a7e5b2d4086a1c7e902",
+    "actor": "alice",
+    "by_owner": true,
+    "reason": null,
+    "purge_at": "2026-04-03T05:06:07Z"
+  }
+}
+```
+
+### `account.deletion_restored`
+
+The account holder cancelled a scheduled deletion; the account is enabled again.
+
+`data`: `user`, `user_id`.
+
+```json
+{
+  "id": "evt_01J9ZX3K5V8Q2M7R4T6N0B1C2D",
+  "type": "account.deletion_restored",
+  "created_at": "2026-03-04T05:06:07Z",
+  "server": "https://pyn.example.com",
+  "version": 1,
+  "data": {
+    "user": "alice",
+    "user_id": "u3f9c1a7e5b2d4086a1c7e902"
+  }
+}
+```
+
+### `account.deleted`
+
+An account was purged: its sessions, tokens, keys, linked identities, invitations and memberships are gone and its email address is free. The name stays reserved. `actor` is the administrator, or `@account-deletion` when the server's timers did it.
+
+`data`: `user`, `user_id`, `actor`, `reason` (null for a timer).
+
+```json
+{
+  "id": "evt_01J9ZX3K5V8Q2M7R4T6N0B1C2D",
+  "type": "account.deleted",
+  "created_at": "2026-03-04T05:06:07Z",
+  "server": "https://pyn.example.com",
+  "version": 1,
+  "data": {
+    "user": "alice",
+    "user_id": "u3f9c1a7e5b2d4086a1c7e902",
+    "actor": "root",
+    "reason": "inactive for years"
+  }
+}
+```
+
 ### `account.renamed`
 
 An account changed its username ([renames](access.md#changing-your-username)). The old name is free for anyone to take.

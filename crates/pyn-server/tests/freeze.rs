@@ -414,6 +414,15 @@ const EXEMPT: &[(&str, &str)] = &[
     ("approve", "an operator action"),
     ("disable", "an operator action"),
     ("enable", "an operator action"),
+    ("admin_delete_account", "an operator action"),
+    (
+        "schedule_account_deletion",
+        "refused as account_frozen while the account is frozen (core account_deletion tests)",
+    ),
+    (
+        "restore_account_deletion",
+        "undoing a deletion stays possible",
+    ),
     ("freeze_owner", "an operator action"),
     ("unfreeze_owner", "an operator action"),
     ("create_webhook", "server-wide, not under an owner"),

@@ -556,4 +556,7 @@ pub trait MetadataStore: Send + Sync {
 
     /// Distinct stored bytes by top-level folder and the largest paths; empty for a repository with no revisions.
     async fn repo_breakdown(&self, repo: &RepoId) -> Result<RepoBreakdown>;
+
+    /// Whether any revision in any repository was written by `author`; the comparison ignores case.
+    async fn author_appears(&self, author: &UserId) -> Result<bool>;
 }
