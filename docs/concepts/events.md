@@ -187,6 +187,28 @@ An administrator lifted a disable.
 }
 ```
 
+### `account.renamed`
+
+An account changed its username ([renames](access.md#changing-your-username)). The old name is free for anyone to take.
+
+`data`: `old_name`, `new_name`, `user_id` (unchanged by the rename), `actor`.
+
+```json
+{
+  "id": "evt_01J9ZX3K5V8Q2M7R4T6N0B1C2D",
+  "type": "account.renamed",
+  "created_at": "2026-03-04T05:06:07Z",
+  "server": "https://pyn.example.com",
+  "version": 1,
+  "data": {
+    "old_name": "alice",
+    "new_name": "alice-w",
+    "user_id": "u3f9c1a7e5b2d4086a1c7e902",
+    "actor": "alice"
+  }
+}
+```
+
 ### `organization.created`
 
 An organization was created, by a user or on behalf of one by an administrator or service credential.

@@ -502,6 +502,19 @@ pub trait MetadataStore: Send + Sync {
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>>;
 
+    /// The repository an old `owner/name` address was moved from by a rename of `owner`, for a lookup that found no
+    /// live repository there.
+    async fn find_repo_redirect(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>>;
+
+    /// Moves every repository of `old` to `new` and leaves a redirect from each old address, and hands the locks and
+    /// branches `old` made to `new`. Returns the moved repositories as they now stand.
+    async fn rename_owner(
+        &self,
+        old: &UserId,
+        new: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<RepoRecord>>;
+
     async fn get_repo(&self, id: &RepoId) -> Result<Option<RepoRecord>>;
 
     /// Ordered by owner, then name.

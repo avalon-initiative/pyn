@@ -73,6 +73,59 @@ credential helper would; the CLI uses it when no token is given, and `pyn logout
 session is a token that reaches every repository you belong to, with your role there as its limit, and it lasts 30 days by
 default (`PYN_SESSION_DAYS`). Signing in needs no role anywhere: a new account with no repository can sign in and create its own.
 
+## Your email addresses
+
+An account can hold several email addresses, and only its owner ever sees them (no other user, no organization, no public
+profile; server administrators see an account's primary address in the admin account list, as before). One is the **primary**:
+the address the server uses for the account. The rules:
+
+- **Adding** an address (`POST /v1/me/emails`) leaves it **pending**: the server sends the same `{PYN_PUBLIC_URL}/verify-email?token=...`
+  link as at sign-up, valid once for 24 hours, and the web page behind it calls the same `POST /v1/register/verify {token}`
+  (the answer is the account's status). Delivery goes through the same sender as sign-up, so today the link reaches the
+  log only (see [email delivery](#protecting-open-registration)). A pending address is not usable: it cannot be the primary and
+  is never written anywhere. `POST /v1/me/emails/{address}/resend` mails a fresh link (`404 email_not_found` once the address is
+  verified); it counts against the same per-recipient mail limit as sign-up.
+- **Unique across accounts**, ignoring case (addresses are lowercased). An address another account holds, or has pending, is
+  refused with `409 email_unavailable`, the one generic answer, so it never says whose address it is or whether it is
+  verified. An address already on your own account is `409 email_refused`. An account holds at most 10.
+- **The primary must be verified** (`PUT /v1/me/emails/{address}/primary`, `409 email_refused` otherwise). The old primary stays on
+  the account as an additional verified address. The first address an account verifies becomes its primary if it has none.
+- **Removing** (`DELETE /v1/me/emails/{address}`): removing the primary promotes the oldest other verified address. Where the
+  server requires a verified address to sign up (open registration with `PYN_EMAIL_VERIFICATION`), the last verified address
+  cannot be removed (`409 email_refused`); elsewhere it can.
+- Adding, verifying, choosing and removing an address are each recorded in the server audit log
+  (`email_added`, `email_verified`, `email_primary_changed`, `email_removed`).
+
+On the command line: `pyn account email list` (columns `PRIMARY STATUS ADDED ADDRESS`), `add <address>`, `primary <address>`,
+`remove <address>`, `resend <address>`.
+
+## Changing your username
+
+`PUT /v1/me/username {username, password}` renames your account (`pyn account rename <new-name> [--yes]`), as on GitHub.
+It needs the current password again (an account with none can confirm from a signed-in web session), counted like the
+password check of `PUT /v1/me/password`. The name follows the [username rules](repositories.md#addresses-and-namespaces)
+and must be free: a user or organization holding it gives `409 user_exists`, and an organization name can never be taken
+by renaming. Renaming organizations is not supported. An account that is [frozen](limits.md#freezing-an-owner) cannot rename
+(`403 owner_frozen`).
+
+**Warning, shown by the CLI and the web app before the rename is confirmed.** The old name is not reserved. Anyone may take it
+right away. Your repositories move to the new name and each old `old-name/repo` address keeps working, but a redirect stops,
+repository by repository, as soon as someone under the old name creates a repository with the same name: that live
+repository always wins over the redirect, and links and remotes using the old name then reach the new holder's repository.
+Update remotes and links after renaming. The old profile address is not redirected, and neither are `@mentions` of the old name.
+
+What follows the rename: the account id (which is how integrations should key accounts), sessions, tokens (every token
+stays valid), SSH keys, memberships and roles in repositories, organizations and teams, held locks, repository ownership,
+and pending invitations. [Redirects](repositories.md#renamed-owners-and-address-redirects) are kept per repository.
+Revisions and commits keep the author name they were written with, because their hashes cover it; every history response
+adds `author_current` (revisions and commits) with the account's name now, which clients show, so one person appears under one
+name across history. Locks show their holder's current name. For an account that was deleted there is no current name and
+the last name stays. The server audit log keeps names as written and records a rename as `account_renamed` with actor the old
+name and detail `old renamed to new`; the `account.renamed` [event](events.md#accountrenamed) announces it to webhooks.
+
+A name check for a new account or a rename goes through one server function, so rules that reserve names (for example for
+deleted accounts) apply to both.
+
 ## Web sessions
 
 The web signs in with `POST /v1/session` (user name and password, throttled like `pyn login`). The server keeps the session
@@ -213,6 +266,8 @@ is off, or on but nothing is delivered.
 | `POST /v1/register` | `{username, password, email?, invite?}` gives `201 {user, status}`; `status` is `active`, `pending_verification` or `pending_approval` |
 | `POST /v1/register/verify` | `{token}` gives `200 {user, status}`; `400 invalid_verification` for an unknown, used or expired link |
 | `POST /v1/register/resend` | `{email}` gives `202`, always |
+| `GET /v1/me/emails`, `POST /v1/me/emails {address}`, `POST /v1/me/emails/{address}/resend`, `PUT /v1/me/emails/{address}/primary`, `DELETE /v1/me/emails/{address}` | [your addresses](#your-email-addresses); `POST` gives `201` with the pending address |
+| `PUT /v1/me/username` | `{username, password}` gives `200 {old_name, new_name, repositories}`; see [changing your username](#changing-your-username) |
 | `POST /v1/login`, `POST /v1/session` | `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password |
 | `GET /v1/me` | `{id, user, admin}` |
 | `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{id, user, email, email_verified, status, disabled_at, disabled_reason, admin, created_at}` |
@@ -221,7 +276,7 @@ is off, or on but nothing is delivered.
 | `POST /v1/admin/users/{user}/enable` | the updated account |
 | `PUT /v1/admin/users/{user}/admin` | grants the flag; the updated account. `400 invalid_request` if the account is not active; granting again changes nothing |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
 
 On the command line (server administrators; each listing is an aligned table with the name last):
 

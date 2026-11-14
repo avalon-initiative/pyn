@@ -60,7 +60,9 @@ impl Api {
     }
 
     pub fn send(&self, call: Call) -> Result<Reply> {
-        ok(self.transport.send(call)?)
+        let reply = ok(self.transport.send(call)?)?;
+        crate::account::note_moved(self, &reply);
+        Ok(reply)
     }
 
     /// Fails with an upgrade hint unless the server advertises support for local commits.

@@ -16,6 +16,7 @@ use crate::access::{
 use crate::access_service::{
     AccessStore, AccountDisable, AdminRevoke, OrgDeleteMark, OrgMemberChange,
 };
+use crate::account_self::{AccountEmail, EmailAdd, EmailRemove, PrimaryChange, RenameOutcome};
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent, brief};
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts};
 use crate::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
@@ -48,6 +49,8 @@ use crate::webhook::{
     WebhookStore, retry_delay,
 };
 
+mod self_service;
+
 type Key = (RepoId, RepoPath);
 
 #[derive(Default, Clone)]
@@ -69,6 +72,8 @@ struct State {
     /// Holds on the unreferenced-upload budget of in-flight uploads: repository, bytes, expiry.
     reservations: HashMap<i64, (RepoId, u64, DateTime<Utc>)>,
     next_reservation: i64,
+    /// Old `owner/name` addresses left by a rename of the owner, by lowercase name, to the repository's id.
+    redirects: HashMap<(UserId, String), RepoId>,
 }
 
 impl State {
@@ -1594,6 +1599,8 @@ impl MetadataStore for MemoryMetadataStore {
             });
         }
         self.outbox.queue(events)?;
+        st.redirects
+            .remove(&(repo.owner.clone(), repo.name.to_lowercase()));
         st.ensure_default_branch(&repo.id, &repo.owner, repo.created_at);
         st.repos.insert(repo.id.clone(), repo.clone());
         Ok(repo)
@@ -1610,6 +1617,43 @@ impl MetadataStore for MemoryMetadataStore {
 
     async fn get_repo(&self, id: &RepoId) -> Result<Option<RepoRecord>> {
         Ok(self.state.lock().unwrap().repos.get(id).cloned())
+    }
+
+    async fn find_repo_redirect(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .redirects
+            .get(&(owner.clone(), name.to_lowercase()))
+            .and_then(|id| st.repos.get(id))
+            .cloned())
+    }
+
+    async fn rename_owner(
+        &self,
+        old: &UserId,
+        new: &UserId,
+        _now: DateTime<Utc>,
+    ) -> Result<Vec<RepoRecord>> {
+        let mut st = self.state.lock().unwrap();
+        let mut moved = Vec::new();
+        for repo in st.repos.values_mut().filter(|r| &r.owner == old) {
+            repo.owner = new.clone();
+            moved.push(repo.clone());
+        }
+        for repo in &moved {
+            st.redirects
+                .insert((old.clone(), repo.name.to_lowercase()), repo.id.clone());
+        }
+        for lock in st.locks.values_mut().filter(|l| &l.owner == old) {
+            lock.owner = new.clone();
+        }
+        for branch in st.branches.values_mut().flatten() {
+            if &branch.created_by == old {
+                branch.created_by = new.clone();
+            }
+        }
+        moved.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(moved)
     }
 
     async fn list_repos(&self, owner: Option<&UserId>) -> Result<Vec<RepoRecord>> {
@@ -1674,6 +1718,8 @@ impl MetadataStore for MemoryMetadataStore {
             return Err(PynError::RepoExists(repo.address()));
         }
         self.outbox.queue(events)?;
+        st.redirects
+            .remove(&(repo.owner.clone(), repo.name.to_lowercase()));
         st.repos.insert(id.clone(), repo.clone());
         Ok(repo)
     }
@@ -1694,6 +1740,7 @@ impl MetadataStore for MemoryMetadataStore {
         st.uploads.retain(|(r, _), _| r != id);
         st.lfs.retain(|(r, _), _| r != id);
         st.reservations.retain(|_, (r, _, _)| r != id);
+        st.redirects.retain(|_, r| r != id);
         Ok(st.repos.remove(id).is_some())
     }
 
@@ -1871,6 +1918,8 @@ struct AccessState {
     oidc_flows: HashMap<String, OidcFlow>,
     settings: Option<ServerSettings>,
     limits: BTreeMap<UserId, Limits>,
+    emails: Vec<self_service::EmailRow>,
+    spans: Vec<crate::account_self::NameSpan>,
 }
 
 impl AccessState {
@@ -2620,12 +2669,7 @@ impl AccessStore for MemoryAccessStore {
     }
 
     async fn verified_email_owner(&self, email: &str) -> Result<Option<UserId>> {
-        let st = self.state.lock().unwrap();
-        Ok(st
-            .accounts
-            .values()
-            .find(|a| a.email_verified_at.is_some() && a.email.as_deref() == Some(email))
-            .map(|a| a.user.clone()))
+        Ok(self.state.lock().unwrap().verified_address_owner(email))
     }
 
     async fn pending_by_email(&self, email: &str) -> Result<Vec<AccountRecord>> {
@@ -2640,6 +2684,71 @@ impl AccessStore for MemoryAccessStore {
             .collect())
     }
 
+    async fn account_emails(&self, user: &UserId) -> Result<Vec<AccountEmail>> {
+        Ok(self.state.lock().unwrap().emails_of(user))
+    }
+
+    async fn add_email(
+        &self,
+        user: &UserId,
+        address: &str,
+        now: DateTime<Utc>,
+    ) -> Result<EmailAdd> {
+        Ok(self.state.lock().unwrap().add_email(user, address, now))
+    }
+
+    async fn confirm_added_email(
+        &self,
+        user: &UserId,
+        address: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .confirm_added_email(user, address, now))
+    }
+
+    async fn set_primary_email(&self, user: &UserId, address: &str) -> Result<PrimaryChange> {
+        Ok(self.state.lock().unwrap().set_primary_email(user, address))
+    }
+
+    async fn remove_email(
+        &self,
+        user: &UserId,
+        address: &str,
+        keep_verified: bool,
+    ) -> Result<EmailRemove> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .remove_email(user, address, keep_verified))
+    }
+
+    async fn rename_account(
+        &self,
+        user: &UserId,
+        new: &UserId,
+        at: DateTime<Utc>,
+        events: &[EventDraft],
+    ) -> Result<RenameOutcome> {
+        let mut st = self.state.lock().unwrap();
+        let outcome = st.rename_account(user, new, at);
+        if matches!(outcome, RenameOutcome::Renamed { .. }) {
+            self.outbox.queue(events)?;
+        }
+        Ok(outcome)
+    }
+
+    async fn current_names(
+        &self,
+        authors: &[(UserId, DateTime<Utc>)],
+    ) -> Result<Vec<Option<UserId>>> {
+        Ok(self.state.lock().unwrap().current_names(authors))
+    }
+
     async fn complete_verification_with_events(
         &self,
         user: &UserId,
@@ -2651,12 +2760,10 @@ impl AccessStore for MemoryAccessStore {
         let Some(email) = st.accounts.get(user).and_then(|a| a.email.clone()) else {
             return Ok(false);
         };
-        let taken = st.accounts.values().any(|a| {
-            &a.user != user
-                && a.email_verified_at.is_some()
-                && a.email.as_deref() == Some(email.as_str())
-        });
-        if taken {
+        if st
+            .verified_address_owner(&email)
+            .is_some_and(|o| &o != user)
+        {
             return Ok(false);
         }
         self.outbox.queue(events)?;
@@ -2823,7 +2930,8 @@ impl AccessStore for MemoryAccessStore {
 
     async fn put_verification(&self, record: VerificationRecord) -> Result<()> {
         let mut st = self.state.lock().unwrap();
-        st.verifications.retain(|_, v| v.user != record.user);
+        st.verifications
+            .retain(|_, v| v.user != record.user || v.email != record.email);
         st.verifications.insert(record.token_hash.clone(), record);
         Ok(())
     }

@@ -48,6 +48,12 @@ pub enum DomainEvent {
         user_id: AccountId,
         actor: UserId,
     },
+    AccountRenamed {
+        old_name: UserId,
+        new_name: UserId,
+        user_id: AccountId,
+        actor: UserId,
+    },
     OrganizationCreated {
         name: UserId,
         org_id: AccountId,
@@ -173,6 +179,7 @@ impl DomainEvent {
             Self::AccountApproved { .. } => "account.approved",
             Self::AccountDisabled { .. } => "account.disabled",
             Self::AccountEnabled { .. } => "account.enabled",
+            Self::AccountRenamed { .. } => "account.renamed",
             Self::OrganizationCreated { .. } => "organization.created",
             Self::OrganizationDeleted { .. } => "organization.deleted",
             Self::RepositoryCreated { .. } => "repository.created",

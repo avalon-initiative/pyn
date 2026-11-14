@@ -140,6 +140,12 @@ pub enum PynError {
     InvalidVerification(String),
     #[error("no account {0}")]
     UserNotFound(String),
+    #[error("that email address cannot be added")]
+    EmailUnavailable,
+    #[error("that address is not on this account")]
+    EmailNotFound,
+    #[error("{0}")]
+    EmailRefused(String),
     #[error("{0}")]
     UnsupportedImage(String),
     #[error("{0} has no avatar")]
@@ -335,6 +341,9 @@ impl PynError {
             Self::AvatarNotFound(_) => "avatar_not_found",
             Self::ServerAdminRequired => "server_admin_required",
             Self::LastServerAdmin => "last_server_admin",
+            Self::EmailUnavailable => "email_unavailable",
+            Self::EmailNotFound => "email_not_found",
+            Self::EmailRefused(_) => "email_refused",
             Self::ServiceScopeRequired(_) => "service_scope_required",
             Self::ServiceCredentialNotAllowed => "service_credential_not_allowed",
             Self::ServiceCredentialNotFound(_) => "service_credential_not_found",
