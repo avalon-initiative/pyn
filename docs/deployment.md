@@ -2,7 +2,7 @@
 
 New here? [Getting started](getting-started.md) leads with an installer script (`scripts/install.sh`) and keeps the step-by-step version, with image-only Compose files in
 [`deploy/`](../deploy/docker-compose.yml). This page covers running a server you keep: one node with Docker Compose, TLS in front, upgrades, several copies, and backups with a
-tested restore. Provisional: written against the first pre-release, `v0.1.0-alpha`; the image-only Compose file in `deploy/` has not been run against a release yet.
+tested restore. Provisional: the default image-only Compose file in `deploy/` has been run against the pre-releases `v0.1.0-alpha` to `v0.1.3-alpha` (the smoke test starts it from the published images and completes setup); the server-only and web-only files have not been run against a release yet.
 
 ## What runs
 
