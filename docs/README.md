@@ -9,6 +9,7 @@ Markdown, plus the generated OpenAPI document; `make docs-check` verifies relati
 - [Repositories: owners, names, visibility and the API shape](concepts/repositories.md)
 - [Browsing a repository: folder listing and summary](concepts/browsing.md)
 - [Access: roles, permissions and tokens](concepts/access.md)
+- [Profiles: display name, bio, links and avatar, and who sees what](concepts/profiles.md)
 - [Signing in with an external provider: OpenID Connect](concepts/external-sign-in.md)
 - [Limits and usage: optional per-owner caps](concepts/limits.md)
 - [Events: the lifecycle event schema](concepts/events.md)

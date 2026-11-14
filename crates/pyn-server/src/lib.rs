@@ -38,10 +38,12 @@ mod oidc_api;
 mod org_api;
 pub mod origin;
 pub mod passwords;
+mod profile_api;
 mod push_api;
 mod repo_api;
 mod repo_policy_api;
 pub mod request_limits;
+mod self_service_api;
 mod session_api;
 mod setup_api;
 mod team_api;
@@ -97,10 +99,21 @@ struct RepoAddress {
         oidc_api::list_identities,
         oidc_api::unlink_identity,
         access_api::change_password,
+        self_service_api::list_emails,
+        self_service_api::add_email,
+        self_service_api::resend_email,
+        self_service_api::set_primary_email,
+        self_service_api::delete_email,
+        self_service_api::rename_account,
         access_api::add_key,
         access_api::list_keys,
         access_api::delete_key,
         access_api::me,
+        profile_api::get_profile,
+        profile_api::update_profile,
+        profile_api::put_avatar,
+        profile_api::delete_avatar,
+        profile_api::get_avatar,
         repo_api::my_locks,
         admin_api::list_accounts,
         admin_api::approve,
@@ -299,6 +312,10 @@ struct RepoAddress {
         api::ExternalIdentityInfo,
         api::OidcLink,
         api::ChangePasswordRequest,
+        api::AccountEmail,
+        api::AddEmailRequest,
+        api::RenameRequest,
+        api::Renamed,
         api::AddUserRequest,
         api::CreateInviteRequest,
         api::InviteInfo,
@@ -306,6 +323,9 @@ struct RepoAddress {
         api::AddKeyRequest,
         api::SshKeyInfo,
         api::Account,
+        api::Profile,
+        api::UpdateProfileRequest,
+        api::PublicProfile,
         api::MyLock,
         api::Me,
         api::OrgInfo,
@@ -365,6 +385,7 @@ struct RepoAddress {
         api::AccountDeletionScheduledData,
         api::AccountDeletionRestoredData,
         api::AccountDeletedData,
+        api::AccountRenamedData,
         api::OrganizationCreatedData,
         api::OrganizationDeletedData,
         api::RepositoryCreatedData,
@@ -513,6 +534,23 @@ fn routes(state: AppState) -> Router {
         )
         .route("/v1/me/password", put(access_api::change_password))
         .route(
+            "/v1/me/emails",
+            get(self_service_api::list_emails).post(self_service_api::add_email),
+        )
+        .route(
+            "/v1/me/emails/{address}",
+            delete(self_service_api::delete_email),
+        )
+        .route(
+            "/v1/me/emails/{address}/resend",
+            post(self_service_api::resend_email),
+        )
+        .route(
+            "/v1/me/emails/{address}/primary",
+            put(self_service_api::set_primary_email),
+        )
+        .route("/v1/me/username", put(self_service_api::rename_account))
+        .route(
             "/v1/keys",
             get(access_api::list_keys).post(access_api::add_key),
         )
@@ -521,6 +559,13 @@ fn routes(state: AppState) -> Router {
             axum::routing::delete(access_api::delete_key),
         )
         .route("/v1/me", get(access_api::me))
+        .route("/v1/me/profile", put(profile_api::update_profile))
+        .route(
+            "/v1/me/avatar",
+            put(profile_api::put_avatar).delete(profile_api::delete_avatar),
+        )
+        .route("/v1/users/{user}", get(profile_api::get_profile))
+        .route("/v1/users/{user}/avatar", get(profile_api::get_avatar))
         .route("/v1/me/locks", get(repo_api::my_locks))
         .route(
             "/v1/tokens",
@@ -712,6 +757,10 @@ fn routes(state: AppState) -> Router {
         )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
+            self_service_api::moved_to_header,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             session_api::csrf_guard,
         ))
         .layer(axum::middleware::from_fn_with_state(
@@ -757,6 +806,8 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::LockRequired(_)
         | PynError::NotLocked(_)
         | PynError::UserExists(_)
+        | PynError::EmailUnavailable
+        | PynError::EmailRefused(_)
         | PynError::RepoExists(_)
         | PynError::OrgNotEmpty(_)
         | PynError::OrgDeleting(_)
@@ -811,6 +862,7 @@ fn status_for(e: &PynError) -> StatusCode {
         PynError::ObjectTooLarge { .. } | PynError::PushTooLarge(_) => {
             StatusCode::PAYLOAD_TOO_LARGE
         }
+        PynError::UnsupportedImage(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
         PynError::Unauthenticated(_) | PynError::ExternalSignInFailed(_) => {
             StatusCode::UNAUTHORIZED
@@ -822,6 +874,8 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::WebhookSecretNotFound { .. }
         | PynError::WebhookDeliveryNotFound { .. }
         | PynError::UserNotFound(_)
+        | PynError::EmailNotFound
+        | PynError::AvatarNotFound(_)
         | PynError::KeyNotFound(_)
         | PynError::OidcNotConfigured
         | PynError::ExternalIdentityNotFound(_)
@@ -1017,6 +1071,7 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         content: r.content.to_hex(),
         legacy_content: r.legacy_content,
         author: r.author.to_string(),
+        author_current: None,
         author_identity: r.person.map(person_dto),
         hash_version: r.hash_version,
         message: r.message,
@@ -1096,6 +1151,7 @@ fn commit_dto(c: pyn_core::Commit) -> api::Commit {
         parents: c.parents.iter().map(|p| p.to_hex()).collect(),
         tree: c.tree.to_hex(),
         author: person_dto(c.author),
+        author_current: None,
         committer: person_dto(c.committer),
         created_at: c.created_at,
         authored_at: Some(c.authored_at),
@@ -1495,8 +1551,10 @@ async fn history(
                 q.limit,
             )
             .await?;
+        let mut revisions: Vec<_> = page.revisions.into_iter().map(revision_dto).collect();
+        self_service_api::annotate_revisions(&s, &mut revisions).await?;
         return Ok(Json(api::HistoryPage {
-            revisions: page.revisions.into_iter().map(revision_dto).collect(),
+            revisions,
             next_cursor: page.next.map(encode_path_cursor),
         }));
     }
@@ -1511,8 +1569,10 @@ async fn history(
             q.limit,
         )
         .await?;
+    let mut revisions: Vec<_> = page.revisions.into_iter().map(revision_dto).collect();
+    self_service_api::annotate_revisions(&s, &mut revisions).await?;
     Ok(Json(api::HistoryPage {
-        revisions: page.revisions.into_iter().map(revision_dto).collect(),
+        revisions,
         next_cursor: page.next.map(|c| c.encode()),
     }))
 }
@@ -1684,8 +1744,10 @@ async fn list_commits(
             q.limit,
         )
         .await?;
+    let mut commits: Vec<_> = page.commits.into_iter().map(commit_dto).collect();
+    self_service_api::annotate_commits(&s, &mut commits).await?;
     Ok(Json(api::CommitPage {
-        commits: page.commits.into_iter().map(commit_dto).collect(),
+        commits,
         next_before: page.next.map(|n| n.to_hex()),
     }))
 }
@@ -1703,7 +1765,10 @@ async fn get_commit(
 ) -> ApiResult<Json<api::Commit>> {
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let id = repo.service.resolve_commit(&commit).await?;
-    Ok(Json(commit_dto(repo.service.get_commit(&id).await?)))
+    let mut commit = [commit_dto(repo.service.get_commit(&id).await?)];
+    self_service_api::annotate_commits(&s, &mut commit).await?;
+    let [commit] = commit;
+    Ok(Json(commit))
 }
 
 #[derive(Deserialize)]

@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod access_service;
+pub mod account_self;
 pub mod audit;
 pub mod auth;
 pub mod branch;
@@ -24,6 +25,8 @@ pub mod merge;
 pub mod object;
 pub mod oidc;
 pub mod passwords;
+pub mod profile;
+pub mod profiles;
 pub mod ratelimit;
 pub mod repo;
 pub mod repo_policy;
@@ -56,6 +59,9 @@ pub use access_service::{
 pub use access_service::{
     AdminRecovery, CreateWebhook, DeliveryPage, HOST_RECOVERY_ACTOR, IssuedSecret, WebhookDetail,
     WebhookSecretInfo, WebhookSettings,
+};
+pub use account_self::{
+    AccountEmail, EmailAdd, EmailRemove, NameSpan, PrimaryChange, RenameOutcome,
 };
 pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 pub use auth::AuthProvider;
@@ -94,6 +100,8 @@ pub use oidc::{
     IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider, pkce_challenge,
 };
 pub use passwords::{InlinePasswords, PasswordWorker};
+pub use profile::{Avatar, ImageKind, Profile, ProfileFields};
+pub use profiles::{Profiles, PublicProfile};
 pub use pyn_gitattr::lockable::Disagreement;
 pub use pyn_object::{FileMode, ObjectId};
 pub use ratelimit::{RateLimitStore, RateState};

@@ -66,6 +66,12 @@ pub enum DomainEvent {
         actor: UserId,
         reason: Option<String>,
     },
+    AccountRenamed {
+        old_name: UserId,
+        new_name: UserId,
+        user_id: AccountId,
+        actor: UserId,
+    },
     OrganizationCreated {
         name: UserId,
         org_id: AccountId,
@@ -194,6 +200,7 @@ impl DomainEvent {
             Self::AccountDeletionScheduled { .. } => "account.deletion_scheduled",
             Self::AccountDeletionRestored { .. } => "account.deletion_restored",
             Self::AccountDeleted { .. } => "account.deleted",
+            Self::AccountRenamed { .. } => "account.renamed",
             Self::OrganizationCreated { .. } => "organization.created",
             Self::OrganizationDeleted { .. } => "organization.deleted",
             Self::RepositoryCreated { .. } => "repository.created",

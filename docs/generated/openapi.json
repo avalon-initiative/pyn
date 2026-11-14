@@ -1964,6 +1964,341 @@
         }
       }
     },
+    "/v1/me/avatar": {
+      "put": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "put_avatar",
+        "requestBody": {
+          "description": "the image bytes (png, jpeg or webp, at most 1 MiB); the type is judged from the bytes, not the `Content-Type` header",
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the profile with the new `avatar_url`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: an empty body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "object_too_large: over 1 MiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "unsupported_image: not a png, jpeg or webp",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: too many avatar changes in an hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "delete_avatar",
+        "responses": {
+          "200": {
+            "description": "the profile without an avatar; removing none is not an error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/emails": {
+      "get": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "list_emails",
+        "responses": {
+          "200": {
+            "description": "the caller's addresses, the primary first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountEmail"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "add_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "added unverified; a link was mailed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountEmail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "not a valid address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "email_unavailable (held by or pending for another account, never says whose), or email_refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/emails/{address}": {
+      "delete": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "delete_email",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "description": "an address of the caller",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "email_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "email_refused: the last verified address, on a server that requires one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/emails/{address}/primary": {
+      "put": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "set_primary_email",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "description": "a verified address of the caller",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "email_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "email_refused: the address is not verified",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/emails/{address}/resend": {
+      "post": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "resend_email",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "description": "an unverified address of the caller",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {},
+          "404": {
+            "description": "email_not_found (not held, or already verified)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/me/identities": {
       "get": {
         "tags": [
@@ -2289,6 +2624,145 @@
           },
           "429": {
             "description": "too_many_attempts; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/profile": {
+      "put": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "update_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the stored profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a field is too long, has control characters, or a link is not an http(s) URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/username": {
+      "put": {
+        "tags": [
+          "self_service_api"
+        ],
+        "operationId": "rename_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "renamed; the old name is free for anyone, and each repository's old address redirects until a live repository takes it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Renamed"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request or reserved_name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "the password is wrong",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "owner_frozen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "user_exists: a user or organization holds the name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts",
             "content": {
               "application/json": {
                 "schema": {
@@ -8236,6 +8710,111 @@
           }
         }
       }
+    },
+    "/v1/users/{user}": {
+      "get": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "get_profile",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "readable signed out; never includes an email address, and lists only the repositories and organizations the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicProfile"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "credentials were sent but are not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found: no such user, or an organization, or an account that is disabled or not yet approved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{user}/avatar": {
+      "get": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "get_avatar",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "v",
+            "in": "query",
+            "description": "the version from `avatar_url`; when it is the current one the image is cached for a year",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the image, as `image/png`, `image/jpeg` or `image/webp` according to its bytes; readable signed out, with an `ETag` and `Cache-Control`",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "`If-None-Match` matches the current image"
+          },
+          "404": {
+            "description": "user_not_found, or avatar_not_found when the user has none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -8252,9 +8831,17 @@
             "type": "boolean",
             "description": "Runs the server: may approve and disable accounts under `/v1/admin`."
           },
+          "has_password": {
+            "type": "boolean",
+            "description": "Whether the account has a password. False for an account created through external sign-in until it sets\none, in which case `PUT /v1/me/password` takes no current password."
+          },
           "id": {
             "type": "string",
             "description": "Stable, never reused: the name can be recycled after a delete, the id cannot."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/Profile",
+            "description": "The account's profile; the email address is never part of it."
           },
           "user": {
             "type": "string"
@@ -8451,6 +9038,41 @@
           }
         }
       },
+      "AccountEmail": {
+        "type": "object",
+        "description": "One address an account holds. Only the account's owner ever sees these.",
+        "required": [
+          "address",
+          "verified",
+          "primary",
+          "added_at"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "address": {
+            "type": "string",
+            "description": "Lowercase."
+          },
+          "primary": {
+            "type": "boolean",
+            "description": "The address the server uses for the account; always verified."
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "False until the link mailed to the address is used; a pending address cannot be the primary."
+          },
+          "verified_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
       "AccountEnabledData": {
         "type": "object",
         "description": "`account.enabled`.",
@@ -8524,6 +9146,31 @@
           }
         }
       },
+      "AccountRenamedData": {
+        "type": "object",
+        "description": "`account.renamed`.",
+        "required": [
+          "old_name",
+          "new_name",
+          "user_id",
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string",
+            "description": "Who renamed it: the account itself."
+          },
+          "new_name": {
+            "type": "string"
+          },
+          "old_name": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
+      },
       "AccountStatus": {
         "type": "string",
         "description": "An account's state.",
@@ -8564,6 +9211,17 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "AddEmailRequest": {
+        "type": "object",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string"
           }
         }
       },
@@ -9026,6 +9684,13 @@
         "properties": {
           "author": {
             "$ref": "#/components/schemas/Person"
+          },
+          "author_current": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The author's account name now, when it was renamed after the commit (decision #986); `author.name` stays as\nwritten because the commit id covers it."
           },
           "authored_at": {
             "type": [
@@ -11171,6 +11836,103 @@
           }
         }
       },
+      "Profile": {
+        "type": "object",
+        "description": "The optional, user-edited part of an account: what others see on its profile page.",
+        "properties": {
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the avatar image is served, with a `v` parameter that changes when the image does; absent when the\naccount has none."
+          },
+          "bio": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 160 characters; may span lines."
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 64 characters."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 64 characters, trimmed, no control characters."
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to 5 `http` or `https` URLs."
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 64 characters."
+          }
+        }
+      },
+      "PublicProfile": {
+        "type": "object",
+        "description": "An account's public profile as the caller may see it: no email address, and only the repositories and\norganizations the caller may know about.",
+        "required": [
+          "id",
+          "user",
+          "created_at",
+          "profile",
+          "repositories",
+          "repository_count",
+          "organizations"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable, never reused."
+          },
+          "organizations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrgInfo"
+            },
+            "description": "The organizations the user belongs to that the caller belongs to as well, with the caller's role; always\nempty when signed out."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/Profile"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoInfo"
+            },
+            "description": "The repositories the user owns that the caller may see: public ones, and private ones where the caller has\na role. `role` is the caller's."
+          },
+          "repository_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many repositories are listed.",
+            "minimum": 0
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
       "PushObject": {
         "type": "object",
         "description": "One git object of a push: its id and its body (the bytes after git's `<kind> <length>` header), base64.",
@@ -11364,6 +12126,50 @@
         "properties": {
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "RenameRequest": {
+        "type": "object",
+        "description": "A username change; the old name is free for anyone to take afterwards.",
+        "required": [
+          "username"
+        ],
+        "properties": {
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account's current password; omitted only by an account with none, from a web session."
+          },
+          "username": {
+            "type": "string",
+            "description": "The new name: 2 to 39 lowercase letters, digits, `-` or `_`."
+          }
+        }
+      },
+      "Renamed": {
+        "type": "object",
+        "description": "The answer to a username change.",
+        "required": [
+          "old_name",
+          "new_name",
+          "repositories"
+        ],
+        "properties": {
+          "new_name": {
+            "type": "string"
+          },
+          "old_name": {
+            "type": "string"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The account's repositories; their old addresses now redirect (`X-Pyn-Moved-To`)."
           }
         }
       },
@@ -11909,6 +12715,13 @@
         "properties": {
           "author": {
             "type": "string"
+          },
+          "author_current": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The author's name now, when the account was renamed after writing this revision (decision #986). `author`\nstays as written because the hash covers it; show this one."
           },
           "author_identity": {
             "oneOf": [
@@ -12735,6 +13548,42 @@
           "exclusive",
           "mixed"
         ]
+      },
+      "UpdateProfileRequest": {
+        "type": "object",
+        "description": "The new profile text: every field is replaced, and one left out or blank is cleared.",
+        "properties": {
+          "bio": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "UpdateRepoRequest": {
         "type": "object",

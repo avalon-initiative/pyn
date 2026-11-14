@@ -12,6 +12,7 @@ use crate::access::{
     SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
     account, invite, service_credential, session, ssh, token, verification,
 };
+use crate::account_self::{AccountEmail, EmailAdd, EmailRemove, PrimaryChange, RenameOutcome};
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::deletion::{
@@ -27,6 +28,7 @@ use crate::oidc::{
     ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider,
 };
 use crate::passwords::{InlinePasswords, PasswordWorker};
+use crate::profile::{Avatar, Profile, ProfileFields};
 use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
@@ -46,8 +48,10 @@ mod freeze;
 mod invitations;
 mod limits;
 mod organizations;
+mod profile;
 mod recovery;
 mod repo_policy;
+mod self_service;
 mod setup;
 mod teams;
 mod webhooks;
@@ -58,6 +62,7 @@ pub use freeze::OwnerFreezeState;
 pub use invitations::OrgAdd;
 pub use limits::OwnerLimits;
 pub use recovery::{AdminRecovery, HOST_RECOVERY_ACTOR};
+pub use self_service::{AccountRename, MAX_ACCOUNT_EMAILS};
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
 pub use webhooks::{
@@ -354,6 +359,25 @@ pub trait AccessStore: Send + Sync {
 
     async fn password_hash(&self, user: &UserId) -> Result<Option<String>>;
 
+    /// The account's profile; empty when none was saved.
+    async fn profile(&self, user: &UserId) -> Result<Profile>;
+
+    /// Replaces the profile's text fields, keeping the avatar. The account must exist.
+    async fn set_profile(
+        &self,
+        user: &UserId,
+        fields: &ProfileFields,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+
+    /// Sets or clears the avatar, keeping the text fields. The account must exist.
+    async fn set_avatar(
+        &self,
+        user: &UserId,
+        avatar: Option<&Avatar>,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+
     async fn create_invite(&self, invite: InviteRecord) -> Result<()>;
 
     async fn get_invite(&self, id: &InviteId) -> Result<Option<InviteRecord>>;
@@ -437,6 +461,52 @@ pub trait AccessStore: Send + Sync {
 
     /// Accounts still waiting to verify `email`.
     async fn pending_by_email(&self, email: &str) -> Result<Vec<AccountRecord>>;
+
+    /// Every address the account holds, the primary first and then oldest first.
+    async fn account_emails(&self, user: &UserId) -> Result<Vec<AccountEmail>>;
+
+    /// Adds an unverified address. `Taken` when another account holds it, verified or pending; the check and the
+    /// insert are one step.
+    async fn add_email(&self, user: &UserId, address: &str, now: DateTime<Utc>)
+    -> Result<EmailAdd>;
+
+    /// Verifies an address added with `add_email`; it becomes the primary when the account has none. False when the
+    /// account does not hold it unverified or another account has verified it meanwhile.
+    async fn confirm_added_email(
+        &self,
+        user: &UserId,
+        address: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool>;
+
+    /// Makes a verified address the primary; the old primary stays on the account as an additional address.
+    async fn set_primary_email(&self, user: &UserId, address: &str) -> Result<PrimaryChange>;
+
+    /// Removes an address. Removing the primary promotes the oldest other verified address. With `keep_verified`, the
+    /// last verified address stays (`LastVerified`).
+    async fn remove_email(
+        &self,
+        user: &UserId,
+        address: &str,
+        keep_verified: bool,
+    ) -> Result<EmailRemove>;
+
+    /// Renames an account that is not an organization, with its memberships, tokens, keys, sessions and the other
+    /// records that name it, and notes the old name's span. `NameTaken` changes nothing.
+    async fn rename_account(
+        &self,
+        user: &UserId,
+        new: &UserId,
+        at: DateTime<Utc>,
+        events: &[EventDraft],
+    ) -> Result<RenameOutcome>;
+
+    /// For each author name and time, the name the account that held it then holds now; `None` when it is unchanged
+    /// or no renamed account held it.
+    async fn current_names(
+        &self,
+        authors: &[(UserId, DateTime<Utc>)],
+    ) -> Result<Vec<Option<UserId>>>;
 
     /// Marks the account's address verified and moves it to `signup`; false if another account has already
     /// verified the same address, or there is no such account.
@@ -1994,8 +2064,10 @@ impl AccessService {
             .store
             .account(&record.user)
             .await?
-            .filter(|a| a.signup == SignupStage::PendingVerification)
             .ok_or_else(|| bad("the link is not valid or has already been used"))?;
+        if account.signup != SignupStage::PendingVerification {
+            return self.confirm_added_email(&account, &record).await;
+        }
         let next = if self.config.require_approval {
             SignupStage::PendingApproval
         } else {

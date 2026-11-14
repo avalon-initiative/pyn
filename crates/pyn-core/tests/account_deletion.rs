@@ -785,3 +785,25 @@ async fn enabling_an_account_cancels_its_scheduled_deletion() {
     );
     assert_eq!(AuditAction::AccountDeleted.to_string(), "account_deleted");
 }
+
+#[tokio::test]
+async fn a_rename_cannot_take_a_purged_accounts_reserved_name() {
+    let w = world();
+    let root = admin(&w, "root").await;
+    sign_up(&w, "alice").await;
+    sign_up(&w, "bob").await;
+    disable(&w, &root, "alice").await;
+    w.access
+        .admin_delete_account(&root, &user("alice"), "gone", true)
+        .await
+        .unwrap();
+    let refused = w
+        .access
+        .rename_account(&session("bob"), "alice", Some(PASSWORD))
+        .await;
+    assert_eq!(code(refused), "name_reserved");
+    w.access
+        .rename_account(&session("bob"), "robert", Some(PASSWORD))
+        .await
+        .unwrap();
+}

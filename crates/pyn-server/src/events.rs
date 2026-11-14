@@ -8,11 +8,12 @@ use pyn_core::{
 };
 use pyn_proto::{
     AccountApprovedData, AccountCreatedData, AccountDeletedData, AccountDeletionRestoredData,
-    AccountDeletionScheduledData, AccountDisabledData, AccountEnabledData, Event, EventData,
-    LimitKind as WireLimitKind, Limits, LockAcquiredData, LockExpiredData, LockForcedData,
-    LockReleasedData, OrganizationCreatedData, OrganizationDeletedData, OwnerFrozenData, OwnerKind,
-    OwnerLimitReachedData, OwnerLimitsChangedData, OwnerUnfrozenData, RepositoryCreatedData,
-    RepositoryDeletedData, RepositoryRenamedData, RepositoryStorageCapChangedData,
+    AccountDeletionScheduledData, AccountDisabledData, AccountEnabledData, AccountRenamedData,
+    Event, EventData, LimitKind as WireLimitKind, Limits, LockAcquiredData, LockExpiredData,
+    LockForcedData, LockReleasedData, OrganizationCreatedData, OrganizationDeletedData,
+    OwnerFrozenData, OwnerKind, OwnerLimitReachedData, OwnerLimitsChangedData, OwnerUnfrozenData,
+    RepositoryCreatedData, RepositoryDeletedData, RepositoryRenamedData,
+    RepositoryStorageCapChangedData,
 };
 
 /// Builds webhook envelopes for the domain's limit refusals.
@@ -147,6 +148,17 @@ impl LimitEvents for WebhookLimitEvents {
                 user_id: user_id.to_string(),
                 actor: name(actor),
                 reason,
+            }),
+            DomainEvent::AccountRenamed {
+                old_name,
+                new_name,
+                user_id,
+                actor,
+            } => EventData::AccountRenamed(AccountRenamedData {
+                old_name: name(old_name),
+                new_name: name(new_name),
+                user_id: user_id.to_string(),
+                actor: name(actor),
             }),
             DomainEvent::OrganizationCreated {
                 name: org,

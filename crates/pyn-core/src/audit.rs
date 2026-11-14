@@ -73,6 +73,11 @@ pub enum AuditAction {
     ServerSetupCompleted,
     AdminGranted,
     AdminRevoked,
+    AccountRenamed,
+    EmailAdded,
+    EmailVerified,
+    EmailPrimaryChanged,
+    EmailRemoved,
     OwnerLimitsChanged,
     RepoStorageCapChanged,
     OwnerFrozen,
@@ -97,7 +102,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 67] = [
+    pub const ALL: [AuditAction; 72] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -144,6 +149,11 @@ impl AuditAction {
         AuditAction::ServerSetupCompleted,
         AuditAction::AdminGranted,
         AuditAction::AdminRevoked,
+        AuditAction::AccountRenamed,
+        AuditAction::EmailAdded,
+        AuditAction::EmailVerified,
+        AuditAction::EmailPrimaryChanged,
+        AuditAction::EmailRemoved,
         AuditAction::OwnerLimitsChanged,
         AuditAction::RepoStorageCapChanged,
         AuditAction::OwnerFrozen,
@@ -215,6 +225,11 @@ impl AuditAction {
             Self::ServerSetupCompleted => "server_setup_completed",
             Self::AdminGranted => "admin_granted",
             Self::AdminRevoked => "admin_revoked",
+            Self::AccountRenamed => "account_renamed",
+            Self::EmailAdded => "email_added",
+            Self::EmailVerified => "email_verified",
+            Self::EmailPrimaryChanged => "email_primary_changed",
+            Self::EmailRemoved => "email_removed",
             Self::OwnerLimitsChanged => "owner_limits_changed",
             Self::RepoStorageCapChanged => "repo_storage_cap_changed",
             Self::OwnerFrozen => "owner_frozen",

@@ -4,13 +4,14 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
-    AccessStore, AccountDeletion, AccountDisable, AccountId, AccountKind, AccountPurge,
-    AccountRecord, AccountStatus, AdminRevoke, CreationEffect, CreationRule, CreationScope,
-    CreationSubject, DeletionSchedule, EventDraft, ExternalCreate, ExternalIdentity,
-    IdentityUnlink, InvitationAccept, InvitationCreate, InviteId, InviteRecord, Limits,
-    LimitsChange, LimitsEvent, MemberCreation, NameReservation, NewAccount, NewExternalAccount,
-    OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgRole, Permission, PynError,
-    RateLimitStore, RateState, RegistrationMode, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
+    AccessStore, AccountDeletion, AccountDisable, AccountEmail, AccountId, AccountKind,
+    AccountPurge, AccountRecord, AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule,
+    CreationScope, CreationSubject, DeletionSchedule, EmailAdd, EmailRemove, EventDraft,
+    ExternalCreate, ExternalIdentity, IdentityUnlink, InvitationAccept, InvitationCreate, InviteId,
+    InviteRecord, Limits, LimitsChange, LimitsEvent, MemberCreation, NameReservation, NewAccount,
+    NewExternalAccount, OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgRole,
+    Permission, PrimaryChange, Profile, ProfileFields, PynError, RateLimitStore, RateState,
+    RegistrationMode, RenameOutcome, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
     ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
     SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord, UserId,
     VerificationRecord,
@@ -713,6 +714,28 @@ impl AccessStore for PgMetadataStore {
             .await
             .map_err(db)?;
         Ok(())
+    }
+
+    async fn profile(&self, user: &UserId) -> Result<Profile> {
+        self.profile_row(user).await
+    }
+
+    async fn set_profile(
+        &self,
+        user: &UserId,
+        fields: &ProfileFields,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.put_profile_fields(user, fields, now).await
+    }
+
+    async fn set_avatar(
+        &self,
+        user: &UserId,
+        avatar: Option<&Avatar>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.put_avatar(user, avatar, now).await
     }
 
     async fn password_hash(&self, user: &UserId) -> Result<Option<String>> {
@@ -1564,13 +1587,67 @@ impl AccessStore for PgMetadataStore {
 
     async fn verified_email_owner(&self, email: &str) -> Result<Option<UserId>> {
         let id: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM users WHERE email = $1 AND email_verified_at IS NOT NULL",
+            "SELECT id FROM users WHERE email = $1 AND email_verified_at IS NOT NULL
+             UNION ALL SELECT user_id FROM account_emails WHERE address = $1 AND verified_at IS NOT NULL
+             LIMIT 1",
         )
         .bind(email)
         .fetch_optional(&self.pool)
         .await
         .map_err(db)?;
         Ok(id.map(UserId::new))
+    }
+
+    async fn account_emails(&self, user: &UserId) -> Result<Vec<AccountEmail>> {
+        self.emails_of(user).await
+    }
+
+    async fn add_email(
+        &self,
+        user: &UserId,
+        address: &str,
+        now: DateTime<Utc>,
+    ) -> Result<EmailAdd> {
+        self.add_email_row(user, address, now).await
+    }
+
+    async fn confirm_added_email(
+        &self,
+        user: &UserId,
+        address: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.confirm_email_row(user, address, now).await
+    }
+
+    async fn set_primary_email(&self, user: &UserId, address: &str) -> Result<PrimaryChange> {
+        self.set_primary_row(user, address).await
+    }
+
+    async fn remove_email(
+        &self,
+        user: &UserId,
+        address: &str,
+        keep_verified: bool,
+    ) -> Result<EmailRemove> {
+        self.remove_email_row(user, address, keep_verified).await
+    }
+
+    async fn rename_account(
+        &self,
+        user: &UserId,
+        new: &UserId,
+        at: DateTime<Utc>,
+        events: &[EventDraft],
+    ) -> Result<RenameOutcome> {
+        self.rename_account_row(user, new, at, events).await
+    }
+
+    async fn current_names(
+        &self,
+        authors: &[(UserId, DateTime<Utc>)],
+    ) -> Result<Vec<Option<UserId>>> {
+        self.current_names_of(authors).await
     }
 
     async fn pending_by_email(&self, email: &str) -> Result<Vec<AccountRecord>> {
@@ -1591,7 +1668,9 @@ impl AccessStore for PgMetadataStore {
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let done = sqlx::query(
-            "UPDATE users SET email_verified_at = $3, signup = $2 WHERE id = $1 AND email IS NOT NULL",
+            "UPDATE users SET email_verified_at = $3, signup = $2 WHERE id = $1 AND email IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM account_emails a
+                                WHERE a.address = users.email AND a.verified_at IS NOT NULL AND a.user_id <> users.id)",
         )
         .bind(user.as_str())
         .bind(signup.as_str())
@@ -1825,7 +1904,7 @@ impl AccessStore for PgMetadataStore {
     async fn put_verification(&self, record: VerificationRecord) -> Result<()> {
         sqlx::query(
             "INSERT INTO email_verifications (token_hash, user_id, email, expires_at) VALUES ($1, $2, $3, $4)
-             ON CONFLICT (user_id) DO UPDATE SET
+             ON CONFLICT (user_id, email) DO UPDATE SET
                 token_hash = EXCLUDED.token_hash, email = EXCLUDED.email, expires_at = EXCLUDED.expires_at",
         )
         .bind(record.token_hash)

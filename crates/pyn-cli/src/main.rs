@@ -49,6 +49,7 @@ mod pathspec;
 mod policy;
 mod policy_lint;
 mod probe;
+mod profile;
 mod pyn_server;
 mod quiet;
 mod rename;
@@ -121,6 +122,9 @@ enum Command {
         #[arg(long)]
         password_stdin: bool,
     },
+    /// Manage your own account: email addresses, username and deletion.
+    #[command(subcommand)]
+    Account(account::AccountCommand),
     /// Change your own password.
     Password {
         /// Read the current password, then the new one, from standard input.
@@ -343,9 +347,9 @@ enum Command {
     External(Vec<OsString>),
     /// Show who you are signed in as and, in a repository, what you may do there.
     Whoami,
-    /// Delete your account, restore it during the recovery window, or see its deletion status.
+    /// Show profiles, and edit your own display name, bio, links and avatar.
     #[command(subcommand)]
-    Account(account::AccountCommand),
+    Profile(profile::ProfileCommand),
     /// Link SSH public keys to your account.
     #[command(subcommand)]
     Key(KeyCommand),
@@ -1522,6 +1526,7 @@ fn runs_anywhere(command: &Command) -> bool {
             | Command::Password { .. }
             | Command::Account(_)
             | Command::Key(_)
+            | Command::Profile(_)
             | Command::Token(_)
             | Command::User(_)
             | Command::Org(_)
@@ -1949,6 +1954,7 @@ fn run(cli: Cli) -> Result<()> {
             println!("password changed");
             report_ended_sign_in(api)?;
         }
+        Command::Account(cmd) => account::run(backend.pyn_server("account")?, cmd)?,
         Command::Key(KeyCommand::Add { file, title }) => {
             let api = backend.pyn_server("key")?;
             let file = file.map_or_else(default_public_key, Ok)?;
@@ -2058,10 +2064,12 @@ fn run(cli: Cli) -> Result<()> {
                 println!("{}\t{}", me.user, me.permissions.join(","));
             } else {
                 let me: api::Account = api.send(api.get("/v1/me"))?.json()?;
-                println!("{}", me.user);
+                match me.profile.display_name {
+                    Some(name) => println!("{} ({})", me.user, sanitize::text(&name)),
+                    None => println!("{}", me.user),
+                }
             }
         }
-        Command::Account(cmd) => account::run(backend.pyn_server("account")?, cmd)?,
         Command::Repo(cmd) => repo_command(backend.pyn_server("repo")?, cmd)?,
         Command::Org(cmd) => org_command(backend.pyn_server("org")?, cmd)?,
         Command::Invitation(cmd) => invitation_command(backend.pyn_server("invitation")?, cmd)?,
@@ -2949,6 +2957,7 @@ fn run(cli: Cli) -> Result<()> {
                 eprintln!("more: --before {next}");
             }
         }
+        Command::Profile(cmd) => profile::run(backend.pyn_server("profile")?, cmd)?,
         Command::Token(cmd) => token_command(backend.pyn_server("token")?, cmd)?,
         Command::Member(MemberCommand::List) => {
             let api = backend.pyn_server("member")?;

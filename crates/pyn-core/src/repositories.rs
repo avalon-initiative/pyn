@@ -22,6 +22,8 @@ use crate::service::{DEFAULT_UNREFERENCED_UPLOAD_BYTES, LockLimit, RepoService, 
 use crate::store::MetadataStore;
 use crate::types::{Lock, UserId};
 
+mod visible;
+
 fn limit_detail(settings: &RepoSettings) -> String {
     settings
         .max_locks
@@ -221,11 +223,32 @@ impl Repositories {
         Ok(svc)
     }
 
+    /// A live repository at `owner/name`, else the one a rename of `owner` moved away from there (decision #986).
+    async fn find_or_redirect(&self, owner: &str, name: &str) -> Result<Option<RepoRecord>> {
+        let owner = UserId::new(owner);
+        match self.meta.find_repo(&owner, name).await? {
+            Some(live) => Ok(Some(live)),
+            None => self.meta.find_repo_redirect(&owner, name).await,
+        }
+    }
+
+    /// The current address of `owner/name` when that address is only a redirect left by a rename.
+    pub async fn moved_to(&self, owner: &str, name: &str) -> Result<Option<String>> {
+        let owner = UserId::new(owner);
+        if self.meta.find_repo(&owner, name).await?.is_some() {
+            return Ok(None);
+        }
+        Ok(self
+            .meta
+            .find_repo_redirect(&owner, name)
+            .await?
+            .map(|r| r.address()))
+    }
+
     /// Finds `owner/name`; `RepoNotFound` if there is none.
     pub async fn open(&self, owner: &str, name: &str) -> Result<OpenRepo> {
         let record = self
-            .meta
-            .find_repo(&UserId::new(owner), name)
+            .find_or_redirect(owner, name)
             .await?
             .ok_or_else(|| PynError::RepoNotFound(format!("{owner}/{name}")))?;
         let service = self.service_for(&record).await?;
@@ -240,7 +263,7 @@ impl Repositories {
         name: &str,
         who: Option<&Identity>,
     ) -> Result<(OpenRepo, Principal)> {
-        let record = self.meta.find_repo(&UserId::new(owner), name).await?;
+        let record = self.find_or_redirect(owner, name).await?;
         let principal = match &record {
             Some(r) => self.principal_for(r, who).await?,
             None => {

@@ -79,6 +79,10 @@ mod repo_cap;
 pub use repo_cap::*;
 mod account_deletion;
 pub use account_deletion::*;
+mod self_service;
+pub use self_service::*;
+mod profiles;
+pub use profiles::*;
 
 struct Harness {
     store: Store,
@@ -3257,6 +3261,8 @@ pub async fn verify_checks_every_branch_and_a_commit_names_its_parent(store: Sto
 macro_rules! contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; second_user_cannot_take_a_held_lock);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_rename_moves_repositories_and_locks_and_leaves_redirects);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_live_repository_ends_the_redirect_for_its_own_name_only);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_cap_refuses_only_writes_that_add_stored_bytes);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_lower_of_the_owner_and_repository_caps_refuses);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_changeset_past_the_repository_cap_applies_nothing);
@@ -4406,6 +4412,23 @@ impl MetadataStore for HookedMeta {
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> crate::Result<Option<RepoRecord>> {
         self.inner.find_repo(owner, name).await
+    }
+
+    async fn find_repo_redirect(
+        &self,
+        owner: &UserId,
+        name: &str,
+    ) -> crate::Result<Option<RepoRecord>> {
+        self.inner.find_repo_redirect(owner, name).await
+    }
+
+    async fn rename_owner(
+        &self,
+        old: &UserId,
+        new: &UserId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> crate::Result<Vec<RepoRecord>> {
+        self.inner.rename_owner(old, new, now).await
     }
 
     async fn get_repo(&self, id: &RepoId) -> crate::Result<Option<RepoRecord>> {
@@ -8128,6 +8151,10 @@ pub async fn a_manager_sees_and_revokes_only_tokens_within_the_repositories_they
 macro_rules! access_contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; tokens_round_trip_and_list_newest_first);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; added_addresses_are_unique_pending_until_verified_and_the_primary_must_be_verified);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_address_promotes_a_verified_one_and_can_keep_the_last);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_rename_moves_what_names_the_account_and_refuses_a_taken_name);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; name_spans_resolve_an_author_to_the_accounts_current_name);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; an_owner_freezes_with_a_reason_and_time_and_unfreezes);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_is_recorded_and_harmless_twice);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sign_in_tokens_are_revoked_apart_from_created_ones);
@@ -8184,6 +8211,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_last_way_to_sign_in_cannot_be_unlinked);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; racing_unlinks_leave_one_way_to_sign_in);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sign_in_flows_are_taken_once_and_swept_when_expired);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profiles_store_text_fields_and_an_avatar_apart);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profiles_belong_to_one_account_each);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
