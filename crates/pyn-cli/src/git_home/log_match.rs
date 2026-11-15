@@ -204,6 +204,13 @@ pub fn parse_date(text: &str, now: DateTime<Local>) -> Result<i64> {
     }
 }
 
+/// A `--since` / `--until` value as git reads it: what it cannot read is `now`, and a time before 1970 wraps to a huge one.
+pub fn parse_filter_date(text: &str, now: DateTime<Local>) -> i64 {
+    let secs = parse_date_basic(text, now.timestamp())
+        .unwrap_or_else(|| approxidate(text, now.timestamp()).0);
+    if secs < 0 { i64::MAX } else { secs }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +267,7 @@ mod tests {
         assert_eq!(at("2 weeks 3 days ago"), 1_800_000_000 - 17 * 86_400);
         assert_eq!(at("five minutes"), 1_800_000_000 - 300);
         assert!(parse_date("garbage", now()).is_err());
+        assert_eq!(parse_filter_date("garbage", now()), now().timestamp());
+        assert_eq!(parse_filter_date("100 years ago", now()), i64::MAX);
     }
 }

@@ -26,6 +26,16 @@ pub(super) struct Origin {
     suspects: Vec<(usize, usize)>,
     pub previous: Option<usize>,
     pub guilty: bool,
+    /// Whether git would hold this origin's file in memory, for the `--show-stats` read count.
+    loaded: bool,
+}
+
+/// What `--show-stats` prints.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Stats {
+    pub reads: u32,
+    pub patches: u32,
+    pub commits: u32,
 }
 
 /// The work tree file standing in as a commit on top of `parents`.
@@ -107,6 +117,7 @@ pub(super) struct Board<'a> {
     /// The blamed file's text and the offset of each of its lines, for scoring moved and copied lines.
     final_text: Rc<Vec<u8>>,
     final_off: Vec<usize>,
+    pub stats: Stats,
 }
 
 /// A stable merge by source line: on a tie the lines already there come first, as git's list merge does.
@@ -155,6 +166,7 @@ impl<'a> Board<'a> {
             piece: vec![0; line_count],
             final_text: Rc::new(Vec::new()),
             final_off: Vec::new(),
+            stats: Stats::default(),
         }
     }
 
@@ -238,6 +250,7 @@ impl<'a> Board<'a> {
             suspects: Vec::new(),
             previous: None,
             guilty: false,
+            loaded: false,
         });
         self.index.insert((commit, path.to_vec()), i);
         self.by_commit.entry(commit).or_default().push(i);
@@ -255,6 +268,8 @@ impl<'a> Board<'a> {
     ) -> Result<usize> {
         let o = self.origin(commit, path, blob, mode);
         self.origins[o].suspects = lines.map(|l| (l, l)).collect();
+        self.stats.reads += 1;
+        self.origins[o].loaded = self.fake.is_some();
         let time = self.time_of(&commit)?;
         self.push(commit, time);
         Ok(o)
@@ -284,6 +299,15 @@ impl<'a> Board<'a> {
         Ok(d)
     }
 
+    /// The origin's file, counted as a read the first time git would load it.
+    pub(super) fn fill(&mut self, o: usize) -> Result<Rc<Vec<u8>>> {
+        if !self.origins[o].loaded {
+            self.origins[o].loaded = true;
+            self.stats.reads += 1;
+        }
+        self.data(o)
+    }
+
     pub fn run(&mut self) -> Result<()> {
         while let Some(q) = self.queue.pop() {
             while let Some(o) = self.by_commit.get(&q.commit).and_then(|v| {
@@ -294,6 +318,7 @@ impl<'a> Board<'a> {
             }) {
                 if self.settings.reverse || !self.hidden.contains(&q.commit) {
                     self.pass_blame(o)?;
+                    self.origins[o].loaded = false;
                 }
                 let rest = std::mem::take(&mut self.origins[o].suspects);
                 if !rest.is_empty() {
@@ -389,10 +414,26 @@ impl<'a> Board<'a> {
 
     fn pass_whole(&mut self, o: usize, po: usize) -> Result<()> {
         let suspects = std::mem::take(&mut self.origins[o].suspects);
+        if self.origins[o].loaded && !self.origins[po].loaded {
+            self.origins[o].loaded = false;
+            self.origins[po].loaded = true;
+        }
         self.queue_blames(po, suspects)
     }
 
+    /// Passes blame on; as git does, a parent left with no lines gives up its file.
     fn pass_blame(&mut self, o: usize) -> Result<()> {
+        let mut parents = Vec::new();
+        let done = self.pass_blame_to(o, &mut parents);
+        for po in parents {
+            if self.origins[po].suspects.is_empty() {
+                self.origins[po].loaded = false;
+            }
+        }
+        done
+    }
+
+    fn pass_blame_to(&mut self, o: usize, taken: &mut Vec<usize>) -> Result<()> {
         let commit = self.origins[o].commit;
         let parents = self.parents_of(&commit)?;
         let mut found: Vec<Option<usize>> = vec![None; parents.len()];
@@ -419,6 +460,10 @@ impl<'a> Board<'a> {
                 }
             }
         }
+        taken.extend(found.iter().flatten());
+        if !parents.is_empty() {
+            self.stats.commits += 1;
+        }
         for po in found.iter().flatten().copied() {
             if self.origins[o].previous.is_none() {
                 self.origins[o].previous = Some(po);
@@ -431,6 +476,7 @@ impl<'a> Board<'a> {
         if self.ignore.contains(&commit) {
             for po in found.iter().flatten().copied() {
                 self.pass_to_parent(o, po, true)?;
+                self.origins[po].loaded = false;
                 self.prints.remove(&po);
                 if self.origins[o].suspects.is_empty() {
                     break;
@@ -451,7 +497,8 @@ impl<'a> Board<'a> {
         if self.origins[o].suspects.is_empty() {
             return Ok(());
         }
-        let (a, b) = (self.data(po)?, self.data(o)?);
+        let (a, b) = (self.fill(po)?, self.fill(o)?);
+        self.stats.patches += 1;
         let mut ws = if self.settings.ignore_whitespace {
             pyn_diff::Ws::all()
         } else {

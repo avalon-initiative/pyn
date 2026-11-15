@@ -1560,6 +1560,8 @@ fn incremental_prints_entries_as_settled_like_git() {
             &["--incremental", "-p", "m.txt"],
             &["--incremental", "-s", "-e", "m.txt"],
             &["--incremental", "--progress", "m.txt"],
+            &["--incremental", "-M", "m.txt"],
+            &["--incremental", "-C", "-C", "-C", "m.txt"],
         ] {
             r.same(args);
         }
@@ -1714,16 +1716,101 @@ fn function_ranges_follow_the_diff_driver() {
     });
 }
 
+const WORK_COUNTERS: [&[&str]; 14] = [
+    &["--show-stats"],
+    &["--score-debug"],
+    &["--show-stats", "--score-debug", "-f", "-n"],
+    &["--score-debug", "-s", "-e"],
+    &["--score-debug", "--abbrev=10", "-l"],
+    &["--show-stats", "--score-debug", "--root"],
+    &["--show-stats", "--score-debug", "-w"],
+    &["--show-stats", "--score-debug", "--first-parent"],
+    &["--show-stats", "--score-debug", "-L", "3,9"],
+    &["--show-stats", "--score-debug", "-M"],
+    &["--show-stats", "--score-debug", "-C", "-C", "-C"],
+    &["--show-stats", "--score-debug", "-p"],
+    &["--show-stats", "--incremental"],
+    &[
+        "--score-debug",
+        "--no-score-debug",
+        "--show-stats",
+        "--no-show-stats",
+    ],
+];
+
 #[test]
-fn what_is_not_built_is_a_usage_error() {
+fn work_counters_and_scores_match_git() {
     each_format(|r| {
-        linear(r);
-        for args in [&["--show-stats", "a.txt"][..], &["--score-debug", "a.txt"]] {
-            let (code, out, err) = r.pyn(&r.dir, "blame", args);
-            assert_eq!(code, 129, "{} blame {args:?}: {err}", r.format);
-            assert!(out.is_empty(), "{args:?}");
+        merged(r);
+        for opts in WORK_COUNTERS {
+            let mut args = opts.to_vec();
+            args.push("m.txt");
+            r.same(&args);
+        }
+        for rev in ["HEAD", "HEAD~2", "side...late"] {
+            r.same(&["--show-stats", "--score-debug", rev, "m.txt"]);
+        }
+        r.same(&[
+            "--show-stats",
+            "--score-debug",
+            "--reverse",
+            "HEAD~3",
+            "m.txt",
+        ]);
+        r.same(&[
+            "--show-stats",
+            "--score-debug",
+            "--ignore-rev",
+            "HEAD~1",
+            "m.txt",
+        ]);
+        r.same_annotate(&["--score-debug", "--show-stats", "m.txt"]);
+        let mut text = fs::read_to_string(r.dir.join("m.txt")).unwrap();
+        text = text.replace("line 4", "work tree four");
+        r.write("m.txt", text.as_bytes());
+        r.same_masked(&["--show-stats", "--score-debug", "m.txt"]);
+    });
+    each_format(|r| {
+        moved_block(r);
+        for opts in [&["-M"][..], &["-C", "-C", "-C"], &["-M50", "-C20"]] {
+            let mut args = vec!["--show-stats", "--score-debug"];
+            args.extend_from_slice(opts);
+            args.push("m.txt");
+            r.same(&args);
         }
     });
+    each_format(|r| {
+        copied_block(r);
+        for file in ["n.txt", "a.txt", "d.txt"] {
+            for opts in [&["-C"][..], &["-C", "-C"], &["-C", "-C", "-C"]] {
+                let mut args = vec!["--show-stats", "--score-debug"];
+                args.extend_from_slice(opts);
+                args.push(file);
+                r.same(&args);
+            }
+        }
+    });
+}
+
+#[test]
+fn work_counters_and_scores_on_random_histories_match_git() {
+    for format in FORMATS {
+        for seed in 1..=8u64 {
+            let r = Repo::new(format);
+            let cur = random_history(&r, seed);
+            for opts in [
+                &["--show-stats", "--score-debug"][..],
+                &["--show-stats", "--score-debug", "-w"],
+                &["--show-stats", "--score-debug", "--root", "HEAD~3"],
+                &["--show-stats", "--score-debug", "-M", "-C"],
+                &["--show-stats", "--score-debug", "--first-parent"],
+            ] {
+                let mut args = opts.to_vec();
+                args.push(&cur);
+                r.same(&args);
+            }
+        }
+    }
 }
 
 #[test]

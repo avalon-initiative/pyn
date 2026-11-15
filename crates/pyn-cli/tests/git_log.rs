@@ -573,6 +573,10 @@ fn approximate_dates_match_git() {
             "yesterday 11pm",
             "last tuesday",
             "garbage 5",
+            "garbage",
+            "100 years ago",
+            "1 week 100 years ago",
+            "never 5 days ago",
             "nov 23:00 2023",
             "jun 5:00 2026",
             "2023-11-14T22:30",
@@ -776,12 +780,9 @@ fn bad_arguments_fail_as_git_does() {
         assert_eq!((want, code), (128, 128), "{err}");
         assert!(err.contains("ambiguous"), "{err}");
         f.same(&["v1", "--", "b.txt"]);
-        for bad in [
-            "--date=nonsense",
-            "--since=gibberish",
-            "--author=[",
-            "--grep=\\(",
-        ] {
+        f.same(&["--oneline", "--until=gibberish"]);
+        f.same(&["--oneline", "--since=gibberish"]);
+        for bad in ["--date=nonsense", "--author=[", "--grep=\\("] {
             let (code, out, err) = f.pyn(&f.repo, &[bad]);
             assert_ne!(code, 0, "{bad}");
             assert!(out.is_empty() && !err.is_empty(), "{bad}");

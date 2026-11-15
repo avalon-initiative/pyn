@@ -13,7 +13,7 @@ use super::commands::{add_changes, add_unchanged, emit, head_or_refuse, message_
 use super::decorate::{DecorateArgs, with_decoration};
 use super::log_gate::{Gate, Pickaxe};
 use super::log_graph::{Graph, topo_order};
-use super::log_match::{Dialect, compile_as, compile_ere, parse_date};
+use super::log_match::{Dialect, compile_as, compile_ere, parse_date, parse_filter_date};
 use super::merge_diff::{Against, Body, MergeArgs, Plan, Shape, Want, with_from};
 use super::verify_sig::{commit_report, with_report};
 use crate::commit_format::{Context, FormatArgs, Pretty, Rendering, render};
@@ -421,7 +421,9 @@ impl Filters {
                 .collect()
         };
         let now = super::log_match::now();
-        let date = |d: &Option<String>| d.as_deref().map(|d| parse_date(d, now)).transpose();
+        let date = |d: &Option<String>| -> Result<Option<i64>> {
+            Ok(d.as_deref().map(|d| parse_filter_date(d, now)))
+        };
         Ok(Self {
             authors: all(&a.author)?,
             committers: all(&a.committer)?,

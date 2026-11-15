@@ -43,6 +43,7 @@ pub(super) struct Flags {
     pub blank_boundary: bool,
     pub mark_ignored: bool,
     pub mark_unblamable: bool,
+    pub score_debug: bool,
 }
 
 pub(super) struct Layout<'a> {
@@ -57,6 +58,8 @@ pub(super) struct Layout<'a> {
     pub infos: &'a HashMap<ObjectId, Info>,
     pub lines: &'a [&'a [u8]],
     pub color: Coloring,
+    /// Per origin, git's reference count, for `--score-debug`.
+    pub refs: &'a [usize],
 }
 
 fn tz_string(offset_minutes: i32) -> String {
@@ -111,6 +114,14 @@ fn pad(out: &mut Vec<u8>, count: usize) {
 impl Layout<'_> {
     fn info(&self, e: &Entry) -> &Info {
         &self.infos[&self.origins[e.origin].commit]
+    }
+
+    /// Letters and digits in the entry's lines, plus one.
+    fn score(&self, e: &Entry) -> usize {
+        1 + self.lines[e.lno..e.lno + e.count]
+            .iter()
+            .map(|l| l.iter().filter(|b| b.is_ascii_alphanumeric()).count())
+            .sum::<usize>()
     }
 
     fn time(&self, who: &Signature) -> String {
@@ -203,6 +214,11 @@ impl Layout<'_> {
         }
         let hex_len = self.git.algorithm().digest_len() * 2;
         let abbrev_len = self.abbrev.unwrap_or(auto + 1);
+        let score_digits = entries
+            .iter()
+            .map(|e| decimal_width(self.score(e)))
+            .max()
+            .unwrap_or(1);
         let (orig_digits, digits) = (decimal_width(longest_src), decimal_width(longest_dst));
         for e in entries {
             let o = &self.origins[e.origin];
@@ -238,6 +254,16 @@ impl Layout<'_> {
                 out.extend_from_slice(&shown.as_bytes()[..length.min(shown.len())]);
                 let lno = e.lno + i;
                 let name = self.name_of(&info.author);
+                if self.flags.score_debug && !self.flags.annotate {
+                    out.extend_from_slice(
+                        format!(
+                            " {:>score_digits$} {:02}",
+                            self.score(e),
+                            self.refs[e.origin]
+                        )
+                        .as_bytes(),
+                    );
+                }
                 if self.flags.annotate {
                     out.extend_from_slice(b"\t(");
                     pad(out, 10usize.saturating_sub(name.len()));

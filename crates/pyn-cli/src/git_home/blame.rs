@@ -46,8 +46,9 @@ Options (a git repository only; output and exit status are git blame's):
   -M[<num>]             find lines moved within a file; <num> is the least letters and digits (default 20), attached: -M30
   -C[<num>]             also lines copied from files the commit changed; -C -C: from any file when the file is new;
                         -C -C -C: from any file of the parent; default 40
-Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): --show-stats,
---score-debug, -L :<funcname> with a built-in diff driver that is not ported and
+  --show-stats          print git's work counters after the output (not with --incremental)
+  --score-debug         show each entry's score and its origin's reference count after the id
+Revisions: <rev>, <a>..<b>, <a>...<b>, ^<rev>. Not built (usage error 129): -L :<funcname> with a built-in diff driver that is not ported and
 other revision options.";
 
 #[derive(Args, Debug)]
@@ -83,6 +84,7 @@ struct Parsed {
     color_by_age: bool,
     revs_file: Option<String>,
     incremental: bool,
+    show_stats: bool,
     reverse: bool,
     ignore_revs: Vec<String>,
     ignore_files: Vec<String>,
@@ -107,13 +109,6 @@ fn fail(annotate: bool, message: &str) -> ! {
 /// A score as git reads it: digits only, anything else is 0 (the default).
 fn parse_score(text: &str) -> usize {
     text.parse().unwrap_or(0)
-}
-
-fn not_built(annotate: bool, option: &str) -> ! {
-    fail(
-        annotate,
-        &format!("option `{option}' is not supported on a git repository yet"),
-    )
 }
 
 fn value_of(
@@ -193,7 +188,10 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                         );
                     }
                 }
-                ("show-stats" | "score-debug", _) => not_built(annotate, &format!("--{name}")),
+                ("show-stats", None) => p.show_stats = true,
+                ("no-show-stats", None) => p.show_stats = false,
+                ("score-debug", None) => p.flags.score_debug = true,
+                ("no-score-debug", None) => p.flags.score_debug = false,
                 _ => fail(annotate, &format!("unknown option `{arg}'")),
             }
         } else if arg.len() > 1 && arg.starts_with('-') {
@@ -607,6 +605,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
         infos: &infos,
         lines: &lines,
         color: color.resolve(p.color_lines, p.color_by_age),
+        refs: &reference_counts(&board, &entries),
     };
     if p.incremental {
         let settled = board.settled.iter().flat_map(|(origin, rest)| {
@@ -636,7 +635,43 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
         return Ok(());
     }
     emit_bytes(&layout.render(&entries)?);
+    if p.show_stats {
+        let s = board.stats;
+        let text = format!(
+            "num read blob: {}\nnum get patch: {}\nnum commits: {}\n",
+            s.reads, s.patches, s.commits
+        );
+        emit_bytes(text.as_bytes());
+    }
     Ok(())
+}
+
+/// Git's reference count of each origin: its entries plus the live origins that name it as `previous`.
+fn reference_counts(board: &Board, entries: &[Entry]) -> Vec<usize> {
+    let mut refs = vec![0; board.origins.len()];
+    for e in entries {
+        refs[e.origin] += 1;
+    }
+    let mut live: Vec<bool> = refs.iter().map(|n| *n > 0).collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (q, o) in board.origins.iter().enumerate() {
+            if let Some(prev) = o.previous
+                && live[q]
+                && !live[prev]
+            {
+                live[prev] = true;
+                changed = true;
+            }
+        }
+    }
+    for (q, o) in board.origins.iter().enumerate() {
+        if let Some(prev) = o.previous.filter(|_| live[q]) {
+            refs[prev] += 1;
+        }
+    }
+    refs
 }
 
 fn date_style(git: &GitHome, p: &Parsed, annotate: bool) -> Result<DateMode> {
