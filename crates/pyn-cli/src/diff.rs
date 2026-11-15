@@ -745,6 +745,9 @@ pub fn origins(
 /// The create, delete, rename, copy and mode-change lines of `--summary` for a pair.
 fn summary_line(backend: &dyn Backend, p: &Pair) -> String {
     let mut out = String::new();
+    if p.unmerged {
+        return out;
+    }
     let quote = |s: &str| backend.quote_diff_path(s.as_bytes());
     let (old_path, new_path) = (&quote(&p.old_path), &quote(&p.new_path));
     match (&p.old, &p.new) {
@@ -916,9 +919,10 @@ fn refuse_with_break(backend: &dyn Backend, format: &Format) {
 }
 
 /// Whether this output shows unmerged paths, as git does for every listing and the patch but not `--check` or `--dirstat`.
+/// A `--dirstat` with a patch still brings them in for the patch.
 pub(crate) fn lists_unmerged(format: &Format) -> bool {
-    !format.summary
-        && matches!(
+    format.with_patch
+        || matches!(
             format.kind,
             Kind::NameStatus
                 | Kind::NameOnly
@@ -992,6 +996,24 @@ pub(crate) fn emit(
         opts: format.opts.with_config(&|k| backend.diff_setting(k)),
         ..format.clone()
     };
+    // git prints a combined patch ahead of the other output and leaves its path out of it.
+    let lead: String = if format.with_patch || format.kind == Kind::Patch {
+        list.iter().filter_map(|p| p.combined.as_deref()).collect()
+    } else {
+        String::new()
+    };
+    let rest: Vec<Pair>;
+    let list = if lead.is_empty() {
+        list
+    } else {
+        rest = list
+            .iter()
+            .filter(|p| p.combined.is_none())
+            .cloned()
+            .collect();
+        &rest
+    };
+    out.push_str(&lead);
     let summary: String = if format.summary || format.kind == Kind::Summary {
         list.iter().map(|p| summary_line(backend, p)).collect()
     } else {
@@ -1029,8 +1051,9 @@ pub(crate) fn emit(
             .opts
             .dirstat
             .is_some_and(|d| d.measure == dirstat::Measure::Lines);
-        let before =
-            ((format.kind != Kind::Dirstat || by_line) && out.len() > start) || !summary.is_empty();
+        let before = ((format.kind != Kind::Dirstat || by_line) && out.len() > start)
+            || !summary.is_empty()
+            || (by_line && !lead.is_empty());
         if before && !patch.is_empty() {
             out.push('\n');
         }
@@ -1176,7 +1199,7 @@ fn render(
                 Kind::Patch | Kind::Stat | Kind::NumStat | Kind::ShortStat
             )
         {
-            differs = true;
+            differs |= p.combined.is_none();
             match format.kind {
                 Kind::Patch => match &p.combined {
                     Some(text) => out.push_str(text),
@@ -1212,6 +1235,7 @@ fn render(
                 differs = true;
                 out.push_str(&diff_raw::record(p, &format.opts, &quote));
             }
+            Kind::Dirstat if p.unmerged => {}
             Kind::Dirstat => {
                 differs = true;
                 let spec = format.opts.dirstat.unwrap_or_default();
