@@ -1030,3 +1030,141 @@ fn what_a_criss_cross_merge_cannot_do_is_refused_before_anything_changes() {
         git checkout -q side; sed -i 8s/.*/s8/ f; git commit -qam s\ngit checkout -q main\n";
     each_format(same_time, |p| p.refused(&["merge", "side"], 128));
 }
+
+/// Independent branches off `base`: new files `a`, `b`, `c`; `e1` and `e2` edit different lines of `f`, `e3` the line `e1` does.
+const HEADS: &str = "seq 1 8 >f; printf 'x\\n' >g; git add .; git commit -qm base\ngit branch start\n\
+    for b in a b c; do git checkout -q -b $b start; echo $b >$b.txt; git add .; git commit -qm \"add $b\"; done\n\
+    git checkout -q -b e1 start; sed -i 2s/.*/two/ f; git commit -qam e1\n\
+    git checkout -q -b e2 start; sed -i 7s/.*/seven/ f; git commit -qam e2\n\
+    git checkout -q -b e3 start; sed -i 2s/.*/deux/ f; git commit -qam e3\n\
+    git checkout -q main; echo m >m.txt; git add .; git commit -qm m\n";
+
+#[test]
+fn an_octopus_merge_of_several_heads_matches_git() {
+    for args in [
+        &["merge", "a", "b", "c"][..],
+        &["merge", "a", "b"],
+        &["merge", "a", "e1", "e2"],
+        &["merge", "-s", "octopus", "a", "b", "c"],
+        &["merge", "--no-ff", "a", "b"],
+        &["merge", "-m", "hello", "a", "b"],
+        &["merge", "--log", "a", "b", "e1"],
+        &["merge", "--no-commit", "a", "b"],
+        &["merge", "--squash", "a", "b"],
+        &["merge", "--no-stat", "-X", "theirs", "a", "b"],
+    ] {
+        each_format(HEADS, |p| p.same(args, Skip::default()));
+    }
+}
+
+#[test]
+fn heads_that_are_already_merged_or_repeated_are_left_out() {
+    for args in [
+        &["merge", "start", "a"][..],
+        &["merge", "a", "main"],
+        &["merge", "a", "a", "b"],
+        &["merge", "start", "main"],
+        &["merge", "--squash", "start", "main"],
+        &["merge", "a", "a"],
+    ] {
+        each_format(HEADS, |p| p.same(args, Skip::default()));
+    }
+}
+
+#[test]
+fn a_head_that_already_contains_head_leaves_it_out_of_the_parents() {
+    for args in [
+        &["merge", "a", "b"][..],
+        &["merge", "--no-ff", "a", "b"],
+        &["merge", "-s", "ours", "a", "b"],
+        &["merge", "--no-commit", "a", "b"],
+    ] {
+        each_format(HEADS, |p| {
+            p.both_sh("git checkout -q -b old start");
+            p.same(args, Skip::default())
+        });
+    }
+}
+
+#[test]
+fn a_conflict_in_the_last_head_waits_for_hand_fixing_and_an_earlier_one_stops_the_merge() {
+    let skip = Skip {
+        markers: true,
+        ..Skip::default()
+    };
+    each_format(HEADS, |p| {
+        p.same(&["merge", "a", "e1", "e3"], skip);
+        p.same(&["merge", "--abort"], skip);
+    });
+    each_format(HEADS, |p| {
+        p.same(&["merge", "a", "e1", "e3"], skip);
+        p.both_sh("seq 1 8 >f; git add f");
+        p.same(&["commit", "-m", "done"], skip);
+    });
+    each_format(HEADS, |p| p.same(&["merge", "e1", "e3", "a"], skip));
+    each_format(HEADS, |p| {
+        p.same(&["merge", "--no-commit", "e1", "e3"], skip)
+    });
+}
+
+#[test]
+fn only_octopus_and_ours_take_several_heads() {
+    let skip = Skip {
+        reflog: true,
+        auto_merge: true,
+        ..Skip::default()
+    };
+    for strategy in ["ort", "recursive", "resolve", "subtree"] {
+        each_format(HEADS, |p| {
+            p.same(&["merge", "-s", strategy, "a", "b"], skip)
+        });
+    }
+    each_format(HEADS, |p| {
+        p.same(&["merge", "-s", "ours", "-s", "octopus", "a", "b"], SEVERAL)
+    });
+    each_format(HEADS, |p| p.same(&["merge", "--ff-only", "a", "b"], skip));
+}
+
+#[test]
+fn pull_octopus_names_the_default_strategy_of_several_heads() {
+    each_format(HEADS, |p| {
+        p.both_sh("git config pull.octopus ours; git config pull.twohead resolve");
+        p.same(&["merge", "a", "b"], Skip::default());
+    });
+    each_format(HEADS, |p| {
+        p.both_sh("git config pull.octopus ours; git config pull.twohead octopus");
+        p.same(&["merge", "start", "a"], Skip::default());
+    });
+    each_format(HEADS, |p| {
+        p.both_sh("git config pull.octopus bogus");
+        p.same(&["merge", "a", "b"], Skip::default());
+    });
+}
+
+#[test]
+fn local_changes_stop_an_octopus_merge() {
+    let skip = Skip {
+        reflog: true,
+        auto_merge: true,
+        ..Skip::default()
+    };
+    for setup in [
+        "echo q >>g; git add g",
+        "echo q >>g",
+        "echo q >>a.txt",
+        "echo q >b.txt; git add b.txt",
+    ] {
+        each_format(HEADS, |p| {
+            p.both_sh(setup);
+            p.same(&["merge", "a", "b"], skip);
+        });
+    }
+}
+
+#[test]
+fn an_octopus_merge_needs_a_commit_to_merge_into() {
+    each_format(HEADS, |p| {
+        p.both_sh("git checkout -q --orphan fresh; git rm -rfq .");
+        p.same(&["merge", "a", "b"], Skip::default());
+    });
+}
