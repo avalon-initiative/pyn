@@ -46,3 +46,27 @@ pub struct AdminDeleteAccountResult {
     #[schema(required = true)]
     pub purge_at: Option<DateTime<Utc>>,
 }
+
+/// What stops an account from being deleted until it is transferred or deleted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeletionBlockers {
+    /// Repositories the account owns, as `owner/name`.
+    pub repositories: Vec<String>,
+    /// Organizations the account is the only owner of.
+    pub organizations: Vec<String>,
+}
+
+/// The server's account-deletion settings, set by the operator and read-only here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AccountDeletionSettings {
+    /// Days a self-service or administrator deletion can be undone (`PYN_ACCOUNT_DELETION_WINDOW_DAYS`); 0 purges at the next pass.
+    pub window_days: u32,
+    /// Days a disabled account is kept before the server deletes it (`PYN_DISABLED_ACCOUNT_RETENTION_DAYS`); 0 means never.
+    pub disabled_retention_days: u32,
+}
+
+/// Server settings an administrator can read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AdminSettings {
+    pub account_deletion: AccountDeletionSettings,
+}

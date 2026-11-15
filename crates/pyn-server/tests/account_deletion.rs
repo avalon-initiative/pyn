@@ -302,6 +302,63 @@ async fn an_account_owning_a_repository_names_it_in_the_refusal() {
     assert_eq!(r.status, StatusCode::CONFLICT);
     assert_eq!(r.code(), "account_owns_resources");
     assert!(r.message().contains("alice/game"), "{}", r.message());
+    let blockers = r.json::<api::ErrorBody>().blockers.unwrap();
+    assert_eq!(blockers.repositories, ["alice/game"]);
+    assert!(blockers.organizations.is_empty());
+}
+
+#[tokio::test]
+async fn administrators_read_the_deletion_settings_and_purge_times() {
+    let s = server();
+    sign_up(&s.app, "alice").await;
+    sign_up(&s.app, "bob").await;
+    let bob = token(&s.app, "bob").await;
+    let denied = call(
+        &s.app,
+        "GET",
+        "/v1/admin/settings",
+        Some(("bearer", &bob)),
+        None,
+    )
+    .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+    let settings = call(
+        &s.app,
+        "GET",
+        "/v1/admin/settings",
+        Some(("dev", "root")),
+        None,
+    )
+    .await;
+    assert_eq!(settings.status, StatusCode::OK);
+    let defaults = settings.json::<api::AdminSettings>().account_deletion;
+    assert_eq!(
+        (defaults.window_days, defaults.disabled_retention_days),
+        (30, 90)
+    );
+
+    for (path, body) in [
+        ("/v1/admin/users/alice/disable", serde_json::json!({})),
+        (
+            "/v1/admin/users/alice/delete",
+            serde_json::json!({"reason": "spam"}),
+        ),
+    ] {
+        let r = call(&s.app, "POST", path, Some(("dev", "root")), Some(body)).await;
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    let users = call(
+        &s.app,
+        "GET",
+        "/v1/admin/users",
+        Some(("dev", "root")),
+        None,
+    )
+    .await;
+    let users = users.json::<Vec<api::AccountInfo>>();
+    let purge = |name: &str| users.iter().find(|a| a.user == name).unwrap().purge_at;
+    assert!(purge("alice").is_some());
+    assert!(purge("bob").is_none());
 }
 
 #[tokio::test]

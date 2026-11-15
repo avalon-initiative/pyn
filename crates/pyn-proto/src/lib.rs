@@ -1321,6 +1321,11 @@ pub struct AccountInfo {
     pub status: String,
     pub disabled_at: Option<DateTime<Utc>>,
     pub disabled_reason: Option<String>,
+    /// When the account's scheduled deletion runs, as in `GET /v1/account/deletion`; null when none is scheduled
+    /// (an account disabled with no schedule is deleted by the server's retention setting instead). Filled on
+    /// `GET /v1/admin/users`.
+    #[serde(default)]
+    pub purge_at: Option<DateTime<Utc>>,
     pub admin: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -1438,6 +1443,9 @@ pub struct SshKeyInfo {
 pub struct ErrorBody {
     pub code: String,
     pub message: String,
+    /// What blocks the account's deletion; present only with `account_owns_resources`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blockers: Option<DeletionBlockers>,
 }
 
 /// Response header carrying the revision number of returned content.

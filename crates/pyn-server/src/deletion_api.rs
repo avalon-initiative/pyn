@@ -106,3 +106,21 @@ pub(crate) async fn admin_delete_account(
         purge_at: scheduled.map(|d| d.purge_at),
     }))
 }
+
+#[utoipa::path(get, path = "/v1/admin/settings", responses(
+    (status = 200, body = api::AdminSettings, description = "the effective server settings an administrator can read"),
+    (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_accounts"),
+))]
+pub(crate) async fn admin_settings(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<api::AdminSettings>> {
+    let who = identify_admin(&s, &headers).await?;
+    let (window, retention) = s.access.account_deletion_settings(&who).await?;
+    Ok(Json(api::AdminSettings {
+        account_deletion: api::AccountDeletionSettings {
+            window_days: u32::try_from(window).unwrap_or(0),
+            disabled_retention_days: u32::try_from(retention).unwrap_or(0),
+        },
+    }))
+}

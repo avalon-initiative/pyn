@@ -697,6 +697,36 @@
         }
       }
     },
+    "/v1/admin/settings": {
+      "get": {
+        "tags": [
+          "deletion_api"
+        ],
+        "operationId": "admin_settings",
+        "responses": {
+          "200": {
+            "description": "the effective server settings an administrator can read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_accounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/users": {
       "get": {
         "tags": [
@@ -8975,6 +9005,28 @@
           }
         }
       },
+      "AccountDeletionSettings": {
+        "type": "object",
+        "description": "The server's account-deletion settings, set by the operator and read-only here.",
+        "required": [
+          "window_days",
+          "disabled_retention_days"
+        ],
+        "properties": {
+          "disabled_retention_days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days a disabled account is kept before the server deletes it (`PYN_DISABLED_ACCOUNT_RETENTION_DAYS`); 0 means never.",
+            "minimum": 0
+          },
+          "window_days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days a self-service or administrator deletion can be undone (`PYN_ACCOUNT_DELETION_WINDOW_DAYS`); 0 purges at the next pass.",
+            "minimum": 0
+          }
+        }
+      },
       "AccountDeletionStatus": {
         "type": "object",
         "description": "Whether the signed-in account is scheduled for deletion.",
@@ -9137,6 +9189,14 @@
           "id": {
             "type": "string",
             "description": "Stable, never reused."
+          },
+          "purge_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the account's scheduled deletion runs, as in `GET /v1/account/deletion`; null when none is scheduled\n(an account disabled with no schedule is deleted by the server's retention setting instead). Filled on\n`GET /v1/admin/users`."
           },
           "status": {
             "$ref": "#/components/schemas/AccountStatus"
@@ -9351,6 +9411,18 @@
           },
           "user": {
             "type": "string"
+          }
+        }
+      },
+      "AdminSettings": {
+        "type": "object",
+        "description": "Server settings an administrator can read.",
+        "required": [
+          "account_deletion"
+        ],
+        "properties": {
+          "account_deletion": {
+            "$ref": "#/components/schemas/AccountDeletionSettings"
           }
         }
       },
@@ -10114,6 +10186,30 @@
           }
         }
       },
+      "DeletionBlockers": {
+        "type": "object",
+        "description": "What stops an account from being deleted until it is transferred or deleted.",
+        "required": [
+          "repositories",
+          "organizations"
+        ],
+        "properties": {
+          "organizations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Organizations the account is the only owner of."
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Repositories the account owns, as `owner/name`."
+          }
+        }
+      },
       "DisableAccountRequest": {
         "type": "object",
         "properties": {
@@ -10134,6 +10230,17 @@
           "message"
         ],
         "properties": {
+          "blockers": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DeletionBlockers",
+                "description": "What blocks the account's deletion; present only with `account_owns_resources`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "code": {
             "type": "string"
           },
