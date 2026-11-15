@@ -6,8 +6,8 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use pyn_core::{
-    AccountRecord, AccountStatus, AuditQuery, OrgRole, ServiceCredentialRecord, ServiceScope,
-    UserId,
+    AccountDeletion, AccountRecord, AccountStatus, AuditQuery, OrgRole, ServiceCredentialRecord,
+    ServiceScope, UserId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -15,6 +15,10 @@ use serde::Deserialize;
 use crate::{ApiResult, AppState, identify_admin};
 
 fn info(a: AccountRecord) -> api::AccountInfo {
+    info_with(a, None)
+}
+
+fn info_with(a: AccountRecord, deletion: Option<AccountDeletion>) -> api::AccountInfo {
     api::AccountInfo {
         id: a.id.to_string(),
         status: a.status().to_string(),
@@ -23,6 +27,7 @@ fn info(a: AccountRecord) -> api::AccountInfo {
         email_verified: a.email_verified_at.is_some(),
         disabled_at: a.disabled_at,
         disabled_reason: a.disabled_reason,
+        purge_at: deletion.map(|d| d.purge_at),
         admin: a.is_admin,
         created_at: a.created_at,
     }
@@ -51,8 +56,16 @@ pub(crate) async fn list_accounts(
         .map(AccountStatus::from_str)
         .transpose()?;
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
-    let accounts = s.access.list_accounts(&who, status, limit).await?;
-    Ok(Json(accounts.into_iter().map(info).collect()))
+    let accounts = s
+        .access
+        .list_accounts_with_deletions(&who, status, limit)
+        .await?;
+    Ok(Json(
+        accounts
+            .into_iter()
+            .map(|(account, deletion)| info_with(account, deletion))
+            .collect(),
+    ))
 }
 
 #[utoipa::path(post, path = "/v1/admin/users/{user}/approve",

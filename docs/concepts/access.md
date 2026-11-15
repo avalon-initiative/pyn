@@ -96,6 +96,10 @@ window runs the account is *pending deletion*:
 the same window and `--now` (`immediately`) purges at once. An administrator cannot delete their own account this way, and
 `pyn admin user enable <user>` cancels a scheduled deletion. A service credential with `manage_accounts` may do the same.
 
+An account that owns repositories, or is the only owner of an organization, cannot be deleted (`409 account_owns_resources`). The error
+body carries `blockers: {repositories: ["owner/name"], organizations: ["org"]}` next to the message. The account list at
+`GET /v1/admin/users` gives each disabled account's `purge_at`, and `GET /v1/admin/settings` the window and retention in days.
+
 **Automatic deletion.** An account disabled for `PYN_DISABLED_ACCOUNT_RETENTION_DAYS` days (default 90, `0` turns it off) is purged
 by the server. A background task runs at start and then hourly; it keeps no state of its own (schedules and disable times are in the
 database), so a restart loses nothing, a pass can run twice, and an account it cannot purge is logged and tried again on the next pass.
@@ -329,7 +333,8 @@ is off, or on but nothing is delivered.
 | `PUT /v1/me/username` | `{username, password}` gives `200 {old_name, new_name, repositories}`; see [changing your username](#changing-your-username) |
 | `POST /v1/login`, `POST /v1/session` | `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password |
 | `GET /v1/me` | `{id, user, admin}` |
-| `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{id, user, email, email_verified, status, disabled_at, disabled_reason, admin, created_at}` |
+| `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{id, user, email, email_verified, status, disabled_at, disabled_reason, purge_at, admin, created_at}`; `purge_at` is the scheduled deletion time, as in `GET /v1/account/deletion`, or null |
+| `GET /v1/admin/settings` | `{account_deletion: {window_days, disabled_retention_days}}`: the effective deletion window and disabled-account retention, read-only (set by the environment variables below) |
 | `POST /v1/admin/users/{user}/approve` | `{}`; the updated account |
 | `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account. `409 last_server_admin` if the account is the only active administrator |
 | `POST /v1/admin/users/{user}/enable` | the updated account; also cancels a scheduled deletion |

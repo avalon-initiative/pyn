@@ -2557,6 +2557,34 @@ impl AccessService {
         self.store.list_accounts(status, limit).await
     }
 
+    /// `list_accounts`, each with the deletion scheduled for it.
+    pub async fn list_accounts_with_deletions(
+        &self,
+        actor: &Identity,
+        status: Option<AccountStatus>,
+        limit: usize,
+    ) -> Result<Vec<(AccountRecord, Option<AccountDeletion>)>> {
+        let mut listed = Vec::new();
+        for account in self.list_accounts(actor, status, limit).await? {
+            let deletion = match account.disabled_at {
+                Some(_) => self.store.account_deletion(&account.user).await?,
+                None => None,
+            };
+            listed.push((account, deletion));
+        }
+        Ok(listed)
+    }
+
+    /// The effective account-deletion settings.
+    pub async fn account_deletion_settings(&self, actor: &Identity) -> Result<(i64, i64)> {
+        self.require_admin_scope(actor, ServiceScope::ManageAccounts)
+            .await?;
+        Ok((
+            self.config.deletion_window_days,
+            self.config.disabled_retention_days,
+        ))
+    }
+
     async fn existing_account(&self, user: &UserId) -> Result<AccountRecord> {
         self.store
             .account(user)

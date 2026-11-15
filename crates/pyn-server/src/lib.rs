@@ -124,6 +124,7 @@ struct RepoAddress {
         deletion_api::account_deletion_status,
         deletion_api::schedule_account_deletion,
         deletion_api::restore_account_deletion,
+        deletion_api::admin_settings,
         admin_api::grant_admin,
         admin_api::revoke_admin,
         admin_api::audit,
@@ -383,6 +384,9 @@ struct RepoAddress {
         api::AccountDeletionStatus,
         api::AdminDeleteAccountRequest,
         api::AdminDeleteAccountResult,
+        api::DeletionBlockers,
+        api::AccountDeletionSettings,
+        api::AdminSettings,
         api::AccountDeletionScheduledData,
         api::AccountDeletionRestoredData,
         api::AccountDeletedData,
@@ -443,6 +447,7 @@ fn routes(state: AppState) -> Router {
             "/v1/admin/users/{user}/delete",
             post(deletion_api::admin_delete_account),
         )
+        .route("/v1/admin/settings", get(deletion_api::admin_settings))
         .route(
             "/v1/account/deletion",
             get(deletion_api::account_deletion_status)
@@ -931,6 +936,13 @@ impl IntoResponse for ApiError {
         let body = api::ErrorBody {
             code: self.0.code().to_string(),
             message: public_message(&self.0),
+            blockers: match &self.0 {
+                PynError::AccountOwnsResources { repos, orgs, .. } => Some(api::DeletionBlockers {
+                    repositories: repos.clone(),
+                    organizations: orgs.clone(),
+                }),
+                _ => None,
+            },
         };
         let mut res = (status, Json(body)).into_response();
         if internal {
