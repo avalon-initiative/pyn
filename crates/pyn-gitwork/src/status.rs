@@ -198,16 +198,26 @@ fn read_link_bytes(path: &Path) -> Result<Vec<u8>> {
     }
 }
 
+/// Which stat fields beyond size and mtime must match: `core.checkStat` (`default`/`minimal`) and `core.trustCtime`.
+#[derive(Clone, Copy)]
+struct StatCheck {
+    owner_and_inode: bool,
+    ctime: bool,
+}
+
 #[cfg(unix)]
-fn stat_matches(meta: &Metadata, e: &IndexEntry) -> bool {
+fn stat_matches(meta: &Metadata, e: &IndexEntry, check: StatCheck) -> bool {
     use std::os::unix::fs::MetadataExt;
+    // Whole seconds only: git is built without nanosecond stat comparison by default.
     meta.len() as u32 == e.size
         && meta.mtime() as u32 == e.mtime.seconds
-        && meta.mtime_nsec() as u32 == e.mtime.nanos
+        && (!check.ctime || meta.ctime() as u32 == e.ctime.seconds)
+        && (!check.owner_and_inode
+            || (meta.ino() as u32 == e.ino && meta.uid() == e.uid && meta.gid() == e.gid))
 }
 
 #[cfg(not(unix))]
-fn stat_matches(_: &Metadata, _: &IndexEntry) -> bool {
+fn stat_matches(_: &Metadata, _: &IndexEntry, _: StatCheck) -> bool {
     false
 }
 
@@ -404,6 +414,14 @@ impl Repo {
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs());
+        let full = !self
+            .config()
+            .get("core.checkStat")
+            .is_some_and(|v| v.eq_ignore_ascii_case("minimal"));
+        let stat = StatCheck {
+            owner_and_inode: full,
+            ctime: full && self.bool_setting("core.trustCtime", true),
+        };
         let mut out = BTreeMap::new();
         for e in &index.entries {
             if e.stage > 0 {
@@ -415,6 +433,7 @@ impl Repo {
                     file_mode,
                     index_time,
                     size_decides,
+                    stat,
                 },
                 modules,
             )? {
@@ -435,6 +454,7 @@ impl Repo {
             file_mode,
             index_time,
             size_decides,
+            stat,
         } = scan;
         if e.assume_valid || e.skip_worktree {
             return Ok(None);
@@ -482,7 +502,7 @@ impl Repo {
         let mode_differs =
             file_mode && !is_link(mode) && (mode == FileMode::Executable) != (e.mode == EXECUTABLE);
         let racy = index_time.is_none_or(|t| u64::from(e.mtime.seconds) >= t);
-        if !mode_differs && !racy && stat_matches(&meta, e) {
+        if !mode_differs && !racy && stat_matches(&meta, e, stat) {
             return Ok(None);
         }
         if size_decides && !mode_differs && e.size != 0 && meta.len() as u32 != e.size {
@@ -537,6 +557,7 @@ struct Scan {
     file_mode: bool,
     index_time: Option<u64>,
     size_decides: bool,
+    stat: StatCheck,
 }
 
 struct Walk<'a> {

@@ -738,6 +738,75 @@ fn ls_files_modified_lists_a_size_change_without_comparing_converted_content() {
     }
 }
 
+// A committed pair of files with an old mtime, which `replace` then rewrites to the same size and mtime.
+fn replaced_repo(rig: &Rig, format: &str) -> PathBuf {
+    let repo = rig.work("r", format, &[("f.t", b"aaaa\n"), ("g.t", b"aaaa\n")], "");
+    for name in ["f.t", "g.t"] {
+        stamp(&repo, name);
+    }
+    run(&repo, &["add", "-A"]);
+    run(&repo, &["commit", "-q", "-m", "one"]);
+    repo
+}
+
+fn stamp(repo: &Path, name: &str) {
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    let file = fs::File::options()
+        .write(true)
+        .open(repo.join(name))
+        .unwrap();
+    file.set_modified(when).unwrap();
+}
+
+fn replace(repo: &Path, by_rename: bool) {
+    for name in ["f.t", "g.t"] {
+        if by_rename {
+            fs::write(repo.join("tmp"), b"bbbb\n").unwrap();
+            fs::rename(repo.join("tmp"), repo.join(name)).unwrap();
+        } else {
+            fs::write(repo.join(name), b"bbbb\n").unwrap();
+        }
+        stamp(repo, name);
+    }
+}
+
+#[test]
+fn a_same_size_same_mtime_replacement_is_seen_through_the_stat_check_as_git_does() {
+    let settings = [
+        None,
+        Some(("core.checkStat", "minimal")),
+        Some(("core.trustCtime", "false")),
+    ];
+    let mut cases = Vec::new();
+    for format in FORMATS {
+        for by_rename in [false, true] {
+            for setting in settings {
+                let rig = Rig::new();
+                let repo = replaced_repo(&rig, format);
+                if let Some((key, value)) = setting {
+                    run(&repo, &["config", key, value]);
+                }
+                cases.push((rig, repo, by_rename, setting));
+            }
+        }
+    }
+    // The stat check compares whole seconds, so the rewrite must land in a later second.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    for (rig, repo, by_rename, setting) in &cases {
+        replace(repo, *by_rename);
+        let out = rig.same(repo, &["ls-files", "-m"], b"");
+        rig.same(repo, &["status", "--short"], b"");
+        let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+        let seen = match setting {
+            None => true,
+            Some(("core.trustCtime", _)) => *by_rename,
+            _ => false,
+        };
+        let want = if seen { "f.t\ng.t\n" } else { "" };
+        assert_eq!(listed, want, "rename {by_rename} {setting:?}");
+    }
+}
+
 #[test]
 fn a_bad_attr_source_is_fatal_only_where_git_reads_attributes() {
     for format in FORMATS {
@@ -755,8 +824,11 @@ fn a_bad_attr_source_is_fatal_only_where_git_reads_attributes() {
             vec!["ls-files", "-m"],
             vec!["status", "--short"],
             vec!["ls-files", "--eol"],
+            vec!["ls-files", "--eol", "--", "nonesuch"],
             vec!["format-patch", "-1", "--stdout"],
             vec!["grep", "-c", "a"],
+            vec!["grep", "-c", "a", "--", "nonesuch"],
+            vec!["grep", "-ac", "a"],
         ] {
             let (got, want) = (rig.pyn(&repo, &args, b""), rig.git(&repo, &args, b""));
             assert_eq!(

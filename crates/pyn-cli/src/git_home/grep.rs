@@ -528,10 +528,24 @@ impl Searcher<'_> {
         self.opts.quiet && self.matched
     }
 
-    fn file(&mut self, name: &[u8], data: &[u8]) -> Result<()> {
-        // git consults the attributes for every file searched, so a bad source is fatal.
-        self.attrs.attributes()?;
-        let binary = !self.opts.text && data[..data.len().min(BINARY_SCAN)].contains(&0);
+    // The `diff` attribute decides binary, else a NUL in the first bytes; `-a` skips the lookup.
+    fn is_binary(&self, path: &[u8], data: &[u8]) -> Result<bool> {
+        if self.opts.text {
+            return Ok(false);
+        }
+        let path = String::from_utf8_lossy(path);
+        let driver = crate::diff_driver::DiffDriver::resolve(
+            &*self.attrs.attributes()?,
+            self.attrs.config(),
+            &path,
+        )?;
+        Ok(driver
+            .binary
+            .unwrap_or_else(|| data[..data.len().min(BINARY_SCAN)].contains(&0)))
+    }
+
+    fn file(&mut self, path: &[u8], name: &[u8], data: &[u8]) -> Result<()> {
+        let binary = self.is_binary(path, data)?;
         if binary && self.opts.skip_binary {
             return Ok(());
         }
@@ -675,7 +689,7 @@ pub fn grep(git: &GitHome, cwd: &Path) -> Result<bool> {
                 if e.stage != 0 || e.intent_to_add {
                     continue;
                 }
-                searcher.file(&shown(&e.path), &git.repo.blob(&e.id)?)?;
+                searcher.file(&e.path, &shown(&e.path), &git.repo.blob(&e.id)?)?;
                 continue;
             }
             if last == Some(e.path.as_slice()) {
@@ -684,7 +698,7 @@ pub fn grep(git: &GitHome, cwd: &Path) -> Result<bool> {
             last = Some(&e.path);
             if e.assume_valid || e.skip_worktree {
                 if e.stage == 0 {
-                    searcher.file(&shown(&e.path), &git.repo.blob(&e.id)?)?;
+                    searcher.file(&e.path, &shown(&e.path), &git.repo.blob(&e.id)?)?;
                 }
                 continue;
             }
@@ -693,7 +707,7 @@ pub fn grep(git: &GitHome, cwd: &Path) -> Result<bool> {
                 continue;
             }
             match std::fs::read(&on_disk) {
-                Ok(data) => searcher.file(&shown(&e.path), &data)?,
+                Ok(data) => searcher.file(&e.path, &shown(&e.path), &data)?,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
             }
@@ -710,7 +724,7 @@ pub fn grep(git: &GitHome, cwd: &Path) -> Result<bool> {
             }
             let mut label = format!("{name}:").into_bytes();
             label.extend_from_slice(&shown(&path));
-            searcher.file(&label, &git.repo.blob(&entry.id)?)?;
+            searcher.file(&path, &label, &git.repo.blob(&entry.id)?)?;
         }
     }
     searcher.out.flush()?;

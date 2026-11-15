@@ -800,6 +800,60 @@ fn grep_matches_git_sha256() {
 }
 
 #[test]
+fn grep_reads_the_diff_attribute() {
+    let f = fixture("sha1");
+    f.write(
+        ".gitattributes",
+        b"a.txt -diff\nbin.dat diff\nbin2.dat diff=raw\nsub/** diff=txt\n*.log -diff\n",
+    );
+    f.git(&["config", "diff.raw.binary", "true"]);
+    f.git(&["config", "diff.txt.binary", "false"]);
+    let mut cases = vec![
+        case("foo"),
+        case("-n foo"),
+        case("-c foo"),
+        case("-l foo"),
+        case("-I foo"),
+        case("-Ic foo"),
+        case("-a foo"),
+        case("--cached foo"),
+        case("--cached -I foo"),
+        case("foo HEAD"),
+        case("-I foo HEAD"),
+        case("foo -- a.txt bin.dat bin2.dat"),
+        at("sub", "foo"),
+    ];
+    cases.push(case("-e foo --and -e world -- a.txt"));
+    check(&f, cases);
+}
+
+#[test]
+fn grep_reads_attributes_only_for_the_files_it_searches() {
+    let f = fixture("sha1");
+    for (args, want_fail) in [
+        (vec!["grep", "foo", "--", "nonesuch"], false),
+        (vec!["grep", "-a", "foo", "--", "a.txt"], false),
+        (vec!["grep", "foo", "--", "a.txt"], true),
+    ] {
+        let run = |program: &str| {
+            let program = if program == "pyn" {
+                env!("CARGO_BIN_EXE_pyn")
+            } else {
+                program
+            };
+            f.command(program, &f.root, &args)
+                .env("GIT_ATTR_SOURCE", "nonesuch")
+                .output()
+                .unwrap()
+        };
+        let (git, pyn) = (run("git"), run("pyn"));
+        assert_eq!(git.status.code() == Some(128), want_fail, "git {args:?}");
+        assert_eq!(git.status.code(), pyn.status.code(), "{args:?}");
+        assert_eq!(git.stdout, pyn.stdout, "{args:?}");
+    }
+}
+
+#[test]
 fn grep_follows_the_grep_settings() {
     let f = fixture("sha1");
     f.git(&["config", "grep.lineNumber", "true"]);
