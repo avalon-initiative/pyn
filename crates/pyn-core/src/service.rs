@@ -10,7 +10,8 @@ mod uploads;
 mod verify;
 pub use lfs::is_lfs_oid;
 pub use lfs_tus::{
-    TUS_MAX_SESSIONS_PER_USER, TUS_SESSION_TTL_HOURS, TusAppended, TusError, TusSessions, TusStatus,
+    TUS_APPEND_LEASE_MINUTES, TUS_MAX_SESSIONS_PER_USER, TUS_SESSION_TTL_HOURS, TusAppended,
+    TusError, TusStatus, sweep_tus_sessions,
 };
 pub use uploads::DEFAULT_UNREFERENCED_UPLOAD_BYTES;
 
@@ -226,7 +227,6 @@ pub struct RepoService {
     limit_events: (UserId, AccountId, Arc<dyn crate::LimitEvents>),
     unreferenced_cap: u64,
     merge_slots: Arc<tokio::sync::Semaphore>,
-    tus: Arc<TusSessions>,
 }
 
 impl RepoService {
@@ -263,7 +263,6 @@ impl RepoService {
             merge_slots: Arc::new(tokio::sync::Semaphore::new(
                 crate::merge::default_concurrent_merges(),
             )),
-            tus: Arc::default(),
         }
     }
 
@@ -278,12 +277,6 @@ impl RepoService {
     /// Shares `slots` as the bound on text merges running at once.
     pub fn with_merge_slots(mut self, slots: Arc<tokio::sync::Semaphore>) -> Self {
         self.merge_slots = slots;
-        self
-    }
-
-    /// Shares `sessions` as the registry of open resumable LFS uploads.
-    pub fn with_tus_sessions(mut self, sessions: Arc<TusSessions>) -> Self {
-        self.tus = sessions;
         self
     }
 

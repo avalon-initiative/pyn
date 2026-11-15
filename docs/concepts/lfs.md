@@ -178,12 +178,16 @@ There is one upload per oid and repository.
 - The last byte completes the upload: the server joins the parts and stores the object as `PUT` does, checking the length and the
   sha256 against the `oid` and the storage caps. A mismatch is `422` (`digest_mismatch`, `length_mismatch`) on that `PATCH`, keeps
   nothing and closes the upload, so the client starts over. The batch's `verify` action applies as for `basic`.
-- An upload expires 24 hours after its last request; `HEAD` and the next `PATCH` then answer `404`, and the parts it stored are
-  removed.
+- An upload expires 24 hours after its last request; `HEAD` and the next `PATCH` then answer `404`. The server sweeps lapsed uploads
+  every ten minutes (and on each `POST`), removing the parts they stored.
 - A user may hold 32 open uploads (`429`, `uploads_busy`); a `PATCH` takes the same per-user upload slot as a `PUT`.
-- Upload sessions are held in the server's memory, so a restart drops them and clients start over (`404` on `HEAD`). The parts are
-  stored as chunks in the object store (shared with [chunked transfer](storage.md#chunked-transfer)); a part that outlives its upload
-  (after a crash) stays until [garbage collection](storage.md#planned-provisional) (#207). Provisional; durable sessions are #953.
+- Upload sessions (oid, length, offset, owner, expiry, part list) are recorded in the metadata store, so they survive a restart
+  and work with more than one server process. An append holds its upload for at most an hour; after a crash another request can
+  take over once that lease lapses. The parts are stored as chunks in the object store (shared with
+  [chunked transfer](storage.md#chunked-transfer)).
+- The bytes an open upload has stored count against the [storage caps](limits.md#per-repository-storage-cap) when a new upload is
+  admitted (a `POST`, a batch, a `PUT`), next to revisions and finished LFS objects. Usage reports still show finished objects only.
+  The tus `checksum` extension is not implemented; the sha256 `oid` is checked on completion.
 
 The client (`pyn lfs push`, a push on a git home) offers `["tus", "basic"]` for uploads, asks `HEAD` where the server stands
 (creating the upload on `404`), sends the rest in one `PATCH` and after an interruption asks again, up to four passes; with

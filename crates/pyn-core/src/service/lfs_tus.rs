@@ -1,24 +1,25 @@
 //! Resumable LFS uploads for the tus transfer adapter: each append is kept as a raw chunk in the object store and the
-//! sessions are tracked in memory. A finished upload is joined and verified by `lfs_upload`.
+//! sessions are recorded in the metadata store. A finished upload is joined and verified by `lfs_upload`.
 
-use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Mutex;
 use std::task::{Context, Poll};
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, SubsecRound, Utc};
 use tokio::io::{AsyncRead, ReadBuf};
 
 use super::RepoService;
 use super::uploads::remove_unrecorded;
-use crate::ObjectId;
 use crate::chunking::ChainReader;
 use crate::error::{PynError, Result};
-use crate::object::{Keying, ObjectReader};
-use crate::types::{LfsObject, RepoId, UserId};
+use crate::object::{Keying, ObjectReader, ObjectStore};
+use crate::store::MetadataStore;
+use crate::types::{LfsObject, TusCancel, TusClaim, TusSession, UserId};
+use std::sync::Arc;
 
 /// How long an upload may sit untouched before it is dropped.
 pub const TUS_SESSION_TTL_HOURS: i64 = 24;
+/// How long one append may hold its upload before another request can take over.
+pub const TUS_APPEND_LEASE_MINUTES: i64 = 60;
 /// Open uploads one user may hold at a time.
 pub const TUS_MAX_SESSIONS_PER_USER: usize = 32;
 
@@ -52,32 +53,14 @@ pub enum TusError {
     Pyn(#[from] PynError),
 }
 
-struct Session {
-    owner: UserId,
-    size: u64,
-    offset: u64,
-    parts: Vec<(ObjectId, u64)>,
-    created: Vec<ObjectId>,
-    expires: DateTime<Utc>,
-    busy: bool,
-}
-
-impl Session {
-    fn status(&self) -> TusStatus {
-        TusStatus {
-            offset: self.offset,
-            size: self.size,
-            expires: self.expires,
+impl TusStatus {
+    fn of(s: &TusSession) -> Self {
+        Self {
+            offset: s.offset,
+            size: s.size,
+            expires: s.expires,
         }
     }
-}
-
-type Key = (RepoId, String);
-
-/// The open resumable uploads of every repository; shared by the services `Repositories` builds.
-#[derive(Default)]
-pub struct TusSessions {
-    open: Mutex<HashMap<Key, Session>>,
 }
 
 /// Ends a body that fails as if it were short, so what arrived is kept.
@@ -96,33 +79,29 @@ impl AsyncRead for Lenient {
     }
 }
 
+/// Drops every upload that lapsed, in any repository, and removes the pieces it stored. Returns how many.
+pub async fn sweep_tus_sessions(
+    meta: &Arc<dyn MetadataStore>,
+    objects: &Arc<dyn ObjectStore>,
+    now: DateTime<Utc>,
+) -> Result<usize> {
+    let lapsed = meta.tus_take_expired(now).await?;
+    let n = lapsed.len();
+    for s in lapsed {
+        remove_unrecorded(meta, objects, s.created).await;
+    }
+    Ok(n)
+}
+
 impl RepoService {
-    fn tus_key(&self, oid: &str) -> Key {
-        (self.repo.clone(), oid.to_string())
-    }
-
-    /// Drops every upload that lapsed, in any repository, and removes the pieces it stored.
-    pub async fn lfs_tus_expire(&self) {
-        let now = self.clock.now();
-        let mut lapsed = Vec::new();
-        {
-            let mut open = self.tus.open.lock().unwrap();
-            open.retain(|_, s| {
-                let keep = s.busy || s.expires > now;
-                if !keep {
-                    lapsed.extend(std::mem::take(&mut s.created));
-                }
-                keep
-            });
-        }
-        remove_unrecorded(&self.meta, &self.objects, lapsed).await;
-    }
-
     /// Where the upload of `oid` stands, if one is open.
-    pub async fn lfs_tus_status(&self, oid: &str) -> Option<TusStatus> {
-        self.lfs_tus_expire().await;
-        let open = self.tus.open.lock().unwrap();
-        open.get(&self.tus_key(oid)).map(Session::status)
+    pub async fn lfs_tus_status(&self, oid: &str) -> Result<Option<TusStatus>> {
+        let live = self
+            .meta
+            .tus_session(&self.repo, oid)
+            .await?
+            .filter(|s| s.expires > self.clock.now());
+        Ok(live.as_ref().map(TusStatus::of))
     }
 
     /// Opens an upload of `size` bytes for `oid`, or returns the one already open for the same size.
@@ -139,7 +118,16 @@ impl RepoService {
         if size > max {
             return Err(PynError::ObjectTooLarge { limit: max });
         }
-        self.lfs_tus_expire().await;
+        sweep_tus_sessions(&self.meta, &self.objects, self.clock.now()).await?;
+        if let Some(have) = self.meta.tus_session(&self.repo, oid).await? {
+            if have.size != size {
+                return Err(PynError::LengthMismatch {
+                    declared: size,
+                    actual: have.size,
+                });
+            }
+            return Ok(TusStatus::of(&have));
+        }
         if let Some(have) = self.lfs_object(oid).await? {
             self.ensure_writable().await?;
             if have.size != size {
@@ -151,34 +139,28 @@ impl RepoService {
         } else {
             self.lfs_admit(size).await?;
         }
-        let mut open = self.tus.open.lock().unwrap();
-        let key = self.tus_key(oid);
-        if let Some(have) = open.get(&key) {
-            if have.size != size {
-                return Err(PynError::LengthMismatch {
-                    declared: size,
-                    actual: have.size,
-                });
-            }
-            return Ok(have.status());
-        }
-        if open.values().filter(|s| &s.owner == by).count() >= TUS_MAX_SESSIONS_PER_USER {
-            return Err(PynError::UploadsBusy {
-                scope: "resumable uploads",
-            });
-        }
-        let session = Session {
+        let session = TusSession {
+            repo: self.repo.clone(),
+            oid: oid.to_string(),
             owner: by.clone(),
             size,
             offset: 0,
             parts: Vec::new(),
             created: Vec::new(),
             expires: self.clock.now() + Duration::hours(TUS_SESSION_TTL_HOURS),
-            busy: false,
+            busy_until: None,
         };
-        let status = session.status();
-        open.insert(key, session);
-        Ok(status)
+        let opened = self
+            .meta
+            .tus_open(&session, TUS_MAX_SESSIONS_PER_USER)
+            .await?;
+        if opened.size != size {
+            return Err(PynError::LengthMismatch {
+                declared: size,
+                actual: opened.size,
+            });
+        }
+        Ok(TusStatus::of(&opened))
     }
 
     /// Abandons the upload and removes what it stored.
@@ -187,18 +169,18 @@ impl RepoService {
         by: &UserId,
         oid: &str,
     ) -> std::result::Result<(), TusError> {
-        let created = {
-            let mut open = self.tus.open.lock().unwrap();
-            let key = self.tus_key(oid);
-            match open.get(&key) {
-                Some(s) if &s.owner == by && !s.busy => {}
-                Some(s) if &s.owner == by => return Err(TusError::Busy),
-                _ => return Err(TusError::NotFound),
+        match self
+            .meta
+            .tus_cancel(&self.repo, oid, by, self.clock.now())
+            .await?
+        {
+            TusCancel::Removed(s) => {
+                remove_unrecorded(&self.meta, &self.objects, s.created).await;
+                Ok(())
             }
-            open.remove(&key).map(|s| s.created).unwrap_or_default()
-        };
-        remove_unrecorded(&self.meta, &self.objects, created).await;
-        Ok(())
+            TusCancel::Busy => Err(TusError::Busy),
+            TusCancel::Missing => Err(TusError::NotFound),
+        }
     }
 
     /// Appends up to `len` bytes of `reader` at `offset`. A body that ends early (a dropped connection) keeps what
@@ -212,22 +194,18 @@ impl RepoService {
         len: u64,
         max: u64,
     ) -> std::result::Result<TusAppended, TusError> {
+        let now = self.clock.now();
+        let lease = (now + Duration::minutes(TUS_APPEND_LEASE_MINUTES)).trunc_subsecs(6);
+        match self
+            .meta
+            .tus_claim(&self.repo, oid, by, offset..offset + len, now, lease)
+            .await?
         {
-            let mut open = self.tus.open.lock().unwrap();
-            let s = match open.get_mut(&self.tus_key(oid)) {
-                Some(s) if &s.owner == by && s.expires > self.clock.now() => s,
-                _ => return Err(TusError::NotFound),
-            };
-            if s.busy {
-                return Err(TusError::Busy);
-            }
-            if offset != s.offset {
-                return Err(TusError::OffsetMismatch { expected: s.offset });
-            }
-            if len > s.size - s.offset {
-                return Err(TusError::TooLong);
-            }
-            s.busy = true;
+            TusClaim::Claimed(_) => {}
+            TusClaim::Missing => return Err(TusError::NotFound),
+            TusClaim::Busy => return Err(TusError::Busy),
+            TusClaim::Offset { expected } => return Err(TusError::OffsetMismatch { expected }),
+            TusClaim::TooLong => return Err(TusError::TooLong),
         }
         let stored = self
             .objects
@@ -237,36 +215,33 @@ impl RepoService {
             Ok(st) => self.stored_size(&st.id).await,
             Err(_) => Ok(0),
         };
-        let finished = {
-            let mut open = self.tus.open.lock().unwrap();
-            let key = self.tus_key(oid);
-            let Some(s) = open.get_mut(&key) else {
-                return Err(TusError::NotFound);
-            };
-            s.busy = false;
-            let (st, got) = match (stored, got) {
-                (Ok(st), Ok(got)) => (st, got),
-                (Err(e), _) | (_, Err(e)) => return Err(e.into()),
-            };
-            if got > 0 {
-                s.parts.push((st.id, got));
-                s.offset += got;
-            }
-            s.created.extend(st.created);
-            s.expires = self.clock.now() + Duration::hours(TUS_SESSION_TTL_HOURS);
-            if s.offset == s.size {
-                open.remove(&key)
-            } else {
-                return Ok(TusAppended {
-                    status: s.status(),
-                    completed: None,
-                });
+        let expires = self.clock.now() + Duration::hours(TUS_SESSION_TTL_HOURS);
+        let (st, got) = match (stored, got) {
+            (Ok(st), Ok(got)) => (st, got),
+            (Err(e), _) | (_, Err(e)) => {
+                let _ = self
+                    .meta
+                    .tus_commit(&self.repo, oid, lease, None, &[], expires)
+                    .await;
+                return Err(e.into());
             }
         };
-        let Some(s) = finished else {
+        let part = (got > 0).then_some((st.id, got));
+        let committed = self
+            .meta
+            .tus_commit(&self.repo, oid, lease, part, &st.created, expires)
+            .await?;
+        let Some(s) = committed else {
+            remove_unrecorded(&self.meta, &self.objects, st.created).await;
             return Err(TusError::NotFound);
         };
-        let status = s.status();
+        if s.offset != s.size {
+            return Ok(TusAppended {
+                status: TusStatus::of(&s),
+                completed: None,
+            });
+        }
+        let status = TusStatus::of(&s);
         let pieces = s.parts.iter().map(|(id, n)| (*id, 0..*n)).collect();
         let joined = ChainReader::new(self.objects.clone(), pieces);
         let result = self

@@ -119,8 +119,8 @@ pub use service::{
     ChangeEntry, CommitPage, Deletion, FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES,
     FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit, FileEntry, LockLimit, PolicyPreview,
     PushObjects, Pushed, Recorded, RepoService, RepoServiceContext, ServiceConfig, Snapshot,
-    SnapshotEntry, TUS_MAX_SESSIONS_PER_USER, TUS_SESSION_TTL_HOURS, TusAppended, TusError,
-    TusSessions, TusStatus, VERIFY_BUDGET, is_lfs_oid,
+    SnapshotEntry, TUS_APPEND_LEASE_MINUTES, TUS_MAX_SESSIONS_PER_USER, TUS_SESSION_TTL_HOURS,
+    TusAppended, TusError, TusStatus, VERIFY_BUDGET, is_lfs_oid, sweep_tus_sessions,
 };
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};
@@ -129,7 +129,8 @@ pub use types::{
     AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, MAX_CHANGESET_ITEMS,
     MAX_COMMIT_CHANGES, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_PATH_BYTES,
     MAX_PATH_COMPONENT_BYTES, MAX_PUSH_CHANGES, MAX_PUSH_COMMITS, MAX_TREE_ENTRIES, NewRevision,
-    Person, PushedCommit, RepoId, RepoPath, Revision, RevisionHash, RevisionId, TeamId, UserId,
+    Person, PushedCommit, RepoId, RepoPath, Revision, RevisionHash, RevisionId, TeamId, TusCancel,
+    TusClaim, TusSession, UserId,
 };
 pub use webhook::{
     Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, EventDraft, FixedJitter, Jitter,

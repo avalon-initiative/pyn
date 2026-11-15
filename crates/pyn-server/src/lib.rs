@@ -47,6 +47,7 @@ mod self_service_api;
 mod session_api;
 mod setup_api;
 mod team_api;
+pub mod tus_sweep;
 mod webhook_api;
 pub mod webhook_delivery;
 

@@ -579,6 +579,7 @@ async fn main() -> anyhow::Result<()> {
 
     start_webhook_delivery(webhooks, clock, &hook_settings, access.public_url())?;
     pyn_server::account_deletion::spawn(access.clone(), std::time::Duration::from_secs(3600));
+    pyn_server::tus_sweep::spawn(repos.clone(), std::time::Duration::from_secs(600));
 
     let dev_auth: Option<Arc<dyn AuthProvider>> = if flag("PYN_DEV_AUTH") {
         tracing::warn!("PYN_DEV_AUTH is on: anyone who can reach this server can act as any user");

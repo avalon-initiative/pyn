@@ -68,7 +68,7 @@ impl RepoService {
     }
 
     /// Whether `size` more bytes may be uploaded: the owner is not frozen and neither the owner's nor the
-    /// repository's storage cap would pass, counting revisions and LFS objects. An early check; the record is atomic.
+    /// repository's storage cap would pass, counting revisions, LFS objects and the bytes of open resumable uploads. An early check; the record is atomic.
     pub async fn lfs_admit(&self, size: u64) -> Result<()> {
         self.ensure_writable().await?;
         let Some(cap) = self.storage_cap().await? else {
@@ -76,7 +76,8 @@ impl RepoService {
         };
         if let Some(limit) = cap.repo_max_bytes {
             let used = self.meta.repo_usage(&self.repo).await?;
-            let used = used.stored_bytes + used.lfs_bytes;
+            let used =
+                used.stored_bytes + used.lfs_bytes + self.meta.tus_held_bytes(&self.repo).await?;
             if used.saturating_add(size) > limit {
                 return Err(PynError::RepoStorageLimitReached {
                     repository: cap.repository,
@@ -87,7 +88,9 @@ impl RepoService {
         }
         if let Some(limit) = cap.max_bytes {
             let used = self.meta.owner_usage(&cap.owner).await?;
-            let used = used.stored_bytes + used.lfs_bytes;
+            let used = used.stored_bytes
+                + used.lfs_bytes
+                + self.meta.tus_held_bytes_by_owner(&cap.owner).await?;
             if used.saturating_add(size) > limit {
                 return Err(PynError::StorageLimitReached {
                     owner: cap.owner.to_string(),

@@ -57,7 +57,6 @@ pub struct Repositories {
     unreferenced_cap: u64,
     uploads: crate::gate::UploadGate,
     merge_slots: Arc<tokio::sync::Semaphore>,
-    tus: Arc<crate::TusSessions>,
     services: Mutex<HashMap<crate::RepoId, (ServiceKey, Arc<RepoService>)>>,
 }
 
@@ -83,6 +82,11 @@ fn absent_record(owner: &str, name: &str) -> RepoRecord {
 }
 
 impl Repositories {
+    /// Drops the resumable LFS uploads that lapsed and the pieces they stored; returns how many.
+    pub async fn sweep_tus_sessions(&self) -> Result<usize> {
+        crate::sweep_tus_sessions(&self.meta, &self.objects, self.clock.now()).await
+    }
+
     /// `rules` apply to a repository until it has a `.pyn/pyn.toml`.
     pub fn new(
         meta: Arc<dyn MetadataStore>,
@@ -106,7 +110,6 @@ impl Repositories {
             merge_slots: Arc::new(tokio::sync::Semaphore::new(
                 crate::merge::default_concurrent_merges(),
             )),
-            tus: Arc::default(),
             services: Mutex::new(HashMap::new()),
         }
     }
@@ -209,8 +212,7 @@ impl Repositories {
                 .with_repo_storage_cap(record.address(), record.storage_cap)
                 .with_owner_writes(self.access.clone())
                 .with_unreferenced_cap(self.unreferenced_cap)
-                .with_merge_slots(self.merge_slots.clone())
-                .with_tus_sessions(self.tus.clone()),
+                .with_merge_slots(self.merge_slots.clone()),
         );
         svc.load_policy().await?;
         let mut services = self.services.lock().unwrap();
