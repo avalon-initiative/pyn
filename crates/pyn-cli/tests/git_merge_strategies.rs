@@ -551,14 +551,19 @@ fn an_option_is_only_read_when_a_real_merge_needs_it() {
 }
 
 #[test]
-fn what_cannot_be_honored_is_refused_before_anything_changes() {
+fn patience_and_histogram_merge_as_git_does() {
     for opt in [
         "patience",
         "histogram",
         "diff-algorithm=patience",
         "diff-algorithm=histogram",
     ] {
-        each_format(CONFLICT, |p| p.refused(&["merge", "-X", opt, "side"], 129));
+        each_format(CONFLICT, |p| {
+            p.same(&["merge", "-X", opt, "side"], Skip::default())
+        });
+        each_format(CLEAN, |p| {
+            p.same(&["merge", "-X", opt, "side"], Skip::default())
+        });
     }
 }
 

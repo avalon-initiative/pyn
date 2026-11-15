@@ -115,6 +115,17 @@ pub fn merge_favoring<T: PartialEq + Clone>(
     favor: Option<Favor>,
 ) -> Vec<Chunk<T>> {
     let (ro, rt) = (regions(&diff(base, ours)), regions(&diff(base, theirs)));
+    merge_regions(base, ours, theirs, favor, ro, rt)
+}
+
+fn merge_regions<T: PartialEq + Clone>(
+    base: &[T],
+    ours: &[T],
+    theirs: &[T],
+    favor: Option<Favor>,
+    ro: Vec<Region>,
+    rt: Vec<Region>,
+) -> Vec<Chunk<T>> {
     let mut all: Vec<(bool, Region)> = ro
         .iter()
         .map(|r| (false, *r))
@@ -240,11 +251,48 @@ impl Space {
     }
 }
 
-/// How to merge text: which side wins conflicts and which whitespace differences are ignored.
+/// Line edits `(a_start, a_count, b_start, b_count)` turning the first text into the second.
+pub type Differ = fn(&[u8], &[u8], Space) -> Vec<(usize, usize, usize, usize)>;
+
+/// How to merge text: which side wins conflicts, which whitespace differences are ignored and, when set, the diff to use.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Options {
     pub favor: Option<Favor>,
     pub space: Space,
+    pub differ: Option<Differ>,
+}
+
+fn ops_from_edits(edits: &[(usize, usize, usize, usize)], a_len: usize) -> Vec<Op> {
+    let mut ops = Vec::new();
+    let mut at = 0;
+    for &(a, ac, _, bc) in edits {
+        ops.extend(std::iter::repeat_n(Op::Equal, a - at));
+        ops.extend(std::iter::repeat_n(Op::Delete, ac));
+        ops.extend(std::iter::repeat_n(Op::Insert, bc));
+        at = a + ac;
+    }
+    ops.extend(std::iter::repeat_n(Op::Equal, a_len - at));
+    ops
+}
+
+fn merge_by<T: PartialEq + Clone>(
+    lines: [&[T]; 3],
+    texts: [&[u8]; 3],
+    options: Options,
+) -> Vec<Chunk<T>> {
+    let [base, ours, theirs] = lines;
+    let Some(differ) = options.differ else {
+        return merge_favoring(base, ours, theirs, options.favor);
+    };
+    let ro = regions(&ops_from_edits(
+        &differ(texts[0], texts[1], options.space),
+        base.len(),
+    ));
+    let rt = regions(&ops_from_edits(
+        &differ(texts[0], texts[2], options.space),
+        base.len(),
+    ));
+    merge_regions(base, ours, theirs, options.favor, ro, rt)
 }
 
 /// A line that equals another when their reduced forms do, and keeps its own bytes for output.
@@ -302,7 +350,11 @@ pub fn merge_text_with<'a>(
         if base_lines == their_lines {
             return Outcome::Clean(ours.to_vec());
         }
-        let merged = merge_favoring(&base_lines, &our_lines, &their_lines, options.favor);
+        let merged = merge_by(
+            [&base_lines, &our_lines, &their_lines],
+            [base, ours, theirs],
+            options,
+        );
         let raw = |lines: Vec<Keyed<'a>>| lines.into_iter().map(|l| l.raw).collect::<Vec<_>>();
         merged
             .into_iter()
@@ -317,11 +369,10 @@ pub fn merge_text_with<'a>(
             })
             .collect()
     } else {
-        merge_favoring(
-            &split_lines(base),
-            &split_lines(ours),
-            &split_lines(theirs),
-            options.favor,
+        merge_by(
+            [&split_lines(base), &split_lines(ours), &split_lines(theirs)],
+            [base, ours, theirs],
+            options,
         )
     };
     if chunks.iter().any(|c| matches!(c, Chunk::Conflict(_))) {
@@ -704,6 +755,47 @@ mod option_tests {
             };
             assert_eq!(clean(merge_text_with(BASE, ours, theirs, options)), want);
         }
+    }
+
+    #[test]
+    fn a_supplied_differ_decides_the_changed_regions() {
+        // Reports every line of the side as replaced, so two edits far apart now overlap.
+        fn whole(a: &[u8], b: &[u8], _: Space) -> Vec<(usize, usize, usize, usize)> {
+            vec![(0, split_lines(a).len(), 0, split_lines(b).len())]
+        }
+        let (ours, theirs) = (
+            b"A
+b
+c
+d
+e
+"
+            .as_slice(),
+            b"a
+b
+c
+d
+E
+"
+            .as_slice(),
+        );
+        assert_eq!(
+            clean(merge_text(BASE, ours, theirs)),
+            "A
+b
+c
+d
+E
+"
+        );
+        let options = Options {
+            differ: Some(whole),
+            ..Options::default()
+        };
+        assert!(matches!(
+            merge_text_with(BASE, ours, theirs, options),
+            Outcome::Conflicted(_)
+        ));
     }
 
     #[test]

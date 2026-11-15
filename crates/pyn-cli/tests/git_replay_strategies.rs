@@ -214,6 +214,18 @@ fn a_rebase_stopped_by_a_conflict_keeps_its_strategy_for_the_rest() {
 }
 
 #[test]
+fn replay_diff_algorithms_match_git() {
+    for opt in ["patience", "histogram", "diff-algorithm=histogram"] {
+        each_format(HISTORY, |p| {
+            p.both_sh("git checkout -q side");
+            p.same(&["rebase", "-X", opt, "main"]);
+        });
+        each_format(HISTORY, |p| p.same(&["cherry-pick", "-X", opt, "side~2"]));
+        each_format(REVERTABLE, |p| p.same(&["revert", "-X", opt, "HEAD~1"]));
+    }
+}
+
+#[test]
 fn rebase_strategies_pyn_does_not_build_are_usage_errors() {
     let p = Pair::new("sha1", HISTORY);
     p.both_sh("git checkout -q side");
@@ -224,9 +236,6 @@ fn rebase_strategies_pyn_does_not_build_are_usage_errors() {
         &["-s", "subtree"],
         &["-X", "subtree"],
         &["-X", "subtree=sub"],
-        &["-X", "patience"],
-        &["-X", "histogram"],
-        &["-X", "diff-algorithm=patience"],
     ] {
         let mut args = vec!["rebase"];
         args.extend(opts);
@@ -293,7 +302,6 @@ fn cherry_pick_strategies_pyn_does_not_build_are_usage_errors() {
         &["--strategy=ours"][..],
         &["--strategy=resolve"],
         &["-X", "subtree"],
-        &["-X", "patience"],
     ] {
         let mut args = vec!["cherry-pick"];
         args.extend(opts);
@@ -325,7 +333,6 @@ fn revert_options_match_git() {
 fn revert_strategies_pyn_does_not_build_are_usage_errors() {
     let p = Pair::new("sha1", REVERTABLE);
     p.refused(&["revert", "--strategy=ours", "HEAD~1"], 129);
-    p.refused(&["revert", "-X", "patience", "HEAD~1"], 129);
 }
 
 #[test]
