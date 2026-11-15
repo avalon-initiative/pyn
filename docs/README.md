@@ -26,6 +26,7 @@ Markdown, plus the generated OpenAPI document; `make docs-check` verifies relati
 - [Deployment and backups: Docker Compose, native systemd install, TLS, upgrades, backup and restore](deployment.md)
 - [Releasing: from `make release` to the published image and binaries](releasing.md)
 - [CI and the pinned git: how the oracle git version is built, cached and moved](ci.md)
+- [CLI JSON output: the versioned `--json` shapes for integrations](cli-json.md)
 - [Phase 1 scope](phase-1.md)
 
 ## API contract

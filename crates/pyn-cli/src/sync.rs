@@ -201,10 +201,12 @@ pub fn status(
         (0, 0, 0, 0, 0, 0);
     let (mut mine, mut theirs) = (0, 0);
     let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut json_files: Vec<serde_json::Value> = Vec::new();
     for path in paths {
         let (known, entry) = (state.get(path), entries.get(path));
         let on_disk = localfile::exists(&ws.abs(path));
         let mut notes: Vec<String> = Vec::new();
+        let mut states: Vec<&str> = Vec::new();
         let mut work = ' ';
         let staged_entry = index.entries.get(path);
         let stage = match staged_entry {
@@ -224,6 +226,7 @@ pub fn status(
                 let (file_mode, bytes) = localfile::read(&ws.abs(path))?;
                 if dirty(file_mode, &bytes) {
                     notes.push("modified".into());
+                    states.push("modified");
                     work = 'M';
                     modified += 1;
                 }
@@ -231,18 +234,22 @@ pub fn status(
                 match (commit, theirs) {
                     (None, Some(head)) if head > k.revision => {
                         notes.push(format!("behind (head r{head})"));
+                        states.push("behind");
                         behind += 1;
                     }
                     (Some(c), Some(rev)) if rev > k.revision => {
                         notes.push(format!("behind ({} has r{rev})", short(c)));
+                        states.push("behind");
                         behind += 1;
                     }
                     (Some(c), Some(rev)) if rev < k.revision => {
                         notes.push(format!("ahead ({} has r{rev})", short(c)));
+                        states.push("ahead");
                         ahead += 1;
                     }
                     (Some(c), None) if entry.is_some() => {
                         notes.push(format!("ahead (not in {})", short(c)));
+                        states.push("ahead");
                         ahead += 1;
                     }
                     _ => {}
@@ -251,6 +258,7 @@ pub fn status(
             (Some(_), false) if staged_entry.is_some_and(|s| s.deleted) => {}
             (Some(_), false) => {
                 notes.push("deleted locally".into());
+                states.push("deleted_locally");
                 work = 'D';
                 modified += 1;
             }
@@ -258,12 +266,14 @@ pub fn status(
                 let (file_mode, bytes) = localfile::read(&ws.abs(path))?;
                 if dirty(file_mode, &bytes) {
                     notes.push("modified".into());
+                    states.push("modified");
                     work = 'M';
                     modified += 1;
                 }
             }
             (None, true) if local.contains(path) => {
                 let on_server = entry.is_some_and(|e| e.revision.is_some());
+                states.push("untracked");
                 notes.push(if on_server {
                     "untracked (on the server: run `pyn update`)".into()
                 } else {
@@ -276,9 +286,11 @@ pub fn status(
             (None, false) if entry.is_some() => {
                 if entry.is_some_and(|e| e.revision.is_some()) {
                     notes.push("new".into());
+                    states.push("new");
                     new += 1;
                 } else if entry.is_some_and(|e| e.lock.is_some()) {
                     notes.push("locked, not checked in yet".into());
+                    states.push("locked_unpublished");
                 }
             }
             _ => {}
@@ -288,12 +300,23 @@ pub fn status(
         }
         if let Some(change) = unpublished.paths.get(path) {
             notes.push(format!("{} in a local commit", change.word()));
+            states.push("local_commit");
         }
         if let Some(why) = unmerged.get(path) {
             notes.push(format!("unmerged ({why})"));
+            states.push("unmerged");
         } else if merged.contains(path) {
             notes.push("merged".into());
+            states.push("merged");
         }
+        let lock_json = entry.and_then(|e| e.lock.as_ref()).map(|l| {
+            serde_json::json!({
+                "owner": l.owner,
+                "mine": l.owner == me,
+                "acquired_at": l.acquired_at,
+                "expires_at": l.expires_at,
+            })
+        });
         let lock = entry.and_then(|e| e.lock.as_ref()).map(|lock| {
             let by_me = lock.owner == me;
             if by_me {
@@ -344,6 +367,14 @@ pub fn status(
                 |e| mode_name(e.mode),
             )
         });
+        json_files.push(serde_json::json!({
+            "path": path,
+            "mode": mode,
+            "revision": known.map(|k| k.revision).filter(|r| *r != 0),
+            "staged": stage,
+            "states": states,
+            "lock": lock_json,
+        }));
         rows.push(vec![
             mode.to_string(),
             known.map_or("-".to_string(), |k| match k.revision {
@@ -378,6 +409,18 @@ pub fn status(
             prefix.as_bytes(),
             true,
         );
+    }
+    if crate::json_out::on() {
+        crate::json_out::print(serde_json::json!({
+            "files": json_files,
+            "counts": {
+                "staged": staged, "modified": modified, "behind": behind, "ahead": ahead,
+                "unmerged": unmerged.len(), "new": new, "untracked": untracked,
+                "locked_by_you": mine, "locked_by_others": theirs,
+            },
+            "unpublished_commits": unpublished.ahead,
+        }));
+        return Ok(());
     }
     if rows.is_empty() {
         println!("everything is up to date");
