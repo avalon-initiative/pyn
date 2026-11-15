@@ -9198,6 +9198,13 @@
           "actor": {
             "type": "string"
           },
+          "actor_current": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The actor's name now, when it differs from `actor`."
+          },
           "at": {
             "type": "string",
             "format": "date-time"
@@ -9378,7 +9385,15 @@
             "type": "string"
           },
           "actor": {
-            "type": "string"
+            "type": "string",
+            "description": "The name the event was recorded with; the log never rewrites it."
+          },
+          "actor_current": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The actor's name now, when it differs from `actor`."
           },
           "at": {
             "type": "string",
@@ -13307,6 +13322,13 @@
           "author": {
             "type": "string",
             "description": "Who made the stranded revision."
+          },
+          "author_current": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The author's name now, when it differs from `author` (decision #986)."
           },
           "branch": {
             "type": "string",

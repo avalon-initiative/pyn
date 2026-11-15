@@ -259,6 +259,14 @@ impl Rendering {
     }
 }
 
+/// The name to show for an account: its current name, with the one it was written under when they differ.
+pub fn shown_name(written: &str, current: Option<&str>) -> String {
+    match current {
+        Some(now) if now != written => format!("{now} (written as {written})"),
+        _ => written.to_string(),
+    }
+}
+
 fn person(p: &api::Person, time: i64) -> Signature {
     Signature {
         name: p.name.clone().into_bytes(),
@@ -271,7 +279,7 @@ fn person(p: &api::Person, time: i64) -> Signature {
 /// A server home's commit as the renderer's view of it, with its id.
 pub fn from_api(c: &api::Commit) -> Result<(ObjectId, Commit)> {
     let ids = |hex: &str| ObjectId::parse(hex).map_err(anyhow::Error::from);
-    let view = Commit {
+    let mut view = Commit {
         tree: ids(&c.tree)?,
         parents: c.parents.iter().map(|p| ids(p)).collect::<Result<_>>()?,
         author: person(&c.author, c.authored_at.unwrap_or(c.created_at).timestamp()),
@@ -279,6 +287,7 @@ pub fn from_api(c: &api::Commit) -> Result<(ObjectId, Commit)> {
         extra_headers: Vec::new(),
         message: c.message.clone().into_bytes(),
     };
+    view.author.name = shown_name(&c.author.name, c.author_current.as_deref()).into_bytes();
     Ok((ids(&c.id)?, view))
 }
 
@@ -827,6 +836,16 @@ mod tests {
         let (s, b) = subject_and_body("\none\ntwo  \n\n\nbody\nmore\n");
         assert_eq!((s.as_str(), b), ("one two", "body\nmore\n"));
         assert_eq!(subject_and_body("only\n"), ("only".to_string(), ""));
+    }
+
+    #[test]
+    fn a_renamed_author_shows_the_current_name_and_the_written_one() {
+        assert_eq!(shown_name("alice", None), "alice");
+        assert_eq!(shown_name("alice", Some("alice")), "alice");
+        assert_eq!(
+            shown_name("alice", Some("alicia")),
+            "alicia (written as alice)"
+        );
     }
 
     #[test]

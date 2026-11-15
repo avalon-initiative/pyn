@@ -35,7 +35,7 @@ pub fn print(heading: &str, versions: &[api::StrandedVersion]) {
                 v.branch.clone(),
                 v.branch_owner.clone(),
                 format!("r{}", v.revision),
-                v.author.clone(),
+                crate::commit_format::shown_name(&v.author, v.author_current.as_deref()),
                 time::local(v.created_at),
                 v.path.clone(),
             ]
