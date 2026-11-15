@@ -154,12 +154,15 @@ pub(crate) async fn list_members(
 ) -> ApiResult<Json<Vec<api::OrgMember>>> {
     let who = identify(&s, &headers).await?;
     let members = s.access.org_members(&who, &UserId::new(org)).await?;
-    Ok(Json(members.into_iter().map(member_info).collect()))
+    let mut members: Vec<_> = members.into_iter().map(member_info).collect();
+    crate::self_service_api::annotate_identities(&s, &mut members).await?;
+    Ok(Json(members))
 }
 
 fn member_info((user, role): (UserId, OrgRole)) -> api::OrgMember {
     api::OrgMember {
         user: user.to_string(),
+        identity: None,
         role: role.to_string(),
     }
 }

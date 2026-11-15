@@ -15,6 +15,9 @@ pub use webhooks::*;
 pub struct Lock {
     pub path: String,
     pub owner: String,
+    /// The owner's public identity; absent when the account is gone or not active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<PublicIdentity>,
     pub acquired_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -75,6 +78,9 @@ pub struct Revision {
     /// stays as written because the hash covers it; show this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_current: Option<String>,
+    /// The author's public identity (the current name's account when renamed); absent when no active account holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_public: Option<PublicIdentity>,
     /// The structured author the v2 hash covers; absent for a v1 revision, whose hash predates it.
     #[serde(default)]
     pub author_identity: Option<Person>,
@@ -128,6 +134,9 @@ pub struct StrandedVersion {
     /// The author's name now, when it differs from `author` (decision #986).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_current: Option<String>,
+    /// The author's public identity (the current name's account when renamed); absent when no active account holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_public: Option<PublicIdentity>,
     pub created_at: DateTime<Utc>,
     /// The conversion revision the default branch made when the path became exclusive; absent in a preview.
     pub conversion: Option<u64>,
@@ -147,6 +156,9 @@ pub struct Commit {
     /// written because the commit id covers it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_current: Option<String>,
+    /// The author's public identity (the current name's account when renamed); absent when no active account holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_public: Option<PublicIdentity>,
     pub committer: Person,
     /// The committer time, in whole seconds.
     pub created_at: DateTime<Utc>,
@@ -627,6 +639,9 @@ pub struct ActivityEntry {
     /// The actor's name now, when it differs from `actor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_current: Option<String>,
+    /// The actor's public identity (the current name's account when renamed); absent when no active account holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_public: Option<PublicIdentity>,
     /// checkout, release, checkin, restore or force_unlock.
     pub action: String,
     pub path: Option<String>,
@@ -841,10 +856,22 @@ pub enum MemberSource {
     OrgOwner,
 }
 
+/// What others may see of an account next to its name: the account name, display name and avatar address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PublicIdentity {
+    pub user: String,
+    pub display_name: Option<String>,
+    /// Same form as `Profile.avatar_url`.
+    pub avatar_url: Option<String>,
+}
+
 /// A person in an organization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OrgMember {
     pub user: String,
+    /// The member's public identity; absent when the account is not active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<PublicIdentity>,
     #[schema(value_type = OrgRole)]
     pub role: String,
 }
@@ -1010,6 +1037,9 @@ pub struct SetRoleRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Member {
     pub user: String,
+    /// The member's public identity; absent when the account is not active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<PublicIdentity>,
     /// The effective role: the highest of the direct grant, team grants and organization ownership.
     pub role: String,
     #[schema(value_type = MemberSource)]
@@ -1191,6 +1221,9 @@ pub struct AuditEntry {
     /// The actor's name now, when it differs from `actor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_current: Option<String>,
+    /// The actor's public identity (the current name's account when renamed); absent when no active account holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_public: Option<PublicIdentity>,
     pub action: String,
     pub path: Option<String>,
     pub detail: String,

@@ -315,16 +315,17 @@ pub(crate) async fn list_members(
 ) -> ApiResult<Json<Vec<api::Member>>> {
     let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     let members = s.access.members(&who, &repo.record.id).await?;
-    Ok(Json(
-        members
-            .into_iter()
-            .map(|m| api::Member {
-                user: m.user.to_string(),
-                role: m.role.to_string(),
-                source: m.source.to_string(),
-            })
-            .collect(),
-    ))
+    let mut members: Vec<_> = members
+        .into_iter()
+        .map(|m| api::Member {
+            user: m.user.to_string(),
+            identity: None,
+            role: m.role.to_string(),
+            source: m.source.to_string(),
+        })
+        .collect();
+    crate::self_service_api::annotate_identities(&s, &mut members).await?;
+    Ok(Json(members))
 }
 
 #[utoipa::path(put, path = "/v1/repos/{owner}/{name}/members/{user}",

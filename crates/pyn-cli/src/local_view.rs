@@ -34,6 +34,7 @@ fn api_commit(store: &LocalStore, id: &ObjectId) -> Result<api::Commit> {
         tree: c.tree.to_hex(),
         author: person(&c.author),
         author_current: None,
+        author_public: None,
         committer: person(&c.committer),
         created_at: at(c.committer.time),
         authored_at: Some(at(c.author.time)),

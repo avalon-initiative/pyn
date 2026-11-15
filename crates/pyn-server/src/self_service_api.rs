@@ -156,6 +156,40 @@ fn repo_address(path: &str) -> Option<(String, String)> {
 pub(crate) trait Named {
     fn written(&self) -> (UserId, chrono::DateTime<chrono::Utc>);
     fn set_current(&mut self, now: Option<String>);
+    fn set_public(&mut self, who: Option<api::PublicIdentity>);
+}
+
+/// A response item for one account, named by `user`, that carries that account's public identity.
+pub(crate) trait Identified {
+    fn user(&self) -> UserId;
+    fn set_identity(&mut self, who: Option<api::PublicIdentity>);
+}
+
+impl Identified for api::Lock {
+    fn user(&self) -> UserId {
+        UserId::new(&self.owner)
+    }
+    fn set_identity(&mut self, who: Option<api::PublicIdentity>) {
+        self.identity = who;
+    }
+}
+
+impl Identified for api::Member {
+    fn user(&self) -> UserId {
+        UserId::new(&self.user)
+    }
+    fn set_identity(&mut self, who: Option<api::PublicIdentity>) {
+        self.identity = who;
+    }
+}
+
+impl Identified for api::OrgMember {
+    fn user(&self) -> UserId {
+        UserId::new(&self.user)
+    }
+    fn set_identity(&mut self, who: Option<api::PublicIdentity>) {
+        self.identity = who;
+    }
 }
 
 impl Named for api::Revision {
@@ -165,6 +199,9 @@ impl Named for api::Revision {
     fn set_current(&mut self, now: Option<String>) {
         self.author_current = now;
     }
+    fn set_public(&mut self, who: Option<api::PublicIdentity>) {
+        self.author_public = who;
+    }
 }
 
 impl Named for api::StrandedVersion {
@@ -173,6 +210,9 @@ impl Named for api::StrandedVersion {
     }
     fn set_current(&mut self, now: Option<String>) {
         self.author_current = now;
+    }
+    fn set_public(&mut self, who: Option<api::PublicIdentity>) {
+        self.author_public = who;
     }
 }
 
@@ -186,6 +226,9 @@ impl Named for api::Commit {
     fn set_current(&mut self, now: Option<String>) {
         self.author_current = now;
     }
+    fn set_public(&mut self, who: Option<api::PublicIdentity>) {
+        self.author_public = who;
+    }
 }
 
 impl Named for api::ActivityEntry {
@@ -194,6 +237,9 @@ impl Named for api::ActivityEntry {
     }
     fn set_current(&mut self, now: Option<String>) {
         self.actor_current = now;
+    }
+    fn set_public(&mut self, who: Option<api::PublicIdentity>) {
+        self.actor_public = who;
     }
 }
 
@@ -204,13 +250,76 @@ impl Named for api::AuditEntry {
     fn set_current(&mut self, now: Option<String>) {
         self.actor_current = now;
     }
+    fn set_public(&mut self, who: Option<api::PublicIdentity>) {
+        self.actor_public = who;
+    }
 }
 
-/// Fills the current-name field (decision #986) on every item; the one resolver all history surfaces share.
+/// The public identity of each account, one lookup per distinct name; `None` where no active account holds it.
+pub(crate) async fn identities(
+    s: &AppState,
+    users: &[UserId],
+) -> ApiResult<Vec<Option<api::PublicIdentity>>> {
+    let mut distinct: Vec<UserId> = Vec::new();
+    for u in users {
+        if !distinct.contains(u) {
+            distinct.push(u.clone());
+        }
+    }
+    let found = s.access.public_profiles(&distinct).await?;
+    let known: std::collections::HashMap<_, _> = distinct
+        .into_iter()
+        .zip(found.into_iter().map(|f| {
+            f.map(|(user, profile)| {
+                let p = crate::profile_api::profile_dto(&user, profile);
+                api::PublicIdentity {
+                    user: user.to_string(),
+                    display_name: p.display_name,
+                    avatar_url: p.avatar_url,
+                }
+            })
+        }))
+        .collect();
+    Ok(users.iter().map(|u| known[u].clone()).collect())
+}
+
+/// Fills the public identity of every item's account.
+pub(crate) async fn annotate_identities<T: Identified>(
+    s: &AppState,
+    items: &mut [T],
+) -> ApiResult<()> {
+    let users: Vec<_> = items.iter().map(Identified::user).collect();
+    for (item, who) in items.iter_mut().zip(identities(s, &users).await?) {
+        item.set_identity(who);
+    }
+    Ok(())
+}
+
+/// For each author name and time, the renamed current name (decision #986) and the public identity of the account.
+async fn resolve(
+    s: &AppState,
+    asked: &[(UserId, chrono::DateTime<chrono::Utc>)],
+) -> ApiResult<Vec<(Option<String>, Option<api::PublicIdentity>)>> {
+    let names = s.access.current_names(asked).await?;
+    let users: Vec<_> = asked
+        .iter()
+        .zip(&names)
+        .map(|((written, _), now)| now.clone().unwrap_or_else(|| written.clone()))
+        .collect();
+    let who = identities(s, &users).await?;
+    Ok(names
+        .into_iter()
+        .map(|n| n.map(|n| n.to_string()))
+        .zip(who)
+        .collect())
+}
+
+/// Fills the current name and public identity on every item; the one resolver all history surfaces share.
 pub(crate) async fn annotate<T: Named>(s: &AppState, items: &mut [T]) -> ApiResult<()> {
     let asked: Vec<_> = items.iter().map(Named::written).collect();
-    for (item, now) in items.iter_mut().zip(s.access.current_names(&asked).await?) {
-        item.set_current(now.map(|n| n.to_string()));
+    for (item, (now, who)) in items.iter_mut().zip(resolve(s, &asked).await?) {
+        item.set_current(now);
+        item.set_public(who);
     }
     Ok(())
 }
@@ -236,16 +345,31 @@ pub(crate) async fn annotate_commits(s: &AppState, commits: &mut [api::Commit]) 
     Ok(())
 }
 
-/// Like `annotate`, for each tree entry's last change.
+/// Like `annotate`, for each tree entry's last change and lock holder.
 pub(crate) async fn annotate_tree(s: &AppState, entries: &mut [api::TreeEntry]) -> ApiResult<()> {
     let asked: Vec<_> = entries
         .iter()
         .filter_map(|e| e.last_change.as_ref())
         .map(Named::written)
         .collect();
-    let mut names = s.access.current_names(&asked).await?.into_iter();
+    let mut found = resolve(s, &asked).await?.into_iter();
     for r in entries.iter_mut().filter_map(|e| e.last_change.as_mut()) {
-        r.set_current(names.next().flatten().map(|n| n.to_string()));
+        let (now, who) = found.next().unwrap_or_default();
+        r.set_current(now);
+        r.set_public(who);
+    }
+    annotate_held(s, entries.iter_mut().filter_map(|e| e.lock.as_mut())).await
+}
+
+/// Fills the public identity of each lock holder.
+pub(crate) async fn annotate_held<'a>(
+    s: &AppState,
+    locks: impl Iterator<Item = &'a mut api::Lock>,
+) -> ApiResult<()> {
+    let mut locks: Vec<_> = locks.collect();
+    let users: Vec<_> = locks.iter().map(|l| l.user()).collect();
+    for (l, who) in locks.iter_mut().zip(identities(s, &users).await?) {
+        l.set_identity(who);
     }
     Ok(())
 }

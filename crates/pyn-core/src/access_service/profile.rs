@@ -17,6 +17,22 @@ impl AccessService {
             .ok_or_else(|| PynError::UserNotFound(user.to_string()))
     }
 
+    /// For each name, the active user account's canonical name and profile; `None` for any other.
+    pub async fn public_profiles(
+        &self,
+        users: &[UserId],
+    ) -> Result<Vec<Option<(UserId, Profile)>>> {
+        let mut out = Vec::with_capacity(users.len());
+        for user in users {
+            out.push(match self.active_user(user).await {
+                Ok(a) => Some((a.user.clone(), self.store.profile(&a.user).await?)),
+                Err(PynError::UserNotFound(_)) => None,
+                Err(e) => return Err(e),
+            });
+        }
+        Ok(out)
+    }
+
     pub async fn profile_of(&self, user: &UserId) -> Result<Profile> {
         self.store.profile(user).await
     }
