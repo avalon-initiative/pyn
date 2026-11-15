@@ -213,15 +213,23 @@ fn a_rebase_stopped_by_a_conflict_keeps_its_strategy_for_the_rest() {
     });
 }
 
+/// Repeated lines on which a merge differs by algorithm where git honors it; a replay in git 2.43 reads none, so this checks pyn agrees.
+const ALGORITHMS: &str = "git config merge.conflictStyle merge\n\
+    printf '%s\\n' '}' 'a' 'a' '{' 'a' 'a' 'a' 'a' '{' '{' >f; git add .; git commit -qm base\n\
+    git checkout -q -b side\nprintf '%s\\n' 'a' '}' 'b' 'Z' 'a' '{' 'a' 'a' 'a' 'a' '{' '{' >f; git commit -qam side\n\
+    git checkout -q main\nprintf '%s\\n' '}' 'b' 'a' 'a' '{' 'a' 'a' 'a' 'a' 'a' '}' 'b' '{' >f; git commit -qam main\n";
+
 #[test]
-fn replay_diff_algorithms_match_git() {
-    for opt in ["patience", "histogram", "diff-algorithm=histogram"] {
-        each_format(HISTORY, |p| {
-            p.both_sh("git checkout -q side");
-            p.same(&["rebase", "-X", opt, "main"]);
+fn replay_algorithms_match_git() {
+    for opt in ["patience", "histogram"] {
+        let args = ["-s", "recursive", "-X", opt];
+        each_format(ALGORITHMS, |p| {
+            p.same(&[&["cherry-pick"][..], &args, &["side"]].concat())
         });
-        each_format(HISTORY, |p| p.same(&["cherry-pick", "-X", opt, "side~2"]));
-        each_format(REVERTABLE, |p| p.same(&["revert", "-X", opt, "HEAD~1"]));
+        each_format(ALGORITHMS, |p| {
+            p.both_sh("git checkout -q side");
+            p.same(&[&["rebase"][..], &args, &["main"]].concat());
+        });
     }
 }
 

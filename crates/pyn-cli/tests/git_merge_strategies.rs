@@ -550,6 +550,36 @@ fn an_option_is_only_read_when_a_real_merge_needs_it() {
     });
 }
 
+/// Repeated lines on which `-s recursive` merges differently under Myers, patience and histogram (git 2.43; `ort` there reads no algorithm).
+const ALGORITHMS: &str = "git config merge.conflictStyle merge\n\
+    printf '%s\\n' '}' 'a' 'a' '{' 'a' 'a' 'a' 'a' '{' '{' >f; git add .; git commit -qm base\n\
+    git checkout -q -b side\nprintf '%s\\n' 'a' '}' 'b' 'Z' 'a' '{' 'a' 'a' 'a' 'a' '{' '{' >f; git commit -qam side\n\
+    git checkout -q main\nprintf '%s\\n' '}' 'b' 'a' 'a' '{' 'a' 'a' 'a' 'a' 'a' '}' 'b' '{' >f; git commit -qam main\n";
+
+#[test]
+fn recursive_merges_by_the_algorithm_as_git_does() {
+    if git_minor() >= 50 {
+        return;
+    }
+    let file = |args: &[&str]| {
+        let p = Pair::new("sha1", ALGORITHMS);
+        p.git_in(&p.git, args);
+        std::fs::read(p.git.join("f")).unwrap()
+    };
+    let merge = |opt: &str| ["merge", "-q", "-s", "recursive", "-X", opt, "side"].map(String::from);
+    let myers = merge("diff-algorithm=myers");
+    let by = |args: &[String]| file(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    for opt in ["patience", "histogram"] {
+        assert_ne!(by(&merge(opt)), by(&myers), "{opt} must differ from Myers");
+        each_format(ALGORITHMS, |p| {
+            p.same(
+                &["merge", "-s", "recursive", "-X", opt, "side"],
+                old_engine("recursive"),
+            )
+        });
+    }
+}
+
 #[test]
 fn patience_and_histogram_merge_as_git_does() {
     for opt in [
