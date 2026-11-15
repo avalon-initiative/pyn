@@ -833,14 +833,8 @@ fn explicit_remote_branch_and_url_arguments() {
     let t = Twin::new("sha1", Via::Ssh);
     t.local("l.txt", "local\n", "local");
     t.remote("n.txt", "new\n", "remote");
-    let before = state(&t.pyn);
-    let p = t.pyn_cmd(
-        &t.pyn,
-        &["pull", "--no-rebase", "origin", "main", "feature"],
-    );
-    assert_eq!(p.code, 128, "{}", p.stderr);
-    assert!(p.stderr.contains("octopus"), "{}", p.stderr);
-    assert_ne!(state(&t.pyn), before, "the fetch ran");
+    let out = t.both_ok(&["--no-rebase", "--no-edit", "origin", "main", "feature"]);
+    assert!(out.stdout.contains("octopus"), "{}", out.stdout);
 }
 
 #[test]
@@ -1324,4 +1318,110 @@ fn pull_allow_unrelated_histories() {
         args.extend(["origin", "other"]);
         both_alike(&t, &args);
     }
+}
+
+/// A branch off `feature` with an annotated tag on it, and one that names `main`'s tip again, served beside the sample refs.
+fn more_refs(t: &Twin) {
+    let bare = t.bare.to_str().unwrap();
+    run(&t.seed, &["switch", "-q", "-c", "extra", "feature"]);
+    commit(&t.seed, "d.txt", b"four\n", "four");
+    run(&t.seed, &["tag", "-a", "v3", "-m", "third"]);
+    run(&t.seed, &["branch", "same", "main"]);
+    run(&t.seed, &["switch", "-q", "main"]);
+    run(&t.seed, &["push", "-q", bare, "--all"]);
+    run(&t.seed, &["push", "-q", bare, "--tags"]);
+}
+
+fn several_refs(format: &str, via: Via) -> Twin {
+    let t = diverged(format, via);
+    more_refs(&t);
+    t
+}
+
+#[test]
+fn a_pull_of_several_refs_is_an_octopus_merge_as_git_makes_it() {
+    let cases: &[&[&str]] = &[
+        &["origin", "feature", "extra"],
+        &["origin", "main", "feature"],
+        &["origin", "feature", "main", "extra"],
+        &["--log", "origin", "feature", "extra"],
+        &["--no-commit", "origin", "feature", "extra"],
+        &["--squash", "origin", "feature", "extra"],
+        &["--no-ff", "origin", "feature", "extra"],
+        &["--ff", "origin", "feature", "extra"],
+        &["-s", "octopus", "origin", "feature", "extra"],
+        &["-s", "ours", "origin", "feature", "extra"],
+        &["-s", "ort", "origin", "feature", "extra"],
+        &["-m", "own message", "origin", "feature", "extra"],
+        &["origin", "tag", "v2", "tag", "v3"],
+        &["origin", "tag", "v1", "tag", "v2"],
+        &["--log", "origin", "feature", "tag", "v3"],
+    ];
+    for (format, via) in [("sha1", Via::Ssh), ("sha256", Via::Http)] {
+        for refs in cases {
+            let t = several_refs(format, via);
+            let mut args = vec!["--no-edit"];
+            args.extend(refs.iter());
+            both_alike(&t, &args);
+        }
+    }
+}
+
+#[test]
+fn several_refs_that_name_one_commit_make_one_parent_and_one_log_block_each() {
+    let cases: &[&[&str]] = &[
+        &["origin", "HEAD", "main"],
+        &["--log", "origin", "HEAD", "main"],
+        &["--log", "origin", "main", "same"],
+        &["--log", "origin", "HEAD", "feature"],
+        &["--log", "origin", "HEAD", "feature", "extra"],
+        &["--squash", "origin", "main", "same"],
+        &["--no-commit", "origin", "HEAD", "main"],
+        &["--log", "origin", "tag", "v2", "same"],
+    ];
+    for (format, via) in [("sha1", Via::Ssh), ("sha256", Via::Http)] {
+        for refs in cases {
+            let t = several_refs(format, via);
+            let mut args = vec!["--no-edit"];
+            args.extend(refs.iter());
+            both_alike(&t, &args);
+        }
+    }
+}
+
+#[test]
+fn pull_octopus_names_the_strategy_of_a_pull_of_several_refs() {
+    for value in ["ours", "octopus", "bogus"] {
+        let t = several_refs("sha1", Via::Ssh);
+        t.configure("pull.octopus", value);
+        t.configure("pull.twohead", "resolve");
+        both_alike(&t, &["--no-edit", "origin", "feature", "extra"]);
+    }
+}
+
+#[test]
+fn several_refs_cannot_rebase_fast_forward_or_start_a_branch() {
+    for flags in [
+        &["--rebase"][..],
+        &["--ff-only"],
+        &["--rebase", "--ff-only"],
+        &["--no-rebase", "--ff-only"],
+    ] {
+        for refs in [&["feature", "extra"][..], &["main", "same"]] {
+            let t = several_refs("sha1", Via::Ssh);
+            let mut args = flags.to_vec();
+            args.push("origin");
+            args.extend(refs);
+            let (g, p) = t.both(&args);
+            assert_eq!(p.code, 128, "{args:?}: {}", p.stderr);
+            assert_eq!(g.code, 128);
+        }
+    }
+    let t = several_refs("sha1", Via::Ssh);
+    t.each(&["config", "--unset", "pull.rebase"]);
+    let (_, p) = t.both(&["origin", "feature", "extra"]);
+    assert_eq!(p.code, 128, "{}", p.stderr);
+    let t = Twin::unborn("sha1", Via::Ssh);
+    let (_, p) = t.both(&["origin", "main", "feature"]);
+    assert_eq!(p.code, 128, "{}", p.stderr);
 }

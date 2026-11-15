@@ -292,6 +292,55 @@ fn candidates(git: &GitHome) -> Result<Vec<Candidate>> {
     Ok(out)
 }
 
+/// The refs fetched from one origin, as a merge title groups them.
+struct Origin<'a> {
+    url: &'a str,
+    head: bool,
+    items: Vec<(String, String)>,
+}
+
+/// git's merge title for the fetched refs: each origin's `HEAD`, branches, tags and commits, origins joined by `; `.
+fn title(found: &[&Candidate]) -> String {
+    let mut origins: Vec<Origin> = Vec::new();
+    for c in found {
+        let at = match origins.iter().position(|o| o.url == c.url) {
+            Some(at) => at,
+            None => {
+                origins.push(Origin {
+                    url: &c.url,
+                    head: false,
+                    items: Vec::new(),
+                });
+                origins.len() - 1
+            }
+        };
+        match &c.what {
+            None => origins[at].head = true,
+            Some(what) => {
+                let kind = if c.kind.is_empty() { "commit" } else { &c.kind };
+                origins[at]
+                    .items
+                    .push((kind.to_owned(), format!("'{what}'")));
+            }
+        }
+    }
+    let parts: Vec<String> = origins
+        .iter()
+        .map(|o| {
+            if o.items.is_empty() {
+                return o.url.to_owned();
+            }
+            let of = if o.url == "." {
+                String::new()
+            } else {
+                format!(" of {}", o.url)
+            };
+            format!("{}{of}", merge::octopus::group(o.head, &o.items))
+        })
+        .collect();
+    parts.join("; ")
+}
+
 impl Candidate {
     /// What a merge message calls this: `branch 'x' of <url>`, or `<url>` for a bare `HEAD`.
     fn describe(&self) -> String {
@@ -603,11 +652,19 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
         QUIET.store(true, Ordering::Relaxed);
         return initial_checkout(git, &theirs, "pull: initial pull");
     };
-    if found.len() > 1 {
-        die("octopus merges are not built; name one branch to pull");
+    let several = found.len() > 1;
+    if several && rebase_on {
+        die("Cannot rebase onto multiple branches.");
+    }
+    if several && how.stated && how.ff_only {
+        die("Cannot fast-forward to multiple branches.");
     }
     let candidate = &found[0];
-    let theirs = peel(git, candidate)?;
+    let mut heads = Vec::new();
+    for c in &found {
+        heads.push(peel(git, c)?);
+    }
+    let theirs = heads[0];
     if let Rebase::On(mode) = rebase {
         let interactive = mode == PullMode::Interactive;
         if !interactive && git.is_ancestor(&theirs, &ours)? {
@@ -641,19 +698,37 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
     }
     if rebase_unset
         && !how.stated
-        && !git.is_ancestor(&theirs, &ours)?
-        && !git.is_ancestor(&ours, &theirs)?
+        && (several || (!git.is_ancestor(&theirs, &ours)? && !git.is_ancestor(&ours, &theirs)?))
     {
         say_divergent();
     }
     if args.quiet > 0 {
         QUIET.store(true, Ordering::Relaxed);
     }
-    let mut message = default_message(git, &candidate.describe())?;
-    if candidate.kind == "tag"
-        && let Some(tag) = merge::tag_object_message(git, &candidate.id)
-    {
-        message = format!("{message}\n\n{tag}");
+    let given: Vec<(String, ObjectId)> = heads.iter().map(|h| (h.to_hex(), *h)).collect();
+    let kept = merge::octopus::reduce(git, &ours, &given)?;
+    let mut shown: Vec<&Candidate> = found
+        .iter()
+        .zip(&heads)
+        .filter(|(_, h)| kept.iter().any(|(_, k)| k == *h))
+        .map(|(c, _)| c)
+        .collect();
+    if shown.is_empty() {
+        shown = found.iter().collect();
+    }
+    let mut message = default_message(git, &title(&shown))?;
+    let tags: Vec<(String, String)> = shown
+        .iter()
+        .filter(|c| c.kind == "tag")
+        .filter_map(|c| Some((c.describe(), merge::tag_object_message(git, &c.id)?)))
+        .collect();
+    for (label, tag) in &tags {
+        let head = if tags.len() > 1 {
+            format!("# {label}\n")
+        } else {
+            String::new()
+        };
+        message = format!("{message}\n\n{head}{tag}");
     }
     let _ = merge::ACTION.set(action);
     let cfg = if rebase_on {
@@ -728,6 +803,7 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
         git,
         MergeArgs {
             source: Some(theirs.to_hex()),
+            more_sources: heads[1..].iter().map(ObjectId::to_hex).collect(),
             message: if own_message {
                 cfg.message.clone()
             } else {
@@ -761,7 +837,12 @@ fn pull_inner(git: &GitHome, args: PullArgs) -> Result<()> {
             strategy_option,
             edit,
             no_edit,
-            log_label: candidate.log_label(),
+            log_label: if several { None } else { candidate.log_label() },
+            log_labels: if several {
+                found.iter().map(Candidate::log_label).collect()
+            } else {
+                Vec::new()
+            },
             sign,
             ..cfg
         },

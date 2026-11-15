@@ -31,6 +31,8 @@ use crate::diff::{self, Tree};
 use crate::diffstat;
 use crate::merging::MergeArgs;
 
+pub(super) mod octopus;
+
 /// Set by `pyn pull -q`: the informational lines below are not printed.
 /// The reflog action when a command other than `merge` runs the merge (`pull ...`).
 pub(super) static ACTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -231,32 +233,42 @@ fn start(git: &GitHome, mut args: MergeArgs) -> Result<()> {
     if args.quiet {
         QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
     }
-    let configured: Vec<String> = match git.repo.config().get("pull.twohead") {
-        Some(names) if args.strategy.is_empty() => {
-            names.split_whitespace().map(str::to_string).collect()
-        }
-        _ => args.strategy.clone(),
+    let several = !args.more_sources.is_empty();
+    let named = !several || !args.strategy.is_empty();
+    let mut strategies = if named {
+        Strategy::parse_all(&strategy_names(git, &args, false), &args.strategy_option)
+    } else {
+        Vec::new()
     };
-    let strategies = Strategy::parse_all(&configured, &args.strategy_option);
     let opened = git.open_index()?;
     refuse_unfinished(git, &opened);
     refuse_in_progress(git)?;
     let head = git.repo.head()?;
-    let theirs = git
-        .repo
-        .resolve(&spec)
-        .map_err(|_| Refused(format!("{spec} - not something we can merge")))?;
-    if options::wants_signature_check(git, &args) {
-        options::verify_signature(git, &theirs);
+    let specs: Vec<String> = std::iter::once(spec)
+        .chain(args.more_sources.iter().cloned())
+        .collect();
+    let mut given: Vec<(String, ObjectId)> = Vec::new();
+    for spec in &specs {
+        let id = git
+            .repo
+            .resolve(spec)
+            .map_err(|_| Refused(format!("{spec} - not something we can merge")))?;
+        if options::wants_signature_check(git, &args) {
+            options::verify_signature(git, &id);
+        }
+        given.push((spec.clone(), id));
     }
-    let what = describe(git, &spec);
     let Some(ours) = head.id() else {
+        if several {
+            bail!("Can merge only exactly one commit into empty head");
+        }
         if args.squash {
             bail!("Squash commit into empty head not supported yet");
         }
-        return fast_forward(git, &opened, None, &theirs, &spec, &args);
+        return fast_forward(git, &opened, None, &given[0].1, &specs[0], &args);
     };
-    if git.is_ancestor(&theirs, &ours)? {
+    let kept = octopus::reduce(git, &ours, &given)?;
+    if kept.is_empty() {
         write_orig_head(git, &ours)?;
         say(if args.squash {
             "Already up to date. (nothing to squash)"
@@ -265,10 +277,27 @@ fn start(git: &GitHome, mut args: MergeArgs) -> Result<()> {
         });
         return Ok(());
     }
+    let joined = kept
+        .iter()
+        .map(|(s, _)| s.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let what = if kept.len() > 1 {
+        octopus::describe_all(
+            git,
+            &kept.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(),
+        )
+    } else {
+        describe(git, &kept[0].0)
+    };
+    if !named {
+        let names = strategy_names(git, &args, kept.len() > 1);
+        strategies = Strategy::parse_all(&names, &args.strategy_option);
+    }
     if strategies.iter().any(|s| s.kind.no_fast_forward()) {
         (args.no_ff, args.ff_only) = (true, false);
     }
-    let can_ff = git.is_ancestor(&ours, &theirs)?;
+    let can_ff = kept.len() == 1 && git.is_ancestor(&ours, &kept[0].1)?;
     let opened = if options::wants_autostash(git, &args) {
         let made = options::create_autostash(git)?;
         if let Ok(mut held) = AUTOSTASH.lock() {
@@ -279,7 +308,7 @@ fn start(git: &GitHome, mut args: MergeArgs) -> Result<()> {
         opened
     };
     if can_ff && !args.no_ff {
-        return fast_forward(git, &opened, Some(ours), &theirs, &spec, &args);
+        return fast_forward(git, &opened, Some(ours), &kept[0].1, &joined, &args);
     }
     if args.ff_only {
         write_orig_head(git, &ours)?;
@@ -289,14 +318,31 @@ fn start(git: &GitHome, mut args: MergeArgs) -> Result<()> {
         git,
         &args,
         &opened,
-        (ours, theirs),
-        (&spec, &what),
+        (ours, &kept, &given),
+        (&joined, &what),
         &strategies,
     )
 }
 
+/// `-s`, else `pull.octopus` (several heads) or `pull.twohead`, else git's default strategy.
+fn strategy_names(git: &GitHome, args: &MergeArgs, several: bool) -> Vec<String> {
+    if !args.strategy.is_empty() {
+        return args.strategy.clone();
+    }
+    let key = if several {
+        "pull.octopus"
+    } else {
+        "pull.twohead"
+    };
+    match git.repo.config().get(key) {
+        Some(names) => names.split_whitespace().map(str::to_string).collect(),
+        None if several => vec!["octopus".to_string()],
+        None => Vec::new(),
+    }
+}
+
 /// `SQUASH_MSG`: the commits `theirs` brings in, newest first, as `log` prints them.
-fn squash_message(git: &GitHome, ours: &ObjectId, theirs: &ObjectId) -> Result<String> {
+fn squash_message(git: &GitHome, ours: &ObjectId, theirs: &[ObjectId]) -> Result<String> {
     let mut text = String::from("Squashed commit of the following:\n");
     let abbreviations = crate::commit_format::IdFormat::Git(git.repo.abbreviations(None)?);
     let ctx = Context {
@@ -312,7 +358,7 @@ fn squash_message(git: &GitHome, ours: &ObjectId, theirs: &ObjectId) -> Result<S
     };
     let mut walk = git
         .repo
-        .log_hiding(&[*theirs], git.reachable(ours)?, Pathspec::default())?;
+        .log_hiding(theirs, git.reachable(ours)?, Pathspec::default())?;
     while let Some(entry) = walk.next_entry()? {
         text.push('\n');
         text.push_str(&render(&Pretty::Medium, &ctx, &entry.id, &entry.commit));
@@ -460,7 +506,7 @@ fn fast_forward(
     if args.squash {
         let ours = ours.expect("a squash needs a commit to merge into");
         say("Fast-forward");
-        write_state(git, "SQUASH_MSG", &squash_message(git, &ours, theirs)?)?;
+        write_state(git, "SQUASH_MSG", &squash_message(git, &ours, &[*theirs])?)?;
         say("Squash commit -- not updating HEAD");
         show_stat(git, args, old_tree.as_ref(), &new_tree)?;
         git.warn_if_hooks_off(&MERGE_HOOKS);
@@ -559,6 +605,9 @@ impl Done {
     }
 }
 
+/// A head as named on the command line.
+type Named = (String, ObjectId);
+
 /// What every attempt of one merge shares.
 struct Merging<'a> {
     finish: &'a Finish<'a>,
@@ -572,12 +621,17 @@ fn true_merge(
     git: &GitHome,
     args: &MergeArgs,
     opened: &super::stage::OpenIndex,
-    (ours, theirs): (ObjectId, ObjectId),
+    (ours, kept, given): (ObjectId, &[Named], &[Named]),
     (spec, what): (&str, &str),
     strategies: &[Strategy],
 ) -> Result<()> {
-    let bases = git.merge_bases(&ours, &theirs)?;
-    if bases.is_empty() && !args.allow_unrelated_histories {
+    let theirs = kept[0].1;
+    let bases = if kept.len() > 1 {
+        Vec::new()
+    } else {
+        git.merge_bases(&ours, &theirs)?
+    };
+    if bases.is_empty() && kept.len() == 1 && !args.allow_unrelated_histories {
         write_orig_head(git, &ours)?;
         bail!("refusing to merge unrelated histories");
     }
@@ -593,6 +647,10 @@ fn true_merge(
         spec,
         what,
         ours_tree,
+        label: &kept[kept.len() - 1].0,
+        kept,
+        given,
+        drop_ours: octopus::drops_head(git, args, &ours, kept)?,
     };
     let merging = Merging {
         finish: &finish,
@@ -661,6 +719,9 @@ impl Merging<'_> {
         let (git, opened, bases) = (*git, self.opened, self.bases);
         let (ours, spec, ours_tree) = (*ours, *spec, *ours_tree);
         let kind = strategy.kind;
+        if self.finish.kept.len() > 1 && kind != Which::Ours {
+            return octopus::attempt(self, strategy, run);
+        }
         let tree_of = |c: &ObjectId| -> Result<ObjectId> { Ok(git.repo.commit(c)?.tree) };
         if kind == Which::Ours {
             if !index_changes(git, opened, Some(&ours_tree))?.is_empty() {
@@ -740,7 +801,7 @@ impl Merging<'_> {
             [base_tree.as_ref(), Some(&ours_tree), Some(&theirs_tree)],
             &Labels {
                 ours: "HEAD",
-                theirs: spec,
+                theirs: self.finish.label,
                 base: &base_label,
             },
             &settings,
@@ -780,7 +841,7 @@ impl Merging<'_> {
             return fail_start(git, &ours, spec, kind, false);
         }
         let landing = Landing {
-            theirs: spec,
+            theirs: self.finish.label,
             orig_head: Some(ours),
             strict_index: true,
             quiet_when_clean: false,
@@ -788,35 +849,7 @@ impl Merging<'_> {
         };
         let applied = match apply_merge_as(git, opened, Some(&ours_tree), &merged, &landing, run)? {
             Ok(applied) => applied,
-            Err(refusal) => {
-                write_orig_head(git, &ours)?;
-                if refusal.index_differs {
-                    git.log_ref(
-                        "HEAD",
-                        Some(&ours),
-                        &ours,
-                        &format!("{}: updating HEAD", action(spec)),
-                        false,
-                    )?;
-                }
-                if refusal.index_check {
-                    let names: Vec<String> = refusal
-                        .blocked
-                        .local
-                        .iter()
-                        .map(|p| path_string(p))
-                        .collect();
-                    eprintln!(
-                        "error: Your local changes to the following files would be overwritten by merge:\n  {}",
-                        names.join(" ")
-                    );
-                } else {
-                    refusal.blocked.print("merge", "merge");
-                    eprintln!("Aborting");
-                }
-                eprintln!("Merge with strategy {} failed.", kind.name());
-                return Ok(Tried::Failed);
-            }
+            Err(refusal) => return refuse_apply(git, &ours, spec, kind, refusal),
         };
         Ok(Tried::Done(Box::new(Done {
             kind,
@@ -826,6 +859,43 @@ impl Merging<'_> {
             landed: Some((merged, applied.index)),
         })))
     }
+}
+
+/// Reports a merge that could not touch the work tree or index, keeping `ORIG_HEAD`.
+fn refuse_apply(
+    git: &GitHome,
+    ours: &ObjectId,
+    spec: &str,
+    kind: Which,
+    refusal: Refusal,
+) -> Result<Tried> {
+    write_orig_head(git, ours)?;
+    if refusal.index_differs {
+        git.log_ref(
+            "HEAD",
+            Some(ours),
+            ours,
+            &format!("{}: updating HEAD", action(spec)),
+            false,
+        )?;
+    }
+    if refusal.index_check {
+        let names: Vec<String> = refusal
+            .blocked
+            .local
+            .iter()
+            .map(|p| path_string(p))
+            .collect();
+        eprintln!(
+            "error: Your local changes to the following files would be overwritten by merge:\n  {}",
+            names.join(" ")
+        );
+    } else {
+        refusal.blocked.print("merge", "merge");
+        eprintln!("Aborting");
+    }
+    eprintln!("Merge with strategy {} failed.", kind.name());
+    Ok(Tried::Failed)
 }
 
 /// How a merge that did not conflict is described: by its strategy, or as the plain in-index merge.
@@ -853,7 +923,7 @@ impl Finish<'_> {
         if !self.message_stage() && !empty {
             return Ok(message.to_string());
         }
-        write_state(git, "MERGE_HEAD", &format!("{}\n", self.theirs))?;
+        write_state(git, "MERGE_HEAD", &self.merge_heads())?;
         write_state(git, "MERGE_MSG", message)?;
         write_state(git, "MERGE_MODE", mode)?;
         let mut env = vec![("GIT_INDEX_FILE", git.hook_index())];
@@ -924,9 +994,55 @@ struct Finish<'a> {
     spec: &'a str,
     what: &'a str,
     ours_tree: ObjectId,
+    /// What the incoming side is called in conflict reports.
+    label: &'a str,
+    /// The heads that become parents, and every head named (a pull may name one commit twice).
+    kept: &'a [Named],
+    given: &'a [Named],
+    /// `HEAD` is an ancestor of a head and the merge may fast-forward, so it is no parent.
+    drop_ours: bool,
 }
 
 impl Finish<'_> {
+    fn heads(&self) -> Vec<ObjectId> {
+        self.kept.iter().map(|(_, id)| *id).collect()
+    }
+
+    fn merge_heads(&self) -> String {
+        self.heads().iter().map(|id| format!("{id}\n")).collect()
+    }
+
+    /// The shortlog heading for one head: the pull's, else git's name for the ref.
+    fn log_label(&self, spec: &str) -> String {
+        let what = if self.given.len() > 1 {
+            describe(self.git, spec)
+        } else {
+            self.what.to_string()
+        };
+        match what.as_str() {
+            _ if self.args.log_label.is_some() => self.args.log_label.clone().unwrap_or_default(),
+            w if w.ends_with("(early part)") => w.trim_start_matches("branch ").to_string(),
+            w if w.starts_with("branch '") || w.starts_with("remote-tracking branch '") => {
+                let named = w.split('\'').nth(1).unwrap_or(spec);
+                if spec.starts_with("refs/") {
+                    spec.to_string()
+                } else {
+                    named.to_string()
+                }
+            }
+            w => w.to_string(),
+        }
+    }
+
+    fn parents(&self) -> Vec<ObjectId> {
+        let rest = self.heads();
+        if self.drop_ours {
+            rest
+        } else {
+            std::iter::once(self.ours).chain(rest).collect()
+        }
+    }
+
     /// The message before hooks and the editor: `-m` or `-F`, else the generated title, then the `--log` shortlog.
     fn initial_message(&self) -> Result<String> {
         let (git, args) = (self.git, self.args);
@@ -946,26 +1062,26 @@ impl Finish<'_> {
         };
         let limit = options::log_limit(git, args);
         if limit > 0 {
-            let label = match self.what {
-                _ if args.log_label.is_some() => args.log_label.clone().unwrap_or_default(),
-                w if w.ends_with("(early part)") => w.trim_start_matches("branch ").to_string(),
-                w if w.starts_with("branch '") || w.starts_with("remote-tracking branch '") => {
-                    let named = w.split('\'').nth(1).unwrap_or(self.spec);
-                    if self.spec.starts_with("refs/") {
-                        self.spec.to_string()
-                    } else {
-                        named.to_string()
+            let mut seen: Vec<ObjectId> = Vec::new();
+            for (i, (spec, id)) in self.given.iter().enumerate() {
+                let dropped = !self.kept.iter().any(|(_, k)| k == id);
+                let again = args.log_labels.is_empty() && seen.contains(id);
+                if dropped || again {
+                    continue;
+                }
+                seen.push(*id);
+                let label = match args.log_labels.get(i).cloned().flatten() {
+                    Some(label) => label,
+                    None => self.log_label(spec),
+                };
+                let log = options::shortlog(git, &self.ours, id, &label, limit)?;
+                if !log.is_empty() {
+                    if text.last() != Some(&b'\n') {
+                        text.push(b'\n');
                     }
-                }
-                w => w.to_string(),
-            };
-            let log = options::shortlog(git, &self.ours, &self.theirs, &label, limit)?;
-            if !log.is_empty() {
-                if text.last() != Some(&b'\n') {
                     text.push(b'\n');
+                    text.extend_from_slice(log.as_bytes());
                 }
-                text.push(b'\n');
-                text.extend_from_slice(log.as_bytes());
             }
         }
         let mode = options::cleanup_mode(args);
@@ -1001,7 +1117,6 @@ impl Finish<'_> {
             git,
             args,
             ours,
-            theirs,
             spec,
             ours_tree,
             ..
@@ -1012,7 +1127,11 @@ impl Finish<'_> {
             write_state(git, "AUTO_MERGE", &format!("{id}\n"))?;
         }
         if args.squash {
-            write_state(git, "SQUASH_MSG", &squash_message(git, ours, theirs)?)?;
+            write_state(
+                git,
+                "SQUASH_MSG",
+                &squash_message(git, ours, &self.heads())?,
+            )?;
             if !conflicted.is_empty() {
                 let mut text = String::from("\n# Conflicts:\n");
                 for p in &conflicted {
@@ -1034,14 +1153,14 @@ impl Finish<'_> {
             for p in &conflicted {
                 text.push_str(&format!("#\t{}\n", path_string(p)));
             }
-            write_state(git, "MERGE_HEAD", &format!("{theirs}\n"))?;
+            write_state(git, "MERGE_HEAD", &self.merge_heads())?;
             write_state(git, "MERGE_MSG", &text)?;
             write_state(git, "MERGE_MODE", mode)?;
             println!("Automatic merge failed; fix conflicts and then commit the result.");
             leave(git, 1);
         }
         if args.no_commit {
-            write_state(git, "MERGE_HEAD", &format!("{theirs}\n"))?;
+            write_state(git, "MERGE_HEAD", &self.merge_heads())?;
             write_state(git, "MERGE_MSG", &message)?;
             write_state(git, "MERGE_MODE", mode)?;
             println!("Automatic merge went well; stopped before committing as requested");
@@ -1058,7 +1177,7 @@ impl Finish<'_> {
         let tree = tree()?;
         let mut record = Commit {
             tree,
-            parents: vec![*ours, *theirs],
+            parents: self.parents(),
             author: identity(git, "author")?,
             committer: identity(git, "committer")?,
             extra_headers: Vec::new(),
@@ -1066,7 +1185,7 @@ impl Finish<'_> {
         };
         if let Err(e) = super::signing::sign_commit(git, &args.sign, &mut record) {
             // As git does, leave the merge to conclude with `pyn commit` once signing works.
-            write_state(git, "MERGE_HEAD", &format!("{theirs}\n"))?;
+            write_state(git, "MERGE_HEAD", &self.merge_heads())?;
             write_state(git, "MERGE_MSG", &message)?;
             write_state(git, "MERGE_MODE", mode)?;
             return Err(e);

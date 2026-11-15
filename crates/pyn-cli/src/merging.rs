@@ -40,6 +40,9 @@ pub enum MessagePart {
 pub struct MergeArgs {
     /// The branch, or commit, to merge into the current branch.
     pub(crate) source: Option<String>,
+    /// More branches or commits merged together with the first, as one octopus merge (a git repository only).
+    #[arg(requires = "source")]
+    pub(crate) more_sources: Vec<String>,
     /// The merge commit's message; repeat for more paragraphs.
     #[arg(short = 'm', long = "message")]
     pub(crate) message: Vec<String>,
@@ -109,6 +112,9 @@ pub struct MergeArgs {
     /// The shortlog heading a pull chose, as `'main' of <url>`.
     #[arg(skip)]
     pub(crate) log_label: Option<String>,
+    /// The shortlog heading of each head of a pull of several refs, in order.
+    #[arg(skip)]
+    pub(crate) log_labels: Vec<Option<String>>,
     /// Skip the `pre-merge-commit` and `commit-msg` hooks (a git repository only).
     #[arg(long, overrides_with = "verify")]
     pub(crate) no_verify: bool,
@@ -609,6 +615,9 @@ pub fn merge_command(backend: &dyn Backend, ws: Option<&Workspace>, args: MergeA
         bail!(
             "you have staged changes; commit them or take them out with `pyn restore --staged` before you merge"
         );
+    }
+    if !args.more_sources.is_empty() {
+        bail!("a pyn server merges one branch at a time; name one");
     }
     let source = branch::start_point(backend, api, &spec)?;
     let fast_forward = if args.no_ff {
