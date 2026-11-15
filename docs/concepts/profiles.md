@@ -53,6 +53,24 @@ A name that is no account, an organization name, and an account that is disabled
 `404 user_not_found`, with the same message, so a disabled account is indistinguishable from a missing one. A frozen
 owner stays visible: freezing refuses writes, not reads.
 
+## Public identity in lists
+
+Wherever a response lists people, it carries a small public identity next to the account name, so clients can show an
+avatar and display name without one profile request per person. `PublicIdentity` is `user` (the account name),
+`display_name` and `avatar_url` (same form as in the profile), both null when unset. It is the same data as the public
+profile, so it is as public as the profile is.
+
+| Field | On |
+| --- | --- |
+| `identity` | repository members, organization members, and lock owners (`GET .../locks`, the summary's `locks`, the lock on file and tree entries) |
+| `author_public` | revisions, stranded versions and commits (every response that carries `author_current`) |
+| `actor_public` | activity and audit entries |
+
+For history the identity is that of the account's current name when it was renamed, else the name as written. The field is
+absent when no active account holds the name (deleted, disabled, not yet approved, or an organization). It is additive:
+`author`, `actor` and `owner` are unchanged. The lock responses of checkout and force-unlock and the caller's own
+`GET /v1/me/locks` carry none.
+
 ## Avatars
 
 The server stores the bytes through the object store under their SHA-256 and records the hash, the type and the size on the

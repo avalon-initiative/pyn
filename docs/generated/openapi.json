@@ -9265,6 +9265,17 @@
             ],
             "description": "The actor's name now, when it differs from `actor`."
           },
+          "actor_public": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicIdentity",
+                "description": "The actor's public identity (the current name's account when renamed); absent when no active account holds it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "at": {
             "type": "string",
             "format": "date-time"
@@ -9466,6 +9477,17 @@
               "null"
             ],
             "description": "The actor's name now, when it differs from `actor`."
+          },
+          "actor_public": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicIdentity",
+                "description": "The actor's public identity (the current name's account when renamed); absent when no active account holds it."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "at": {
             "type": "string",
@@ -9778,6 +9800,17 @@
               "null"
             ],
             "description": "The author's account name now, when it was renamed after the commit (decision #986); `author.name` stays as\nwritten because the commit id covers it."
+          },
+          "author_public": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicIdentity",
+                "description": "The author's public identity (the current name's account when renamed); absent when no active account holds it."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "authored_at": {
             "type": [
@@ -10745,6 +10778,17 @@
             "type": "string",
             "format": "date-time"
           },
+          "identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicIdentity",
+                "description": "The owner's public identity; absent when the account is gone or not active."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "owner": {
             "type": "string"
           },
@@ -10983,6 +11027,17 @@
           "source"
         ],
         "properties": {
+          "identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicIdentity",
+                "description": "The member's public identity; absent when the account is not active."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "role": {
             "type": "string",
             "description": "The effective role: the highest of the direct grant, team grants and organization ownership."
@@ -11555,6 +11610,17 @@
           "role"
         ],
         "properties": {
+          "identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicIdentity",
+                "description": "The member's public identity; absent when the account is not active."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "role": {
             "$ref": "#/components/schemas/OrgRole"
           },
@@ -12003,6 +12069,31 @@
               "null"
             ],
             "description": "At most 64 characters."
+          }
+        }
+      },
+      "PublicIdentity": {
+        "type": "object",
+        "description": "What others may see of an account next to its name: the account name, display name and avatar address.",
+        "required": [
+          "user"
+        ],
+        "properties": {
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same form as `Profile.avatar_url`."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "type": "string"
           }
         }
       },
@@ -12856,6 +12947,17 @@
               }
             ]
           },
+          "author_public": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicIdentity",
+                "description": "The author's public identity (the current name's account when renamed); absent when no active account holds it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "base": {
             "type": [
               "integer",
@@ -13436,6 +13538,17 @@
               "null"
             ],
             "description": "The author's name now, when it differs from `author` (decision #986)."
+          },
+          "author_public": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicIdentity",
+                "description": "The author's public identity (the current name's account when renamed); absent when no active account holds it."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "branch": {
             "type": "string",

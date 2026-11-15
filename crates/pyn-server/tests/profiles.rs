@@ -518,3 +518,60 @@ async fn profile_responses_never_carry_an_email_address() {
         assert!(!text.contains("\"email"), "{uri}: {text}");
     }
 }
+
+#[tokio::test]
+async fn lists_of_people_carry_their_public_identity() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    let bob = token_for(&app, "bob").await;
+    call(
+        &app,
+        &alice,
+        "PUT",
+        "/v1/me/profile",
+        Some(json!({"display_name": "Alice A."})),
+    )
+    .await;
+    assert!(
+        put_avatar(&app, &alice, "image/png", png())
+            .await
+            .status
+            .is_success()
+    );
+    let org = Some(json!({"name": "acme"}));
+    call(&app, &alice, "POST", "/v1/orgs", org).await;
+    let invite = json!({"user": "bob", "role": "member"});
+    call(&app, &alice, "POST", "/v1/orgs/acme/members", Some(invite)).await;
+    call(&app, &bob, "POST", "/v1/me/invitations/acme/accept", None).await;
+
+    let r = call(&app, &alice, "GET", "/v1/orgs/acme/members", None).await;
+    let members = r.json::<Vec<api::OrgMember>>();
+    let of = |n: &str| {
+        members
+            .iter()
+            .find(|m| m.user == n)
+            .unwrap()
+            .identity
+            .clone()
+    };
+    let a = of("alice").expect("alice has an identity");
+    assert_eq!(a.display_name.as_deref(), Some("Alice A."));
+    assert!(
+        a.avatar_url
+            .unwrap()
+            .starts_with("/v1/users/alice/avatar?v=")
+    );
+    let b = of("bob").unwrap();
+    assert_eq!((b.display_name, b.avatar_url), (None, None));
+
+    repo(&app, &alice, "r", "private").await;
+    let r = call(&app, &alice, "GET", "/v1/repos/alice/r/members", None).await;
+    let members = r.json::<Vec<api::Member>>();
+    assert_eq!(members[0].identity.as_ref().unwrap().user, "alice");
+
+    let r = call(&app, &alice, "GET", "/v1/orgs/acme/audit", None).await;
+    let page = r.json::<api::AuditPage>();
+    let first = page.entries.iter().find(|e| e.actor == "alice").unwrap();
+    let who = first.actor_public.as_ref().expect("actor identity");
+    assert_eq!(who.display_name.as_deref(), Some("Alice A."));
+}

@@ -1072,6 +1072,7 @@ fn lock_dto(l: pyn_core::Lock) -> api::Lock {
     api::Lock {
         path: l.path.to_string(),
         owner: l.owner.to_string(),
+        identity: None,
         acquired_at: l.acquired_at,
         expires_at: l.expires_at,
     }
@@ -1085,6 +1086,7 @@ fn revision_dto(r: pyn_core::Revision) -> api::Revision {
         legacy_content: r.legacy_content,
         author: r.author.to_string(),
         author_current: None,
+        author_public: None,
         author_identity: r.person.map(person_dto),
         hash_version: r.hash_version,
         message: r.message,
@@ -1111,6 +1113,7 @@ pub(crate) fn stranded_dto(v: pyn_core::StrandedVersion) -> api::StrandedVersion
         commit: v.commit.to_hex(),
         author: v.author.to_string(),
         author_current: None,
+        author_public: None,
         created_at: v.created_at,
         conversion: v.conversion.map(|c| c.0),
     }
@@ -1128,6 +1131,7 @@ pub(crate) fn audit_entry_dto(e: pyn_core::AuditEvent, with_path: bool) -> api::
         at: e.at,
         actor: e.actor.to_string(),
         actor_current: None,
+        actor_public: None,
         action: e.action.to_string(),
         path: e.path.filter(|_| with_path).map(|p| p.to_string()),
         detail: e.detail,
@@ -1167,6 +1171,7 @@ fn commit_dto(c: pyn_core::Commit) -> api::Commit {
         tree: c.tree.to_hex(),
         author: person_dto(c.author),
         author_current: None,
+        author_public: None,
         committer: person_dto(c.committer),
         created_at: c.created_at,
         authored_at: Some(c.authored_at),
@@ -1202,14 +1207,15 @@ async fn list_locks(
     Path((owner, name)): Path<(String, String)>,
 ) -> ApiResult<Json<Vec<api::Lock>>> {
     let repo = authorize_read(&s, &headers, &owner, &name).await?;
-    Ok(Json(
-        repo.service
-            .locks()
-            .await?
-            .into_iter()
-            .map(lock_dto)
-            .collect(),
-    ))
+    let mut locks: Vec<_> = repo
+        .service
+        .locks()
+        .await?
+        .into_iter()
+        .map(lock_dto)
+        .collect();
+    self_service_api::annotate_identities(&s, &mut locks).await?;
+    Ok(Json(locks))
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/checkout", params(RepoAddress), request_body = api::CheckoutRequest, responses(
@@ -1896,7 +1902,7 @@ async fn list_files(
         files.truncate(limit);
         files[limit - 1].path.to_string()
     });
-    let entries = files
+    let mut entries: Vec<_> = files
         .into_iter()
         .map(|f| api::FileEntry {
             path: f.path.to_string(),
@@ -1906,6 +1912,7 @@ async fn list_files(
             lock: f.lock.map(lock_dto),
         })
         .collect();
+    self_service_api::annotate_held(&s, entries.iter_mut().filter_map(|e| e.lock.as_mut())).await?;
     Ok(Json(api::FilePage {
         entries,
         next_after,
@@ -2003,12 +2010,14 @@ async fn summary(
                 at: e.at,
                 actor: e.actor.to_string(),
                 actor_current: None,
+                actor_public: None,
                 action: e.action.to_string(),
                 path: e.path.map(|p| p.to_string()),
             })
             .collect(),
     };
     self_service_api::annotate(&s, &mut summary.activity).await?;
+    self_service_api::annotate_identities(&s, &mut summary.locks).await?;
     Ok(Json(summary))
 }
 

@@ -179,7 +179,7 @@ carries the account's name now: `author_current` on revisions, commits and stran
 `last_change`, push, fetch, merge and policy responses) and `actor_current` on activity and audit entries, shown by clients so one
 person appears under one name across history. The CLI prints the current name and, when it differs, the written one
 (`alicia (written as alice)`) in `pyn log`, `pyn show`, `pyn ls`, `pyn summary` and the audit and stranded listings. Locks show
-their holder's current name. For an account that was deleted there is no current name and the last name stays. Audit logs keep
+their holder's current name. The same responses carry the holder's [public identity](profiles.md#public-identity-in-lists). For an account that was deleted there is no current name and the last name stays. Audit logs keep
 names as written. The server log records a rename as `account_renamed` with actor the old name and detail `old renamed to new`;
 each repository that moved gets the same action in its own log, under the new name, with detail `owner old renamed to new`. The
 `account.renamed` [event](events.md#accountrenamed) announces it to webhooks.

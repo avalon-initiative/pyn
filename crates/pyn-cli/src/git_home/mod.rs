@@ -424,6 +424,7 @@ impl GitHome {
             tree: c.tree.to_hex(),
             author: person(&c.author),
             author_current: None,
+            author_public: None,
             committer: person(&c.committer),
             created_at: DateTime::<Utc>::from_timestamp(c.author.time, 0).unwrap_or_default(),
             authored_at: DateTime::<Utc>::from_timestamp(c.author.time, 0),
