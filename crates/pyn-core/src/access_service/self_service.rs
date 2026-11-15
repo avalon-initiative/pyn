@@ -250,6 +250,15 @@ impl AccessService {
             format!("{} renamed to {new}", account.user),
         )
         .await?;
+        for repo in &moved {
+            self.record(
+                AuditScope::Repo(repo.id.clone()),
+                &new,
+                AuditAction::AccountRenamed,
+                format!("owner {} renamed to {new}", account.user),
+            )
+            .await?;
+        }
         Ok(AccountRename {
             old: account.user,
             new,

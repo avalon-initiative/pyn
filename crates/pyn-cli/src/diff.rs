@@ -1480,7 +1480,7 @@ pub fn commit_header(c: &api::Commit) -> String {
     let mut out = format!(
         "commit {}\nAuthor: {} <{}>\nDate:   {}\n\n",
         c.id,
-        c.author.name,
+        crate::commit_format::shown_name(&c.author.name, c.author_current.as_deref()),
         c.author.email,
         time::local(c.created_at)
     );

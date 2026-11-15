@@ -125,6 +125,9 @@ pub struct StrandedVersion {
     pub commit: String,
     /// Who made the stranded revision.
     pub author: String,
+    /// The author's name now, when it differs from `author` (decision #986).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_current: Option<String>,
     pub created_at: DateTime<Utc>,
     /// The conversion revision the default branch made when the path became exclusive; absent in a preview.
     pub conversion: Option<u64>,
@@ -621,6 +624,9 @@ pub struct ActivityEntry {
     pub id: i64,
     pub at: DateTime<Utc>,
     pub actor: String,
+    /// The actor's name now, when it differs from `actor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_current: Option<String>,
     /// checkout, release, checkin, restore or force_unlock.
     pub action: String,
     pub path: Option<String>,
@@ -1180,7 +1186,11 @@ pub struct ForceUnlockRequest {
 pub struct AuditEntry {
     pub id: i64,
     pub at: DateTime<Utc>,
+    /// The name the event was recorded with; the log never rewrites it.
     pub actor: String,
+    /// The actor's name now, when it differs from `actor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_current: Option<String>,
     pub action: String,
     pub path: Option<String>,
     pub detail: String,

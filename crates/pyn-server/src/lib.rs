@@ -1097,6 +1097,7 @@ pub(crate) fn stranded_dto(v: pyn_core::StrandedVersion) -> api::StrandedVersion
         revision: v.revision.0,
         commit: v.commit.to_hex(),
         author: v.author.to_string(),
+        author_current: None,
         created_at: v.created_at,
         conversion: v.conversion.map(|c| c.0),
     }
@@ -1113,6 +1114,7 @@ pub(crate) fn audit_entry_dto(e: pyn_core::AuditEvent, with_path: bool) -> api::
         id: e.id,
         at: e.at,
         actor: e.actor.to_string(),
+        actor_current: None,
         action: e.action.to_string(),
         path: e.path.filter(|_| with_path).map(|p| p.to_string()),
         detail: e.detail,
@@ -1269,7 +1271,10 @@ async fn checkin(
             req.message,
         )
         .await?;
-    Ok(Json(recorded_dto(recorded)))
+    let mut revision = [recorded_dto(recorded)];
+    self_service_api::annotate_revisions(&s, &mut revision).await?;
+    let [revision] = revision;
+    Ok(Json(revision))
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/changesets", params(RepoAddress), request_body = api::ChangesetRequest, responses(
@@ -1323,9 +1328,11 @@ async fn changeset(
         .first()
         .and_then(|r| r.changeset.clone())
         .unwrap_or_default();
+    let mut revisions: Vec<_> = revs.into_iter().map(revision_dto).collect();
+    self_service_api::annotate_revisions(&s, &mut revisions).await?;
     Ok(Json(api::ChangesetResponse {
         changeset,
-        revisions: revs.into_iter().map(revision_dto).collect(),
+        revisions,
     }))
 }
 
@@ -1355,7 +1362,10 @@ async fn restore(
             req.message,
         )
         .await?;
-    Ok(Json(recorded_dto(recorded)))
+    let mut revision = [recorded_dto(recorded)];
+    self_service_api::annotate_revisions(&s, &mut revision).await?;
+    let [revision] = revision;
+    Ok(Json(revision))
 }
 
 /// The request body as a reader, with the length its `Content-Length` header (or an exact body size) declares.
@@ -1918,9 +1928,11 @@ async fn tree(
         .service
         .tree_on(branch_of(q.branch.as_deref()), dir.as_ref())
         .await?;
+    let mut entries: Vec<_> = entries.into_iter().map(tree_entry_dto).collect();
+    self_service_api::annotate_tree(&s, &mut entries).await?;
     Ok(Json(api::TreeListing {
         path: trimmed.to_string(),
-        entries: entries.into_iter().map(tree_entry_dto).collect(),
+        entries,
     }))
 }
 
@@ -1962,7 +1974,7 @@ async fn summary(
         .service
         .summary(q.activity.unwrap_or(10).clamp(1, 100))
         .await?;
-    Ok(Json(api::RepoSummary {
+    let mut summary = api::RepoSummary {
         default_branch: summary.default_branch,
         branch_count: summary.branch_count,
         files: summary.files,
@@ -1977,11 +1989,14 @@ async fn summary(
                 id: e.id,
                 at: e.at,
                 actor: e.actor.to_string(),
+                actor_current: None,
                 action: e.action.to_string(),
                 path: e.path.map(|p| p.to_string()),
             })
             .collect(),
-    }))
+    };
+    self_service_api::annotate(&s, &mut summary.activity).await?;
+    Ok(Json(summary))
 }
 
 /// The raw bytes of a file revision.
@@ -2171,11 +2186,13 @@ async fn preview_policy(
     let (repo, who) =
         authorize_repo(&s, &headers, &owner, &name, Some(Permission::EditPolicy)).await?;
     let found = repo.service.preview_policy(&who, &req.content).await?;
+    let mut stranded: Vec<_> = found.stranded.into_iter().map(stranded_dto).collect();
+    self_service_api::annotate(&s, &mut stranded).await?;
     Ok(Json(api::PolicyPreview {
         to_shared: found.to_shared.iter().map(ToString::to_string).collect(),
         to_exclusive: found.to_exclusive.iter().map(ToString::to_string).collect(),
         released_locks: found.released_locks.into_iter().map(lock_dto).collect(),
-        stranded: found.stranded.into_iter().map(stranded_dto).collect(),
+        stranded,
         disagreements: found
             .disagreements
             .into_iter()
@@ -2232,10 +2249,11 @@ async fn audit(
         events.truncate(limit);
         events[limit - 1].id
     });
-    let entries = events
+    let mut entries: Vec<_> = events
         .into_iter()
         .map(|e| audit_entry_dto(e, true))
         .collect();
+    self_service_api::annotate(&s, &mut entries).await?;
     Ok(Json(api::AuditPage {
         entries,
         next_before,

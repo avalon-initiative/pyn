@@ -40,7 +40,7 @@ new owner name and each old `owner/name` address keeps resolving to its reposito
   entry is removed when a live repository with that name appears under the old owner (created, or another repository renamed to
   it), and when its repository is deleted. The old name is not reserved, so someone else can take it and create repositories
   there; the redirects of the repositories they have not recreated keep working.
-- API routes answer through a redirect transparently (`/v1/repos/{old-owner}/{name}/...` serves the renamed repository, with the
+- API routes answer through a redirect transparently (`/v1/repos/{old-owner}/{name}/...`, the LFS routes under `info/lfs` included, serves the renamed repository, with the
   same visibility rules, so a private repository stays hidden) and add `X-Pyn-Moved-To: new-owner/name` to a successful response so a client can
   update its remote. The CLI prints a note to update the remote when it sees the header.
 - Only repository addresses redirect: not the old profile address, not `@mentions`, and organization names cannot be renamed.

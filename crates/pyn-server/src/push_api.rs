@@ -10,6 +10,7 @@ use base64::engine::general_purpose::STANDARD;
 use pyn_core::{FetchQuery, ObjectId, Permission, PushObjects, PynError};
 use pyn_proto as api;
 
+use crate::self_service_api::{annotate, annotate_revisions};
 use crate::{
     ApiResult, AppState, FileContent, RepoAddress, authorize_read, authorize_repo, branch_of,
     lock_dto, parse_object_id, parse_range, range_not_satisfiable, revision_dto, stranded_dto,
@@ -77,12 +78,16 @@ pub(crate) async fn push(
         .head_of(branch)
         .await?
         .ok_or_else(|| PynError::BranchNotFound(branch.to_string()))?;
+    let mut revisions: Vec<_> = pushed.revisions.into_iter().map(revision_dto).collect();
+    annotate_revisions(&s, &mut revisions).await?;
+    let mut stranded: Vec<_> = pushed.stranded.into_iter().map(stranded_dto).collect();
+    annotate(&s, &mut stranded).await?;
     Ok(Json(api::PushResponse {
         branch: branch.to_string(),
         head: head.to_hex(),
         created: pushed.created,
-        revisions: pushed.revisions.into_iter().map(revision_dto).collect(),
-        stranded: pushed.stranded.into_iter().map(stranded_dto).collect(),
+        revisions,
+        stranded,
         released_locks: pushed.released_locks.into_iter().map(lock_dto).collect(),
     }))
 }
@@ -112,6 +117,24 @@ pub(crate) async fn fetch(
     };
     let page = repo.service.fetch(&query).await?;
     let encode = |bytes: &[u8]| STANDARD.encode(bytes);
+    let mut commits = Vec::new();
+    for c in page.commits {
+        let mut pointers: Vec<_> = c.pointers.into_iter().map(revision_dto).collect();
+        annotate_revisions(&s, &mut pointers).await?;
+        commits.push(api::FetchCommit {
+            id: c.id.to_hex(),
+            data: encode(&c.raw),
+            pointers,
+            trees: c
+                .trees
+                .iter()
+                .map(|(id, body)| api::PushObject {
+                    id: id.to_hex(),
+                    data: encode(body),
+                })
+                .collect(),
+        });
+    }
     Ok(Json(api::FetchResponse {
         refs: page
             .refs
@@ -121,23 +144,7 @@ pub(crate) async fn fetch(
                 head: head.map(|h| h.to_hex()),
             })
             .collect(),
-        commits: page
-            .commits
-            .into_iter()
-            .map(|c| api::FetchCommit {
-                id: c.id.to_hex(),
-                data: encode(&c.raw),
-                pointers: c.pointers.into_iter().map(revision_dto).collect(),
-                trees: c
-                    .trees
-                    .iter()
-                    .map(|(id, body)| api::PushObject {
-                        id: id.to_hex(),
-                        data: encode(body),
-                    })
-                    .collect(),
-            })
-            .collect(),
+        commits,
         next: page.next,
     }))
 }
