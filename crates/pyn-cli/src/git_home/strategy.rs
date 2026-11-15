@@ -161,8 +161,7 @@ pub(super) struct Strategy {
 }
 
 impl Strategy {
-    /// Reads each `-s` and the `-X` options: an unknown strategy ends the command as git does, and options the
-    /// merge cannot honor are a usage error before anything changes.
+    /// Reads each `-s` and the `-X` options: an unknown strategy ends the command as git does.
     pub(super) fn parse_all(strategies: &[String], xopts: &[String]) -> Vec<Self> {
         let kinds: Vec<Which> = if strategies.is_empty() {
             vec![Which::Ort]
@@ -171,17 +170,9 @@ impl Strategy {
         };
         kinds
             .into_iter()
-            .map(|kind| {
-                let strategy = Self {
-                    kind,
-                    xopts: xopts.to_vec(),
-                };
-                if kind.is_tree_merge()
-                    && let Err(BadOption::Unsupported(opt, why)) = strategy.settings()
-                {
-                    crate::usage_error(&format!("`-X{opt}`: {why}"));
-                }
-                strategy
+            .map(|kind| Self {
+                kind,
+                xopts: xopts.to_vec(),
             })
             .collect()
     }
@@ -242,7 +233,7 @@ impl Replay {
                 "`pyn {command} -Xsubtree`: the subtree shift is not built for a replay"
             )),
             Ok(_) => {}
-            Err(BadOption::Unknown(opt) | BadOption::Unsupported(opt, _)) => {
+            Err(BadOption::Unknown(opt)) => {
                 eprintln!("fatal: unknown strategy option: -X{opt}");
                 std::process::exit(128);
             }
@@ -267,10 +258,35 @@ impl Replay {
 #[derive(Debug)]
 pub(super) enum BadOption {
     Unknown(String),
-    Unsupported(String, &'static str),
 }
 
-const NO_ALGORITHM: &str = "only the Myers diff is built";
+fn xdiff_edits(
+    a: &[u8],
+    b: &[u8],
+    space: pyn_merge::Space,
+    algorithm: pyn_diff::Algorithm,
+) -> Vec<pyn_diff::Edit> {
+    let ws = pyn_diff::Ws {
+        all: space.all,
+        change: space.change,
+        eol: space.at_eol,
+        cr: space.cr_at_eol,
+        algorithm,
+        ..Default::default()
+    };
+    crate::xdiff::hunks_ws(a, b, &ws, false)
+        .iter()
+        .map(|h| (h.a_start, h.a_count, h.b_start, h.b_count))
+        .collect()
+}
+
+fn patience_differ(a: &[u8], b: &[u8], space: pyn_merge::Space) -> Vec<pyn_diff::Edit> {
+    xdiff_edits(a, b, space, pyn_diff::Algorithm::Patience)
+}
+
+fn histogram_differ(a: &[u8], b: &[u8], space: pyn_merge::Space) -> Vec<pyn_diff::Edit> {
+    xdiff_edits(a, b, space, pyn_diff::Algorithm::Histogram)
+}
 
 fn rename_score(arg: &str) -> Option<u64> {
     let digits = arg.strip_suffix('%').unwrap_or(arg);
@@ -294,19 +310,17 @@ fn apply(s: &mut Settings, opt: &str) -> Result<(), BadOption> {
         "renormalize" => s.renormalize = true,
         "no-renormalize" => s.renormalize = false,
         "no-renames" => s.rename_opts.detect = Some(false),
-        "patience" | "histogram" => {
-            return Err(BadOption::Unsupported(opt.to_string(), NO_ALGORITHM));
-        }
+        "patience" => s.text.differ = Some(patience_differ),
+        "histogram" => s.text.differ = Some(histogram_differ),
         "find-renames" => s.rename_opts.detect = Some(true),
         _ => {
             if let Some(path) = opt.strip_prefix("subtree=") {
                 s.shift = Some(path.to_string());
             } else if let Some(algorithm) = opt.strip_prefix("diff-algorithm=") {
                 match algorithm {
-                    "myers" | "default" | "minimal" => {}
-                    "patience" | "histogram" => {
-                        return Err(BadOption::Unsupported(opt.to_string(), NO_ALGORITHM));
-                    }
+                    "myers" | "default" | "minimal" => s.text.differ = None,
+                    "patience" => s.text.differ = Some(patience_differ),
+                    "histogram" => s.text.differ = Some(histogram_differ),
                     _ => return Err(unknown()),
                 }
             } else if let Some(score) = opt.strip_prefix("find-renames=") {
@@ -542,10 +556,8 @@ mod tests {
             xopts(&[""]).settings(),
             Err(BadOption::Unknown(_))
         ));
-        assert!(matches!(
-            xopts(&["patience"]).settings(),
-            Err(BadOption::Unsupported(..))
-        ));
+        assert!(xopts(&["patience"]).settings().is_ok());
+        assert!(xopts(&["diff-algorithm=histogram"]).settings().is_ok());
         assert!(xopts(&["rename-threshold=40%"]).settings().is_ok());
         assert!(matches!(
             xopts(&["rename-threshold=x"]).settings(),

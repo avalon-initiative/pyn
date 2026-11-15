@@ -656,9 +656,7 @@ fn unsupported_flags_are_usage_errors() {
         vec!["--overwrite-ignore"],
         vec!["--no-overwrite-ignore"],
         vec!["-F", "msg"],
-        vec!["-X", "patience"],
         vec!["--rebase", "-s", "ours"],
-        vec!["--rebase", "-X", "patience"],
     ] {
         let mut full = vec!["pull"];
         full.extend(&args);

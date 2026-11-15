@@ -550,15 +550,50 @@ fn an_option_is_only_read_when_a_real_merge_needs_it() {
     });
 }
 
+/// Repeated lines on which a merge can differ by algorithm, in a git that honors it.
+const ALGORITHMS: &str = "git config merge.conflictStyle merge\n\
+    printf '%s\\n' '}' 'a' 'a' '{' 'a' 'a' 'a' 'a' '{' '{' >f; git add .; git commit -qm base\n\
+    git checkout -q -b side\nprintf '%s\\n' 'a' '}' 'b' 'Z' 'a' '{' 'a' 'a' 'a' 'a' '{' '{' >f; git commit -qam side\n\
+    git checkout -q main\nprintf '%s\\n' '}' 'b' 'a' 'a' '{' 'a' 'a' 'a' 'a' 'a' '}' 'b' '{' >f; git commit -qam main\n";
+
 #[test]
-fn what_cannot_be_honored_is_refused_before_anything_changes() {
+fn recursive_merges_by_the_algorithm_as_git_does() {
+    let git_file = |opt: &str| {
+        let p = Pair::new("sha1", ALGORITHMS);
+        p.git_in(
+            &p.git,
+            &["merge", "-q", "-s", "recursive", "-X", opt, "side"],
+        );
+        std::fs::read(p.git.join("f")).unwrap()
+    };
+    let myers = git_file("diff-algorithm=myers");
+    for opt in ["patience", "histogram"] {
+        // Whether or not this git lets the algorithm change the result, pyn must agree with it.
+        let matters = git_file(opt) != myers;
+        each_format(ALGORITHMS, |p| {
+            p.same(
+                &["merge", "-s", "recursive", "-X", opt, "side"],
+                old_engine("recursive"),
+            )
+        });
+        eprintln!("{opt}: algorithm changes git's result: {matters}");
+    }
+}
+
+#[test]
+fn patience_and_histogram_merge_as_git_does() {
     for opt in [
         "patience",
         "histogram",
         "diff-algorithm=patience",
         "diff-algorithm=histogram",
     ] {
-        each_format(CONFLICT, |p| p.refused(&["merge", "-X", opt, "side"], 129));
+        each_format(CONFLICT, |p| {
+            p.same(&["merge", "-X", opt, "side"], Skip::default())
+        });
+        each_format(CLEAN, |p| {
+            p.same(&["merge", "-X", opt, "side"], Skip::default())
+        });
     }
 }
 

@@ -213,6 +213,26 @@ fn a_rebase_stopped_by_a_conflict_keeps_its_strategy_for_the_rest() {
     });
 }
 
+/// Repeated lines on which a merge differs by algorithm where git honors it; a replay in git 2.43 reads none, so this checks pyn agrees.
+const ALGORITHMS: &str = "git config merge.conflictStyle merge\n\
+    printf '%s\\n' '}' 'a' 'a' '{' 'a' 'a' 'a' 'a' '{' '{' >f; git add .; git commit -qm base\n\
+    git checkout -q -b side\nprintf '%s\\n' 'a' '}' 'b' 'Z' 'a' '{' 'a' 'a' 'a' 'a' '{' '{' >f; git commit -qam side\n\
+    git checkout -q main\nprintf '%s\\n' '}' 'b' 'a' 'a' '{' 'a' 'a' 'a' 'a' 'a' '}' 'b' '{' >f; git commit -qam main\n";
+
+#[test]
+fn replay_algorithms_match_git() {
+    for opt in ["patience", "histogram"] {
+        let args = ["-s", "recursive", "-X", opt];
+        each_format(ALGORITHMS, |p| {
+            p.same(&[&["cherry-pick"][..], &args, &["side"]].concat())
+        });
+        each_format(ALGORITHMS, |p| {
+            p.both_sh("git checkout -q side");
+            p.same(&[&["rebase"][..], &args, &["main"]].concat());
+        });
+    }
+}
+
 #[test]
 fn rebase_strategies_pyn_does_not_build_are_usage_errors() {
     let p = Pair::new("sha1", HISTORY);
@@ -224,9 +244,6 @@ fn rebase_strategies_pyn_does_not_build_are_usage_errors() {
         &["-s", "subtree"],
         &["-X", "subtree"],
         &["-X", "subtree=sub"],
-        &["-X", "patience"],
-        &["-X", "histogram"],
-        &["-X", "diff-algorithm=patience"],
     ] {
         let mut args = vec!["rebase"];
         args.extend(opts);
@@ -293,7 +310,6 @@ fn cherry_pick_strategies_pyn_does_not_build_are_usage_errors() {
         &["--strategy=ours"][..],
         &["--strategy=resolve"],
         &["-X", "subtree"],
-        &["-X", "patience"],
     ] {
         let mut args = vec!["cherry-pick"];
         args.extend(opts);
@@ -325,7 +341,6 @@ fn revert_options_match_git() {
 fn revert_strategies_pyn_does_not_build_are_usage_errors() {
     let p = Pair::new("sha1", REVERTABLE);
     p.refused(&["revert", "--strategy=ours", "HEAD~1"], 129);
-    p.refused(&["revert", "-X", "patience", "HEAD~1"], 129);
 }
 
 #[test]

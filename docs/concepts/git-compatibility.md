@@ -1830,10 +1830,10 @@ fast-forward or an up-to-date merge. The options of the tree strategies (`ort`, 
 | `ours`, `theirs` | A conflicting hunk of a file both sides changed takes that side's lines; the rest of the file still merges. A binary file, a link and an add/add take that side whole. Modify/delete and mode conflicts still conflict. The last of the two wins. |
 | `ignore-space-change`, `ignore-all-space`, `ignore-space-at-eol`, `ignore-cr-at-eol` | Lines that differ only in that whitespace count as equal when finding changes. A side whose only changes are such differences changed nothing, so the other side's file is the result, as in git. |
 | `subtree[=<path>]` | Shifts as `-s subtree` does; with a path, only that folder is tried, in either direction. |
-| `diff-algorithm=myers\|default\|minimal`, `no-renormalize` | Accepted; pyn has one diff. |
+| `diff-algorithm=myers\|default\|minimal`, `no-renormalize` | Accepted; the merge finds changes with Myers. |
 | `no-renames`, `find-renames[=<n>]`, `rename-threshold=<n>` | Turn rename detection off or on, and set its similarity threshold (`50%` by default, written as for `diff -M`); see [Renames in a merge](#renames-in-a-merge). |
 | `renormalize` | Before each three-way content merge, the base and both sides are converted to the work tree form and back through the path's line endings, `ident` and filter, so changes that differ only in conversion merge cleanly, and a side that differs from the base only by conversion counts as unchanged (a deletion on the other side wins, as in `ort`); the result is in repository form. Also for `cherry-pick`, `revert`, `rebase` and `pull`, which take `-X`. `.gitattributes` comes from the merged result, as in `ort`, not the work tree: a rule one branch adds applies to both (a conflicted `.gitattributes` stands for its base version, or our side when both added it). A path with `working-tree-encoding` is refused with nothing changed (`128`). Covered by `crates/pyn-cli/tests/git_renormalize.rs`. |
-| `patience`, `histogram`, `diff-algorithm=patience\|histogram` | Usage error (`129`): only the Myers diff is built. |
+| `patience`, `histogram`, `diff-algorithm=patience\|histogram` | The three-way merge (and a replay's) finds each side's changes with the port of xdiff's patience or histogram diff, falling back to Myers where it has no anchor. pyn applies the algorithm under every strategy; some git versions honor it only under `-s recursive` and give `ort` and a replay the same file whatever it is. |
 
 `pull.twohead` names the strategy when no `-s` is given (git reads it for `merge` too); several names in it are tried like several `-s`.
 Not built: several `-s` in one command, `-X` for `resolve`, `pull.octopus` and `merge.<name>.mergeoptions`.
@@ -1885,8 +1885,7 @@ The strategy is kept in `rebase-merge/strategy` and `strategy_opts` (a rebase) a
 `--continue` and `--skip` go on with it, and git can continue a stop of pyn's and the reverse.
 
 Refused with a usage error (`129`) before anything changes: strategies other than `ort` and `recursive` (`ours`, `resolve`,
-`octopus`, `subtree`; git runs them as separate programs for each pick), `-X subtree`, and the options the merge refuses
-(`patience`, `histogram`, ...). Renames are followed (see [Renames in a merge](#renames-in-a-merge)). A strategy git does not define is `Could not find merge strategy` (`1`), and an
+`octopus`, `subtree`; git runs them as separate programs for each pick), `-X subtree`, and `-X` options git does not define. Renames are followed (see [Renames in a merge](#renames-in-a-merge)). A strategy git does not define is `Could not find merge strategy` (`1`), and an
 option it does not define `fatal: unknown strategy option` (`128`), both before the first commit, where git notices only when a
 merge needs them. A workspace on a pyn server refuses them. git reads no strategy setting for a replay (`rebase.*` has none, and
 `pull.twohead` is for merges), so none is read.

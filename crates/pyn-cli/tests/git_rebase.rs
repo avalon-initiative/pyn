@@ -3066,7 +3066,6 @@ fn strategies_a_replay_does_not_build_are_a_usage_error_with_a_rebasing_pull() {
     for args in [
         &["--rebase", "-s", "ours"][..],
         &["--rebase=merges", "-s", "resolve"],
-        &["--rebase=interactive", "-X", "patience"],
         &["--rebase", "-X", "subtree"],
     ] {
         let out = p.env.pyn(&p.pyn, &[&["pull"], args].concat());

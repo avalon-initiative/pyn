@@ -682,7 +682,7 @@ impl Merging<'_> {
                     settings.resolve_renames(git);
                     settings
                 }
-                Err(BadOption::Unknown(opt) | BadOption::Unsupported(opt, _)) => {
+                Err(BadOption::Unknown(opt)) => {
                     write_orig_head(git, &ours)?;
                     eprintln!("fatal: unknown strategy option: -X{opt}");
                     leave(git, 128);
