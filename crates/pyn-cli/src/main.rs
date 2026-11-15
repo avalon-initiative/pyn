@@ -26,6 +26,7 @@ mod git_home;
 mod git_log_options;
 mod http_transport;
 mod init_pyn;
+mod json_out;
 mod limits;
 mod local_branches;
 mod local_commit;
@@ -97,6 +98,9 @@ struct Cli {
     /// The repository as owner/name; falls back to the workspace's setting, then your user setting.
     #[arg(long, env = "PYN_REPO", global = true)]
     repo: Option<String>,
+    /// Machine-readable output for whoami, status, locks, lock, unlock, files, ls and summary; see docs/cli-json.md.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -1170,6 +1174,12 @@ fn main() {
             std::process::exit(code);
         }
     };
+    if cli.json {
+        if !json_supported(&cli.command) {
+            usage_error("`--json` is not available for this command");
+        }
+        json_out::set();
+    }
     if let Err(e) = expand_pathspec_files(&mut cli.command) {
         eprintln!("fatal: {e}");
         std::process::exit(128);
@@ -1237,26 +1247,49 @@ fn main() {
         eprintln!("{message}");
         std::process::exit(1);
     }
+    let json = json_out::on();
+    let report = |prefix: &str, e: &anyhow::Error, message: &str| {
+        let message = sanitize::text(message);
+        if json {
+            json_out::print_error(e, &message);
+        } else {
+            eprintln!("{prefix}{message}");
+        }
+    };
     if let Err(e) = run(cli) {
         if let Some(refused) = e.downcast_ref::<git_home::Refused>() {
-            eprintln!("error: {}", sanitize::text(&refused.to_string()));
+            report("error: ", &e, &refused.to_string());
             std::process::exit(1);
         }
         if let Some(exits) = e.downcast_ref::<git_home::Exits>() {
-            eprintln!("error: {}", sanitize::text(&exits.1));
+            report("error: ", &e, &exits.1);
             std::process::exit(exits.0);
         }
         if let Some(rejected) = e.downcast_ref::<local_sync::Rejected>() {
-            eprintln!("{}", sanitize::text(&rejected.to_string()));
+            report("", &e, &rejected.to_string());
             std::process::exit(1);
         }
         if let Some(rejected) = e.downcast_ref::<local_sync::LockRejected>() {
-            eprintln!("{}", sanitize::text(&rejected.to_string()));
+            report("", &e, &rejected.to_string());
             std::process::exit(128);
         }
-        eprintln!("fatal: {}", sanitize::text(&fatal_message(&e)));
+        report("fatal: ", &e, &fatal_message(&e));
         std::process::exit(128);
     }
+}
+
+fn json_supported(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Whoami
+            | Command::Status(_)
+            | Command::Locks { .. }
+            | Command::Lock { .. }
+            | Command::Unlock { .. }
+            | Command::Files
+            | Command::Ls { .. }
+            | Command::Summary
+    )
 }
 
 fn expand_pathspec_files(command: &mut Command) -> Result<()> {
@@ -1731,6 +1764,9 @@ fn run(cli: Cli) -> Result<()> {
     {
         usage_error("the following required arguments were not provided:\n  --message <MESSAGE>");
     }
+    if json_out::on() && git.is_some() && !runs_anywhere(&cli.command) {
+        usage_error("`--json` needs a pyn server, and this is a git repository");
+    }
     if let Some(git) = &git
         && !runs_anywhere(&cli.command)
     {
@@ -2061,9 +2097,27 @@ fn run(cli: Cli) -> Result<()> {
             let api = backend.pyn_server("whoami")?;
             if api.repo.is_some() {
                 let me: api::Me = api.send(api.get(&api.repo_route("/me")?))?.json()?;
-                println!("{}\t{}", me.user, me.permissions.join(","));
+                if json_out::on() {
+                    json_out::print(serde_json::json!({
+                        "user": me.user,
+                        "user_id": me.user_id,
+                        "repo": api.repo,
+                        "permissions": me.permissions,
+                    }));
+                } else {
+                    println!("{}\t{}", me.user, me.permissions.join(","));
+                }
             } else {
                 let me: api::Account = api.send(api.get("/v1/me"))?.json()?;
+                if json_out::on() {
+                    json_out::print(serde_json::json!({
+                        "user": me.user,
+                        "user_id": me.id,
+                        "display_name": me.profile.display_name,
+                        "admin": me.admin,
+                    }));
+                    return Ok(());
+                }
                 match me.profile.display_name {
                     Some(name) => println!("{} ({})", me.user, sanitize::text(&name)),
                     None => println!("{}", me.user),
@@ -2100,6 +2154,10 @@ fn run(cli: Cli) -> Result<()> {
         Command::Locks { mine: true } => {
             let api = backend.pyn_server("locks")?;
             let locks: Vec<api::MyLock> = api.send(api.get("/v1/me/locks"))?.json()?;
+            if json_out::on() {
+                json_out::print_as("locks", &locks);
+                return Ok(());
+            }
             let rows: Vec<Vec<String>> = locks
                 .into_iter()
                 .map(|l| {
@@ -2120,6 +2178,10 @@ fn run(cli: Cli) -> Result<()> {
         Command::Locks { mine: false } => {
             let api = backend.pyn_server("locks")?;
             let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
+            if json_out::on() {
+                json_out::print_as("locks", &locks);
+                return Ok(());
+            }
             let rows: Vec<Vec<String>> = locks
                 .into_iter()
                 .map(|l| vec![l.owner, time::local(l.expires_at), l.path])
@@ -2131,6 +2193,10 @@ fn run(cli: Cli) -> Result<()> {
         Command::Summary => {
             let api = backend.pyn_server("summary")?;
             let s: api::RepoSummary = api.send(api.get(&api.repo_route("/summary")?))?.json()?;
+            if json_out::on() {
+                json_out::print_as("summary", &s);
+                return Ok(());
+            }
             println!(
                 "{} ({} branch), {} files ({} exclusive, {} shared)",
                 s.default_branch, s.branch_count, s.files, s.exclusive_files, s.shared_files
@@ -2346,13 +2412,16 @@ fn run(cli: Cli) -> Result<()> {
             }
             let w = in_workspace("status")?;
             let format = args.format();
+            if json_out::on() && (format != short_status::Format::Table || args.branch) {
+                usage_error("`pyn status --json` does not combine with --short, --porcelain or -b");
+            }
             let only =
                 pathspec::parse(w, &cwd, &args.paths, Default::default(), false, usage_error)?;
             let commit = args
                 .revision
                 .map(|r| snapshot::resolve(&backend, &r))
                 .transpose()?;
-            if format == short_status::Format::Table {
+            if format == short_status::Format::Table && !json_out::on() {
                 branch::print_header(Some(w));
                 if let Some(text) = merging::status_header(w)? {
                     print!("{text}");
@@ -2512,12 +2581,17 @@ fn run(cli: Cli) -> Result<()> {
                     api.request(Method::POST, &api.repo_route("/checkout")?)
                         .json(&body),
                 )
-                .map_err(|e| behind_hint(e, ws.is_some()))?
+                .map_err(|e| behind_hint(e, ws.is_some()))
+                .map_err(|e| held_by(api, &path, e))?
                 .json()?;
             if let Some(w) = &ws {
                 sync::after_lock(w, &path)?;
             }
-            println!("locked {} until {}", l.path, time::local(l.expires_at));
+            if json_out::on() {
+                json_out::print_as("lock", &l);
+            } else {
+                println!("locked {} until {}", l.path, time::local(l.expires_at));
+            }
         }
         Command::Add { patch: true, .. } => {
             usage_error("`add --patch` needs a git repository; a pyn server stages whole files")
@@ -2891,7 +2965,11 @@ fn run(cli: Cli) -> Result<()> {
             if let Some(w) = &ws {
                 sync::after_unlock(w, &path)?;
             }
-            println!("unlocked {path}");
+            if json_out::on() {
+                json_out::print(serde_json::json!({ "unlocked": path }));
+            } else {
+                println!("unlocked {path}");
+            }
         }
         Command::Unlock {
             path,
@@ -2910,7 +2988,11 @@ fn run(cli: Cli) -> Result<()> {
                         .json(&body),
                 )?
                 .json()?;
-            println!("removed {}'s lock on {path}", lock.owner);
+            if json_out::on() {
+                json_out::print(serde_json::json!({ "removed": lock }));
+            } else {
+                println!("removed {}'s lock on {path}", lock.owner);
+            }
         }
         Command::Unlock { .. } => unreachable!("clap requires a reason with --force"),
         Command::Audit {
@@ -3001,7 +3083,32 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+/// With `--json`, attaches the live lock on `path` to a `lock_held` refusal.
+fn held_by(api: &client::Api, path: &str, e: anyhow::Error) -> anyhow::Error {
+    if !json_out::on()
+        || e.downcast_ref::<client::ApiError>()
+            .is_none_or(|a| a.code != "lock_held")
+    {
+        return e;
+    }
+    let locks: Result<Vec<api::Lock>> = api
+        .repo_route("/locks")
+        .and_then(|r| api.send(api.get(&r)))
+        .and_then(|r| r.json());
+    match locks
+        .ok()
+        .and_then(|l| l.into_iter().find(|l| l.path == path))
+    {
+        Some(lock) => e.context(json_out::HeldBy(lock)),
+        None => e,
+    }
+}
+
 fn files_command(backend: &dyn Backend) -> Result<()> {
+    if json_out::on() {
+        json_out::print_as("files", &backend.list_files()?);
+        return Ok(());
+    }
     let rows: Vec<Vec<String>> = backend
         .list_files()?
         .into_iter()
@@ -3020,6 +3127,10 @@ fn files_command(backend: &dyn Backend) -> Result<()> {
 
 fn ls_command(backend: &dyn Backend, path: Option<&str>) -> Result<()> {
     let listing = backend.tree(path)?;
+    if json_out::on() {
+        json_out::print(serde_json::json!({ "path": listing.path, "entries": listing.entries }));
+        return Ok(());
+    }
     let rows: Vec<Vec<String>> = listing
         .entries
         .iter()
