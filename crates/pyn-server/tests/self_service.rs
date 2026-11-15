@@ -547,3 +547,94 @@ async fn history_shows_the_current_name_while_the_written_one_stays_for_verifica
         Some("alicia")
     );
 }
+
+#[tokio::test]
+async fn every_history_surface_shows_the_current_name_and_the_rename_reaches_the_repository_log() {
+    let s = server();
+    signup(&s, "alice", "a@example.org").await;
+    make_repo(&s, "alice", "game").await;
+    let put = Request::builder()
+        .method("PUT")
+        .uri("/v1/repos/alice/game/objects")
+        .header(api::DEV_USER_HEADER, "alice")
+        .body(Body::from("hello"))
+        .unwrap();
+    let content = send(&s.app, put)
+        .await
+        .json::<api::PutObjectResponse>()
+        .content;
+    let checkin = serde_json::json!({"path": "a.txt", "content": content, "base_revision": null, "message": "m"});
+    send(
+        &s.app,
+        call(
+            "alice",
+            "POST",
+            "/v1/repos/alice/game/checkin",
+            Some(checkin),
+        ),
+    )
+    .await;
+    let r = send(
+        &s.app,
+        call(
+            "alice",
+            "PUT",
+            "/v1/me/username",
+            rename("alicia", PASSWORD),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let tree: api::TreeListing = send(
+        &s.app,
+        call("alicia", "GET", "/v1/repos/alicia/game/tree", None),
+    )
+    .await
+    .json();
+    let change = tree.entries[0].last_change.as_ref().unwrap();
+    assert_eq!(change.author_current.as_deref(), Some("alicia"));
+
+    let summary: api::RepoSummary = send(
+        &s.app,
+        call("alicia", "GET", "/v1/repos/alicia/game/summary", None),
+    )
+    .await
+    .json();
+    assert!(summary.activity.iter().all(|a| a.actor == "alice"));
+    assert!(
+        summary
+            .activity
+            .iter()
+            .all(|a| a.actor_current.as_deref() == Some("alicia"))
+    );
+
+    let log: api::AuditPage = send(
+        &s.app,
+        call("alicia", "GET", "/v1/repos/alicia/game/audit", None),
+    )
+    .await
+    .json();
+    let renamed = log
+        .entries
+        .iter()
+        .find(|e| e.action == "account_renamed")
+        .expect("the rename is in the repository log");
+    assert_eq!(renamed.actor, "alicia");
+    let earlier = log.entries.iter().find(|e| e.actor == "alice").unwrap();
+    assert_eq!(earlier.actor_current.as_deref(), Some("alicia"));
+    assert!(renamed.detail.contains("alice") && renamed.detail.contains("alicia"));
+
+    let lfs = send(
+        &s.app,
+        call("alicia", "GET", "/v1/repos/alice/game/info/lfs/locks", None),
+    )
+    .await;
+    assert_eq!(
+        lfs.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&lfs.body)
+    );
+    assert_eq!(lfs.moved_to.as_deref(), Some("alicia/game"));
+}

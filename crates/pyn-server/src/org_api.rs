@@ -131,10 +131,11 @@ pub(crate) async fn org_audit(
         events.truncate(limit);
         events[limit - 1].id
     });
-    let entries = events
+    let mut entries: Vec<_> = events
         .into_iter()
         .map(|e| crate::audit_entry_dto(e, false))
         .collect();
+    crate::self_service_api::annotate(&s, &mut entries).await?;
     Ok(Json(api::AuditPage {
         entries,
         next_before,

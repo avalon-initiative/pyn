@@ -140,7 +140,9 @@ pub(crate) async fn preview_merge(
 ) -> ApiResult<Json<api::MergeReport>> {
     let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
     let report = repo.service.merge_preview(&request_from(req)?).await?;
-    Ok(Json(report_dto(report)))
+    let mut report = report_dto(report);
+    crate::self_service_api::annotate(&s, &mut report.stranded).await?;
+    Ok(Json(report))
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/merge", params(RepoAddress),
@@ -160,5 +162,7 @@ pub(crate) async fn merge(
     let (repo, who) =
         authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let report = repo.service.merge(&who, request_from(req)?).await?;
-    Ok(Json(report_dto(report)))
+    let mut report = report_dto(report);
+    crate::self_service_api::annotate(&s, &mut report.stranded).await?;
+    Ok(Json(report))
 }

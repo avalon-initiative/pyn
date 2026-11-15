@@ -2218,7 +2218,7 @@ fn run(cli: Cli) -> Result<()> {
                     .map(|a| {
                         vec![
                             time::local(a.at),
-                            a.actor.clone(),
+                            commit_format::shown_name(&a.actor, a.actor_current.as_deref()),
                             a.action.clone(),
                             a.path.clone().unwrap_or_else(|| "-".into()),
                         ]
@@ -2833,7 +2833,7 @@ fn run(cli: Cli) -> Result<()> {
                 for c in page.commits {
                     rows.push(vec![
                         snapshot::short(&c.id).to_string(),
-                        c.author.name,
+                        commit_format::shown_name(&c.author.name, c.author_current.as_deref()),
                         time::local(c.created_at),
                         c.revisions.len().to_string(),
                         commit_format::subject_and_body(&c.message).0,
@@ -2895,7 +2895,7 @@ fn run(cli: Cli) -> Result<()> {
                 };
                 let mut row = vec![
                     format!("r{}", r.id),
-                    r.author,
+                    commit_format::shown_name(&r.author, r.author_current.as_deref()),
                     time::local(r.created_at),
                     format!("{subject}{restored}"),
                 ];
@@ -3023,7 +3023,7 @@ fn run(cli: Cli) -> Result<()> {
                     vec![
                         e.id.to_string(),
                         time::local(e.at),
-                        e.actor.clone(),
+                        commit_format::shown_name(&e.actor, e.actor_current.as_deref()),
                         e.action.clone(),
                         e.path.clone().unwrap_or_else(|| "-".into()),
                         time::localize(&commit_format::audit_detail_line(&e.detail)),
@@ -3148,7 +3148,7 @@ fn ls_command(backend: &dyn Backend, path: Option<&str>) -> Result<()> {
                     format!(
                         "{} ({}, r{})",
                         commit_format::subject_and_body(&r.message).0,
-                        r.author,
+                        commit_format::shown_name(&r.author, r.author_current.as_deref()),
                         r.id
                     )
                 }),
@@ -3498,13 +3498,13 @@ fn restore(
     println!(
         "Restore {path} to r{} ({}, \"{}\").",
         source.id,
-        source.author,
+        commit_format::shown_name(&source.author, source.author_current.as_deref()),
         commit_format::subject_and_body(&source.message).0
     );
     println!(
         "The current head r{} ({}, \"{}\") stays in history; the restore becomes r{}.",
         head.id,
-        head.author,
+        commit_format::shown_name(&head.author, head.author_current.as_deref()),
         commit_format::subject_and_body(&head.message).0,
         head.id + 1
     );
@@ -3786,7 +3786,7 @@ fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
                     vec![
                         e.id.to_string(),
                         time::local(e.at),
-                        e.actor.clone(),
+                        commit_format::shown_name(&e.actor, e.actor_current.as_deref()),
                         e.action.clone(),
                         time::localize(&commit_format::audit_detail_line(&e.detail)),
                     ]

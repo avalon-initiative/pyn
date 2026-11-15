@@ -152,39 +152,100 @@ fn repo_address(path: &str) -> Option<(String, String)> {
     (!owner.is_empty() && !name.is_empty()).then(|| (owner.to_string(), name.to_string()))
 }
 
-/// Fills `author_current` where an author's account was renamed after the revision was written.
+/// A response item that names an account at a point in time and can carry that account's current name.
+pub(crate) trait Named {
+    fn written(&self) -> (UserId, chrono::DateTime<chrono::Utc>);
+    fn set_current(&mut self, now: Option<String>);
+}
+
+impl Named for api::Revision {
+    fn written(&self) -> (UserId, chrono::DateTime<chrono::Utc>) {
+        (UserId::new(&self.author), self.created_at)
+    }
+    fn set_current(&mut self, now: Option<String>) {
+        self.author_current = now;
+    }
+}
+
+impl Named for api::StrandedVersion {
+    fn written(&self) -> (UserId, chrono::DateTime<chrono::Utc>) {
+        (UserId::new(&self.author), self.created_at)
+    }
+    fn set_current(&mut self, now: Option<String>) {
+        self.author_current = now;
+    }
+}
+
+impl Named for api::Commit {
+    fn written(&self) -> (UserId, chrono::DateTime<chrono::Utc>) {
+        (
+            UserId::new(&self.author.name),
+            self.authored_at.unwrap_or(self.created_at),
+        )
+    }
+    fn set_current(&mut self, now: Option<String>) {
+        self.author_current = now;
+    }
+}
+
+impl Named for api::ActivityEntry {
+    fn written(&self) -> (UserId, chrono::DateTime<chrono::Utc>) {
+        (UserId::new(&self.actor), self.at)
+    }
+    fn set_current(&mut self, now: Option<String>) {
+        self.actor_current = now;
+    }
+}
+
+impl Named for api::AuditEntry {
+    fn written(&self) -> (UserId, chrono::DateTime<chrono::Utc>) {
+        (UserId::new(&self.actor), self.at)
+    }
+    fn set_current(&mut self, now: Option<String>) {
+        self.actor_current = now;
+    }
+}
+
+/// Fills the current-name field (decision #986) on every item; the one resolver all history surfaces share.
+pub(crate) async fn annotate<T: Named>(s: &AppState, items: &mut [T]) -> ApiResult<()> {
+    let asked: Vec<_> = items.iter().map(Named::written).collect();
+    for (item, now) in items.iter_mut().zip(s.access.current_names(&asked).await?) {
+        item.set_current(now.map(|n| n.to_string()));
+    }
+    Ok(())
+}
+
+/// Like `annotate`, for revisions and the stranded versions they report.
 pub(crate) async fn annotate_revisions(
     s: &AppState,
     revisions: &mut [api::Revision],
 ) -> ApiResult<()> {
-    let asked: Vec<_> = revisions
-        .iter()
-        .map(|r| (UserId::new(&r.author), r.created_at))
-        .collect();
-    for (r, now) in revisions
-        .iter_mut()
-        .zip(s.access.current_names(&asked).await?)
-    {
-        r.author_current = now.map(|n| n.to_string());
+    annotate(s, revisions).await?;
+    for r in revisions.iter_mut().filter(|r| !r.stranded.is_empty()) {
+        annotate(s, &mut r.stranded).await?;
     }
     Ok(())
 }
 
 /// Like `annotate_revisions`, for commits and the revisions inside them.
 pub(crate) async fn annotate_commits(s: &AppState, commits: &mut [api::Commit]) -> ApiResult<()> {
-    let asked: Vec<_> = commits
-        .iter()
-        .map(|c| {
-            (
-                UserId::new(&c.author.name),
-                c.authored_at.unwrap_or(c.created_at),
-            )
-        })
-        .collect();
-    let names = s.access.current_names(&asked).await?;
-    for (c, now) in commits.iter_mut().zip(names) {
-        c.author_current = now.map(|n| n.to_string());
+    annotate(s, commits).await?;
+    for c in commits.iter_mut() {
         annotate_revisions(s, &mut c.revisions).await?;
+    }
+    Ok(())
+}
+
+/// Like `annotate`, for each tree entry's last change.
+pub(crate) async fn annotate_tree(s: &AppState, entries: &mut [api::TreeEntry]) -> ApiResult<()> {
+    let asked: Vec<_> = entries
+        .iter()
+        .filter_map(|e| e.last_change.as_ref())
+        .map(Named::written)
+        .collect();
+    let mut names = s.access.current_names(&asked).await?.into_iter();
+    for r in entries.iter_mut().filter_map(|e| e.last_change.as_mut()) {
+        r.set_current(names.next().flatten().map(|n| n.to_string()));
     }
     Ok(())
 }
