@@ -1020,7 +1020,7 @@ fn diff(
                     new.insert(name, b);
                 }
             }
-            if listed {
+            if listed || matches!(format.kind, diff::Kind::Check | diff::Kind::Dirstat) {
                 for path in unmerged_paths(&index, &spec) {
                     let at = |stage| {
                         index
@@ -1041,9 +1041,11 @@ fn diff(
                             cleaned: None,
                         },
                     };
-                    let combined = at(2)
-                        .zip(at(3))
-                        .filter(|_| format.kind == diff::Kind::Patch);
+                    let combined = at(2).zip(at(3)).filter(|_| {
+                        !quiet
+                            && (format.kind == diff::Kind::Patch
+                                || (format.with_patch && format.kind != diff::Kind::Raw))
+                    });
                     if let Some((ours, theirs)) = combined {
                         let side = |e: &pyn_git::IndexEntry| {
                             entry_blob(&Entry {

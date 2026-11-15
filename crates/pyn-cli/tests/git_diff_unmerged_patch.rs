@@ -114,3 +114,113 @@ fn a_path_with_one_conflict_stage_still_prints_only_its_name() {
     assert!(want.contains("* Unmerged path g"), "{want}");
     assert_eq!(pyn(&p.ours, &["diff"]), want);
 }
+
+fn outcome(program: &mut Command) -> (String, Option<i32>) {
+    let out = program.output().unwrap();
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.code(),
+    )
+}
+
+/// Output and exit status of git and pyn must agree, with the combined patch among them.
+fn same_result(p: &Pair, args: &[&str]) {
+    let mut oracle = git(&p.oracle);
+    let want = outcome(oracle.args(args));
+    let mut ours = Command::new(env!("CARGO_BIN_EXE_pyn"));
+    ours.current_dir(&p.ours)
+        .args(args)
+        .env_clear()
+        .env("PATH", path_env())
+        .env("HOME", p.ours.join(".git"))
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    let got = outcome(&mut ours);
+    assert_eq!(got, want, "{args:?}");
+}
+
+fn resolve_g(p: &Pair) {
+    edit(p, |d| {
+        run(d, &["rm", "-q", "-f", "g"]);
+    });
+}
+
+const COMBINED_FORMS: &[&[&str]] = &[
+    &["diff", "--stat", "-p"],
+    &["diff", "--numstat", "-p"],
+    &["diff", "--shortstat", "-p"],
+    &["diff", "--dirstat", "-p"],
+    &["diff", "--dirstat=lines", "-p"],
+    &["diff", "--summary", "-p"],
+    &["diff", "-p", "--stat", "--summary"],
+    &["diff", "--exit-code"],
+    &["diff", "--exit-code", "-p"],
+    &["diff", "--quiet"],
+    &["diff", "--exit-code", "--stat"],
+    &["diff", "--exit-code", "--numstat"],
+    &["diff", "--exit-code", "--name-only"],
+    &["diff", "--exit-code", "--", "g"],
+    &["diff", "--stat", "--summary"],
+    &["diff", "--numstat", "--summary"],
+    &["diff", "--stat"],
+    &["diff", "--numstat"],
+    &["diff", "--shortstat"],
+    &["diff", "--dirstat"],
+    &["diff", "--summary"],
+    &["diff", "--check"],
+    &["diff", "--quiet", "--check"],
+];
+
+#[test]
+fn statistics_next_to_a_patch_lead_with_the_combined_patch() {
+    for format in FORMATS {
+        let p = conflicted(format);
+        for args in COMBINED_FORMS {
+            same_result(&p, args);
+        }
+    }
+}
+
+#[test]
+fn a_conflict_alone_exits_zero_with_exit_code_and_one_with_quiet() {
+    let p = conflicted("sha1");
+    resolve_g(&p);
+    for args in COMBINED_FORMS {
+        same_result(&p, args);
+    }
+}
+
+#[test]
+fn another_changed_file_keeps_its_rows_and_the_exit_status() {
+    let p = conflicted("sha1");
+    resolve_g(&p);
+    edit(&p, |d| fs::write(d.join("h"), "new\n").unwrap());
+    edit(&p, |d| {
+        run(d, &["add", "-N", "h"]);
+    });
+    for args in COMBINED_FORMS {
+        same_result(&p, args);
+    }
+}
+
+#[test]
+fn the_combined_patch_comes_before_every_other_patch() {
+    let p = conflicted("sha1");
+    edit(&p, |d| {
+        fs::write(d.join("a0"), "x\n").unwrap();
+        run(d, &["add", "-N", "a0"]);
+    });
+    for args in [&["diff"][..], &["diff", "--summary"], &["diff", "-U0"]] {
+        same_result(&p, args);
+    }
+}
+
+#[test]
+fn a_hand_edited_conflict_is_checked_and_counted() {
+    let p = conflicted("sha1");
+    edit(&p, |d| {
+        fs::write(d.join("f"), "a  \nP\nc\nd\ne\nnew\n").unwrap()
+    });
+    for args in COMBINED_FORMS {
+        same_result(&p, args);
+    }
+}
