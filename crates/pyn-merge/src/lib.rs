@@ -479,9 +479,15 @@ pub fn zealous_diff3<T: PartialEq + Clone>(chunks: Vec<Chunk<T>>) -> Vec<Chunk<T
     out
 }
 
-/// Refines conflicts as git's default style does: each conflict splits where its sides agree, then conflicts at most three
-/// lines apart (counted on our side) join again. The base of a split conflict is dropped.
-pub fn refine_two_way<T: PartialEq + Clone>(chunks: Vec<Chunk<T>>) -> Vec<Chunk<T>> {
+/// Finds the edit script between two runs of lines.
+pub type LineDiffer<T> = dyn Fn(&[T], &[T]) -> Vec<Op>;
+
+/// Refines conflicts as git's default style does: each conflict splits where `differ` finds its sides equal, then conflicts at
+/// most three lines apart (counted on our side) join again. The base of a split conflict is dropped.
+pub fn refine_two_way<T: PartialEq + Clone>(
+    chunks: Vec<Chunk<T>>,
+    differ: &LineDiffer<T>,
+) -> Vec<Chunk<T>> {
     /// Unconflicted lines as ours has them, as theirs has them, and as merged.
     struct Gap<T>(Vec<T>, Vec<T>, Vec<T>);
     enum Piece<T> {
@@ -518,7 +524,7 @@ pub fn refine_two_way<T: PartialEq + Clone>(chunks: Vec<Chunk<T>>) -> Vec<Chunk<
                 pending = c.gap;
                 let (mut o, mut t) = (c.ours.iter(), c.theirs.iter());
                 let (mut co, mut ct) = (Vec::new(), Vec::new());
-                for op in diff(&c.ours, &c.theirs) {
+                for op in differ(&c.ours, &c.theirs) {
                     match op {
                         Op::Equal => {
                             flush(&mut pieces, &mut co, &mut ct);
@@ -627,7 +633,7 @@ mod zdiff3_tests {
         let mid = ["m1", "m2", "m3", "m4"];
         let ours: Vec<_> = ["P"].into_iter().chain(mid).chain(["Q"]).collect();
         let theirs: Vec<_> = ["R"].into_iter().chain(mid).chain(["S"]).collect();
-        let got = refine_two_way(vec![conflict(&["b"], &ours, &theirs)]);
+        let got = refine_two_way(vec![conflict(&["b"], &ours, &theirs)], &diff);
         let sub = |o, t| conflict(&[], o, t);
         assert_eq!(
             got,
@@ -642,17 +648,20 @@ mod zdiff3_tests {
     #[test]
     fn a_shared_middle_of_three_lines_or_fewer_stays_in_one_conflict() {
         let c = conflict(&["b"], &["P", "m", "Q"], &["R", "m", "S"]);
-        let got = refine_two_way(vec![c]);
+        let got = refine_two_way(vec![c], &diff);
         assert_eq!(got, vec![conflict(&[], &["P", "m", "Q"], &["R", "m", "S"])]);
     }
 
     #[test]
     fn conflicts_at_most_three_lines_apart_join_using_each_sides_own_gap() {
-        let got = refine_two_way(vec![
-            gapped(&["P"], &["R"], (&["x", "y"], &["x", "z"])),
-            Chunk::Resolved(vec!["x", "w"]),
-            conflict(&["b"], &["Q"], &["S"]),
-        ]);
+        let got = refine_two_way(
+            vec![
+                gapped(&["P"], &["R"], (&["x", "y"], &["x", "z"])),
+                Chunk::Resolved(vec!["x", "w"]),
+                conflict(&["b"], &["Q"], &["S"]),
+            ],
+            &diff,
+        );
         assert_eq!(
             got,
             vec![conflict(&[], &["P", "x", "y", "Q"], &["R", "x", "z", "S"])]
@@ -662,11 +671,14 @@ mod zdiff3_tests {
     #[test]
     fn conflicts_more_than_three_lines_apart_stay_apart() {
         let gap: &[&str] = &["1", "2", "3", "4"];
-        let got = refine_two_way(vec![
-            gapped(&["P"], &["R"], (gap, gap)),
-            Chunk::Resolved(gap.to_vec()),
-            conflict(&["b"], &["Q"], &["S"]),
-        ]);
+        let got = refine_two_way(
+            vec![
+                gapped(&["P"], &["R"], (gap, gap)),
+                Chunk::Resolved(gap.to_vec()),
+                conflict(&["b"], &["Q"], &["S"]),
+            ],
+            &diff,
+        );
         assert_eq!(got.len(), 3);
     }
 

@@ -580,6 +580,30 @@ fn recursive_merges_by_the_algorithm_as_git_does() {
     }
 }
 
+/// One changed line on both sides, so the conflict is the same for every algorithm, with blocks that a Myers and a patience diff split differently.
+const REFINED: &str = "git config merge.conflictStyle merge\n\
+    printf '%s\\n' top mid bottom >f; git add .; git commit -qm base\n\
+    git checkout -q -b side\nprintf '%s\\n' 'top' 'c' 'a' 'b' 'b' 'd' 'c' 'a' 'b' 'a' 'c' 'b' 'c' 'd' 'd' 'd' '{' '{' 'a' 'd' '}' 'bottom' >f; git commit -qam side\n\
+    git checkout -q main\nprintf '%s\\n' 'top' 'b' 'a' 'a' 'b' 'b' 'd' 'a' 'a' 'd' '}' 'a' 'c' '{' 'd' 'bottom' >f; git commit -qam main\n";
+
+#[test]
+fn conflicts_are_refined_as_git_refines_them() {
+    let git_file = |opt: &str| {
+        let p = Pair::new("sha1", REFINED);
+        p.git_in(&p.git, &["merge", "-q", "-X", opt, "side"]);
+        std::fs::read(p.git.join("f")).unwrap()
+    };
+    let myers = git_file("diff-algorithm=myers");
+    for opt in ["patience", "histogram"] {
+        // Whether or not this git lets the algorithm change a refined conflict, pyn must agree with it.
+        let matters = git_file(opt) != myers;
+        each_format(REFINED, |p| {
+            p.same(&["merge", "-X", opt, "side"], Skip::default())
+        });
+        eprintln!("{opt}: algorithm changes git's refinement: {matters}");
+    }
+}
+
 #[test]
 fn patience_and_histogram_merge_as_git_does() {
     for opt in [

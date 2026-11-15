@@ -2,13 +2,13 @@
 //! the parent's file (`-M`) or another file of the parent (`-C`) has, as git's find_move_in_parent and
 //! find_copy_in_parent do. Lines travel as entries: runs contiguous in both files.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 use anyhow::Result;
 use pyn_gitwork::{Entry as TreeEntry, Pathspec};
 use pyn_object::{FileMode, ObjectId};
 
-use super::{Board, Rc};
+use super::Board;
 
 struct Ent {
     s: usize,
@@ -69,7 +69,9 @@ impl Board<'_> {
         let (low, high): (Vec<Ent>, Vec<Ent>) = std::mem::take(ents)
             .into_iter()
             .partition(|e| self.score(e.l, e.n) <= score);
-        small.extend(low);
+        let old = std::mem::take(small);
+        *small = low;
+        small.extend(old);
         *ents = high;
     }
 
@@ -164,11 +166,12 @@ impl Board<'_> {
             if ents.is_empty() {
                 break;
             }
-            self.find_move(po, &mut ents, &mut blamed)?;
+            self.find_move(po, &mut ents, &mut small, &mut blamed)?;
         }
         if self.settings.copy_level > 0 {
             if cp < mv {
                 ents.append(&mut small);
+                ents.sort_by_key(|e| e.s);
             }
             if cp != mv {
                 self.filter_small(&mut small, &mut ents, cp);
@@ -177,10 +180,9 @@ impl Board<'_> {
                 if ents.is_empty() {
                     break;
                 }
-                self.find_copy(o, parent, found[i], &mut ents, &mut blamed)?;
+                self.find_copy(o, parent, found[i], &mut ents, &mut small, &mut blamed)?;
             }
         }
-        small.sort_by_key(|e| e.s);
         self.origins[o].suspects = small
             .iter()
             .chain(&ents)
@@ -193,25 +195,32 @@ impl Board<'_> {
         Ok(())
     }
 
+    /// Rounds as in git: what a round cuts out is blamed on the parent, and the pieces left over that score too little
+    /// go to `small` before the next round.
     fn find_move(
         &mut self,
         po: usize,
         ents: &mut Vec<Ent>,
+        small: &mut Vec<Ent>,
         blamed: &mut Vec<(usize, Lines)>,
     ) -> Result<()> {
-        let file = self.data(po)?;
-        let mut work: VecDeque<Ent> = std::mem::take(ents).into();
-        while let Some(e) = work.pop_front() {
-            match self.best_split(&e, &file) {
-                Some(pick) if pick.score > self.settings.move_score => {
-                    let (run, rest) = Self::cut(&e, pick);
-                    self.blame_run(blamed, po, run);
-                    rest.into_iter().rev().for_each(|r| work.push_front(r));
+        let file = self.fill(po)?;
+        let mut work = std::mem::take(ents);
+        while !work.is_empty() {
+            let mut next = Vec::new();
+            for e in work {
+                match self.best_split(&e, &file) {
+                    Some(pick) if pick.score > self.settings.move_score => {
+                        let (run, rest) = Self::cut(&e, pick);
+                        self.blame_run(blamed, po, run);
+                        next.extend(rest);
+                    }
+                    _ => ents.push(e),
                 }
-                _ => ents.push(e),
             }
+            self.filter_small(small, &mut next, self.settings.move_score);
+            work = next;
         }
-        ents.sort_by_key(|e| e.s);
         Ok(())
     }
 
@@ -221,6 +230,7 @@ impl Board<'_> {
         parent: &ObjectId,
         porigin: Option<usize>,
         ents: &mut Vec<Ent>,
+        small: &mut Vec<Ent>,
         blamed: &mut Vec<(usize, Lines)>,
     ) -> Result<()> {
         let level = self.settings.copy_level;
@@ -236,11 +246,16 @@ impl Board<'_> {
             .iter()
             .map(|(path, src)| self.origin(*parent, path, src.id, src.mode))
             .collect();
+        let resident: Vec<bool> = origins.iter().map(|o| self.origins[*o].loaded).collect();
         let mut work = std::mem::take(ents);
         while !work.is_empty() {
+            self.filter_small(small, &mut work, self.settings.copy_score);
+            if work.is_empty() {
+                break;
+            }
             let mut picks: Vec<Option<(Pick, usize)>> = vec![None; work.len()];
-            for (i, (_, src)) in sources.iter().enumerate() {
-                let file = self.blob_data(&src.id)?;
+            for (i, o) in origins.iter().enumerate() {
+                let file = self.fill(*o)?;
                 for (e, best) in work.iter().zip(&mut picks) {
                     if let Some(p) = self.best_split(e, &file)
                         && best.is_none_or(|(b, _)| p.score >= b.score)
@@ -261,19 +276,15 @@ impl Board<'_> {
                     _ => ents.push(e),
                 }
             }
+            // git frees a candidate's origin, and so its file, unless lines were blamed on it
+            for (i, o) in origins.iter().enumerate() {
+                if !resident[i] && !blamed.iter().any(|(b, _)| b == o) {
+                    self.origins[*o].loaded = false;
+                }
+            }
             work = next;
         }
-        ents.sort_by_key(|e| e.s);
         Ok(())
-    }
-
-    fn blob_data(&mut self, id: &ObjectId) -> Result<Rc<Vec<u8>>> {
-        if let Some(d) = self.blobs.get(id) {
-            return Ok(d.clone());
-        }
-        let d = Rc::new(self.git.repo.blob(id)?);
-        self.blobs.insert(*id, d.clone());
-        Ok(d)
     }
 
     /// The parent's files a copy may come from: those the target changed, or every file with `all`.
