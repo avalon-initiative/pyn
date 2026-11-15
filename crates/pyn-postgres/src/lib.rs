@@ -16,8 +16,8 @@ use pyn_core::{
     FolderUsage, HeadCounts, HistoryCursor, HistoryScan, LfsObject, Lock, LockChange,
     LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person, PushedCommit,
     PynError, REPO_ALGORITHM, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings,
-    RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap,
-    UploadReservation, Usage, UserId, Visibility,
+    RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, TusCancel,
+    TusClaim, TusSession, UploadReservation, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -37,6 +37,7 @@ mod hashing;
 mod history_migration;
 mod profile;
 mod self_service;
+mod tus;
 mod webhook;
 
 /// Which clock judges lease expiry and rate-limit windows.
@@ -2115,6 +2116,62 @@ impl MetadataStore for PgMetadataStore {
         Ok(repo_lfs(&self.pool, repo).await? as u64)
     }
 
+    async fn tus_session(&self, repo: &RepoId, oid: &str) -> Result<Option<TusSession>> {
+        self.tus_session_row(repo, oid).await
+    }
+
+    async fn tus_open(&self, session: &TusSession, max_open: usize) -> Result<TusSession> {
+        self.tus_open_row(session, max_open).await
+    }
+
+    async fn tus_claim(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        owner: &UserId,
+        range: std::ops::Range<u64>,
+        now: DateTime<Utc>,
+        busy_until: DateTime<Utc>,
+    ) -> Result<TusClaim> {
+        self.tus_claim_row(repo, oid, owner, range, now, busy_until)
+            .await
+    }
+
+    async fn tus_commit(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        busy_until: DateTime<Utc>,
+        part: Option<(ObjectId, u64)>,
+        created: &[ObjectId],
+        expires: DateTime<Utc>,
+    ) -> Result<Option<TusSession>> {
+        self.tus_commit_row(repo, oid, busy_until, part, created, expires)
+            .await
+    }
+
+    async fn tus_cancel(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        owner: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<TusCancel> {
+        self.tus_cancel_row(repo, oid, owner, now).await
+    }
+
+    async fn tus_take_expired(&self, now: DateTime<Utc>) -> Result<Vec<TusSession>> {
+        self.tus_take_expired_rows(now).await
+    }
+
+    async fn tus_held_bytes(&self, repo: &RepoId) -> Result<u64> {
+        self.tus_held(repo).await
+    }
+
+    async fn tus_held_bytes_by_owner(&self, owner: &UserId) -> Result<u64> {
+        self.tus_held_by_owner(owner).await
+    }
+
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool> {
         sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM repo_objects WHERE id = $1)
@@ -2749,6 +2806,7 @@ impl MetadataStore for PgMetadataStore {
             "DELETE FROM trees WHERE repo = $1",
             "DELETE FROM repo_objects WHERE repo = $1",
             "DELETE FROM lfs_objects WHERE repo = $1",
+            "DELETE FROM tus_sessions WHERE repo = $1",
             "DELETE FROM upload_reservations WHERE repo = $1",
         ] {
             sqlx::query(stmt)

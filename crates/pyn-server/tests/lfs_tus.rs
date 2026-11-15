@@ -27,6 +27,7 @@ const LFS: &str = "application/vnd.git-lfs+json";
 
 struct World {
     app: Router,
+    repos: Arc<Repositories>,
     clock: Arc<ManualClock>,
     alice: String,
     bob: String,
@@ -129,7 +130,7 @@ async fn world() -> World {
         Rules::from_toml("[meta]\ndefault = \"shared\"\n").unwrap(),
     ));
     let app = router(AppState {
-        repos,
+        repos: repos.clone(),
         objects,
         access: access.clone(),
         auth: Arc::new(BearerAuth { access }),
@@ -162,6 +163,7 @@ async fn world() -> World {
     }
     World {
         app,
+        repos,
         clock,
         alice,
         bob,
@@ -457,6 +459,22 @@ async fn an_abandoned_upload_expires() {
     );
     let r = patch(&w, &w.bob, &url, 300, &bytes[300..]).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_sweep_removes_a_lapsed_upload_without_a_request() {
+    let w = world().await;
+    let bytes = content(1_000);
+    let url = tus_url(&bytes);
+    create(&w, &w.bob, &bytes).await;
+    patch(&w, &w.bob, &url, 0, &bytes[..300]).await;
+
+    assert_eq!(w.repos.sweep_tus_sessions().await.unwrap(), 0);
+    w.clock.advance(Duration::hours(25));
+    assert_eq!(w.repos.sweep_tus_sessions().await.unwrap(), 1);
+    assert_eq!(w.repos.sweep_tus_sessions().await.unwrap(), 0);
+    let r = create(&w, &w.bob, &bytes).await;
+    assert_eq!(r.offset(), 0, "the upload starts over");
 }
 
 #[tokio::test]

@@ -15,7 +15,7 @@ use pyn_object::ObjectId;
 
 use crate::types::{
     ChangesetItem, Commit, CommitFilter, LfsObject, Lock, NewRevision, PushedCommit, RepoId,
-    RepoPath, Revision, RevisionId, UserId,
+    RepoPath, Revision, RevisionId, TusCancel, TusClaim, TusSession, UserId,
 };
 
 /// A hold on part of a repository's unreferenced-upload budget while an upload streams in.
@@ -379,6 +379,55 @@ pub trait MetadataStore: Send + Sync {
 
     /// Bytes of the repository's LFS objects.
     async fn lfs_bytes(&self, repo: &RepoId) -> Result<u64>;
+
+    /// The open resumable upload of `oid` in `repo`, expired or not.
+    async fn tus_session(&self, repo: &RepoId, oid: &str) -> Result<Option<TusSession>>;
+
+    /// Opens `session`, or returns the one already open for that oid. A new session for an owner already holding
+    /// `max_open` sessions is `UploadsBusy`.
+    async fn tus_open(&self, session: &TusSession, max_open: usize) -> Result<TusSession>;
+
+    /// Claims the session for an append of the bytes in `range` until `busy_until`, unless it is missing, not
+    /// `owner`'s, expired at `now`, held, at another offset or too short for the range.
+    async fn tus_claim(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        owner: &UserId,
+        range: std::ops::Range<u64>,
+        now: DateTime<Utc>,
+        busy_until: DateTime<Utc>,
+    ) -> Result<TusClaim>;
+
+    /// Ends the append claimed with `busy_until`: adds `part` and `created`, sets the expiry and frees the session.
+    /// A session that reaches its size is removed. `None` when the claim is gone (swept, or lapsed and retaken).
+    async fn tus_commit(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        busy_until: DateTime<Utc>,
+        part: Option<(ObjectId, u64)>,
+        created: &[ObjectId],
+        expires: DateTime<Utc>,
+    ) -> Result<Option<TusSession>>;
+
+    /// Removes `owner`'s session unless an append holds it at `now`.
+    async fn tus_cancel(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        owner: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<TusCancel>;
+
+    /// Removes and returns every session that expired at `now` and that no append holds.
+    async fn tus_take_expired(&self, now: DateTime<Utc>) -> Result<Vec<TusSession>>;
+
+    /// Bytes stored by the open uploads of `repo`.
+    async fn tus_held_bytes(&self, repo: &RepoId) -> Result<u64>;
+
+    /// Bytes stored by the open uploads of every repository `owner` owns.
+    async fn tus_held_bytes_by_owner(&self, owner: &UserId) -> Result<u64>;
 
     /// Whether any repository, this one included, has recorded the object `id`.
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool>;

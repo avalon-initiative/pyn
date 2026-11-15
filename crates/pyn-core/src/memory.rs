@@ -42,7 +42,7 @@ use crate::store::{MetadataStore, UploadReservation};
 use crate::tree::HeadCounts;
 use crate::types::{
     AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, Person, PushedCommit, RepoId,
-    RepoPath, Revision, RevisionId, UserId,
+    RepoPath, Revision, RevisionId, TusCancel, TusClaim, TusSession, UserId,
 };
 use crate::webhook::{
     Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, EventDraft, Jitter, MAX_ACTIVE_SECRETS,
@@ -70,6 +70,7 @@ struct State {
     /// Uploads each repository may reference: size, and whether an assembled object already holds the chunk.
     uploads: HashMap<(RepoId, ObjectId), (u64, bool)>,
     lfs: HashMap<(RepoId, String), LfsObject>,
+    tus: HashMap<(RepoId, String), TusSession>,
     /// Holds on the unreferenced-upload budget of in-flight uploads: repository, bytes, expiry.
     reservations: HashMap<i64, (RepoId, u64, DateTime<Utc>)>,
     next_reservation: i64,
@@ -1313,6 +1314,138 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(self.state.lock().unwrap().lfs_in(repo))
     }
 
+    async fn tus_session(&self, repo: &RepoId, oid: &str) -> Result<Option<TusSession>> {
+        let st = self.state.lock().unwrap();
+        Ok(st.tus.get(&(repo.clone(), oid.to_string())).cloned())
+    }
+
+    async fn tus_open(&self, session: &TusSession, max_open: usize) -> Result<TusSession> {
+        let mut st = self.state.lock().unwrap();
+        let key = (session.repo.clone(), session.oid.clone());
+        if let Some(have) = st.tus.get(&key) {
+            return Ok(have.clone());
+        }
+        if st.tus.values().filter(|s| s.owner == session.owner).count() >= max_open {
+            return Err(PynError::UploadsBusy {
+                scope: "resumable uploads",
+            });
+        }
+        st.tus.insert(key, session.clone());
+        Ok(session.clone())
+    }
+
+    async fn tus_claim(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        owner: &UserId,
+        range: std::ops::Range<u64>,
+        now: DateTime<Utc>,
+        busy_until: DateTime<Utc>,
+    ) -> Result<TusClaim> {
+        let mut st = self.state.lock().unwrap();
+        let Some(s) = st.tus.get_mut(&(repo.clone(), oid.to_string())) else {
+            return Ok(TusClaim::Missing);
+        };
+        if &s.owner != owner || s.expires <= now {
+            return Ok(TusClaim::Missing);
+        }
+        if s.busy_until.is_some_and(|b| b > now) {
+            return Ok(TusClaim::Busy);
+        }
+        let (offset, len) = (range.start, range.end - range.start);
+        if offset != s.offset {
+            return Ok(TusClaim::Offset { expected: s.offset });
+        }
+        if len > s.size - s.offset {
+            return Ok(TusClaim::TooLong);
+        }
+        s.busy_until = Some(busy_until);
+        Ok(TusClaim::Claimed(s.clone()))
+    }
+
+    async fn tus_commit(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        busy_until: DateTime<Utc>,
+        part: Option<(ObjectId, u64)>,
+        created: &[ObjectId],
+        expires: DateTime<Utc>,
+    ) -> Result<Option<TusSession>> {
+        let mut st = self.state.lock().unwrap();
+        let key = (repo.clone(), oid.to_string());
+        let Some(s) = st.tus.get_mut(&key) else {
+            return Ok(None);
+        };
+        if s.busy_until != Some(busy_until) {
+            return Ok(None);
+        }
+        if let Some((id, n)) = part {
+            s.parts.push((id, n));
+            s.offset += n;
+        }
+        s.created.extend_from_slice(created);
+        s.expires = expires;
+        s.busy_until = None;
+        if s.offset == s.size {
+            return Ok(st.tus.remove(&key));
+        }
+        Ok(Some(s.clone()))
+    }
+
+    async fn tus_cancel(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        owner: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<TusCancel> {
+        let mut st = self.state.lock().unwrap();
+        let key = (repo.clone(), oid.to_string());
+        match st.tus.get(&key) {
+            Some(s) if &s.owner == owner && s.busy_until.is_some_and(|b| b > now) => {
+                Ok(TusCancel::Busy)
+            }
+            Some(s) if &s.owner == owner => Ok(st
+                .tus
+                .remove(&key)
+                .map_or(TusCancel::Missing, TusCancel::Removed)),
+            _ => Ok(TusCancel::Missing),
+        }
+    }
+
+    async fn tus_take_expired(&self, now: DateTime<Utc>) -> Result<Vec<TusSession>> {
+        let mut st = self.state.lock().unwrap();
+        let keys: Vec<_> = st
+            .tus
+            .iter()
+            .filter(|(_, s)| s.expires <= now && !s.busy_until.is_some_and(|b| b > now))
+            .map(|(k, _)| k.clone())
+            .collect();
+        Ok(keys.iter().filter_map(|k| st.tus.remove(k)).collect())
+    }
+
+    async fn tus_held_bytes(&self, repo: &RepoId) -> Result<u64> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .tus
+            .values()
+            .filter(|s| &s.repo == repo)
+            .map(|s| s.offset)
+            .sum())
+    }
+
+    async fn tus_held_bytes_by_owner(&self, owner: &UserId) -> Result<u64> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .tus
+            .values()
+            .filter(|s| st.repos.get(&s.repo).is_some_and(|r| &r.owner == owner))
+            .map(|s| s.offset)
+            .sum())
+    }
+
     async fn object_is_recorded(&self, id: &ObjectId) -> Result<bool> {
         let st = self.state.lock().unwrap();
         Ok(st.uploads.keys().any(|(_, o)| o == id) || st.lfs.values().any(|o| &o.object == id))
@@ -1740,6 +1873,7 @@ impl MetadataStore for MemoryMetadataStore {
         st.pointers.retain(|(r, _), _| r != id);
         st.uploads.retain(|(r, _), _| r != id);
         st.lfs.retain(|(r, _), _| r != id);
+        st.tus.retain(|(r, _), _| r != id);
         st.reservations.retain(|_, (r, _, _)| r != id);
         st.redirects.retain(|_, r| r != id);
         Ok(st.repos.remove(id).is_some())

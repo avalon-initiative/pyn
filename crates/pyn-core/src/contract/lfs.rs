@@ -5,9 +5,12 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
-use super::{Harness, Store, harness, other_repo, path, repo_record, service_in, user, who};
-use crate::PynError;
+use super::{
+    Harness, RULES, Store, harness, harness_on, other_repo, path, repo_record, service_in, user,
+    who,
+};
 use crate::object::ObjectReader;
+use crate::{Clock, ObjectStore, PynError};
 
 fn oid(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -402,4 +405,208 @@ pub async fn lfs_objects_stay_out_of_the_unreferenced_upload_ceiling(store: Stor
         0,
         "bytes named by an LFS object stop counting as unreferenced"
     );
+}
+
+async fn tus_append(
+    svc: &crate::RepoService,
+    bytes: &[u8],
+    from: usize,
+    to: usize,
+) -> Result<crate::TusAppended, crate::TusError> {
+    svc.lfs_tus_append(
+        &user("alice"),
+        &oid(bytes),
+        from as u64,
+        body(&bytes[from..to]),
+        (to - from) as u64,
+        1 << 20,
+    )
+    .await
+}
+
+pub async fn a_resumable_upload_survives_a_new_service_over_the_same_store(store: Store) {
+    let h = harness(store.clone());
+    let bytes = b"0123456789abcdef";
+    let first = &h.svc;
+    first
+        .lfs_tus_create(&user("alice"), &oid(bytes), 16, 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        tus_append(first, bytes, 0, 6).await.unwrap().status.offset,
+        6
+    );
+
+    let second = harness_on(store, h.objects.clone(), h.svc.repo().clone(), RULES);
+    let st = second
+        .svc
+        .lfs_tus_status(&oid(bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((st.offset, st.size), (6, 16));
+    let done = tus_append(&second.svc, bytes, 6, 16).await.unwrap();
+    assert_eq!(done.completed.unwrap().size, 16);
+    assert_eq!(read_all(&second, &oid(bytes)).await, bytes);
+    assert!(
+        second
+            .svc
+            .lfs_tus_status(&oid(bytes))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+pub async fn the_sweep_drops_lapsed_uploads_and_the_parts_they_stored(store: Store) {
+    let h = harness(store.clone());
+    let bytes = b"0123456789abcdef";
+    h.svc
+        .lfs_tus_create(&user("alice"), &oid(bytes), 16, 1 << 20)
+        .await
+        .unwrap();
+    tus_append(&h.svc, bytes, 0, 6).await.unwrap();
+    let session = store
+        .tus_session(h.svc.repo(), &oid(bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    let part = session.parts[0].0;
+    assert!(h.objects.exists(&part).await.unwrap());
+
+    let objects: Arc<dyn crate::ObjectStore> = h.objects.clone();
+    let now = h.clock.now();
+    assert_eq!(
+        crate::sweep_tus_sessions(&store, &objects, now)
+            .await
+            .unwrap(),
+        0
+    );
+    h.clock.advance(chrono::Duration::hours(25));
+    let now = h.clock.now();
+    assert_eq!(
+        crate::sweep_tus_sessions(&store, &objects, now)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(h.svc.lfs_tus_status(&oid(bytes)).await.unwrap().is_none());
+    assert!(!h.objects.exists(&part).await.unwrap());
+}
+
+pub async fn an_append_holds_the_upload_until_it_ends_or_its_lease_lapses(store: Store) {
+    let h = harness(store.clone());
+    let alice = user("alice");
+    let (repo, o) = (h.svc.repo().clone(), oid(b"x"));
+    h.svc.lfs_tus_create(&alice, &o, 10, 1 << 20).await.unwrap();
+    let now = h.clock.now();
+    let lease = now + chrono::Duration::minutes(5);
+    let claim = |at: u64, len: u64, now, lease| {
+        let (store, repo, o, alice) = (store.clone(), repo.clone(), o.clone(), alice.clone());
+        async move {
+            store
+                .tus_claim(&repo, &o, &alice, at..at + len, now, lease)
+                .await
+                .unwrap()
+        }
+    };
+    assert!(matches!(
+        claim(0, 4, now, lease).await,
+        crate::TusClaim::Claimed(_)
+    ));
+    assert_eq!(claim(0, 4, now, lease).await, crate::TusClaim::Busy);
+    let later = now + chrono::Duration::minutes(6);
+    assert_eq!(
+        claim(3, 4, later, later).await,
+        crate::TusClaim::Offset { expected: 0 }
+    );
+    assert_eq!(claim(0, 11, later, later).await, crate::TusClaim::TooLong);
+    let retaken = later + chrono::Duration::minutes(5);
+    assert!(matches!(
+        claim(0, 4, later, retaken).await,
+        crate::TusClaim::Claimed(_)
+    ));
+
+    let expires = later + chrono::Duration::hours(24);
+    let stale = store.tus_commit(&repo, &o, lease, None, &[], expires).await;
+    assert_eq!(stale.unwrap(), None, "a lapsed claim cannot commit");
+    let bob_cancel = store
+        .tus_cancel(&repo, &o, &user("bob"), later)
+        .await
+        .unwrap();
+    assert_eq!(bob_cancel, crate::TusCancel::Missing);
+    let cancel = store.tus_cancel(&repo, &o, &alice, later).await.unwrap();
+    assert_eq!(cancel, crate::TusCancel::Busy);
+    let ended = store
+        .tus_commit(&repo, &o, retaken, None, &[], expires)
+        .await;
+    assert_eq!(ended.unwrap().unwrap().offset, 0);
+    assert!(matches!(
+        store.tus_cancel(&repo, &o, &alice, later).await.unwrap(),
+        crate::TusCancel::Removed(_)
+    ));
+}
+
+pub async fn open_resumable_uploads_are_limited_per_user_and_count_against_the_caps(store: Store) {
+    let h = harness(store.clone());
+    store
+        .create_repo(repo_record("lfs", "alice", "lfs"))
+        .await
+        .unwrap();
+    let svc = owner_capped(&store, &h, "lfs", 10);
+    let (a, b) = (b"aaaaaaaa", b"bbbbbbbb");
+    svc.lfs_tus_create(&user("alice"), &oid(a), 8, 1 << 20)
+        .await
+        .unwrap();
+    svc.lfs_tus_append(&user("alice"), &oid(a), 0, body(&a[..6]), 6, 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(store.tus_held_bytes(svc.repo()).await.unwrap(), 6);
+    assert_eq!(
+        store.tus_held_bytes_by_owner(&user("alice")).await.unwrap(),
+        6
+    );
+    assert_eq!(
+        store.tus_held_bytes_by_owner(&user("bob")).await.unwrap(),
+        0
+    );
+
+    let err = svc
+        .lfs_tus_create(&user("alice"), &oid(b), 8, 1 << 20)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            PynError::StorageLimitReached {
+                limit: 10,
+                used: 6,
+                ..
+            }
+        ),
+        "{err}"
+    );
+
+    let session = |n: usize| crate::TusSession {
+        repo: svc.repo().clone(),
+        oid: format!("{n:064x}"),
+        owner: user("carol"),
+        size: 1,
+        offset: 0,
+        parts: Vec::new(),
+        created: Vec::new(),
+        expires: h.clock.now() + chrono::Duration::hours(1),
+        busy_until: None,
+    };
+    for n in 0..crate::TUS_MAX_SESSIONS_PER_USER {
+        store
+            .tus_open(&session(n), crate::TUS_MAX_SESSIONS_PER_USER)
+            .await
+            .unwrap();
+    }
+    let err = store
+        .tus_open(&session(999), crate::TUS_MAX_SESSIONS_PER_USER)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UploadsBusy { .. }), "{err}");
 }

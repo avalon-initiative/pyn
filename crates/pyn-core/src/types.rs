@@ -453,6 +453,41 @@ mod tests {
     }
 }
 
+/// An open resumable (tus) LFS upload: what was stored so far and who may continue it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TusSession {
+    pub repo: RepoId,
+    pub oid: String,
+    pub owner: UserId,
+    pub size: u64,
+    pub offset: u64,
+    /// The stored pieces in order, each with its length.
+    pub parts: Vec<(ObjectId, u64)>,
+    /// Objects the upload created, removed with it unless something else records them.
+    pub created: Vec<ObjectId>,
+    pub expires: DateTime<Utc>,
+    /// While set and in the future, an append holds the session.
+    pub busy_until: Option<DateTime<Utc>>,
+}
+
+/// The result of claiming a session for one append.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TusClaim {
+    Claimed(TusSession),
+    Missing,
+    Busy,
+    Offset { expected: u64 },
+    TooLong,
+}
+
+/// The result of cancelling a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TusCancel {
+    Removed(TusSession),
+    Missing,
+    Busy,
+}
+
 /// An object uploaded through the LFS API: its sha256 `oid` (lowercase hex), its length, and where the bytes live.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LfsObject {

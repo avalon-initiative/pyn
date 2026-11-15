@@ -3430,6 +3430,10 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_frozen_owner_cannot_upload_an_lfs_object);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_objects_count_against_the_storage_caps);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_bytes_are_reported_and_count_against_the_owner_cap_across_repositories);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_resumable_upload_survives_a_new_service_over_the_same_store);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_sweep_drops_lapsed_uploads_and_the_parts_they_stored);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_append_holds_the_upload_until_it_ends_or_its_lease_lapses);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; open_resumable_uploads_are_limited_per_user_and_count_against_the_caps);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_lfs_uploads_and_checkins_cannot_exceed_the_owner_cap);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; racing_lfs_uploads_cannot_exceed_the_repository_cap);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; lfs_objects_stay_out_of_the_unreferenced_upload_ceiling);
@@ -4269,6 +4273,75 @@ impl MetadataStore for HookedMeta {
 
     async fn lfs_bytes(&self, repo: &RepoId) -> crate::Result<u64> {
         self.inner.lfs_bytes(repo).await
+    }
+
+    async fn tus_session(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+    ) -> crate::Result<Option<crate::TusSession>> {
+        self.inner.tus_session(repo, oid).await
+    }
+
+    async fn tus_open(
+        &self,
+        session: &crate::TusSession,
+        max_open: usize,
+    ) -> crate::Result<crate::TusSession> {
+        self.inner.tus_open(session, max_open).await
+    }
+
+    async fn tus_claim(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        owner: &UserId,
+        range: std::ops::Range<u64>,
+        now: chrono::DateTime<Utc>,
+        busy_until: chrono::DateTime<Utc>,
+    ) -> crate::Result<crate::TusClaim> {
+        self.inner
+            .tus_claim(repo, oid, owner, range, now, busy_until)
+            .await
+    }
+
+    async fn tus_commit(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        busy_until: chrono::DateTime<Utc>,
+        part: Option<(ObjectId, u64)>,
+        created: &[ObjectId],
+        expires: chrono::DateTime<Utc>,
+    ) -> crate::Result<Option<crate::TusSession>> {
+        self.inner
+            .tus_commit(repo, oid, busy_until, part, created, expires)
+            .await
+    }
+
+    async fn tus_cancel(
+        &self,
+        repo: &RepoId,
+        oid: &str,
+        owner: &UserId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<crate::TusCancel> {
+        self.inner.tus_cancel(repo, oid, owner, now).await
+    }
+
+    async fn tus_take_expired(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<Vec<crate::TusSession>> {
+        self.inner.tus_take_expired(now).await
+    }
+
+    async fn tus_held_bytes(&self, repo: &RepoId) -> crate::Result<u64> {
+        self.inner.tus_held_bytes(repo).await
+    }
+
+    async fn tus_held_bytes_by_owner(&self, owner: &UserId) -> crate::Result<u64> {
+        self.inner.tus_held_bytes_by_owner(owner).await
     }
 
     async fn object_is_recorded(&self, id: &ObjectId) -> crate::Result<bool> {

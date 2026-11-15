@@ -91,8 +91,10 @@ pub(crate) async fn head(
     )
     .await?;
     check_oid(&oid)?;
-    let Some(st) = repo.service.lfs_tus_status(&oid).await else {
-        return Ok(tus(StatusCode::NOT_FOUND.into_response()));
+    let st = match repo.service.lfs_tus_status(&oid).await {
+        Ok(Some(st)) => st,
+        Ok(None) => return Ok(tus(StatusCode::NOT_FOUND.into_response())),
+        Err(e) => return Ok(refuse(TusError::Pyn(e))),
     };
     let mut res = StatusCode::OK.into_response();
     status_headers(&mut res, &st);
