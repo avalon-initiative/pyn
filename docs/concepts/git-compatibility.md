@@ -969,8 +969,8 @@ environment variable, else the `attr.tree` setting, each naming a tree-ish whose
 without one, the work tree, or `HEAD`'s tree in a bare repository (git versions differ on that default, an explicit source is the
 same everywhere). A bad `--source` or `GIT_ATTR_SOURCE` is fatal (`128`), a bad `attr.tree` is ignored, and a bare repository whose
 `HEAD` is unreadable is fatal as well. `--cached` still reads the index. A `diff` that prints a patch, `--stat` or `--check` is fatal too, as git's is, and so
-are `ls-files --eol`, `format-patch` of a commit with changes and `grep` of a file. git reads attributes only when a command needs them for a path: `status`
-and `ls-files -m` go on with a bad `GIT_ATTR_SOURCE` while no file needs a content comparison (see below). The attribute lookup of `diff --color` whitespace marks treats a bad
+are `ls-files --eol` (at the first path it lists), `format-patch` of a commit with changes and `grep` of a file (not with `-a`). git reads attributes only when a command needs them for a path: `status`
+and `ls-files -m` go on with a bad `GIT_ATTR_SOURCE` while no file needs a content comparison (see below), and `ls-files --eol` or `grep` whose pathspec selects nothing go on too. The attribute lookup of `diff --color` whitespace marks treats a bad
 source as no attributes, which no output shows, because the `diff` attribute lookup of the same file fails first. Patterns follow git: a pattern without a slash matches names at any depth below its file,
 others are anchored to it, `**` and character classes work, `core.ignoreCase` folds case, negative (`!`) and folder-only
 (`dir/`) patterns are ignored, and a symbolic link named `.gitattributes` is not read. Attribute states are set, unset
@@ -996,7 +996,7 @@ and `diff --no-index` (a file inside the work tree of the repository you are in 
 brings in applies to the files written after it, and to itself. `status` and `diff` compare the converted work tree file with the
 index, so a repository that relies on conversions shows no phantom changes. `status` and `ls-files -m` decide as git does: a file whose size differs
 from its index entry's is modified without comparing converted content, so a CRLF file written outside git under `text` is listed (`diff` prints nothing for it) until
-it is added or restored; only a file with the same size and a changed stat time is compared by its converted content, and the attributes are read only then. `restore` of
+it is added or restored; a file whose size and stat data (mtime and ctime in whole seconds, inode, owner and group; `core.checkStat=minimal` keeps only size and mtime, `core.trustCtime=false` drops ctime) match the index entry is clean, and only a file with the same size and other stat data is compared by its converted content, and the attributes are read only then. `restore` of
 a path from the index refreshes that entry's stat data, as git does. `-diff` makes a file binary in `diff` and `diff` forces text.
 
 `pyn convert --home git` keeps a work tree file's stat data in the new index only when its converted form is the committed blob.
@@ -2569,8 +2569,9 @@ for every answer the menu reads. Covered against the real git, on SHA-1 and SHA-
 `grep` prints git's lines for the pattern: `<path>:<line>` (with `-n`, `<path>:<number>:<line>`), paths relative to where you
 stand, quoted as git quotes them, in index order, and with revisions `<rev>:<path>` for each revision in turn. The exit
 status is `0` when anything matched (also under `-q`), `1` when nothing did, `128` for a fatal error (no pattern, a bad
-pattern, an unknown revision or path, `--cached` with a revision) and `129` for a usage error. A file with a NUL in its first
-8000 bytes is binary and prints `Binary file <name> matches` once (`-a` searches it as text, `-I` skips it); `-c` and `-l`
+pattern, an unknown revision or path, `--cached` with a revision) and `129` for a usage error. A file is binary when its `diff`
+attribute is unset (`-diff`, or a driver with `diff.<name>.binary` true), not binary when it is set (or the driver's `binary` is
+false), and otherwise when it has a NUL in its first 8000 bytes; a binary file prints `Binary file <name> matches` once (`-a` searches it as text without reading attributes, `-I` skips it); `-c` and `-l`
 treat it like any other file. Without a revision only tracked, regular files are searched, from the work tree (a file deleted
 there is skipped, an intent-to-add file is searched, an unmerged path once); `--cached` reads the index and leaves out
 unmerged and intent-to-add paths. Symbolic links and submodules are never searched. Options go before the pattern, as git

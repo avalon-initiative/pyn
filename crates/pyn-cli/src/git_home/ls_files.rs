@@ -92,7 +92,8 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
                 path: &[u8],
                 tag: char,
                 stage: Option<(u32, String, u8)>,
-                entry: Option<&pyn_git::IndexEntry>| {
+                entry: Option<&pyn_git::IndexEntry>|
+     -> Result<()> {
         if labelled {
             out.extend_from_slice(format!("{tag} ").as_bytes());
         }
@@ -105,6 +106,8 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
             out.extend_from_slice(format!("{mode:06o} {id} {st}\t").as_bytes());
         }
         if args.eol {
+            // attributes are read per listed path, so a bad source is fatal at the first one
+            git.repo.attributes()?;
             // git reads the index side by name, so every stage of a conflict shows the first one.
             let first = entry.and_then(|e| index.entries.iter().find(|x| x.path == e.path));
             out.extend_from_slice(eol_info(git, path, first).as_bytes());
@@ -116,17 +119,15 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
             out.extend_from_slice(quote(git, &shown).as_bytes());
             out.push(b'\n');
         }
+        Ok(())
     };
     let tracked: BTreeSet<&[u8]> = index.entries.iter().map(|e| e.path.as_slice()).collect();
     let mut matched: BTreeSet<Vec<u8>> = BTreeSet::new();
 
     if args.others {
         for path in untracked(git, &root, &index, &spec, &ignores, &args)? {
-            name(&mut out, &path, '?', None, None);
+            name(&mut out, &path, '?', None, None)?;
         }
-    }
-    if args.eol && !index.entries.is_empty() {
-        git.repo.attributes()?;
     }
     let stage_of = |e: &pyn_git::IndexEntry| Some((e.mode, e.id.to_hex(), e.stage));
     let unstaged = if args.deleted || args.modified {
@@ -162,7 +163,7 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
                 tag,
                 show_stage.then(|| stage_of(e)).flatten(),
                 Some(e),
-            );
+            )?;
         }
         if args.deleted || args.modified {
             let kind = if e.stage > 0 {
@@ -178,7 +179,7 @@ pub(super) fn ls_files(git: &GitHome, cwd: &Path, args: LsFilesArgs) -> Result<(
             ] {
                 if shown {
                     let stage = show_stage.then(|| stage_of(e)).flatten();
-                    name(&mut out, &e.path, tag, stage, Some(e));
+                    name(&mut out, &e.path, tag, stage, Some(e))?;
                 }
             }
         }

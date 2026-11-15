@@ -170,6 +170,11 @@ fn a_matching_stat_is_trusted_unless_the_entry_is_racy() {
             seconds: 1_000_000,
             nanos: 0,
         };
+        let meta = std::fs::metadata(fx.root.join("a")).unwrap();
+        entry.ctime.seconds = meta.ctime() as u32;
+        entry.ino = meta.ino() as u32;
+        entry.uid = meta.uid();
+        entry.gid = meta.gid();
         fx.index(vec![entry.clone()]);
         set_mtime(&fx.root.join(".git/index"), 2_000_000);
         assert_eq!(
