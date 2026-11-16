@@ -9,7 +9,7 @@ use crate::access::{AccountRecord, Identity, OrgRole, Role};
 use crate::access_service::AccessService;
 use crate::error::{PynError, Result};
 use crate::object::ObjectStore;
-use crate::profile::{Avatar, Profile, check_avatar};
+use crate::profile::{Avatar, OrgProfile, Profile, check_avatar};
 use crate::repo::RepoRecord;
 use crate::repositories::Repositories;
 use crate::types::{AccountId, UserId};
@@ -72,19 +72,8 @@ impl Profiles<'_> {
     /// store: it is shared and content-addressed, so another record may use the same object.
     pub async fn set_avatar(&self, actor: &Identity, bytes: Vec<u8>) -> Result<Profile> {
         actor.require_full_scope()?;
-        let kind = check_avatar(&bytes)?;
-        let size = bytes.len() as u64;
-        let content = self.objects.put_chunk(bytes).await?;
-        self.access
-            .update_avatar(
-                actor,
-                Some(Avatar {
-                    content,
-                    kind,
-                    size,
-                }),
-            )
-            .await
+        let avatar = self.store_avatar(bytes).await?;
+        self.access.update_avatar(actor, Some(avatar)).await
     }
 
     pub async fn remove_avatar(&self, actor: &Identity) -> Result<Profile> {
@@ -103,17 +92,71 @@ impl Profiles<'_> {
             profile.public_view()
         };
         let avatar = profile.avatar.ok_or_else(none)?;
-        let read = self
-            .objects
-            .read(&avatar.content, None)
-            .await?
-            .ok_or_else(none)?;
+        let bytes = self.avatar_bytes(&avatar).await?.ok_or_else(none)?;
+        Ok((avatar, bytes))
+    }
+
+    async fn avatar_bytes(&self, avatar: &Avatar) -> Result<Option<Vec<u8>>> {
+        let Some(read) = self.objects.read(&avatar.content, None).await? else {
+            return Ok(None);
+        };
         let mut bytes = Vec::with_capacity(avatar.size as usize);
         read.reader
             .take(crate::profile::MAX_AVATAR_BYTES + 1)
             .read_to_end(&mut bytes)
             .await
             .map_err(|e| PynError::Storage(e.to_string()))?;
+        Ok(Some(bytes))
+    }
+
+    async fn store_avatar(&self, bytes: Vec<u8>) -> Result<Avatar> {
+        let kind = check_avatar(&bytes)?;
+        let size = bytes.len() as u64;
+        let content = self.objects.put_chunk(bytes).await?;
+        Ok(Avatar {
+            content,
+            kind,
+            size,
+        })
+    }
+
+    /// The organization's description and avatar record.
+    pub async fn org_profile(&self, org: &str) -> Result<OrgProfile> {
+        self.access.org_profile_of(&UserId::new(org)).await
+    }
+
+    /// Stores the avatar bytes and makes them the organization's avatar; owners only.
+    pub async fn set_org_avatar(
+        &self,
+        actor: &Identity,
+        org: &str,
+        bytes: Vec<u8>,
+    ) -> Result<OrgProfile> {
+        let org = UserId::new(org);
+        self.access.require_org_edit(actor, &org).await?;
+        let avatar = self.store_avatar(bytes).await?;
+        self.access
+            .update_org_avatar(actor, &org, Some(avatar))
+            .await
+    }
+
+    pub async fn remove_org_avatar(&self, actor: &Identity, org: &str) -> Result<OrgProfile> {
+        self.access
+            .update_org_avatar(actor, &UserId::new(org), None)
+            .await
+    }
+
+    /// The organization's avatar and its bytes; `AvatarNotFound` when there is none.
+    pub async fn org_avatar(&self, org: &str) -> Result<(Avatar, Vec<u8>)> {
+        let org = UserId::new(org);
+        let none = || PynError::AvatarNotFound(org.to_string());
+        let avatar = self
+            .access
+            .org_profile_of(&org)
+            .await?
+            .avatar
+            .ok_or_else(none)?;
+        let bytes = self.avatar_bytes(&avatar).await?.ok_or_else(none)?;
         Ok((avatar, bytes))
     }
 }

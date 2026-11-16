@@ -100,7 +100,7 @@ pub use oidc::{
     IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider, pkce_challenge,
 };
 pub use passwords::{InlinePasswords, PasswordWorker};
-pub use profile::{Avatar, ImageKind, Profile, ProfileFields, ProfileVisibility};
+pub use profile::{Avatar, ImageKind, OrgProfile, Profile, ProfileFields, ProfileVisibility};
 pub use profiles::{Profiles, PublicProfile};
 pub use pyn_gitattr::lockable::Disagreement;
 pub use pyn_object::{FileMode, ObjectId};

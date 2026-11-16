@@ -346,3 +346,62 @@ async fn an_update_without_visibility_keeps_it() {
         .unwrap();
     assert_eq!(saved.visibility, hide);
 }
+
+#[tokio::test]
+async fn only_organization_owners_edit_its_profile() {
+    let w = world();
+    let (alice, bob) = (w.user("alice").await, w.user("bob").await);
+    let acme = UserId::new("acme");
+    w.store
+        .create_org(&acme, &alice.user, Utc::now())
+        .await
+        .unwrap();
+    w.store
+        .add_org_member(&acme, &bob.user, OrgRole::Member)
+        .await
+        .unwrap();
+    let p = w.profiles();
+
+    assert_eq!(p.org_profile("acme").await.unwrap(), Default::default());
+    let saved = w
+        .access
+        .update_org_description(&alice, &acme, Some(" hi ".into()))
+        .await
+        .unwrap();
+    assert_eq!(saved.description.as_deref(), Some("hi"));
+    let saved = p.set_org_avatar(&alice, "acme", png()).await.unwrap();
+    let avatar = saved.avatar.expect("avatar");
+    assert_eq!(saved.description.as_deref(), Some("hi"));
+    let (served, bytes) = p.org_avatar("acme").await.unwrap();
+    assert_eq!((served, bytes), (avatar, png()));
+
+    let err = p.set_org_avatar(&bob, "acme", png()).await.unwrap_err();
+    assert!(matches!(err, PynError::NotOrgOwner(_)), "{err}");
+    let err = w
+        .access
+        .update_org_description(&bob, &acme, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::NotOrgOwner(_)), "{err}");
+    let err = p
+        .set_org_avatar(&alice, "acme", b"nope".to_vec())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UnsupportedImage(_)), "{err}");
+    let err = p.set_org_avatar(&alice, "alice", png()).await.unwrap_err();
+    assert!(matches!(err, PynError::OrgNotFound(_)), "{err}");
+
+    p.remove_org_avatar(&alice, "acme").await.unwrap();
+    assert!(matches!(
+        p.org_avatar("acme").await.unwrap_err(),
+        PynError::AvatarNotFound(_)
+    ));
+    assert!(
+        w.access
+            .org_profile_if_org(&alice.user)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(w.access.org_profile_if_org(&acme).await.unwrap().is_some());
+}

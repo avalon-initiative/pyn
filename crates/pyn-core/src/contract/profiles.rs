@@ -140,3 +140,77 @@ pub async fn profile_visibility_defaults_public_and_is_stored_apart(store: Acces
     assert_eq!(saved.fields, fields("Alice"), "visibility keeps the text");
     assert_eq!(saved.avatar, Some(avatar(3)));
 }
+
+pub async fn org_profiles_store_a_description_and_an_avatar_apart(store: Access) {
+    let (acme, alice) = (user("acme"), user("alice"));
+    store.create_user(&alice, at(0)).await.unwrap();
+    assert!(store.create_org(&acme, &alice, at(1)).await.unwrap());
+    assert_eq!(
+        store.org_profile(&acme).await.unwrap(),
+        Default::default(),
+        "no profile until one is saved"
+    );
+
+    store
+        .set_org_description(&acme, Some("we build tools"), at(2))
+        .await
+        .unwrap();
+    store
+        .set_org_avatar(&acme, Some(&avatar(5)), at(3))
+        .await
+        .unwrap();
+    let saved = store.org_profile(&acme).await.unwrap();
+    assert_eq!(saved.description.as_deref(), Some("we build tools"));
+    assert_eq!(saved.avatar, Some(avatar(5)));
+
+    store.set_org_description(&acme, None, at(4)).await.unwrap();
+    let saved = store.org_profile(&acme).await.unwrap();
+    assert_eq!(saved.description, None, "clearing the text");
+    assert_eq!(saved.avatar, Some(avatar(5)), "keeps the avatar");
+
+    store
+        .set_org_description(&acme, Some("again"), at(5))
+        .await
+        .unwrap();
+    store.set_org_avatar(&acme, None, at(6)).await.unwrap();
+    let saved = store.org_profile(&acme).await.unwrap();
+    assert_eq!(saved.avatar, None);
+    assert_eq!(
+        saved.description.as_deref(),
+        Some("again"),
+        "keeps the text"
+    );
+}
+
+pub async fn org_profiles_are_apart_from_user_profiles_and_go_with_the_org(store: Access) {
+    let (acme, alice) = (user("acme"), user("alice"));
+    store.create_user(&alice, at(0)).await.unwrap();
+    assert!(store.create_org(&acme, &alice, at(1)).await.unwrap());
+    store
+        .set_org_description(&acme, Some("acme"), at(2))
+        .await
+        .unwrap();
+    store
+        .set_org_avatar(&acme, Some(&avatar(2)), at(2))
+        .await
+        .unwrap();
+    store
+        .set_profile(&alice, &fields("Alice"), at(3))
+        .await
+        .unwrap();
+    assert_eq!(store.profile(&acme).await.unwrap(), Default::default());
+    assert_eq!(store.org_profile(&alice).await.unwrap(), Default::default());
+
+    assert!(store.delete_org(&acme).await.unwrap());
+    assert_eq!(
+        store.org_profile(&acme).await.unwrap(),
+        Default::default(),
+        "deleting the organization drops its profile"
+    );
+    assert!(store.create_org(&acme, &alice, at(4)).await.unwrap());
+    assert_eq!(
+        store.org_profile(&acme).await.unwrap(),
+        Default::default(),
+        "a recreated organization starts empty"
+    );
+}

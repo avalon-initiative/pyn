@@ -31,7 +31,7 @@ use crate::limits::{
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
 use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
-use crate::profile::{Avatar, Profile, ProfileFields, ProfileVisibility};
+use crate::profile::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility};
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate, Visibility};
 use crate::repo_policy::{
@@ -2045,6 +2045,7 @@ struct AccessState {
     verifications: HashMap<String, VerificationRecord>,
     passwords: HashMap<UserId, String>,
     profiles: HashMap<UserId, Profile>,
+    org_profiles: HashMap<UserId, OrgProfile>,
     invites: HashMap<InviteId, InviteRecord>,
     ssh_keys: Vec<SshKeyRecord>,
     roles: HashMap<(RepoId, UserId), Role>,
@@ -2162,6 +2163,34 @@ impl AccessStore for MemoryAccessStore {
     ) -> Result<()> {
         let mut st = self.state.lock().unwrap();
         st.profiles.entry(user.clone()).or_default().avatar = avatar.cloned();
+        Ok(())
+    }
+
+    async fn org_profile(&self, org: &UserId) -> Result<OrgProfile> {
+        let st = self.state.lock().unwrap();
+        Ok(st.org_profiles.get(org).cloned().unwrap_or_default())
+    }
+
+    async fn set_org_description(
+        &self,
+        org: &UserId,
+        description: Option<&str>,
+        _now: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.org_profiles.entry(org.clone()).or_default().description =
+            description.map(str::to_string);
+        Ok(())
+    }
+
+    async fn set_org_avatar(
+        &self,
+        org: &UserId,
+        avatar: Option<&Avatar>,
+        _now: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.org_profiles.entry(org.clone()).or_default().avatar = avatar.cloned();
         Ok(())
     }
 
@@ -2320,6 +2349,7 @@ impl AccessStore for MemoryAccessStore {
         self.outbox.queue(events)?;
         st.accounts.remove(org);
         st.limits.remove(org);
+        st.org_profiles.remove(org);
         st.org_roles.retain(|(o, _), _| o != org);
         st.org_invitations.retain(|(o, _), _| o != org);
         st.teams.retain(|(o, _), _| o != org);

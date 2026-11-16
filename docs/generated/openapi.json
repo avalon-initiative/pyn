@@ -3234,6 +3234,230 @@
         }
       }
     },
+    "/v1/orgs/{org}/avatar": {
+      "get": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "get_org_avatar",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "v",
+            "in": "query",
+            "description": "the version from `avatar_url`; when it is the current one the image is cached for a year",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the image, as `image/png`, `image/jpeg` or `image/webp` according to its bytes; readable signed out, with an `ETag` and `Cache-Control`",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "`If-None-Match` matches the current image"
+          },
+          "404": {
+            "description": "org_not_found, or avatar_not_found when it has none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "put_org_avatar",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "the image bytes (png, jpeg or webp, at most 1 MiB); the type is judged from the bytes, not the `Content-Type` header",
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the profile with the new `avatar_url`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgProfile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: an empty body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "owner_frozen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "object_too_large: over 1 MiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "unsupported_image: not a png, jpeg or webp",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: too many avatar changes in an hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "delete_org_avatar",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the profile without an avatar; removing none is not an error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgProfile"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "owner_frozen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/orgs/{org}/invitations": {
       "get": {
         "tags": [
@@ -3623,6 +3847,126 @@
           },
           "409": {
             "description": "last_org_owner: the only owner cannot be demoted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/orgs/{org}/profile": {
+      "get": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "get_org_profile",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "any signed-in account can read it, as it can look the organization up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgProfile"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found (also for a user name)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "update_org_profile",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOrgProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the stored profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgProfile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the description is too long or has control characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token that is not full-scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "owner_frozen",
             "content": {
               "application/json": {
                 "schema": {
@@ -11645,6 +11989,32 @@
           }
         }
       },
+      "OrgProfile": {
+        "type": "object",
+        "description": "What an organization shows about itself.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`/v1/orgs/{org}/avatar?v=` and the start of the image's hash; null when there is no avatar."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 256 characters; null when unset."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "OrgRole": {
         "type": "string",
         "description": "A person's standing in an organization.",
@@ -12493,6 +12863,17 @@
           "owner_id": {
             "type": "string",
             "description": "The id of `owner`, a user or an organization."
+          },
+          "owner_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicIdentity",
+                "description": "The owning organization's public identity (its avatar); absent when a user owns the repository."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "role": {
             "type": [
@@ -13841,6 +14222,18 @@
           "exclusive",
           "mixed"
         ]
+      },
+      "UpdateOrgProfileRequest": {
+        "type": "object",
+        "description": "The new organization description; blank or left out clears it.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "UpdateProfileRequest": {
         "type": "object",

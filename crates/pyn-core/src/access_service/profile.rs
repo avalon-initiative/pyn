@@ -1,7 +1,9 @@
 //! Account profiles: reading them, and the signed-in user's own edits.
 
 use super::*;
-use crate::profile::{Avatar, Profile, ProfileFields, ProfileVisibility};
+use crate::profile::{
+    Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility, validate_org_description,
+};
 
 /// Avatar changes one account may make per hour.
 const AVATAR_CHANGES_PER_HOUR: u32 = 30;
@@ -83,5 +85,64 @@ impl AccessService {
             .set_avatar(&actor.user, avatar.as_ref(), self.clock.now())
             .await?;
         self.store.profile(&actor.user).await
+    }
+}
+
+impl AccessService {
+    pub async fn org_profile_of(&self, org: &UserId) -> Result<OrgProfile> {
+        self.org(org).await?;
+        self.store.org_profile(org).await
+    }
+
+    /// An organization's profile when `owner` is an organization; `None` for a user.
+    pub async fn org_profile_if_org(&self, owner: &UserId) -> Result<Option<OrgProfile>> {
+        match self.org(owner).await {
+            Ok(_) => Ok(Some(self.store.org_profile(owner).await?)),
+            Err(PynError::OrgNotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Replaces the organization's description. Owners only, with a full-scope credential.
+    pub async fn update_org_description(
+        &self,
+        actor: &Identity,
+        org: &UserId,
+        description: Option<String>,
+    ) -> Result<OrgProfile> {
+        let description = validate_org_description(description)?;
+        self.require_org_edit(actor, org).await?;
+        self.store
+            .set_org_description(org, description.as_deref(), self.clock.now())
+            .await?;
+        self.store.org_profile(org).await
+    }
+
+    /// Records or clears the organization's avatar; the bytes are already stored.
+    pub async fn update_org_avatar(
+        &self,
+        actor: &Identity,
+        org: &UserId,
+        avatar: Option<Avatar>,
+    ) -> Result<OrgProfile> {
+        self.require_org_edit(actor, org).await?;
+        self.count_limited(
+            &format!("org-avatar:{}", bounded_key(&org.as_str().to_lowercase())),
+            AVATAR_CHANGES_PER_HOUR,
+            Duration::hours(1),
+        )
+        .await?;
+        self.store
+            .set_org_avatar(org, avatar.as_ref(), self.clock.now())
+            .await?;
+        self.store.org_profile(org).await
+    }
+
+    /// The checks for editing an organization's profile: full scope, an owner, and not frozen.
+    pub async fn require_org_edit(&self, actor: &Identity, org: &UserId) -> Result<()> {
+        actor.require_full_scope()?;
+        self.org(org).await?;
+        self.require_org_owner(org, &actor.user).await?;
+        self.ensure_owner_writable(org).await
     }
 }

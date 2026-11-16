@@ -115,6 +115,11 @@ struct RepoAddress {
         profile_api::put_avatar,
         profile_api::delete_avatar,
         profile_api::get_avatar,
+        profile_api::get_org_profile,
+        profile_api::update_org_profile,
+        profile_api::put_org_avatar,
+        profile_api::delete_org_avatar,
+        profile_api::get_org_avatar,
         repo_api::my_locks,
         admin_api::list_accounts,
         admin_api::approve,
@@ -327,6 +332,8 @@ struct RepoAddress {
         api::Account,
         api::Profile,
         api::UpdateProfileRequest,
+        api::OrgProfile,
+        api::UpdateOrgProfileRequest,
         api::ProfileVisibility,
         api::PublicProfile,
         api::MyLock,
@@ -573,6 +580,16 @@ fn routes(state: AppState) -> Router {
         )
         .route("/v1/users/{user}", get(profile_api::get_profile))
         .route("/v1/users/{user}/avatar", get(profile_api::get_avatar))
+        .route(
+            "/v1/orgs/{org}/profile",
+            get(profile_api::get_org_profile).put(profile_api::update_org_profile),
+        )
+        .route(
+            "/v1/orgs/{org}/avatar",
+            get(profile_api::get_org_avatar)
+                .put(profile_api::put_org_avatar)
+                .delete(profile_api::delete_org_avatar),
+        )
         .route("/v1/me/locks", get(repo_api::my_locks))
         .route(
             "/v1/tokens",
