@@ -22,6 +22,10 @@ use tower::ServiceExt;
 const PASSWORD: &str = "correct horse battery";
 
 async fn server(mode: RegistrationMode) -> Router {
+    server_with(mode, false).await
+}
+
+async fn server_with(mode: RegistrationMode, require_approval: bool) -> Router {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
@@ -34,6 +38,7 @@ async fn server(mode: RegistrationMode) -> Router {
         )
         .with_config(AccessConfig {
             registration: mode,
+            require_approval,
             require_email_verification: false,
             ..AccessConfig::default()
         })
@@ -91,7 +96,7 @@ async fn send(
         .method(method)
         .uri(uri)
         .header("content-type", "application/json");
-    let builder = if who.starts_with("pyn_") {
+    let builder = if who.starts_with("pyn_") || who.starts_with("pyns_") {
         builder.header("authorization", format!("Bearer {who}"))
     } else {
         builder.header(api::DEV_USER_HEADER, who)
@@ -212,6 +217,127 @@ async fn adding_an_account_follows_the_registration_policy() {
         )
         .await;
         assert_eq!(r.status, status, "{mode:?}");
+    }
+}
+
+async fn login_token(app: &Router, name: &str) -> String {
+    let body = json!({"username": name, "password": PASSWORD});
+    let r = send(app, "root", "POST", "/v1/login", Some(body)).await;
+    r.json::<api::CreatedToken>().token
+}
+
+async fn scoped_token(app: &Router, user_token: &str, permissions: &[&str]) -> String {
+    let body = json!({"name": "s", "permissions": permissions, "repos": ["root/seed"]});
+    let r = send(app, user_token, "POST", "/v1/tokens", Some(body)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    r.json::<api::CreatedToken>().token
+}
+
+#[tokio::test]
+async fn adding_an_account_needs_a_full_scope_credential() {
+    for (mode, approval) in [
+        (RegistrationMode::Open, false),
+        (RegistrationMode::Closed, false),
+        (RegistrationMode::Open, true),
+    ] {
+        let app = server_with(mode, approval).await;
+        let plain_open = mode == RegistrationMode::Open && !approval;
+        let add = |who: String, name: &'static str| {
+            let app = app.clone();
+            async move {
+                let body = json!({"username": name, "password": PASSWORD, "role": "reader"});
+                send(&app, &who, "POST", "/v1/repos/root/seed/users", Some(body)).await
+            }
+        };
+        send(
+            &app,
+            "root",
+            "POST",
+            "/v1/repos",
+            Some(json!({"name": "seed"})),
+        )
+        .await;
+        for (name, role) in [("wendy", "admin"), ("boss", "admin")] {
+            let body = json!({"username": name, "password": PASSWORD, "role": role});
+            let r = send(
+                &app,
+                "root",
+                "POST",
+                "/v1/repos/root/seed/users",
+                Some(body),
+            )
+            .await;
+            assert_eq!(r.status, StatusCode::CREATED, "{mode:?}: {name}");
+        }
+        let r = send(&app, "root", "PUT", "/v1/admin/users/boss/admin", None).await;
+        assert!(r.status.is_success(), "{mode:?}");
+        let (wendy, boss) = (
+            login_token(&app, "wendy").await,
+            login_token(&app, "boss").await,
+        );
+        let manage = ["manage_users"];
+        let wendy_scoped = scoped_token(&app, &wendy, &manage).await;
+        let boss_scoped = scoped_token(&app, &boss, &manage).await;
+        let minted = send(
+            &app,
+            "root",
+            "POST",
+            "/v1/admin/service-credentials",
+            Some(json!({"name": "svc", "scopes": ["manage_accounts"]})),
+        )
+        .await;
+        let service = minted.json::<api::CreatedServiceCredential>().secret;
+
+        let anon = Request::builder()
+            .method("POST")
+            .uri("/v1/repos/root/seed/users")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"username": "anon", "password": PASSWORD, "role": "reader"}).to_string(),
+            ))
+            .unwrap();
+        let r = app.clone().oneshot(anon).await.unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{mode:?}: signed out");
+
+        let refused = [
+            ("scoped token of a normal user", wendy_scoped, "forbidden"),
+            ("scoped token of an administrator", boss_scoped, "forbidden"),
+            (
+                "service credential",
+                service,
+                "service_credential_not_allowed",
+            ),
+        ];
+        for (n, (what, who, code)) in refused.into_iter().enumerate() {
+            let name = ["x0", "x1", "x2"][n];
+            let r = add(who, name).await;
+            assert!(
+                r.is(StatusCode::FORBIDDEN, code),
+                "{mode:?} {what}: {}",
+                r.message()
+            );
+        }
+        let r = send(&app, "root", "GET", "/v1/repos/root/seed/members", None).await;
+        let members = String::from_utf8_lossy(&r.body).into_owned();
+        assert!(
+            !members.contains("\"x0\"") && !members.contains("\"x1\""),
+            "{members}"
+        );
+
+        let r = add(wendy, "n1").await;
+        if plain_open {
+            assert_eq!(r.status, StatusCode::CREATED, "{mode:?}: full-scope member");
+        } else {
+            assert!(
+                r.is(StatusCode::FORBIDDEN, "forbidden"),
+                "{mode:?}: full-scope member"
+            );
+        }
+        for (what, who) in [("admin token", boss), ("dev", "root".to_string())] {
+            let name = if what == "dev" { "a2" } else { "a1" };
+            let r = add(who, name).await;
+            assert_eq!(r.status, StatusCode::CREATED, "{mode:?} {what}");
+        }
     }
 }
 

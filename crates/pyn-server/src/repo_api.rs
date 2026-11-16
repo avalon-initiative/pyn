@@ -376,7 +376,7 @@ fn invite_info(i: InviteRecord) -> api::InviteInfo {
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/users", params(RepoAddress), request_body = api::AddUserRequest, responses(
     (status = 201, body = api::Registered),
-    (status = 403, body = api::ErrorBody, description = "needs manage_users"),
+    (status = 403, body = api::ErrorBody, description = "needs manage_users and a full-scope credential"),
     (status = 409, body = api::ErrorBody, description = "user_exists"),
 ))]
 pub(crate) async fn add_user(
@@ -385,7 +385,8 @@ pub(crate) async fn add_user(
     Path((owner, name)): Path<(String, String)>,
     Json(req): Json<api::AddUserRequest>,
 ) -> ApiResult<(StatusCode, Json<api::Registered>)> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
+    let who = identify(&s, &headers).await?;
+    let (repo, _) = open_visible(&s, Some(&who), &owner, &name).await?;
     let role = Role::from_str(&req.role)?;
     let user = s
         .access

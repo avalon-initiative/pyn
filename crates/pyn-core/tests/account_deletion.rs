@@ -541,10 +541,7 @@ async fn a_purged_name_is_reserved_for_registration_creation_and_organizations()
     let added = w
         .access
         .add_user(
-            &w.access
-                .principal(&open.record.id, &user("bob"))
-                .await
-                .unwrap(),
+            &session("bob"),
             &open.record.id,
             "alice",
             PASSWORD,

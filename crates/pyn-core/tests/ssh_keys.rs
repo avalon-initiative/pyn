@@ -106,13 +106,14 @@ async fn world() -> (World, Identity, Identity) {
         .add_creator(&w.repo, &UserId::new("root"))
         .await
         .unwrap();
-    let root = w
-        .svc
-        .principal(&w.repo, &UserId::new("root"))
-        .await
-        .unwrap();
     w.svc
-        .add_user(&root, &w.repo, "alice", "a long password", Role::Writer)
+        .add_user(
+            &session("root"),
+            &w.repo,
+            "alice",
+            "a long password",
+            Role::Writer,
+        )
         .await
         .unwrap();
     (w, session("root"), session("alice"))
@@ -177,16 +178,9 @@ async fn other_peoples_keys_are_only_for_administrators() {
     let key = w.svc.add_ssh_key(&alice, None, ED1).await.unwrap();
     let err = w.svc.list_ssh_keys(&root, &UserId::new("alice")).await;
     assert!(err.is_ok(), "an administrator may look");
-    let root_principal = w.svc.principal_in(&w.repo, &root).await.unwrap();
     let bob = w
         .svc
-        .add_user(
-            &root_principal,
-            &w.repo,
-            "bob",
-            "another long password",
-            Role::Reader,
-        )
+        .add_user(&root, &w.repo, "bob", "another long password", Role::Reader)
         .await
         .unwrap();
     let bob = session(bob.as_str());

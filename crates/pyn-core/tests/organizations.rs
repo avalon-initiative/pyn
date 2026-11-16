@@ -964,7 +964,7 @@ async fn direct_grants_on_organization_repositories_go_only_to_members() {
     );
     let err = w
         .access
-        .add_user(&root, &game.id, "dave", PASSWORD, Role::Reader)
+        .add_user(&alice, &game.id, "dave", PASSWORD, Role::Reader)
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::UserNotOrgMember { .. }), "{err}");
