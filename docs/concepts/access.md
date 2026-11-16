@@ -403,6 +403,10 @@ The organization-wide reads need the same credential, because they expose data b
 credential is refused (`403`). A team's `repos` hold only repositories the caller could open (public ones, or any in which they hold a
 role), so a member never learns the name of a private repository they cannot see.
 
+The owner-level reads of [limits, usage and freeze](limits.md#seeing-limits-and-usage) (`GET /v1/owners/{owner}/limits`,
+`/usage` and `/freeze`) need it too: they are account-level, and the usage report names every repository of the owner. A
+narrower token gets `403 forbidden`; a service credential keeps its `manage_limits` and `manage_freeze` scopes.
+
 ## Service credentials
 
 A service credential lets a trusted external service administer a server without being a person. A server

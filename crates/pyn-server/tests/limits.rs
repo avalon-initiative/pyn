@@ -582,3 +582,107 @@ async fn ids_are_exposed_consistently_and_never_reused() {
     .json::<api::OrgInfo>();
     assert_ne!(org2.id, org.id);
 }
+
+/// A token made by `session`, limited to `repos`, read only.
+async fn made_token(app: &Router, session: &str, repos: &[&str]) -> String {
+    let r = send(
+        app,
+        session,
+        "POST",
+        "/v1/tokens",
+        Some(json!({"name": "t", "permissions": ["read"], "repos": repos})),
+    )
+    .await;
+    assert!(
+        r.status.is_success(),
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    r.json::<api::CreatedToken>().token
+}
+
+#[tokio::test]
+async fn owner_usage_and_limits_need_a_full_scope_credential() {
+    let app = server(Limits::default()).await;
+    let alice = token_for(&app, "alice").await;
+    let bob = token_for(&app, "bob").await;
+    for name in ["game", "vault"] {
+        assert_eq!(
+            make_repo(&app, &alice, name).await.status,
+            StatusCode::CREATED
+        );
+    }
+    let r = send(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs",
+        Some(json!({"name": "acme"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let r = send(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs/acme/members",
+        Some(json!({"user": "bob"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let r = send(&app, &bob, "POST", "/v1/me/invitations/acme/accept", None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = send(
+        &app,
+        &alice,
+        "POST",
+        "/v1/repos",
+        Some(json!({"owner": "acme", "name": "plans", "visibility": "private"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+
+    let scoped = made_token(&app, &alice, &["alice/game"]).await;
+    let org_scoped = made_token(&app, &alice, &["acme/plans"]).await;
+    let billing = service(&app, "billing", &["manage_limits"]).await;
+    let accounts = service(&app, "accounts", &["manage_accounts"]).await;
+
+    for route in ["usage", "limits"] {
+        let uri = |owner: &str| format!("/v1/owners/{owner}/{route}");
+        let r = send(&app, "", "GET", &uri("alice"), None).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{route}");
+        for (who, name) in [(&alice, "full-scope token"), (&billing, "service")] {
+            let r = send(&app, who, "GET", &uri("alice"), None).await;
+            assert_eq!(r.status, StatusCode::OK, "{route} {name}");
+        }
+        let r = send(&app, &alice, "GET", &uri("acme"), None).await;
+        assert_eq!(r.status, StatusCode::OK, "{route} org owner full token");
+        for dev in ["root", "alice"] {
+            let r = send(&app, dev, "GET", &uri("alice"), None).await;
+            assert_eq!(r.status, StatusCode::OK, "{route} dev {dev}");
+        }
+        for (who, owner, name) in [
+            (&scoped, "alice", "scoped token of the owner"),
+            (&org_scoped, "acme", "scoped token of an org owner"),
+            (&scoped, "nobody", "scoped token, missing owner"),
+        ] {
+            let r = send(&app, who, "GET", &uri(owner), None).await;
+            assert!(r.is(StatusCode::FORBIDDEN, "forbidden"), "{route} {name}");
+            let text = String::from_utf8_lossy(&r.body);
+            assert!(!text.contains("vault") && !text.contains("plans"), "{text}");
+        }
+        let r = send(&app, &accounts, "GET", &uri("alice"), None).await;
+        assert!(
+            r.is(StatusCode::FORBIDDEN, "service_scope_required"),
+            "{route}"
+        );
+    }
+    let r = send(&app, &alice, "GET", "/v1/owners/alice/usage", None).await;
+    let names: Vec<_> = r
+        .json::<api::OwnerUsage>()
+        .repositories
+        .into_iter()
+        .map(|u| u.repository)
+        .collect();
+    assert_eq!(names, ["alice/game", "alice/vault"]);
+}

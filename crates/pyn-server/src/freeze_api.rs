@@ -25,7 +25,7 @@ fn freeze_dto(owner: String, state: pyn_core::OwnerFreezeState) -> api::OwnerFre
 #[utoipa::path(get, path = "/v1/owners/{owner}/freeze", operation_id = "owner_freeze",
     params(("owner" = String, Path, description = "a user or organization name")),
     responses((status = 200, body = api::OwnerFreeze, description = "frozen is false, with a null time and reason, while the owner is not frozen"),
-              (status = 403, body = api::ErrorBody, description = "not_namespace_owner (also for a name that does not exist): only the user themself, a member of the organization, an administrator or a service credential with manage_freeze may look; service_scope_required for a service credential without it"),
+              (status = 403, body = api::ErrorBody, description = "not_namespace_owner (also for a name that does not exist): only the user themself, a member of the organization, an administrator or a service credential with manage_freeze may look; service_scope_required for a service credential without it; forbidden for a repository-scoped or otherwise limited token"),
               (status = 404, body = api::ErrorBody, description = "user_not_found, for an administrator or a service credential only")))]
 pub(crate) async fn owner_freeze(
     State(s): State<AppState>,

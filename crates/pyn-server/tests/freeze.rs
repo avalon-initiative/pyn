@@ -896,3 +896,71 @@ async fn the_state_and_the_administrative_routes_enforce_who_may_set_and_see_it(
         .collect();
     assert_eq!(org_actors, ["@service:billing", "root", "@service:billing"]);
 }
+
+#[tokio::test]
+async fn reading_the_freeze_needs_a_full_scope_credential() {
+    let f = fixture().await;
+    let perms = ["read"];
+    let mut tokens = Vec::new();
+    for (session, repos) in [
+        (&f.alice, ["alice/game"]),
+        (&f.alice, ["acme/game"]),
+        (&f.bob, ["acme/game"]),
+    ] {
+        let r = send(
+            &f.app,
+            session,
+            "POST",
+            "/v1/tokens",
+            Some(json!({"name": "t", "repos": repos, "permissions": perms})),
+        )
+        .await;
+        assert!(
+            r.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&r.body)
+        );
+        tokens.push(r.json::<api::CreatedToken>().token);
+    }
+    let [scoped, org_owner_scoped, member_scoped] = &tokens[..] else {
+        unreachable!()
+    };
+    let billing = service(&f.app, "billing", &["manage_freeze"]).await;
+    let accounts = service(&f.app, "accounts", &["manage_accounts"]).await;
+
+    let get = |who: &str, owner: &str| {
+        let (app, who, uri) = (
+            f.app.clone(),
+            who.to_string(),
+            format!("/v1/owners/{owner}/freeze"),
+        );
+        async move { send(&app, &who, "GET", &uri, None).await }
+    };
+    assert_eq!(get("", "alice").await.status, StatusCode::UNAUTHORIZED);
+    for (who, owner) in [
+        (&f.alice, "alice"),
+        (&f.alice, "acme"),
+        (&f.bob, "acme"),
+        (&billing, "alice"),
+        (&"root".to_string(), "alice"),
+        (&"alice".to_string(), "alice"),
+    ] {
+        let r = get(who, owner).await;
+        assert_eq!(r.status, StatusCode::OK, "{owner}: {}", r.code());
+    }
+    for (who, owner) in [
+        (scoped, "alice"),
+        (org_owner_scoped, "acme"),
+        (member_scoped, "acme"),
+        (scoped, "nobody"),
+    ] {
+        let r = get(who, owner).await;
+        assert!(
+            r.is(StatusCode::FORBIDDEN, "forbidden"),
+            "{owner}: {}",
+            r.code()
+        );
+    }
+    let r = get(&accounts, "alice").await;
+    assert!(r.is(StatusCode::FORBIDDEN, "service_scope_required"));
+}

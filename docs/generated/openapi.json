@@ -4761,7 +4761,7 @@
             }
           },
           "403": {
-            "description": "not_namespace_owner (also for a name that does not exist): only the user themself, a member of the organization, an administrator or a service credential with manage_freeze may look; service_scope_required for a service credential without it",
+            "description": "not_namespace_owner (also for a name that does not exist): only the user themself, a member of the organization, an administrator or a service credential with manage_freeze may look; service_scope_required for a service credential without it; forbidden for a repository-scoped or otherwise limited token",
             "content": {
               "application/json": {
                 "schema": {
@@ -4812,7 +4812,7 @@
             }
           },
           "403": {
-            "description": "not_namespace_owner (also for a name that does not exist) or not_org_owner (a member who does not own it): only the owner, an administrator or a service credential with manage_limits may look",
+            "description": "not_namespace_owner (also for a name that does not exist) or not_org_owner (a member who does not own it): only the owner, an administrator or a service credential with manage_limits may look; forbidden for a repository-scoped or otherwise limited token",
             "content": {
               "application/json": {
                 "schema": {
@@ -4863,7 +4863,7 @@
             }
           },
           "403": {
-            "description": "not_namespace_owner (also for a name that does not exist) or not_org_owner (a member who does not own it): only the owner, an administrator or a service credential with manage_limits may look",
+            "description": "not_namespace_owner (also for a name that does not exist) or not_org_owner (a member who does not own it): only the owner, an administrator or a service credential with manage_limits may look; forbidden for a repository-scoped or otherwise limited token",
             "content": {
               "application/json": {
                 "schema": {
