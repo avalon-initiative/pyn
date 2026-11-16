@@ -630,14 +630,32 @@ fn refuses_whitespace_settings_it_does_not_read() {
     });
 }
 
-/// `apply <args>` with both tools: the same status, standard output, standard error (their names aside) and state.
+/// Masks the line number after a patch file name: git continues counting across several inputs up to 2.43 and restarts for each file after.
+fn mask_patch_lines(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| match line.find(".patch:") {
+            Some(at) => {
+                let (head, rest) = line.split_at(at + ".patch:".len());
+                let digits = rest.chars().take_while(char::is_ascii_digit).count();
+                if digits > 0 && rest[digits..].starts_with(':') {
+                    format!("{head}N{}", &rest[digits..])
+                } else {
+                    line.to_string()
+                }
+            }
+            None => line.to_string(),
+        })
+        .collect()
+}
+
+/// `apply <args>` with both tools: the same status, standard output, standard error (their names and patch line numbers aside) and state.
 fn same_text(t: &Twin, args: &[&str], stdin: &[u8]) {
     let mut full = vec!["apply"];
     full.extend_from_slice(args);
     let (want, got) = t.same("", &full, stdin);
     assert_eq!(
-        got.err().replace("pyn", "git"),
-        want.err(),
+        mask_patch_lines(&got.err().replace("pyn", "git")),
+        mask_patch_lines(&want.err()),
         "stderr of {args:?}"
     );
 }
