@@ -198,6 +198,7 @@ async fn the_window_length_is_a_setting() {
         .await
         .unwrap();
     assert_eq!(d.purge_at - d.scheduled_at, Duration::days(7));
+    assert_eq!(w.access.deletion_window_days(), 7);
 }
 
 #[tokio::test]

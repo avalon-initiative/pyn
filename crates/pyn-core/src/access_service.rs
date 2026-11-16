@@ -2583,6 +2583,11 @@ impl AccessService {
         Ok(listed)
     }
 
+    /// The recovery window, in days, an account's own deletion waits.
+    pub fn deletion_window_days(&self) -> i64 {
+        self.config.deletion_window_days
+    }
+
     /// The effective account-deletion settings.
     pub async fn account_deletion_settings(&self, actor: &Identity) -> Result<(i64, i64)> {
         self.require_admin_scope(actor, ServiceScope::ManageAccounts)

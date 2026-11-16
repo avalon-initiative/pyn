@@ -78,12 +78,12 @@ default (`PYN_SESSION_DAYS`). Signing in needs no role anywhere: a new account w
 An account can be deleted three ways (decisions #975 and #976). All three end in one **purge**.
 
 **Self-service.** `pyn account delete` (`POST /v1/account/deletion {password}`) asks for the password again, then disables the account
-and schedules its purge after a **recovery window** of 30 days (`PYN_ACCOUNT_DELETION_WINDOW_DAYS`); the answer carries `purge_at`.
+and schedules its purge after a **recovery window** of 30 days (`PYN_ACCOUNT_DELETION_WINDOW_DAYS`); the answer carries `purge_at`. Every status answer (including `GET /v1/account/deletion` before anything is scheduled) carries `window_days`, the effective recovery window, so a regular user sees it without admin settings.
 An account with no password (external sign-in only) is deleted from a signed-in web session, which needs no password. While the
 window runs the account is *pending deletion*:
 
 - Signing in still works (`POST /v1/login`, `POST /v1/session`, external sign-in), so the owner can come back.
-- The credentials of a pending account reach only `GET /v1/account/deletion` (status: `{user, pending, scheduled_at, purge_at}`),
+- The credentials of a pending account reach only `GET /v1/account/deletion` (status: `{user, pending, scheduled_at, purge_at, window_days}`),
   `POST /v1/account/deletion/restore` and `GET /v1/session` (so a web app can load the session and its CSRF token). Every other route,
   Git/SSH access included, answers `403 account_pending_deletion` with the deadline in the message.
 - `pyn account restore` (`POST /v1/account/deletion/restore`) cancels the deletion and enables the account again; it is refused once

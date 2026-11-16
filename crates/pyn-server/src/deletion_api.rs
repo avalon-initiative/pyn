@@ -8,12 +8,17 @@ use pyn_proto as api;
 
 use crate::{ApiResult, AppState, bearer_token, identify_admin, session_api};
 
-fn status(user: &UserId, deletion: Option<AccountDeletion>) -> api::AccountDeletionStatus {
+fn status(
+    user: &UserId,
+    deletion: Option<AccountDeletion>,
+    window_days: i64,
+) -> api::AccountDeletionStatus {
     api::AccountDeletionStatus {
         user: user.to_string(),
         pending: deletion.is_some(),
         scheduled_at: deletion.as_ref().map(|d| d.scheduled_at),
         purge_at: deletion.map(|d| d.purge_at),
+        window_days,
     }
 }
 
@@ -45,7 +50,11 @@ pub(crate) async fn account_deletion_status(
 ) -> ApiResult<Json<api::AccountDeletionStatus>> {
     let who = identify_pending_ok(&s, &headers).await?;
     let deletion = s.access.deletion_status(&who).await?;
-    Ok(Json(status(&who.user, deletion)))
+    Ok(Json(status(
+        &who.user,
+        deletion,
+        s.access.deletion_window_days(),
+    )))
 }
 
 #[utoipa::path(post, path = "/v1/account/deletion", request_body = api::DeleteOwnAccountRequest, responses(
@@ -62,7 +71,11 @@ pub(crate) async fn schedule_account_deletion(
 ) -> ApiResult<Json<api::AccountDeletionStatus>> {
     let who = crate::identify(&s, &headers).await?;
     let deletion = s.access.schedule_own_deletion(&who, &req.password).await?;
-    Ok(Json(status(&who.user, Some(deletion))))
+    Ok(Json(status(
+        &who.user,
+        Some(deletion),
+        s.access.deletion_window_days(),
+    )))
 }
 
 #[utoipa::path(post, path = "/v1/account/deletion/restore", responses(
@@ -76,7 +89,11 @@ pub(crate) async fn restore_account_deletion(
 ) -> ApiResult<Json<api::AccountDeletionStatus>> {
     let who = identify_pending_ok(&s, &headers).await?;
     s.access.restore_account(&who).await?;
-    Ok(Json(status(&who.user, None)))
+    Ok(Json(status(
+        &who.user,
+        None,
+        s.access.deletion_window_days(),
+    )))
 }
 
 #[utoipa::path(post, path = "/v1/admin/users/{user}/delete",

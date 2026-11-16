@@ -167,6 +167,7 @@ async fn self_service_deletion_disables_the_account_and_restore_brings_it_back()
     assert_eq!(none.status, StatusCode::OK);
     let none: api::AccountDeletionStatus = none.json();
     assert!(!none.pending && none.purge_at.is_none() && none.scheduled_at.is_none());
+    assert_eq!(none.window_days, 30);
 
     let wrong = call(
         &s.app,
@@ -194,6 +195,7 @@ async fn self_service_deletion_disables_the_account_and_restore_brings_it_back()
     );
     let status: api::AccountDeletionStatus = done.json();
     assert!(status.pending);
+    assert_eq!(status.window_days, 30);
     assert_eq!(
         status.purge_at.unwrap() - status.scheduled_at.unwrap(),
         chrono::Duration::days(30)

@@ -24,6 +24,8 @@ pub struct AccountDeletionStatus {
     /// When the account is deleted unless it is restored first; null while nothing is scheduled.
     #[schema(required = true)]
     pub purge_at: Option<DateTime<Utc>>,
+    /// The recovery window in days: how long after scheduling a deletion can still be undone.
+    pub window_days: i64,
 }
 
 /// Deletes a disabled account.
