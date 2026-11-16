@@ -11,6 +11,8 @@ use super::GitHome;
 use super::commands::{add_changes, add_unchanged};
 use crate::backend::Backend;
 use crate::diff::{self, Blob, Tree};
+use crate::diff_opts::Opts;
+use crate::diff_raw;
 use crate::rename;
 
 /// One path every parent differs from the result at: what each parent had (after renames) and the result's blob.
@@ -76,6 +78,36 @@ pub(super) fn name_line(git: &GitHome, e: &Element, status: bool) -> String {
         format!("{letters}\t{path}\n")
     } else {
         format!("{path}\n")
+    }
+}
+
+/// The combined `--raw` record of a path: a colon per parent, every mode, every id, then a status letter per parent.
+pub(super) fn raw(git: &GitHome, e: &Element, opts: &Opts) -> String {
+    let len = e
+        .parents
+        .iter()
+        .find_map(|(b, _)| b.as_ref())
+        .map_or(40, |b| b.hash.len());
+    let id = |b: Option<&Blob>| match b.filter(|b| diff_raw::id_known(b)) {
+        Some(b) => opts.raw_id(&b.hash),
+        None => opts.raw_id(&"0".repeat(len)),
+    };
+    let mode = |b: Option<&Blob>| b.map_or("000000", |b| b.mode()).to_string();
+    let blobs: Vec<Option<&Blob>> = e
+        .parents
+        .iter()
+        .map(|(b, _)| b.as_ref())
+        .chain([e.result.as_ref()])
+        .collect();
+    let modes: Vec<String> = blobs.iter().map(|b| mode(*b)).collect();
+    let ids: Vec<String> = blobs.iter().map(|b| id(*b)).collect();
+    let letters: String = e.parents.iter().map(|(_, s)| *s).collect();
+    let colons = ":".repeat(e.parents.len());
+    let head = format!("{colons}{} {} {letters}", modes.join(" "), ids.join(" "));
+    if opts.nul {
+        format!("{head}\0{}\0", e.path)
+    } else {
+        format!("{head}\t{}\n", git.quote_diff_path(e.path.as_bytes()))
     }
 }
 

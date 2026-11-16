@@ -682,6 +682,53 @@ fn whitespace_rules_match_git() {
 }
 
 #[test]
+fn several_output_formats_combine_as_in_git() {
+    each_format(|f| {
+        f.write("ws.txt", b"clean\ntrail  \n");
+        f.git(&["add", "-N", "ws.txt"]);
+        f.all(&[
+            &["diff", "--stat", "--numstat", "HEAD~2", "HEAD"],
+            &["diff", "--stat", "--shortstat", "HEAD~2", "HEAD"],
+            &["diff", "--numstat", "--shortstat", "HEAD~2", "HEAD"],
+            &[
+                "diff",
+                "--stat",
+                "--numstat",
+                "--shortstat",
+                "HEAD~2",
+                "HEAD",
+            ],
+            &["diff", "--stat", "--numstat", "-p", "HEAD~2", "HEAD"],
+            &["diff", "--stat-width=40", "--numstat", "HEAD~2", "HEAD"],
+            &["diff", "--stat", "--name-only", "HEAD~2", "HEAD"],
+            &["diff", "--numstat", "--name-status", "HEAD~2", "HEAD"],
+            &["diff", "-p", "--name-only", "HEAD~2", "HEAD"],
+            &["diff", "--summary", "--name-only", "HEAD~2", "HEAD"],
+            &["diff", "--check", "-p"],
+            &["diff", "--check", "--stat"],
+            &["diff", "--check", "--numstat", "--summary"],
+            &["diff", "--check", "--dirstat"],
+        ]);
+    });
+}
+
+#[test]
+fn check_with_exit_code_ors_both_statuses_as_in_git() {
+    each_format(|f| {
+        f.write("ws.txt", b"clean\ntrail  \n");
+        f.git(&["add", "-N", "ws.txt"]);
+        f.all(&[
+            &["diff", "--check", "--exit-code"],
+            &["diff", "--check", "--exit-code", "-p"],
+            &["diff", "--check", "--exit-code", "--", "ws.txt"],
+            &["diff", "--check", "--exit-code", "HEAD~2", "HEAD"],
+            &["diff", "--check", "--exit-code", "--", "nothing"],
+            &["diff", "--check", "--quiet"],
+        ]);
+    });
+}
+
+#[test]
 fn stat_family_matches_git() {
     each_format(|f| {
         f.all(&[
@@ -986,10 +1033,7 @@ fn unfinished_options_are_usage_errors() {
         &["diff", "--no-index", "f1"],
         &["diff", "--no-index", "-", "f1"],
         &["diff", "--raw", "--stat"],
-        &["diff", "--stat-width=40", "--numstat"],
         &["diff", "--dirstat", "--stat"],
-        &["diff", "-p", "--name-only"],
-        &["diff", "-p", "--check"],
         &["diff", "-s", "--stat"],
         &["diff", "--no-prefix", "--src-prefix=x/"],
         &["log", "--diff-filter=A"],

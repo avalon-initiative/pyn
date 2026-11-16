@@ -364,6 +364,7 @@ impl Shape<'_> {
                 kind,
                 opts: crate::diff_opts::Opts::default(),
                 with_patch: false,
+                also: Vec::new(),
                 renames: want.renames,
                 summary: false,
                 kept: Vec::new(),

@@ -429,6 +429,6 @@ fn diff_and_show_take_shortstat_ignore_whitespace_and_check() {
     let ignore = env.ok(&home, "alice", &["show", "-w", "HEAD~2"]);
     assert!(ignore.contains("-z\n+Z \n"), "{ignore}");
 
-    let err = env.fails(&home, "alice", &["diff", "--check", "--stat"]);
+    let err = env.fails(&home, "alice", &["diff", "--check", "--name-only"]);
     assert!(err.contains("cannot be used with"), "{err}");
 }
