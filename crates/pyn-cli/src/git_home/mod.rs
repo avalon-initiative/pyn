@@ -11,6 +11,7 @@ mod apply_hunk;
 mod apply_parse;
 mod apply_ws;
 mod approxidate;
+mod binary_patch;
 mod bisect;
 mod bisect_bases;
 mod bisect_walk;

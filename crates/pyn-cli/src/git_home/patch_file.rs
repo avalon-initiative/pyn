@@ -1,13 +1,15 @@
 //! The `patch` file of a stopped rebase: the stopped commit's change against its first parent, as `git diff-tree -p`
-//! prints it (no renames; binary files as `Binary files ... differ`).
+//! prints it (no renames; binary files as `Binary files ... differ`). `format-patch` embeds binary data instead.
 
 use anyhow::Result;
 use pyn_gitwork::{Change, Entry, Pathspec};
 use pyn_object::{FileMode, ObjectId};
 
 use super::GitHome;
+use super::binary_patch;
 use super::stage::raw_mode;
 use crate::backend::Backend;
+use crate::diff_driver::DiffDriver;
 use crate::diffstat::Counts;
 
 fn content(git: &GitHome, entry: Option<&Entry>) -> Result<Vec<u8>> {
@@ -33,7 +35,7 @@ pub(super) fn of_commit(git: &GitHome, id: &ObjectId) -> Result<String> {
     let abbreviations = git.repo.abbreviations(None)?;
     let mut out = String::new();
     for change in &changes {
-        out.push_str(&of_change(git, change, 3, &abbreviations)?.text);
+        out.push_str(&of_change(git, change, 3, &abbreviations, false)?.text);
     }
     Ok(out)
 }
@@ -45,18 +47,14 @@ pub(super) struct Rendered {
 }
 
 /// The `diff --git` section for one change with `context` lines around each hunk; names are quoted as git does.
+/// With `embed`, a binary change carries a `GIT binary patch` and full ids.
 pub(super) fn of_change(
     git: &GitHome,
     change: &Change,
     context: usize,
     abbreviations: &pyn_gitwork::Abbreviations,
+    embed: bool,
 ) -> Result<Rendered> {
-    let abbrev = |entry: Option<&Entry>| {
-        entry.map_or_else(
-            || abbreviations.short_null(),
-            |e| abbreviations.short(&e.id),
-        )
-    };
     let q = |prefix: &str| {
         let mut full = prefix.as_bytes().to_vec();
         full.extend_from_slice(&change.path);
@@ -75,13 +73,33 @@ pub(super) fn of_change(
         )),
         _ => {}
     }
+    let (a, b) = (content(git, old)?, content(git, new)?);
+    let driver = DiffDriver::resolve(
+        &*git.repo.attributes()?,
+        git.repo.config(),
+        &String::from_utf8_lossy(&change.path),
+    )?;
+    let binary = driver
+        .binary
+        .unwrap_or_else(|| pyn_diff::is_binary(&a) || pyn_diff::is_binary(&b));
+    let full = embed && binary;
     let same_id = old.zip(new).is_some_and(|(o, n)| o.id == n.id);
     if same_id {
         return Ok(Rendered {
             text: out,
-            counts: Counts::Lines(0, 0),
+            counts: if binary {
+                Counts::Binary(0, 0)
+            } else {
+                Counts::Lines(0, 0)
+            },
         });
     }
+    let abbrev = |entry: Option<&Entry>| match (entry, full) {
+        (Some(e), true) => e.id.to_string(),
+        (None, true) => "0".repeat(old.or(new).map_or(0, |e| e.id.to_string().len())),
+        (Some(e), false) => abbreviations.short(&e.id),
+        (None, false) => abbreviations.short_null(),
+    };
     let tail = match (old, new) {
         (Some(o), Some(n)) if o.mode == n.mode => format!(" {:o}", raw_mode(o.mode)),
         _ => String::new(),
@@ -98,13 +116,16 @@ pub(super) fn of_change(
         old.map_or("/dev/null".into(), |_| spaced(&a_name)),
         new.map_or("/dev/null".into(), |_| spaced(&b_name)),
     );
-    let (a, b) = (content(git, old)?, content(git, new)?);
-    if pyn_diff::is_binary(&a) || pyn_diff::is_binary(&b) {
-        out.push_str(&format!(
-            "Binary files {} and {} differ\n",
-            from.trim_end_matches('\t'),
-            to.trim_end_matches('\t')
-        ));
+    if binary {
+        if embed {
+            out.push_str(&binary_patch::body(&a, &b)?);
+        } else {
+            out.push_str(&format!(
+                "Binary files {} and {} differ\n",
+                from.trim_end_matches('\t'),
+                to.trim_end_matches('\t')
+            ));
+        }
         return Ok(Rendered {
             text: out,
             counts: Counts::Binary(a.len(), b.len()),

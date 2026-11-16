@@ -153,7 +153,7 @@ fn put_copy(out: &mut Vec<u8>, mut offset: usize, mut len: usize) {
 }
 
 /// A git delta turning `base` into `target`, or `None` when it would not be shorter than `max` bytes.
-pub(crate) fn create(base: &[u8], target: &[u8], max: usize) -> Option<Vec<u8>> {
+pub fn create(base: &[u8], target: &[u8], max: usize) -> Option<Vec<u8>> {
     if base.len() < BLOCK || target.len() < BLOCK || u32::try_from(base.len()).is_err() {
         return None;
     }
