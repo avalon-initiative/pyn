@@ -660,3 +660,130 @@ async fn a_zero_unreferenced_upload_cap_refuses_every_upload() {
         "{err}"
     );
 }
+
+/// alice owns public `game` and `lobby` with a lock in each; her tokens come back through `identify`.
+struct Scoped {
+    w: World,
+    game: pyn_core::RepoId,
+    lobby: pyn_core::RepoId,
+    full: Identity,
+    scoped: Identity,
+}
+
+async fn scoped_world() -> Scoped {
+    let w = world();
+    w.access
+        .register(Registration::new("alice", PASSWORD))
+        .await
+        .unwrap();
+    let alice = session("alice");
+    let mut ids = Vec::new();
+    for name in ["game", "lobby"] {
+        let rec = w
+            .repos
+            .create(&alice, &user("alice"), name, Some(Visibility::Public), None)
+            .await
+            .unwrap();
+        let open = w.repos.open("alice", name).await.unwrap();
+        let path = RepoPath::new("Content/a.umap").unwrap();
+        open.service
+            .checkout(&path, &user("alice"), None)
+            .await
+            .unwrap();
+        ids.push(rec.id);
+    }
+    let (_, raw) = w.access.login("alice", PASSWORD, None).await.unwrap();
+    let full = w.access.identify(&raw).await.unwrap();
+    let (_, raw) = w
+        .access
+        .create_token(
+            &alice,
+            "ci",
+            [Permission::Read].into(),
+            vec![ids[0].clone()],
+            None,
+        )
+        .await
+        .unwrap();
+    let scoped = w.access.identify(&raw).await.unwrap();
+    let (game, lobby) = (ids[0].clone(), ids[1].clone());
+    Scoped {
+        w,
+        game,
+        lobby,
+        full,
+        scoped,
+    }
+}
+
+#[tokio::test]
+async fn a_role_is_reported_only_for_repositories_the_credential_covers() {
+    let s = scoped_world().await;
+    let access = &s.w.access;
+    assert!(matches!(s.scoped.credential, Credential::Token(_)));
+    let admin = Some(Role::Admin);
+    for who in [&session("alice"), &s.full] {
+        assert_eq!(access.role_for(&s.game, Some(who)).await.unwrap(), admin);
+        assert_eq!(access.role_for(&s.lobby, Some(who)).await.unwrap(), admin);
+    }
+    assert_eq!(
+        access.role_for(&s.game, Some(&s.scoped)).await.unwrap(),
+        admin
+    );
+    assert_eq!(
+        access.role_for(&s.lobby, Some(&s.scoped)).await.unwrap(),
+        None
+    );
+    assert_eq!(access.role_for(&s.game, None).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn public_listings_give_a_scoped_token_no_role_outside_its_grant() {
+    let s = scoped_world().await;
+    let roles = |found: Vec<(pyn_core::RepoRecord, Option<Role>)>| {
+        found
+            .into_iter()
+            .map(|(r, role)| (r.name, role))
+            .collect::<Vec<_>>()
+    };
+    let admin = Some(Role::Admin);
+    let page = |who: &Identity| {
+        let repos = &s.w.repos;
+        let who = who.clone();
+        async move { roles(repos.list_public(Some(&who), None, 10).await.unwrap().0) }
+    };
+    let visible = |who: &Identity| {
+        let repos = &s.w.repos;
+        let who = who.clone();
+        async move { roles(repos.visible_to(&user("alice"), Some(&who)).await.unwrap()) }
+    };
+    let want_full = vec![("game".to_string(), admin), ("lobby".to_string(), admin)];
+    let want_scoped = vec![("game".to_string(), admin), ("lobby".to_string(), None)];
+    assert_eq!(page(&s.full).await, want_full);
+    assert_eq!(page(&s.scoped).await, want_scoped);
+    assert_eq!(visible(&s.full).await, want_full);
+    assert_eq!(visible(&s.scoped).await, want_scoped);
+}
+
+#[tokio::test]
+async fn my_locks_of_a_scoped_token_are_only_in_its_repositories() {
+    let s = scoped_world().await;
+    let names = |locks: Vec<(pyn_core::RepoRecord, pyn_core::Lock)>| {
+        locks.into_iter().map(|(r, _)| r.name).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(s.w.repos.locks_of(&s.full).await.unwrap()),
+        ["game", "lobby"]
+    );
+    assert_eq!(
+        names(s.w.repos.locks_of(&s.scoped).await.unwrap()),
+        ["game"]
+    );
+}
+
+#[tokio::test]
+async fn a_credential_covers_the_repositories_it_names() {
+    let s = scoped_world().await;
+    assert!(s.scoped.covers_repo(&s.game) && !s.scoped.covers_repo(&s.lobby));
+    assert!(s.full.covers_repo(&s.lobby) && session("alice").covers_repo(&s.lobby));
+}

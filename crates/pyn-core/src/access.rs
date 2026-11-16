@@ -174,6 +174,15 @@ impl Identity {
         }
     }
 
+    /// Whether the credential may act in `repo`: a token only in its repositories, a service in none.
+    pub fn covers_repo(&self, repo: &RepoId) -> bool {
+        match &self.credential {
+            Credential::Session | Credential::Unrestricted => true,
+            Credential::Service(_) => false,
+            Credential::Token(t) => t.repos.is_empty() || t.repos.contains(repo),
+        }
+    }
+
     /// Account-management operations need a full-scope credential.
     pub fn require_full_scope(&self) -> Result<()> {
         if self.is_full_scope() {
