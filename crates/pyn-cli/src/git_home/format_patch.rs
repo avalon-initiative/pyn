@@ -1,5 +1,5 @@
 //! `pyn format-patch` on a git repository: commits as mbox patch emails, written to files or standard output.
-//! Renames are not detected (a rename is a delete and a create) and binary changes are refused.
+//! Renames are not detected (a rename is a delete and a create).
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -325,10 +325,7 @@ impl Context<'_> {
         let mut patch = String::new();
         let mut rows = Vec::new();
         for change in &changes {
-            let rendered = of_change(self.git, change, context, &abbreviations)?;
-            if matches!(rendered.counts, Counts::Binary(..)) {
-                usage("format-patch does not write binary changes yet");
-            }
+            let rendered = of_change(self.git, change, context, &abbreviations, true)?;
             patch.push_str(&rendered.text);
             rows.push((change, rendered.counts));
         }
@@ -422,10 +419,7 @@ impl Context<'_> {
         let abbreviations = self.git.repo.abbreviations(None)?;
         let mut rows = Vec::new();
         for change in &changes {
-            let rendered = of_change(self.git, change, 3, &abbreviations)?;
-            if matches!(rendered.counts, Counts::Binary(..)) {
-                usage("format-patch does not write binary changes yet");
-            }
+            let rendered = of_change(self.git, change, 3, &abbreviations, true)?;
             rows.push((change, rendered.counts));
         }
         if !rows.is_empty() {

@@ -2871,7 +2871,14 @@ not read (`format.*`, `am.*`, `apply.whitespace`, `apply.ignoreWhitespace`) are 
 | `am` | mbox files and standard input, `--continue`/`-r`, `--skip`, `--abort`, `--quit`, `--show-current-patch[=diff\|raw]`, `-3`/`--3way`, `-s`/`--signoff`, `-q`, `--whitespace=warn\|nowarn`, `-S`/`--gpg-sign`, `--no-gpg-sign`. |
 
 `format-patch` ends each patch with `-- ` and `pyn <version>` where git prints its own version. A rename is a delete and a
-create (the diff has no rename detection), and a binary change is a usage error (`129`). `--cover-letter` is refused (`129`)
+create (the diff has no rename detection). A binary change (a NUL in the first 8000 bytes of either side, or a `-diff`
+path; the `diff` attribute and `diff.<name>.binary` decide as in `diff`) is written as git does: the `index` line with full
+ids, then `GIT binary patch` with a forward and a reverse section, each a `literal` or a `delta` (whichever deflates
+smaller), deflated and base85 encoded, so `git am` and `git apply` rebuild the same tree. The deflated bytes and sizes can
+differ from git's, which uses another zlib and delta search, so only the text around the data is compared with git's. The
+diffstat shows `Bin <old> -> <new> bytes` (`Bin` alone for a mode change). A commit that changes only gitlinks writes
+`Subproject commit <id>` hunks as git does. `diff --binary` and `--full-index`, `textconv` and `funcname` in `format-patch`,
+and applying a binary patch with `apply` or `am` are not built. `--cover-letter` is refused (`129`)
 when the range walks over a merge commit, because git's diffstat for that letter depends on what it walked. A commit message
 with a long first paragraph is joined and wrapped at 78 columns as git does.
 

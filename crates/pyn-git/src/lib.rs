@@ -31,6 +31,7 @@ mod walk;
 pub use bundle::{Bundle, Prerequisite, write_header as write_bundle_header};
 pub use config::{Config, Entry as ConfigEntry, Identity};
 pub use config_file::{ConfigFile, quote_value};
+pub use delta::create as create_delta;
 pub use error::{Error, Result};
 pub use filter::ObjectFilter;
 pub use index::{Index, IndexEntry, Timestamp};
