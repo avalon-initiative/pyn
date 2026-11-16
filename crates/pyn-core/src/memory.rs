@@ -2194,6 +2194,35 @@ impl AccessStore for MemoryAccessStore {
         Ok(())
     }
 
+    async fn search_people(
+        &self,
+        query: Option<&str>,
+        after: Option<&UserId>,
+        limit: usize,
+    ) -> Result<Vec<UserId>> {
+        let st = self.state.lock().unwrap();
+        let matches = |a: &AccountRecord| {
+            let Some(q) = query else { return true };
+            let shown = st
+                .profiles
+                .get(&a.user)
+                .filter(|p| p.visibility.display_name);
+            a.user.as_str().to_lowercase().contains(q)
+                || shown
+                    .and_then(|p| p.fields.display_name.as_deref())
+                    .is_some_and(|n| n.to_lowercase().contains(q))
+        };
+        Ok(st
+            .accounts
+            .values()
+            .filter(|a| a.kind == AccountKind::User && a.status() == AccountStatus::Active)
+            .filter(|a| !st.deletions.contains_key(&a.user))
+            .filter(|a| after.is_none_or(|x| a.user.as_str() > x.as_str()) && matches(a))
+            .map(|a| a.user.clone())
+            .take(limit)
+            .collect())
+    }
+
     async fn set_role(&self, repo: &RepoId, user: &UserId, role: Role) -> Result<()> {
         self.state
             .lock()

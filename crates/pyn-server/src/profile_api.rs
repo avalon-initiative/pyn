@@ -85,6 +85,52 @@ pub(crate) async fn get_profile(
     }))
 }
 
+#[derive(Deserialize)]
+pub(crate) struct PeopleQuery {
+    q: Option<String>,
+    after: Option<String>,
+    limit: Option<usize>,
+}
+
+#[utoipa::path(get, path = "/v1/users",
+    params(("q" = Option<String>, Query, description = "keeps accounts whose name or visible display name contains this text, ignoring case; at most 64 characters"),
+           ("after" = Option<String>, Query, description = "return accounts after this account name"),
+           ("limit" = Option<usize>, Query, description = "page size, default 30, max 100")),
+    responses((status = 200, body = api::PeoplePage, description = "active user accounts by name; never an email address, a hidden field, or an account that is disabled, not yet approved, scheduled for deletion or an organization"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request: a search over 64 characters"),
+              (status = 401, body = api::ErrorBody, description = "sign-in required")))]
+pub(crate) async fn list_people(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<PeopleQuery>,
+) -> ApiResult<Json<api::PeoplePage>> {
+    identify(&s, &headers).await?;
+    let limit = q.limit.unwrap_or(30).clamp(1, 100);
+    let after = q.after.map(UserId::new);
+    let (found, next_after) = s
+        .access
+        .people(q.q.as_deref(), after.as_ref(), limit)
+        .await?;
+    let people = found
+        .into_iter()
+        .map(|(user, profile)| {
+            let p = profile_dto(&user, profile, false);
+            api::PersonEntry {
+                identity: api::PublicIdentity {
+                    user: user.to_string(),
+                    display_name: p.display_name,
+                    avatar_url: p.avatar_url,
+                },
+                bio: p.bio,
+                location: p.location,
+                company: p.company,
+                links: p.links,
+            }
+        })
+        .collect();
+    Ok(Json(api::PeoplePage { people, next_after }))
+}
+
 #[utoipa::path(put, path = "/v1/me/profile", request_body = api::UpdateProfileRequest,
     responses((status = 200, body = api::Profile, description = "the stored profile"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: a field is too long, has control characters, or a link is not an http(s) URL"),

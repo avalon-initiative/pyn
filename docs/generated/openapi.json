@@ -9085,6 +9085,76 @@
         }
       }
     },
+    "/v1/users": {
+      "get": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "list_people",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "keeps accounts whose name or visible display name contains this text, ignoring case; at most 64 characters",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "return accounts after this account name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "page size, default 30, max 100",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "active user accounts by name; never an email address, a hidden field, or an account that is disabled, not yet approved, scheduled for deletion or an organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeoplePage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a search over 64 characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "sign-in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/users/{user}": {
       "get": {
         "tags": [
@@ -12330,6 +12400,29 @@
           }
         }
       },
+      "PeoplePage": {
+        "type": "object",
+        "required": [
+          "people",
+          "next_after"
+        ],
+        "properties": {
+          "next_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` to fetch the next page; null on the last page."
+          },
+          "people": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonEntry"
+            },
+            "description": "Ordered by account name."
+          }
+        }
+      },
       "Person": {
         "type": "object",
         "description": "A commit's author or committer, apart from the time (the commit's `created_at`).",
@@ -12349,6 +12442,42 @@
             "type": "integer",
             "format": "int32",
             "description": "Minutes east of UTC."
+          }
+        }
+      },
+      "PersonEntry": {
+        "type": "object",
+        "description": "A person in the people directory: the public identity and the profile fields their owner shows.",
+        "required": [
+          "identity"
+        ],
+        "properties": {
+          "bio": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "identity": {
+            "$ref": "#/components/schemas/PublicIdentity"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

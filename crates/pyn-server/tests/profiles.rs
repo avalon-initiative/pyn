@@ -899,3 +899,242 @@ async fn org_audit_entries_and_members_carry_public_identities() {
     let members = r.json::<Vec<api::OrgMember>>();
     assert!(members.iter().all(|m| m.identity.is_some()));
 }
+
+async fn people(app: &Router, who: &str, query: &str) -> Reply {
+    call(app, who, "GET", &format!("/v1/users{query}"), None).await
+}
+
+fn people_names(r: &Reply) -> Vec<String> {
+    r.json::<api::PeoplePage>()
+        .people
+        .into_iter()
+        .map(|p| p.identity.user)
+        .collect()
+}
+
+#[tokio::test]
+async fn the_people_directory_needs_a_sign_in_and_lists_active_accounts_by_name() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    token_for(&app, "bob").await;
+    token_for(&app, "carol").await;
+    call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs",
+        Some(json!({"name": "acme"})),
+    )
+    .await;
+    call(
+        &app,
+        "root",
+        "POST",
+        "/v1/admin/users/carol/disable",
+        Some(json!({})),
+    )
+    .await;
+
+    let r = people(&app, "", "").await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let r = people(&app, "pyn_bogus", "").await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+
+    let r = people(&app, &alice, "").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let names = people_names(&r);
+    assert!(
+        names.iter().all(|n| n != "carol" && n != "acme"),
+        "{names:?}"
+    );
+    assert!(names.contains(&"alice".to_string()) && names.contains(&"bob".to_string()));
+    assert!(names.windows(2).all(|w| w[0] < w[1]), "ordered by name");
+    assert!(
+        !r.text().contains("mail.test") && !r.text().contains("email"),
+        "never an email address: {}",
+        r.text()
+    );
+
+    let first = people(&app, &alice, "?limit=1")
+        .await
+        .json::<api::PeoplePage>();
+    assert_eq!(first.people.len(), 1);
+    let cursor = first.next_after.expect("more pages");
+    let rest = people(&app, &alice, &format!("?limit=100&after={cursor}")).await;
+    assert!(people_names(&rest).iter().all(|n| *n > cursor));
+    assert_eq!(
+        people(&app, &alice, &format!("?q={}", "x".repeat(65)))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn a_hidden_display_name_is_neither_listed_nor_searchable() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    let bob = token_for(&app, "bob").await;
+    let body = |name: &str, show: bool| {
+        json!({"display_name": name, "bio": "Quartz fan", "links": [],
+               "visibility": {"display_name": show, "bio": false}})
+    };
+    call(
+        &app,
+        &alice,
+        "PUT",
+        "/v1/me/profile",
+        Some(body("Ada Lovelace", true)),
+    )
+    .await;
+    call(
+        &app,
+        &bob,
+        "PUT",
+        "/v1/me/profile",
+        Some(body("Hidden Hopper", false)),
+    )
+    .await;
+
+    let r = people(&app, &alice, "?q=lovelace").await;
+    let page = r.json::<api::PeoplePage>();
+    assert_eq!(page.people.len(), 1);
+    assert_eq!(page.people[0].identity.user, "alice");
+    assert_eq!(
+        page.people[0].identity.display_name.as_deref(),
+        Some("Ada Lovelace")
+    );
+
+    for viewer in [alice.as_str(), bob.as_str()] {
+        for q in ["?q=hopper", "?q=hidden%20hopper", "?q=quartz"] {
+            let r = people(&app, viewer, q).await;
+            assert!(people_names(&r).is_empty(), "{q}: {}", r.text());
+        }
+    }
+    let all = people(&app, &alice, "").await;
+    assert!(!all.text().contains("Hopper") && !all.text().contains("Quartz"));
+    let bob_entry = all
+        .json::<api::PeoplePage>()
+        .people
+        .into_iter()
+        .find(|p| p.identity.user == "bob")
+        .unwrap();
+    assert_eq!(
+        (bob_entry.identity.display_name, bob_entry.bio),
+        (None, None)
+    );
+    assert_eq!(people_names(&people(&app, &alice, "?q=BOB").await), ["bob"]);
+}
+
+#[tokio::test]
+async fn a_deleted_or_scheduled_account_leaves_the_directory() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    let bob = token_for(&app, "bob").await;
+    assert!(people_names(&people(&app, &alice, "?q=bob").await).contains(&"bob".to_string()));
+    let r = call(
+        &app,
+        &bob,
+        "POST",
+        "/v1/account/deletion",
+        Some(json!({"password": PASSWORD})),
+    )
+    .await;
+    assert!(r.status.is_success(), "{} {}", r.status, r.text());
+    assert!(people_names(&people(&app, &alice, "?q=bob").await).is_empty());
+    assert!(!people_names(&people(&app, &alice, "").await).contains(&"bob".to_string()));
+
+    token_for(&app, "dora").await;
+    call(
+        &app,
+        "root",
+        "POST",
+        "/v1/admin/users/dora/disable",
+        Some(json!({})),
+    )
+    .await;
+    let r = call(
+        &app,
+        "root",
+        "POST",
+        "/v1/admin/users/dora/delete",
+        Some(json!({"reason": "spam"})),
+    )
+    .await;
+    assert!(r.status.is_success(), "{}", r.text());
+    assert!(people_names(&people(&app, &alice, "?q=dora").await).is_empty());
+}
+
+#[tokio::test]
+async fn a_private_repository_is_in_no_list_search_or_count_and_its_error_matches_a_missing_one() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    let carol = token_for(&app, "carol").await;
+    repo(&app, &alice, "open", "public").await;
+    repo(&app, &alice, "vault-zq", "private").await;
+
+    for viewer in ["", carol.as_str()] {
+        for uri in [
+            "/v1/users/alice",
+            "/v1/repos?owner=alice",
+            "/v1/explore/repos",
+            "/v1/users?q=vault",
+            "/v1/users?q=alice",
+        ] {
+            let r = call(&app, viewer, "GET", uri, None).await;
+            if r.status == StatusCode::UNAUTHORIZED {
+                continue;
+            }
+            assert!(r.status.is_success(), "{uri}: {}", r.text());
+            assert!(!r.text().contains("vault-zq"), "{uri}: {}", r.text());
+        }
+    }
+    let page = call(&app, &carol, "GET", "/v1/users/alice", None)
+        .await
+        .json::<api::PublicProfile>();
+    assert_eq!(
+        (repo_names(&page), page.repository_count),
+        (vec!["open"], 1)
+    );
+    let entry = people(&app, &carol, "?q=alice").await.text();
+    assert!(
+        !entry.contains("repositor"),
+        "no repository data in the directory: {entry}"
+    );
+
+    for uri in ["", "/files", "/locks", "/summary", "/branches"] {
+        for viewer in ["", carol.as_str()] {
+            let hidden = call(
+                &app,
+                viewer,
+                "GET",
+                &format!("/v1/repos/alice/vault-zq{uri}"),
+                None,
+            )
+            .await;
+            let missing = call(
+                &app,
+                viewer,
+                "GET",
+                &format!("/v1/repos/alice/nope-zq{uri}"),
+                None,
+            )
+            .await;
+            let (h, m) = (
+                hidden.json::<api::ErrorBody>(),
+                missing.json::<api::ErrorBody>(),
+            );
+            assert_eq!(hidden.status, missing.status, "{uri}");
+            assert_eq!(h.code, m.code, "{uri}");
+            assert_eq!(
+                h.message.replace("vault-zq", "X"),
+                m.message.replace("nope-zq", "X"),
+                "{uri}"
+            );
+            assert_eq!(
+                hidden.header("content-type"),
+                missing.header("content-type")
+            );
+        }
+    }
+}
