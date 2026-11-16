@@ -1818,10 +1818,16 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         }
         return record(git);
     }
-    if heads.len() > 1 {
-        return Err(fail(
-            "octopus merges are not built; merge the branches one at a time".into(),
-        ));
+    let heads = if heads.len() > 1 {
+        write_orig_head_as(git, &head_id, None)?;
+        let given: Vec<(String, ObjectId)> = heads.iter().map(|(i, n)| (n.clone(), *i)).collect();
+        let kept = super::merge::octopus::reduce(git, &head_id, &given)?;
+        kept.into_iter().map(|(n, i)| (i, n)).collect()
+    } else {
+        heads
+    };
+    if heads.is_empty() {
+        return record(git);
     }
     let author = match &original {
         Some((_, c)) => c.author.clone(),
@@ -1835,45 +1841,71 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
     };
     write_state(git, "MERGE_MSG", &String::from_utf8_lossy(&message))?;
     let (theirs, theirs_name) = &heads[0];
-    let bases = git.merge_bases(&head_id, theirs)?;
-    if bases.first() == Some(theirs) {
-        return record(git);
-    }
-    let settings = state.replay.settings(git);
     let tree_of = |c: &ObjectId| -> Result<ObjectId> { Ok(git.repo.commit(c)?.tree) };
-    let (base_tree, base_label) = match bases.as_slice() {
-        [] => (None, String::new()),
-        [one] => (Some(tree_of(one)?), git.repo.abbreviate(one)?),
-        many => (
-            Some(virtual_tree(git, many, &settings, 0)?),
-            VIRTUAL_LABEL.to_string(),
-        ),
-    };
-    write_state(git, "MERGE_HEAD", &theirs.to_hex())?;
-    write_state(git, "MERGE_MODE", "no-ff")?;
+    let settings = state.replay.settings(git);
+    if heads.len() == 1 {
+        let bases = git.merge_bases(&head_id, theirs)?;
+        if bases.first() == Some(theirs) {
+            return record(git);
+        }
+    }
+    let merge_heads_text: Vec<String> = heads.iter().map(|h| h.0.to_hex()).collect();
     let opened = git.open_index()?;
     let ours_tree = write_tree(git, &opened.index)?;
-    let theirs_tree = tree_of(theirs)?;
-    let incoming =
-        git.repo
-            .diff_trees(base_tree.as_ref(), Some(&theirs_tree), &Pathspec::default())?;
-    super::convert::refuse_unsupported(
-        git,
-        incoming
-            .iter()
-            .filter_map(|c| c.new.map(|e| (c.path.as_slice(), e.mode))),
-    )?;
-    let merged = merge_trees_with(
-        git,
-        [base_tree.as_ref(), Some(&ours_tree), Some(&theirs_tree)],
-        &Labels {
-            ours: "HEAD",
-            theirs: theirs_name,
-            base: &base_label,
-        },
-        &settings,
-        true,
-    )?;
+    let merged = if heads.len() == 1 {
+        let bases = git.merge_bases(&head_id, theirs)?;
+        let (base_tree, base_label) = match bases.as_slice() {
+            [] => (None, String::new()),
+            [one] => (Some(tree_of(one)?), git.repo.abbreviate(one)?),
+            many => (
+                Some(virtual_tree(git, many, &settings, 0)?),
+                VIRTUAL_LABEL.to_string(),
+            ),
+        };
+        write_state(git, "MERGE_HEAD", &theirs.to_hex())?;
+        write_state(git, "MERGE_MODE", "no-ff")?;
+        let theirs_tree = tree_of(theirs)?;
+        let incoming =
+            git.repo
+                .diff_trees(base_tree.as_ref(), Some(&theirs_tree), &Pathspec::default())?;
+        super::convert::refuse_unsupported(
+            git,
+            incoming
+                .iter()
+                .filter_map(|c| c.new.map(|e| (c.path.as_slice(), e.mode))),
+        )?;
+        merge_trees_with(
+            git,
+            [base_tree.as_ref(), Some(&ours_tree), Some(&theirs_tree)],
+            &Labels {
+                ours: "HEAD",
+                theirs: theirs_name,
+                base: &base_label,
+            },
+            &settings,
+            true,
+        )?
+    } else {
+        let named: Vec<(String, ObjectId)> = heads.iter().map(|(id, n)| (n.clone(), *id)).collect();
+        let Some(merged) = super::merge::octopus::walk(git, &head_id, &ours_tree, &named, false)?
+        else {
+            state.put(
+                git,
+                "message",
+                &format!("{}\n", String::from_utf8_lossy(&message)),
+            )?;
+            eprintln!("Could not merge {}", item.arg);
+            std::process::exit(1);
+        };
+        write_state(
+            git,
+            "MERGE_HEAD",
+            &format!("{}\n", merge_heads_text.join("\n")),
+        )?;
+        write_state(git, "MERGE_MODE", "no-ff")?;
+        merged
+    };
+    let theirs_name = &heads[heads.len() - 1].1;
     let landing = Landing {
         theirs: theirs_name,
         orig_head: None,
@@ -1889,11 +1921,13 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
         }
     };
     if !applied.conflicted.is_empty() {
-        write_state(
-            git,
-            "AUTO_MERGE",
-            &format!("{}\n", result_tree(git, &merged)?),
-        )?;
+        if heads.len() == 1 {
+            write_state(
+                git,
+                "AUTO_MERGE",
+                &format!("{}\n", result_tree(git, &merged)?),
+            )?;
+        }
         record(git)?;
         return stop_merge(git, state, item, &message, &applied.conflicted);
     }
@@ -1908,7 +1942,9 @@ fn do_merge(git: &GitHome, state: &State, item: &Item) -> Result<()> {
             reflog: state.reflog_env.borrow().clone(),
             sign: state.sign.clone(),
         },
-        vec![head_id, *theirs],
+        std::iter::once(head_id)
+            .chain(heads.iter().map(|h| h.0))
+            .collect(),
     )?;
     clear_merge_files(git);
     if item.flag == Flag::Edit {
@@ -2387,7 +2423,6 @@ fn finish(git: &GitHome, state: &State) -> Result<()> {
             &format!("{action} (finish): returning to {}", state.head_name),
         )?;
     }
-    write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
     let _ = rewrite::flush(&dir_of(git), &end);
     let rewritten = rewrite::pairs(git, &dir_of(git));
     if !rewritten.is_empty() {
@@ -2609,8 +2644,9 @@ fn silent_hard_reset(git: &GitHome, rev: &ObjectId) -> Result<()> {
 fn abort(git: &GitHome) -> Result<()> {
     let state = load(git)?;
     let before = git.repo.head_commit()?;
+    let kept = git.repo.refs().resolve("ORIG_HEAD")?;
     silent_hard_reset(git, &state.orig_head)?;
-    write_orig_head_as(git, &state.orig_head, Some("rebase"))?;
+    write_orig_head_as(git, &kept.unwrap_or(state.orig_head), Some("rebase"))?;
     if state.head_name.starts_with("refs/heads/") {
         let old = git.repo.refs().resolve(&state.head_name)?;
         if old != Some(state.orig_head) {

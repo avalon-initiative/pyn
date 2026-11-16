@@ -851,10 +851,17 @@ pub fn commit(git: &GitHome, opts: &CommitOptions) -> Result<()> {
                 .cloned()
                 .collect(),
         ),
-        None => (
-            parent.into_iter().chain(merged.iter().copied()).collect(),
-            Vec::new(),
-        ),
+        None => {
+            let all: Vec<ObjectId> = parent.into_iter().chain(merged.iter().copied()).collect();
+            let no_ff = std::fs::read_to_string(git.repo.git().git_dir().join("MERGE_MODE"))
+                .is_ok_and(|m| m.contains("no-ff"));
+            let parents = if merged.is_empty() || no_ff {
+                all
+            } else {
+                reduce_heads(git, &all)?
+            };
+            (parents, Vec::new())
+        }
     };
     let rooted = parents.is_empty();
     let mut record = Commit {
@@ -952,6 +959,21 @@ impl Drop for IndexLock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
+}
+
+/// The parents of a merge commit without those another parent already contains (and repeats), as git's `commit` does.
+fn reduce_heads(git: &GitHome, parents: &[ObjectId]) -> Result<Vec<ObjectId>> {
+    let mut kept: Vec<ObjectId> = Vec::new();
+    for (i, id) in parents.iter().enumerate() {
+        let mut covered = parents[..i].contains(id);
+        for other in parents.iter().filter(|o| *o != id) {
+            covered = covered || git.is_ancestor(id, other)?;
+        }
+        if !covered {
+            kept.push(*id);
+        }
+    }
+    Ok(kept)
 }
 
 #[cfg(test)]

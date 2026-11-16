@@ -699,6 +699,28 @@ fn several_strategies_that_all_fail_leave_nothing_behind() {
 }
 
 #[test]
+fn the_in_index_attempt_is_reported_once_for_several_strategies() {
+    let count = |out: &Output| {
+        text(&out.stdout)
+            .matches("Trying really trivial in-index merge")
+            .count()
+    };
+    for args in [
+        &["merge", "-s", "octopus", "-s", "octopus", "side"][..],
+        &["merge", "-s", "octopus", "-s", "resolve", "side"],
+        &["merge", "-s", "resolve", "-s", "octopus", "side"],
+        &["merge", "-s", "resolve", "-s", "resolve", "side"],
+        &["merge", "-s", "octopus", "-s", "ort", "side"],
+    ] {
+        each_format(CLEAN, |p| {
+            let (g, n) = (p.git_in(&p.git, args), p.pyn_cmd(args));
+            assert_eq!(count(&g), count(&n), "{args:?}");
+            assert!(count(&n) <= 1, "{args:?}");
+        });
+    }
+}
+
+#[test]
 fn several_strategies_with_local_changes_and_options() {
     each_format(TRIVIAL, |p| {
         p.both_sh("echo more >>g");
@@ -1129,6 +1151,86 @@ fn a_conflict_in_the_last_head_waits_for_hand_fixing_and_an_earlier_one_stops_th
     each_format(HEADS, |p| {
         p.same(&["merge", "--no-commit", "e1", "e3"], skip)
     });
+}
+
+/// From `start`: `fa` adds the file `p`, `fb` adds `p/q` below it; `d1` and `d2` add `n` differently, `s1` and `s2`
+/// add `s` the same, `k` adds `s` otherwise, `c` adds a file, `h` adds the file `p` and another.
+const EDGES: &str = "seq 1 8 >f; git add .; git commit -qm base\ngit branch start\n\
+    git checkout -q -b fa start; echo A >p; git add .; git commit -qm fa\n\
+    git checkout -q -b fb start; mkdir p; echo B >p/q; git add .; git commit -qm fb\n\
+    git checkout -q -b d1 start; echo D1 >n; git add .; git commit -qm d1\n\
+    git checkout -q -b d2 start; echo D2 >n; git add .; git commit -qm d2\n\
+    git checkout -q -b s1 start; echo same >s; git add .; git commit -qm s1\n\
+    git checkout -q -b s2 start; echo same >s; git add .; git commit -qm s2\n\
+    git checkout -q -b k start; echo other >s; git add .; git commit -qm k\n\
+    git checkout -q -b c start; echo c >c; git add .; git commit -qm c\n\
+    git checkout -q -b h start; echo H >p; echo z >z; git add .; git commit -qm h\n\
+    git checkout -q -B main start\n";
+
+#[test]
+fn octopus_leaves_a_path_meeting_a_folder_as_git_does() {
+    let skip = Skip {
+        reflog: true,
+        ..Skip::default()
+    };
+    for args in [
+        &["merge", "c", "fa", "fb"][..],
+        &["merge", "c", "fb", "fa"],
+        &["merge", "fa", "fb"],
+        &["merge", "h", "fb"],
+        &["merge", "fb", "h"],
+        &["merge", "fa", "fb", "c"],
+        &["merge", "fb", "fa", "c"],
+        &["merge", "--no-commit", "c", "fa", "fb"],
+    ] {
+        each_format(EDGES, |p| p.same(args, skip));
+    }
+    each_format(EDGES, |p| {
+        p.same(&["merge", "c", "fa", "fb"], skip);
+        p.same(&["merge", "--abort"], skip);
+    });
+}
+
+#[test]
+fn octopus_leaves_two_heads_adding_a_path_differently_as_git_does() {
+    let skip = Skip {
+        reflog: true,
+        ..Skip::default()
+    };
+    for args in [
+        &["merge", "d1", "d2"][..],
+        &["merge", "c", "d1", "d2"],
+        &["merge", "c", "d2", "d1"],
+        &["merge", "s1", "k"],
+        &["merge", "c", "s1", "k"],
+        &["merge", "d1", "d2", "c"],
+        &["merge", "c", "s1", "s2"],
+    ] {
+        each_format(EDGES, |p| p.same(args, skip));
+    }
+    each_format(EDGES, |p| {
+        p.same(&["merge", "c", "d1", "d2"], skip);
+        p.both_sh("printf 'D\\n' >n; git add n");
+        p.same(&["commit", "-m", "done"], skip);
+    });
+}
+
+#[test]
+fn names_of_one_commit_title_the_merge_as_git_does() {
+    for args in [
+        &["merge", "a", "a2"][..],
+        &["merge", "a2", "a"],
+        &["merge", "a2", "b", "a"],
+        &["merge", "--no-commit", "a", "a2"],
+        &["merge", "--log", "a", "a2"],
+        &["merge", "--squash", "a2", "a"],
+        &["merge", "a", "a2", "start"],
+    ] {
+        each_format(HEADS, |p| {
+            p.both_sh("git branch a2 a");
+            p.same(args, Skip::default());
+        });
+    }
 }
 
 #[test]

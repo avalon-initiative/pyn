@@ -11,7 +11,9 @@ use super::{
 };
 use crate::git_home::GitHome;
 use crate::git_home::strategy::{Settings, Strategy, Which};
-use crate::git_home::treemerge::{Labels, Resolved, merge_trees_with, result_tree};
+use crate::git_home::treemerge::{
+    Conflicting, Labels, Merge, Resolved, Worktree, merge_trees_octopus, result_tree,
+};
 use crate::git_home::worktree::Blocked;
 use crate::merging::MergeArgs;
 
@@ -134,9 +136,53 @@ pub(super) fn attempt(m: &Merging, strategy: &Strategy, run: Run) -> Result<Trie
         return refuse_apply(git, &ours, spec, kind, refusal);
     }
     let talk = run != Run::Silent;
-    let (mut reached, mut tree, mut fast) = (vec![ours], ours_tree, true);
+    let Some(merged) = walk(git, &ours, &ours_tree, f.kept, talk)? else {
+        return fail_start(git, &ours, spec, kind, false);
+    };
+    let landing = Landing {
+        theirs: f.label,
+        orig_head: Some(ours),
+        strict_index: true,
+        quiet_when_clean: false,
+        stages_at_origin: false,
+    };
+    let applied = match apply_merge_as(git, m.opened, Some(&ours_tree), &merged, &landing, run)? {
+        Ok(applied) => applied,
+        Err(refusal) => return refuse_apply(git, &ours, spec, kind, refusal),
+    };
+    Ok(Tried::Done(Box::new(Done {
+        kind,
+        how: Concluding::Strategy(kind),
+        conflicted: applied.conflicted,
+        unmerged: applied.unmerged,
+        landed: Some((merged, applied.index)),
+    })))
+}
+
+/// A name like the temporary file git's merge-one-file labels a conflict marker with, derived from `seed`.
+fn temp_label(seed: &ObjectId) -> String {
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let hex = seed.to_hex();
+    let tail: String = hex
+        .bytes()
+        .take(6)
+        .map(|b| CHARS[usize::from(b) % CHARS.len()] as char)
+        .collect();
+    format!(".merge_file_{tail}")
+}
+
+/// Merges `heads` into `ours` one after another; `None` when one other than the last conflicts or has no single merge
+/// base (reported). Otherwise the last step's merge, with every earlier step's changes added.
+pub(in crate::git_home) fn walk(
+    git: &GitHome,
+    ours: &ObjectId,
+    ours_tree: &ObjectId,
+    heads: &[(String, ObjectId)],
+    talk: bool,
+) -> Result<Option<Merge>> {
+    let (mut reached, mut tree, mut fast) = (vec![*ours], *ours_tree, true);
     let mut last = None;
-    for (i, (name, id)) in f.kept.iter().enumerate() {
+    for (i, (name, id)) in heads.iter().enumerate() {
         let common = git.merge_bases_from(&reached, id)?;
         if common.contains(id) {
             if talk {
@@ -157,20 +203,32 @@ pub(super) fn attempt(m: &Merging, strategy: &Strategy, run: Run) -> Result<Trie
         }
         let [base] = common.as_slice() else {
             eprintln!("fatal: Unable to find a single common commit with {name}");
-            return fail_start(git, &ours, spec, kind, false);
+            return Ok(None);
         };
         let (base_tree, theirs_tree) = (git.repo.commit(base)?.tree, git.repo.commit(id)?.tree);
-        let merged = merge_trees_with(
+        let (ours_label, base_label, theirs_label) =
+            (temp_label(&tree), temp_label(base), temp_label(id));
+        let mut merged = merge_trees_octopus(
             git,
             [Some(&base_tree), Some(&tree), Some(&theirs_tree)],
             &Labels {
-                ours: "HEAD",
-                theirs: name,
-                base: &git.repo.abbreviate(base)?,
+                ours: &ours_label,
+                theirs: &theirs_label,
+                base: &base_label,
             },
             &Settings::default(),
-            false,
         )?;
+        for resolved in merged.paths.values_mut() {
+            if let Resolved::Conflict(c) = resolved
+                && c.kind == Conflicting::AddAdd
+                && let Some(mine) = c.ours
+            {
+                c.worktree = Worktree::Write {
+                    mode: mine.mode,
+                    bytes: git.repo.blob(&mine.id)?,
+                };
+            }
+        }
         let conflicted = merged
             .paths
             .values()
@@ -184,9 +242,9 @@ pub(super) fn attempt(m: &Merging, strategy: &Strategy, run: Run) -> Result<Trie
             }
             tree = result_tree(git, &merged)?;
             reached.push(*id);
-        } else if i + 1 < f.kept.len() {
+        } else if i + 1 < heads.len() {
             eprintln!("Automated merge did not work.\nShould not be doing an octopus.");
-            return fail_start(git, &ours, spec, kind, false);
+            return Ok(None);
         }
         last = Some(merged);
     }
@@ -195,29 +253,12 @@ pub(super) fn attempt(m: &Merging, strategy: &Strategy, run: Run) -> Result<Trie
     };
     let moved = git
         .repo
-        .diff_trees(Some(&ours_tree), Some(&tree), &Pathspec::default())?;
+        .diff_trees(Some(ours_tree), Some(&tree), &Pathspec::default())?;
     for change in moved {
         merged
             .paths
             .entry(change.path)
             .or_insert(Resolved::Take(change.new));
     }
-    let landing = Landing {
-        theirs: f.label,
-        orig_head: Some(ours),
-        strict_index: true,
-        quiet_when_clean: false,
-        stages_at_origin: false,
-    };
-    let applied = match apply_merge_as(git, m.opened, Some(&ours_tree), &merged, &landing, run)? {
-        Ok(applied) => applied,
-        Err(refusal) => return refuse_apply(git, &ours, spec, kind, refusal),
-    };
-    Ok(Tried::Done(Box::new(Done {
-        kind,
-        how: Concluding::Strategy(kind),
-        conflicted: applied.conflicted,
-        unmerged: applied.unmerged,
-        landed: Some((merged, applied.index)),
-    })))
+    Ok(Some(merged))
 }
