@@ -9044,7 +9044,8 @@
           "user",
           "pending",
           "scheduled_at",
-          "purge_at"
+          "purge_at",
+          "window_days"
         ],
         "properties": {
           "pending": {
@@ -9069,6 +9070,11 @@
           },
           "user": {
             "type": "string"
+          },
+          "window_days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The recovery window in days: how long after scheduling a deletion can still be undone."
           }
         }
       },
