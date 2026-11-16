@@ -8,7 +8,7 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 
-use patchfix::{FORMATS, Twin, commit, lines, run, write};
+use patchfix::{FORMATS, Format, Stderr, Twin, commit, lines, run, write};
 
 /// The history every scenario starts from: `c1`, then `c2` changing most kinds of path.
 fn history(dir: &Path) {
@@ -124,10 +124,16 @@ fn patch(t: &Twin, name: &str) -> String {
 }
 
 /// `apply <args>` with both tools in `sub`.
-fn same(t: &Twin, sub: &str, args: &[&str], stdin: &[u8]) {
+fn same(t: &Twin, sub: &str, args: &[&str], stdin: &[u8]) -> (patchfix::Out, patchfix::Out) {
     let mut full = vec!["apply"];
     full.extend_from_slice(args);
-    t.same(sub, &full, stdin);
+    let numstat = args.contains(&"--numstat") && !args.contains(&"--stat");
+    let format = if numstat {
+        Format::Machine
+    } else {
+        Format::Human
+    };
+    t.same_as(format, Stderr::Ignored, sub, &full, stdin)
 }
 
 fn each(base: &str, test: impl Fn(&Twin)) {
@@ -270,17 +276,20 @@ fn an_unstaged_edit_blocks_index_but_not_cached() {
 #[test]
 fn applies_mode_changes_and_empty_files() {
     each("c1", |t| {
-        same(t, "", &["--summary", &patch(t, "mode")], b"");
+        let (_, got) = same(t, "", &["--summary", &patch(t, "mode")], b"");
+        got.has_facts(&["mode change 100755 => 100644 b.sh"], "mode summary");
         same(t, "", &[&patch(t, "mode")], b"");
     });
     each("c1", |t| {
         let text = "diff --git a/empty b/empty\nnew file mode 100644\nindex 0000000..e69de29\n";
-        same(t, "", &["--summary", "--numstat"], text.as_bytes());
+        let (_, got) = same(t, "", &["--summary", "--numstat"], text.as_bytes());
+        got.has_facts(&["create mode 100644 empty"], "empty summary");
         same(t, "", &[], text.as_bytes());
     });
     each("c1", |t| {
         let text = "diff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\nindex 3abcdef..0000000\n--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n";
-        same(t, "", &["--summary", "--stat"], text.as_bytes());
+        let (_, got) = same(t, "", &["--summary", "--stat"], text.as_bytes());
+        got.has_facts(&["delete mode 100644 gone.txt"], "delete summary");
         same(t, "", &["--index"], text.as_bytes());
     });
 }
@@ -288,7 +297,8 @@ fn applies_mode_changes_and_empty_files() {
 #[test]
 fn works_from_a_subfolder() {
     each("c1", |t| {
-        same(t, "d", &["--check", &patch(t, "fwd")], b"");
+        let check = ["apply", "--check", &patch(t, "fwd")];
+        t.same_as(Format::Human, Stderr::Quiet, "d", &check, b"");
         same(t, "d", &["--stat", &patch(t, "fwd")], b"");
         same(t, "d", &[&patch(t, "fwd")], b"");
     });
@@ -630,36 +640,6 @@ fn refuses_whitespace_settings_it_does_not_read() {
     });
 }
 
-/// Masks the line number after a patch file name: git continues counting across several inputs up to 2.43 and restarts for each file after.
-fn mask_patch_lines(text: &str) -> String {
-    text.split_inclusive('\n')
-        .map(|line| match line.find(".patch:") {
-            Some(at) => {
-                let (head, rest) = line.split_at(at + ".patch:".len());
-                let digits = rest.chars().take_while(char::is_ascii_digit).count();
-                if digits > 0 && rest[digits..].starts_with(':') {
-                    format!("{head}N{}", &rest[digits..])
-                } else {
-                    line.to_string()
-                }
-            }
-            None => line.to_string(),
-        })
-        .collect()
-}
-
-/// `apply <args>` with both tools: the same status, standard output, standard error (their names and patch line numbers aside) and state.
-fn same_text(t: &Twin, args: &[&str], stdin: &[u8]) {
-    let mut full = vec!["apply"];
-    full.extend_from_slice(args);
-    let (want, got) = t.same("", &full, stdin);
-    assert_eq!(
-        mask_patch_lines(&got.err().replace("pyn", "git")),
-        mask_patch_lines(&want.err()),
-        "stderr of {args:?}"
-    );
-}
-
 const ACTIONS: [&str; 6] = ["nowarn", "warn", "error", "error-all", "fix", "strip"];
 
 #[test]
@@ -677,15 +657,15 @@ fn every_whitespace_action_behaves_like_git() {
         for action in ACTIONS {
             let option = format!("--whitespace={action}");
             each("c1", |t| {
-                same_text(t, &[&option], text.as_bytes());
+                same(t, "", &[&option], text.as_bytes());
                 t.both(&["checkout", "-q", "."]);
-                same_text(t, &[&option, "--check"], text.as_bytes());
-                same_text(t, &[&option, "--stat"], text.as_bytes());
-                same_text(t, &["-R", &option], text.as_bytes());
+                same(t, "", &[&option, "--check"], text.as_bytes());
+                same(t, "", &[&option, "--stat"], text.as_bytes());
+                same(t, "", &["-R", &option], text.as_bytes());
                 t.both(&["checkout", "-q", "."]);
-                same_text(t, &["--index", &option], text.as_bytes());
+                same(t, "", &["--index", &option], text.as_bytes());
                 t.both(&["reset", "-q", "--hard"]);
-                same_text(t, &["--cached", &option], text.as_bytes());
+                same(t, "", &["--cached", &option], text.as_bytes());
             });
         }
     }
@@ -699,7 +679,11 @@ fn error_actions_apply_nothing_and_say_how_many_lines() {
             let out = t.run_pyn("", &["apply", &option], adding("x  ").as_bytes());
             assert_eq!(out.code, 128, "{}", out.err());
             assert!(out.err().contains("error: 1 line adds whitespace errors."));
-            assert_eq!(patchfix::snapshot(&t.pyn), patchfix::snapshot(&t.git));
+            patchfix::behavior::assert_same_state(
+                "refused apply leaves the state alone",
+                &t.git,
+                &t.pyn,
+            );
         }
     });
 }
@@ -711,14 +695,14 @@ fn the_apply_whitespace_setting_picks_the_action() {
         for extra in [&[][..], &["--whitespace=warn"], &["--check"], &["--stat"]] {
             each("c1", |t| {
                 t.both(&["config", "apply.whitespace", value]);
-                same_text(t, extra, text.as_bytes());
+                same(t, "", extra, text.as_bytes());
             });
         }
     }
     for value in ["bogus", "ERROR", ""] {
         each("c1", |t| {
             t.both(&["config", "apply.whitespace", value]);
-            same_text(t, &["--whitespace=warn"], text.as_bytes());
+            same(t, "", &["--whitespace=warn"], text.as_bytes());
         });
     }
     each("c1", |t| {
@@ -763,7 +747,7 @@ fn fixing_follows_the_rules_of_core_whitespace() {
         each("c1", |t| {
             t.both(&["config", "core.whitespace", rule]);
             for line in added {
-                same_text(t, &["--whitespace=fix"], adding(line).as_bytes());
+                same(t, "", &["--whitespace=fix"], adding(line).as_bytes());
                 t.both(&["checkout", "-q", "."]);
             }
         });
@@ -779,7 +763,7 @@ fn fix_matches_context_that_differs_only_in_whitespace() {
     for text in patches {
         each("c1", |t| {
             for action in ["fix", "warn"] {
-                same_text(t, &[&format!("--whitespace={action}")], text.as_bytes());
+                same(t, "", &[&format!("--whitespace={action}")], text.as_bytes());
                 t.both(&["checkout", "-q", "."]);
             }
         });
@@ -793,7 +777,7 @@ fn fix_matches_context_that_differs_only_in_whitespace() {
             );
         }
         let text = "--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\n line1\n line2\n-line3\n+three\n";
-        same_text(t, &["--whitespace=fix"], text.as_bytes());
+        same(t, "", &["--whitespace=fix"], text.as_bytes());
     });
 }
 
@@ -805,9 +789,9 @@ fn fix_lets_trailing_blank_lines_of_the_patch_be_missing_from_the_file() {
         for rule in ["", "-blank-at-eof"] {
             each("c1", |t| {
                 t.both(&["config", "core.whitespace", rule]);
-                same_text(t, &["--whitespace=fix"], text.as_bytes());
+                same(t, "", &["--whitespace=fix"], text.as_bytes());
                 t.both(&["checkout", "-q", "."]);
-                same_text(t, &["--whitespace=warn"], text.as_bytes());
+                same(t, "", &["--whitespace=warn"], text.as_bytes());
             });
         }
     }
@@ -822,8 +806,8 @@ fn several_inputs_share_one_summary_and_continue_the_line_numbers() {
         for action in ["warn", "fix", "error"] {
             let option = format!("--whitespace={action}");
             let (a, b) = (one.to_str().unwrap(), two.to_str().unwrap());
-            same_text(t, &[&option, "--check", a, b], b"");
-            same_text(t, &[&option, "--stat", a, b], b"");
+            same(t, "", &[&option, "--check", a, b], b"");
+            same(t, "", &[&option, "--stat", a, b], b"");
         }
     });
 }

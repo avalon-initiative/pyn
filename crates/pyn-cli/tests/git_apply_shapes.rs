@@ -4,14 +4,12 @@
 
 mod patchfix;
 
-#[path = "common/oracle.rs"]
-mod oracle;
-
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::Path;
 
-use patchfix::{FORMATS, Twin, commit, run, snapshot, write};
+use patchfix::behavior::Snapshot;
+use patchfix::{FORMATS, Twin, commit, oracle, run, write};
 
 fn history(dir: &Path) {
     let mut tick = 1_700_000_000;
@@ -33,20 +31,10 @@ fn twin(format: &'static str) -> Twin {
     Twin::new(format, history)
 }
 
-/// A state with each unmerged index entry read at its original path: git versions differ on whether `am --3way`
-/// leaves the stage at `d` or at the moved-aside name (`d~HEAD`, `dd~<subject>`).
-fn stages_at_origin(state: &str) -> Vec<String> {
-    let mut lines: Vec<String> = state
-        .lines()
-        .map(|line| match line.split_once('\t') {
-            Some((head, path)) if matches!(head.chars().last(), Some('1'..='3')) => {
-                format!("{head}\t{}", path.split('~').next().unwrap_or(path))
-            }
-            _ => line.to_string(),
-        })
-        .collect();
-    lines.sort();
-    lines
+/// An index path read at its origin: git versions differ on whether `am --3way` leaves a stage at `d` or at the
+/// moved-aside name (`d~HEAD`, `dd~<subject>`).
+fn at_origin(path: &str) -> String {
+    path.split('~').next().unwrap_or(path).to_string()
 }
 
 /// Both tools refuse or both succeed, and the repositories end up the same.
@@ -60,12 +48,10 @@ fn alike(t: &Twin, args: &[&str], stdin: &[u8]) {
         t.format,
         got.err()
     );
-    assert_eq!(
-        stages_at_origin(&snapshot(&t.pyn)),
-        stages_at_origin(&snapshot(&t.git)),
-        "{} {args:?}: state",
-        t.format
-    );
+    let state = |dir: &Path| Snapshot::of(dir).map_index_paths(at_origin);
+    if let Some(d) = state(&t.git).diff(&state(&t.pyn)) {
+        panic!("{} {args:?}: state (first git, second pyn):\n{d}", t.format);
+    }
 }
 
 #[test]

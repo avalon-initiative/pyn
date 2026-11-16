@@ -502,7 +502,7 @@ fn git_carries_on_a_session_pyn_stopped_and_the_other_way_round() {
             by_git.err(),
             by_pyn.err()
         );
-        assert_eq!(patchfix::snapshot(&t.pyn), patchfix::snapshot(&t.git));
+        patchfix::behavior::assert_same_state("cross-continued am", &t.git, &t.pyn);
         assert_eq!(
             run(&t.pyn, &["log", "--format=%H %s"]),
             run(&t.git, &["log", "--format=%H %s"])
