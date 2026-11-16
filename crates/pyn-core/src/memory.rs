@@ -31,7 +31,7 @@ use crate::limits::{
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
 use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
-use crate::profile::{Avatar, Profile, ProfileFields};
+use crate::profile::{Avatar, Profile, ProfileFields, ProfileVisibility};
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate, Visibility};
 use crate::repo_policy::{
@@ -2140,6 +2140,17 @@ impl AccessStore for MemoryAccessStore {
     ) -> Result<()> {
         let mut st = self.state.lock().unwrap();
         st.profiles.entry(user.clone()).or_default().fields = fields.clone();
+        Ok(())
+    }
+
+    async fn set_profile_visibility(
+        &self,
+        user: &UserId,
+        visibility: &ProfileVisibility,
+        _now: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.profiles.entry(user.clone()).or_default().visibility = *visibility;
         Ok(())
     }
 

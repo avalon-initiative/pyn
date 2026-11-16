@@ -552,7 +552,10 @@ async fn disabling_an_account_ends_its_access_and_enabling_restores_it() {
             user: "alice".into(),
             admin: false,
             has_password: true,
-            profile: api::Profile::default(),
+            profile: api::Profile {
+                visibility: Some(api::ProfileVisibility::default()),
+                ..Default::default()
+            },
         }
     );
 

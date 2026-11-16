@@ -159,6 +159,7 @@ fn set(
         } else {
             links
         },
+        visibility: None,
     };
     api.send(api.request(Method::PUT, "/v1/me/profile").json(&body))?;
     println!("profile updated");

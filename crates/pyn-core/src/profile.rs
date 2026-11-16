@@ -76,11 +76,55 @@ pub struct Avatar {
     pub size: u64,
 }
 
+/// Which profile fields other people may see. Every field is visible by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfileVisibility {
+    pub display_name: bool,
+    pub bio: bool,
+    pub location: bool,
+    pub company: bool,
+    pub links: bool,
+    pub avatar: bool,
+}
+
+impl Default for ProfileVisibility {
+    fn default() -> Self {
+        Self {
+            display_name: true,
+            bio: true,
+            location: true,
+            company: true,
+            links: true,
+            avatar: true,
+        }
+    }
+}
+
 /// Everything stored about an account's profile.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Profile {
     pub fields: ProfileFields,
     pub avatar: Option<Avatar>,
+    pub visibility: ProfileVisibility,
+}
+
+impl Profile {
+    /// The profile as anyone but its owner sees it: hidden fields and avatar are absent.
+    pub fn public_view(&self) -> Self {
+        let v = self.visibility;
+        let f = &self.fields;
+        Self {
+            fields: ProfileFields {
+                display_name: f.display_name.clone().filter(|_| v.display_name),
+                bio: f.bio.clone().filter(|_| v.bio),
+                location: f.location.clone().filter(|_| v.location),
+                company: f.company.clone().filter(|_| v.company),
+                links: if v.links { f.links.clone() } else { Vec::new() },
+            },
+            avatar: self.avatar.clone().filter(|_| v.avatar),
+            visibility: v,
+        }
+    }
 }
 
 /// Checks avatar bytes (size, then magic numbers) and returns their format.

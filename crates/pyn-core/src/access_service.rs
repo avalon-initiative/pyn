@@ -28,7 +28,7 @@ use crate::oidc::{
     ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider,
 };
 use crate::passwords::{InlinePasswords, PasswordWorker};
-use crate::profile::{Avatar, Profile, ProfileFields};
+use crate::profile::{Avatar, Profile, ProfileFields, ProfileVisibility};
 use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
@@ -367,6 +367,14 @@ pub trait AccessStore: Send + Sync {
         &self,
         user: &UserId,
         fields: &ProfileFields,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+
+    /// Replaces the per-field visibility, keeping everything else. The account must exist.
+    async fn set_profile_visibility(
+        &self,
+        user: &UserId,
+        visibility: &ProfileVisibility,
         now: DateTime<Utc>,
     ) -> Result<()>;
 

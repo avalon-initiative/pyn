@@ -9,7 +9,8 @@ use pyn_core::memory::{
 use pyn_core::profiles::Profiles;
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, Credential, Identity, ManualClock, ObjectStore,
-    OrgRole, ProfileFields, PynError, Repositories, Role, Rules, UserId, Visibility,
+    OrgRole, ProfileFields, ProfileVisibility, PynError, Repositories, Role, Rules, UserId,
+    Visibility,
 };
 
 struct World {
@@ -185,7 +186,7 @@ async fn missing_disabled_unapproved_and_organization_accounts_are_all_not_found
         assert!(matches!(err, PynError::UserNotFound(_)), "{name}: {err}");
         assert_eq!(err.code(), "user_not_found");
     }
-    assert!(p.avatar("gone").await.is_err());
+    assert!(p.avatar("gone", None).await.is_err());
     assert!(p.public("alice", None).await.is_ok());
 }
 
@@ -202,6 +203,7 @@ async fn profile_text_is_validated_and_replaced() {
                 links: vec!["https://a.example".into()],
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();
@@ -214,6 +216,7 @@ async fn profile_text_is_validated_and_replaced() {
                 bio: Some("x".repeat(161)),
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap_err();
@@ -233,7 +236,7 @@ async fn an_avatar_is_stored_by_content_hash_served_and_removed() {
     assert_eq!(avatar.size, 64);
     assert!(w.objects.exists(&avatar.content).await.unwrap());
 
-    let (got, bytes) = p.avatar("alice").await.unwrap();
+    let (got, bytes) = p.avatar("alice", None).await.unwrap();
     assert_eq!((got, bytes), (avatar.clone(), png()));
     let same = p.set_avatar(&alice, png()).await.unwrap();
     assert_eq!(
@@ -252,13 +255,94 @@ async fn an_avatar_is_stored_by_content_hash_served_and_removed() {
     let err = p.set_avatar(&alice, big).await.unwrap_err();
     assert_eq!(err.code(), "object_too_large");
     assert!(
-        p.avatar("alice").await.is_ok(),
+        p.avatar("alice", None).await.is_ok(),
         "refusals keep the old avatar"
     );
 
     p.remove_avatar(&alice).await.unwrap();
     assert_eq!(
-        p.avatar("alice").await.unwrap_err().code(),
+        p.avatar("alice", None).await.unwrap_err().code(),
         "avatar_not_found"
     );
+}
+
+#[tokio::test]
+async fn hidden_fields_are_absent_for_everyone_but_the_owner() {
+    let w = world();
+    let alice = w.user("alice").await;
+    let bob = w.user("bob").await;
+    let p = w.profiles();
+    p.set_avatar(&alice, png()).await.unwrap();
+    let fields = ProfileFields {
+        display_name: Some("Alice".into()),
+        bio: Some("bio".into()),
+        location: Some("Lisbon".into()),
+        links: vec!["https://a.example".into()],
+        ..Default::default()
+    };
+    let hide = ProfileVisibility {
+        display_name: false,
+        bio: false,
+        links: false,
+        avatar: false,
+        ..Default::default()
+    };
+    w.access
+        .update_profile(&alice, fields, Some(hide))
+        .await
+        .unwrap();
+
+    let seen = p.public("alice", Some(&bob)).await.unwrap();
+    assert!(!seen.own);
+    let f = seen.profile.fields;
+    assert_eq!((f.display_name, f.bio, f.links), (None, None, vec![]));
+    assert_eq!(f.location.as_deref(), Some("Lisbon"));
+    assert!(seen.profile.avatar.is_none());
+    assert!(
+        p.public("alice", None)
+            .await
+            .unwrap()
+            .profile
+            .avatar
+            .is_none()
+    );
+    assert_eq!(
+        p.avatar("alice", Some(&bob)).await.unwrap_err().code(),
+        "avatar_not_found"
+    );
+    let ids = w
+        .access
+        .public_profiles(&[UserId::new("alice")])
+        .await
+        .unwrap();
+    let (_, listed) = ids[0].clone().unwrap();
+    assert_eq!(listed.fields.display_name, None);
+    assert!(listed.avatar.is_none());
+
+    let own = p.public("alice", Some(&alice)).await.unwrap();
+    assert!(own.own);
+    assert_eq!(own.profile.fields.display_name.as_deref(), Some("Alice"));
+    assert!(own.profile.avatar.is_some());
+    assert_eq!(own.profile.visibility, hide);
+    assert!(p.avatar("alice", Some(&alice)).await.is_ok());
+}
+
+#[tokio::test]
+async fn an_update_without_visibility_keeps_it() {
+    let w = world();
+    let alice = w.user("alice").await;
+    let hide = ProfileVisibility {
+        bio: false,
+        ..Default::default()
+    };
+    w.access
+        .update_profile(&alice, ProfileFields::default(), Some(hide))
+        .await
+        .unwrap();
+    let saved = w
+        .access
+        .update_profile(&alice, ProfileFields::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(saved.visibility, hide);
 }

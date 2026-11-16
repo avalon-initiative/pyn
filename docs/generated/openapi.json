@@ -8760,7 +8760,7 @@
         ],
         "responses": {
           "200": {
-            "description": "readable signed out; never includes an email address, and lists only the repositories and organizations the caller may see",
+            "description": "readable signed out; never includes an email address, hides the fields the user made private (everyone but the user sees them absent, an administrator included), and lists only the repositories and organizations the caller may see",
             "content": {
               "application/json": {
                 "schema": {
@@ -8833,8 +8833,18 @@
           "304": {
             "description": "`If-None-Match` matches the current image"
           },
+          "401": {
+            "description": "credentials were sent but are not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "user_not_found, or avatar_not_found when the user has none",
+            "description": "user_not_found, or avatar_not_found when the user has none or hides it from the caller",
             "content": {
               "application/json": {
                 "schema": {
@@ -12069,6 +12079,41 @@
               "null"
             ],
             "description": "At most 64 characters."
+          },
+          "visibility": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProfileVisibility",
+                "description": "Which fields others may see. Present only for the account's own view; the other fields are already filtered\nby it, so a hidden one is absent (null, empty or no `avatar_url`)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ProfileVisibility": {
+        "type": "object",
+        "description": "Per-field visibility of a profile. A missing field is visible.",
+        "properties": {
+          "avatar": {
+            "type": "boolean"
+          },
+          "bio": {
+            "type": "boolean"
+          },
+          "company": {
+            "type": "boolean"
+          },
+          "display_name": {
+            "type": "boolean"
+          },
+          "links": {
+            "type": "boolean"
+          },
+          "location": {
+            "type": "boolean"
           }
         }
       },
@@ -13823,6 +13868,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "visibility": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProfileVisibility",
+                "description": "Left out, the stored visibility is kept; given, it replaces it (a field missing from it is visible)."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         }

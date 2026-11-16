@@ -16,8 +16,31 @@ with none shows its name, join date and repositories.
 Limits count characters, not bytes (links count bytes). A blank value is cleared. A field that breaks a limit is refused with
 `400 invalid_request` and nothing is changed.
 
-Everything in a profile is public, readable signed out. There are no per-field privacy settings (provisional: the owner
-cannot hide a field, only clear it). An email address is never part of a profile response, whoever asks.
+A profile is public, readable signed out, except for the fields its owner hides (see [Privacy](#privacy)). An email
+address is never part of a profile response, whoever asks.
+
+## Privacy
+
+The owner can hide each of `display_name`, `bio`, `location`, `company`, `links` and the avatar. Every field is visible by
+default, so existing accounts and clients are unchanged. The setting is a `visibility` object of booleans (`false` hides):
+
+```json
+{ "display_name": true, "bio": false, "location": true, "company": true, "links": true, "avatar": false }
+```
+
+- `PUT /v1/me/profile` takes an optional `visibility`. Left out, the stored setting is kept (so a client that does not know
+  about it never resets it); given, it replaces the setting, and a key missing from it is visible.
+- `GET /v1/me` and the owner's own `GET /v1/users/{user}` carry `visibility` and every field. Any other viewer gets the
+  profile without the hidden fields and without a `visibility` object: a hidden text field is `null`, hidden `links` is
+  empty, a hidden avatar has no `avatar_url` and `GET /v1/users/{user}/avatar` answers `404 avatar_not_found`. Nothing
+  tells a viewer whether a field is hidden or just empty.
+- A server administrator sees what any other viewer sees: hiding is not overridden by the admin role.. A credential that is not full-scope counts as
+  another viewer, even the owner's own.
+- The lists of people below honour it too, for every viewer including the owner: a hidden display name or avatar is
+  null in `PublicIdentity`.
+
+Cached avatar responses are not recalled: a copy served while the avatar was visible can outlive hiding it by the cache
+lifetime.
 
 ## Routes
 
@@ -58,7 +81,7 @@ owner stays visible: freezing refuses writes, not reads.
 Wherever a response lists people, it carries a small public identity next to the account name, so clients can show an
 avatar and display name without one profile request per person. `PublicIdentity` is `user` (the account name),
 `display_name` and `avatar_url` (same form as in the profile), both null when unset. It is the same data as the public
-profile, so it is as public as the profile is.
+profile as a stranger sees it, so a field its owner hid is null.
 
 | Field | On |
 | --- | --- |

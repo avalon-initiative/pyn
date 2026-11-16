@@ -271,7 +271,7 @@ pub(crate) async fn identities(
         .into_iter()
         .zip(found.into_iter().map(|f| {
             f.map(|(user, profile)| {
-                let p = crate::profile_api::profile_dto(&user, profile);
+                let p = crate::profile_api::profile_dto(&user, profile, false);
                 api::PublicIdentity {
                     user: user.to_string(),
                     display_name: p.display_name,
