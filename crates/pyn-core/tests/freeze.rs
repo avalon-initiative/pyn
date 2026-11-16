@@ -814,3 +814,83 @@ async fn freezing_and_unfreezing_are_audited_and_unfreezing_an_open_owner_is_a_n
     assert_eq!(org_rows.len(), 3);
     assert!(org_rows.iter().all(|e| e.actor == user("root")));
 }
+
+fn token_of(name: &str, permissions: &[Permission], repos: Vec<pyn_core::RepoId>) -> Identity {
+    Identity {
+        user: user(name),
+        credential: Credential::Token(pyn_core::TokenRecord {
+            id: pyn_core::TokenId("aaaaaaaaaaaa".into()),
+            user: user(name),
+            name: "t".into(),
+            secret_hash: String::new(),
+            permissions: permissions.iter().copied().collect(),
+            repos,
+            created_at: Utc::now(),
+            expires_at: None,
+            revoked_at: None,
+            last_used_at: None,
+            sign_in: false,
+        }),
+    }
+}
+
+#[tokio::test]
+async fn reading_the_state_needs_a_full_scope_credential() {
+    let w = world();
+    signup(&w, &["alice", "bob"]).await;
+    w.access
+        .create_org(&session("alice"), "acme")
+        .await
+        .unwrap();
+    w.store
+        .add_org_member(&user("acme"), &user("bob"), OrgRole::Member)
+        .await
+        .unwrap();
+    let repo = w
+        .repos
+        .create(&session("alice"), &user("acme"), "plans", None, None)
+        .await
+        .unwrap();
+    let mine = w
+        .repos
+        .create(&session("alice"), &user("alice"), "game", None, None)
+        .await
+        .unwrap();
+
+    let full = token_of("alice", &Permission::ALL, vec![]);
+    w.access.owner_freeze(&full, &user("alice")).await.unwrap();
+    w.access.owner_freeze(&full, &user("acme")).await.unwrap();
+    w.access
+        .owner_freeze(&token_of("bob", &Permission::ALL, vec![]), &user("acme"))
+        .await
+        .unwrap();
+    root(&w).await;
+    w.access
+        .owner_freeze(&token_of("root", &Permission::ALL, vec![]), &user("alice"))
+        .await
+        .unwrap();
+
+    for (who, owner) in [
+        (
+            token_of("alice", &Permission::ALL, vec![mine.id.clone()]),
+            "alice",
+        ),
+        (token_of("alice", &[Permission::Read], vec![]), "alice"),
+        (
+            token_of("alice", &Permission::ALL, vec![repo.id.clone()]),
+            "acme",
+        ),
+        (
+            token_of("bob", &Permission::ALL, vec![repo.id.clone()]),
+            "acme",
+        ),
+        (
+            token_of("bob", &Permission::ALL, vec![repo.id.clone()]),
+            "nobody",
+        ),
+    ] {
+        let err = w.access.owner_freeze(&who, &user(owner)).await.unwrap_err();
+        assert!(matches!(err, PynError::Forbidden(_)), "{owner}: {err}");
+        assert_eq!(err.code(), "forbidden");
+    }
+}

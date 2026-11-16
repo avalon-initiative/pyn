@@ -154,7 +154,9 @@ pyn admin limits list
 ## Seeing limits and usage
 
 The owner (for an organization, an owner of it), a server administrator and a service credential with `manage_limits`
-may look at an owner's limits and usage. Anyone who can read a repository may see its own usage.
+may look at an owner's limits and usage, and the owner's freeze state, with a full-scope credential: a repository-scoped or otherwise
+limited token gets `403 forbidden`, since these are account-level reads, not actions on a repository the token was granted.
+Anyone who can read a repository may see its own usage.
 
 The caller is checked before the owner is looked up: anyone else gets `403 not_namespace_owner` whether the name is
 missing, a user or an organization, so the routes do not reveal which accounts exist. A member of the organization who is
@@ -241,7 +243,7 @@ streaming when the freeze landed is refused and its bytes are removed.
 | --- | --- |
 | `PUT /v1/admin/owners/{owner}/freeze` | `{reason}` (1 to 512 bytes); freezes, or replaces the reason and time of a freeze in force. `400 invalid_request`, `404 user_not_found`, `403 server_admin_required` or `service_scope_required` |
 | `DELETE /v1/admin/owners/{owner}/freeze` | unfreezes; an owner that is not frozen is left as it is, with no audit entry or event |
-| `GET /v1/owners/{owner}/freeze` | `{owner, owner_id, kind, frozen, frozen_at, reason}` (`frozen_at` and `reason` are null while not frozen); readable by the user themself, any member of the organization, an administrator and a `manage_freeze` credential. Anyone else gets `403 not_namespace_owner`, whether or not the name exists |
+| `GET /v1/owners/{owner}/freeze` | `{owner, owner_id, kind, frozen, frozen_at, reason}` (`frozen_at` and `reason` are null while not frozen); readable with a full-scope credential by the user themself, any member of the organization or an administrator, and by a `manage_freeze` credential (a repository-scoped or otherwise limited token gets `403 forbidden`). Anyone else gets `403 not_namespace_owner`, whether or not the name exists |
 
 Freezing and unfreezing are recorded as `owner_frozen` and `owner_unfrozen` in the server audit log (and in the
 organization's log for an organization) and raise the [`owner.frozen` and `owner.unfrozen`](events.md#ownerfrozen)

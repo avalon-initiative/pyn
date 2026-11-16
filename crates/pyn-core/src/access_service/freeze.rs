@@ -58,7 +58,8 @@ impl AccessService {
     }
 
     /// Server administrators and service credentials with `manage_freeze` may see any owner; otherwise the user
-    /// themself or a member of the organization. A name the caller may not see answers alike whether or not it exists.
+    /// themself or a member of the organization, with a full-scope credential. A name the caller may not see
+    /// answers alike whether or not it exists.
     pub async fn require_freeze_view(
         &self,
         actor: &Identity,
@@ -67,11 +68,11 @@ impl AccessService {
         if matches!(actor.credential, Credential::Service(_)) {
             self.require_admin_scope(actor, ServiceScope::ManageFreeze)
                 .await?;
-        } else if !self.is_server_admin(actor).await?
-            && &actor.user != owner
-            && self.store.org_role(owner, &actor.user).await?.is_none()
-        {
-            return Err(PynError::NotNamespaceOwner(owner.to_string()));
+        } else if !self.is_server_admin(actor).await? {
+            actor.require_full_scope()?;
+            if &actor.user != owner && self.store.org_role(owner, &actor.user).await?.is_none() {
+                return Err(PynError::NotNamespaceOwner(owner.to_string()));
+            }
         }
         self.freeze_account(owner).await
     }

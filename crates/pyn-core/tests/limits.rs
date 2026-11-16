@@ -646,3 +646,101 @@ async fn limits_and_usage_answer_alike_for_a_missing_a_user_and_an_organization(
         .await
         .unwrap();
 }
+
+fn token_of(
+    name: &str,
+    permissions: &[pyn_core::Permission],
+    repos: Vec<pyn_core::RepoId>,
+) -> Identity {
+    Identity {
+        user: user(name),
+        credential: Credential::Token(pyn_core::TokenRecord {
+            id: pyn_core::TokenId("aaaaaaaaaaaa".into()),
+            user: user(name),
+            name: "t".into(),
+            secret_hash: String::new(),
+            permissions: permissions.iter().copied().collect(),
+            repos,
+            created_at: Utc::now(),
+            expires_at: None,
+            revoked_at: None,
+            last_used_at: None,
+            sign_in: false,
+        }),
+    }
+}
+
+#[tokio::test]
+async fn owner_limits_and_usage_need_a_full_scope_credential() {
+    use pyn_core::Permission;
+    let w = world();
+    let root = admin(&w).await;
+    signup(&w, "bob").await;
+    w.access
+        .create_org(&session("alice"), "acme")
+        .await
+        .unwrap();
+    w.access
+        .add_org_member(
+            &session("alice"),
+            &user("acme"),
+            &user("bob"),
+            OrgRole::Member,
+        )
+        .await
+        .unwrap();
+    w.access
+        .accept_org_invitation(&session("bob"), &user("acme"))
+        .await
+        .unwrap();
+    create(&w, "alice", "vault").await.unwrap();
+    let open = create(&w, "alice", "game").await.unwrap();
+    let org_repo = w
+        .repos
+        .create(&session("alice"), &user("acme"), "plans", None, None)
+        .await
+        .unwrap();
+
+    let full = token_of("alice", &Permission::ALL, vec![]);
+    let scoped = token_of("alice", &Permission::ALL, vec![open.id.clone()]);
+    let reader = token_of("alice", &[Permission::Read], vec![]);
+    let org_owner_scoped = token_of("alice", &Permission::ALL, vec![org_repo.id.clone()]);
+    let org_member_scoped = token_of("bob", &Permission::ALL, vec![org_repo.id.clone()]);
+
+    let report = w.repos.owner_report(&full, &user("alice")).await.unwrap();
+    let names: Vec<_> = report
+        .repositories
+        .iter()
+        .map(|(r, _)| r.address())
+        .collect();
+    assert_eq!(names, ["alice/game", "alice/vault"]);
+    w.repos
+        .owner_report(&session("alice"), &user("alice"))
+        .await
+        .unwrap();
+    w.repos.owner_report(&full, &user("acme")).await.unwrap();
+    w.repos.owner_report(&root, &user("alice")).await.unwrap();
+    w.repos
+        .owner_report(&token_of("root", &Permission::ALL, vec![]), &user("alice"))
+        .await
+        .unwrap();
+
+    for (who, owner) in [
+        (&scoped, "alice"),
+        (&reader, "alice"),
+        (&org_owner_scoped, "acme"),
+        (&org_member_scoped, "acme"),
+        (&scoped, "nobody"),
+    ] {
+        let err = w.repos.owner_report(who, &user(owner)).await.unwrap_err();
+        assert!(matches!(err, PynError::Forbidden(_)), "{owner}: {err}");
+        assert_eq!(err.code(), "forbidden");
+        let err = w.access.owner_limits(who, &user(owner)).await.unwrap_err();
+        assert!(matches!(err, PynError::Forbidden(_)), "{owner}: {err}");
+    }
+
+    let blind = service_named(&w, "blind", &[ServiceScope::ManageFreeze]).await;
+    assert!(w.repos.owner_report(&blind, &user("alice")).await.is_err());
+    let seer = service_named(&w, "seer", &[ServiceScope::ManageLimits]).await;
+    w.repos.owner_report(&seer, &user("alice")).await.unwrap();
+}
