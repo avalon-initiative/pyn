@@ -40,3 +40,8 @@ A test builds a `Twin` (the `patchfix` helpers for the patch family), then `twin
 or `twin.same_as(Format::Machine, Stderr::Ignored, sub, args, stdin)`; both return the two outputs for extra checks. For a custom flow call
 `assert_same_behavior(what, format, stderr, (&git_out, &git_dir), (&pyn_out, &pyn_dir))` or `assert_same_state(what, &git_dir,
 &pyn_dir)`. A test that compares wording instead asserts state, exit status and facts.
+
+`scripts/check_oracle_text.py` (run by `make lint` and CI, self-test in `scripts/test_check_oracle_text.py`) fails a test that compares git's stderr or
+stdout text outside the shared comparator, branches on git's version, or rewrites `pyn` to `git` in output (decision #1032). Files that
+still do are listed in `scripts/oracle_text_allowlist.txt`; the list only shrinks, so a listed file that is clean must be removed. A
+single justified line carries `// oracle-text: allowed <reason>`.

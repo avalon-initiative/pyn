@@ -7,7 +7,7 @@ LOG_DIR := $(RUN_DIR)/logs
 PID_FILE := $(PID_DIR)/pyn.pid
 LOG_FILE := $(LOG_DIR)/pyn.log
 
-.PHONY: dev demo docs-check boundary-check openapi help build run start stop restart status test test-live e2e docker-build docker-build-cli fmt fmt-check clippy lint check release release-skip-tests release-publish release-all release-test install-test release-smoke clean
+.PHONY: dev demo docs-check boundary-check oracle-text-check openapi help build run start stop restart status test test-live e2e docker-build docker-build-cli fmt fmt-check clippy lint check release release-skip-tests release-publish release-all release-test install-test release-smoke clean
 
 help:
 	@echo "pyn — local dev commands"
@@ -27,8 +27,9 @@ help:
 	@echo "  make docker-build-cli  build the CLI image locally"
 	@echo "  make fmt           auto-format"
 	@echo "  make fmt-check     format check, no writes"
-	@echo "  make lint          clippy + docs link check + public-boundary check"
+	@echo "  make lint          clippy + docs link check + public-boundary and oracle-text checks"
 	@echo "  make boundary-check  fail on private references, secrets, or a git spawn in runtime source"
+	@echo "  make oracle-text-check  fail on tests that compare git's message text or branch on its version"
 	@echo "  make openapi       regenerate docs/generated/openapi.json"
 	@echo "  make check         fmt-check + lint + test — what CI runs"
 	@echo "  make release       run the checks, bump the version on a release branch and open the pull request"
@@ -109,6 +110,8 @@ clippy:
 lint: clippy
 	python3 scripts/check_links.py
 	python3 scripts/check_public_boundary.py
+	python3 scripts/check_oracle_text.py
+	python3 scripts/test_check_oracle_text.py
 
 DEMO_ADMIN ?= root
 DEMO_PASSWORD ?= demo-password
@@ -134,6 +137,10 @@ docs-check:
 
 boundary-check:
 	python3 scripts/check_public_boundary.py
+
+oracle-text-check:
+	python3 scripts/check_oracle_text.py
+	python3 scripts/test_check_oracle_text.py
 
 openapi:
 	PYN_UPDATE_OPENAPI=1 cargo test -p pyn-server --test openapi
