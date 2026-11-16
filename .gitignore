@@ -1,5 +1,6 @@
 target/
 .pyn-data/
+__pycache__/
 
 # -----------------------------------------------------------------------------
 # Common patterns — OS junk, editors, secrets, scratch. Stack-specific entries
