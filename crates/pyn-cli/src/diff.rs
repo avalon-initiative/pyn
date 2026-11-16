@@ -139,6 +139,12 @@ pub struct Unmerged {
 }
 
 impl Format {
+    /// This format for `diff`, which runs external diff programs unless `--no-ext-diff` is given.
+    pub fn with_external(mut self) -> Self {
+        self.opts.ext_diff.get_or_insert(true);
+        self
+    }
+
     /// This format, or one that prints nothing when `silent`.
     pub fn silenced(self, silent: bool) -> Self {
         if !silent {
@@ -357,6 +363,59 @@ fn id_of(blob: Option<&Blob>, other: Option<&Blob>, shorten: impl Fn(&str) -> St
     }
 }
 
+/// The `similarity index` and `rename from/to` (or `copy`) lines of a moved path.
+fn similarity_lines(backend: &dyn Backend, p: &Pair) -> String {
+    let Some(m) = &p.moved else {
+        return String::new();
+    };
+    let word = if m.copy { "copy" } else { "rename" };
+    format!(
+        "similarity index {}%\n{word} from {}\n{word} to {}\n",
+        m.percent(),
+        backend.quote_diff_path(p.old_path.as_bytes()),
+        backend.quote_diff_path(p.new_path.as_bytes())
+    )
+}
+
+/// `index <old>..<new>[ <mode>]`; a git home lengthens ids until unique, `--full-index` and other homes keep `Opts`' widths.
+fn index_line(
+    p: &Pair,
+    o: &Opts,
+    abbreviations: &crate::commit_format::IdFormat,
+    tail: &str,
+) -> String {
+    let (old, new) = (p.old.as_ref(), p.new.as_ref());
+    let shorten = |h: &str| match abbreviations {
+        crate::commit_format::IdFormat::Git(a) if !o.full_index => a.short_hex(h),
+        _ => o.index_id(h),
+    };
+    let (x, y) = (id_of(old, new, shorten), id_of(new, old, shorten));
+    format!("index {x}..{y}{tail}")
+}
+
+/// What an external diff program gets as its last argument for a moved path: the similarity lines, then the index line.
+fn external_meta(
+    backend: &dyn Backend,
+    p: &Pair,
+    format: &Format,
+    abbreviations: &crate::commit_format::IdFormat,
+) -> String {
+    let mut meta = similarity_lines(backend, p);
+    let tail = match (&p.old, &p.new) {
+        (Some(a), Some(b)) if a.mode() == b.mode() => format!(" {}", a.mode()),
+        _ => String::new(),
+    };
+    if p.old
+        .as_ref()
+        .zip(p.new.as_ref())
+        .is_some_and(|(a, b)| a.hash != b.hash)
+    {
+        meta.push_str(&index_line(p, &format.opts, abbreviations, &tail));
+        meta.push('\n');
+    }
+    meta
+}
+
 fn patch(
     backend: &dyn Backend,
     p: &Pair,
@@ -403,25 +462,10 @@ fn patch(
             score * 100 / rename::MAX_SCORE
         );
     }
-    if let Some(m) = &p.moved {
-        let word = if m.copy { "copy" } else { "rename" };
-        let _ = writeln!(
-            head,
-            "similarity index {}%\n{word} from {}\n{word} to {}",
-            m.percent(),
-            backend.quote_diff_path(p.old_path.as_bytes()),
-            backend.quote_diff_path(p.new_path.as_bytes())
-        );
-    }
+    head.push_str(&similarity_lines(backend, p));
     let changed = old.zip(new).is_none_or(|(a, b)| a.hash != b.hash);
     if changed {
-        // A git home lengthens ids until unique; `--full-index` and other homes keep `Opts`' widths.
-        let shorten = |h: &str| match abbreviations {
-            crate::commit_format::IdFormat::Git(a) if !o.full_index => a.short_hex(h),
-            _ => o.index_id(h),
-        };
-        let (x, y) = (id_of(old, new, shorten), id_of(new, old, shorten));
-        let _ = writeln!(head, "index {x}..{y}{tail}");
+        let _ = writeln!(head, "{}", index_line(p, o, abbreviations, &tail));
     }
     let (from, to) = (
         old.map_or("/dev/null".to_string(), |_| old_label.clone()),
@@ -468,7 +512,11 @@ fn patch(
         inter_hunk: o.inter_hunk,
         function: o.function,
     };
-    let mut hunks = crate::xdiff::unified(&c.old, &c.new, &layout, &o.ws);
+    let is_function = |l: &[u8]| match &c.funcs {
+        Some(f) => f.heading(l.strip_suffix(b"\n").unwrap_or(l)).is_some(),
+        None => pyn_diff::is_function_line(l),
+    };
+    let mut hunks = crate::xdiff::unified_with(&c.old, &c.new, &layout, &o.ws, &is_function);
     if let Some(funcs) = &c.funcs {
         pyn_diff::set_headings(&mut hunks, &c.old, &|l| funcs.heading(l));
     }
@@ -1216,6 +1264,17 @@ fn render(
     let mut moved_from: Vec<Option<(String, String)>> = Vec::new();
     let mut dirstat_rows: Vec<(String, u64)> = Vec::new();
     let mut differs = false;
+    // The external diff program of a pair's path, when one is configured and allowed.
+    let external = |p: &Pair| -> Result<Option<String>> {
+        if format.opts.ext_diff != Some(true) || p.detached {
+            return Ok(None);
+        }
+        let Some(command) = backend.diff_driver(&p.new_path)?.command else {
+            return Ok(None);
+        };
+        let meta = external_meta(backend, p, format, abbreviations);
+        crate::ext_diff::run(backend, &command, p, (list.len(), &meta)).map(Some)
+    };
     let (sep, end) = if format.opts.nul {
         ('\0', '\0')
     } else {
@@ -1300,6 +1359,10 @@ fn render(
                             moved: None,
                             ..(*p).clone()
                         };
+                        if let Some(text) = external(&split)? {
+                            out.push_str(&text);
+                            continue;
+                        }
                         let c = contents(backend, path, old, new, conv(format))?;
                         out.push_str(&patch(
                             backend,
@@ -1310,6 +1373,13 @@ fn render(
                             (style, words.as_ref()),
                         ));
                     }
+                    continue;
+                }
+                if format.kind == Kind::Patch
+                    && let Some(text) = external(p)?
+                {
+                    differs = true;
+                    out.push_str(&text);
                     continue;
                 }
                 let c = contents(backend, path, a, b, conv(format))?;

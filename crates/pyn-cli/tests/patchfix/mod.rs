@@ -142,7 +142,7 @@ impl Twin {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = c.spawn().unwrap();
-        child.stdin.take().unwrap().write_all(stdin).unwrap();
+        let _ = child.stdin.take().unwrap().write_all(stdin);
         let out = child.wait_with_output().unwrap();
         Out {
             code: out.status.code().unwrap(),

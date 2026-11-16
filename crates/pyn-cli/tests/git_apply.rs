@@ -313,6 +313,15 @@ fn adding(added: &str) -> String {
     format!("--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,3 @@\n line1\n+{added}\n line2\n")
 }
 
+/// A patch to `a.txt` adding all of `added` after its first line.
+fn adding_all(added: &[&str]) -> String {
+    let body: String = added.iter().map(|l| format!("+{l}\n")).collect();
+    format!(
+        "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,{} @@\n line1\n{body} line2\n",
+        2 + added.len()
+    )
+}
+
 const EOF_BLANK: &str = "--- a/a.txt\n+++ b/a.txt\n@@ -11,2 +11,3 @@\n line11\n line12\n+\n";
 
 #[test]
@@ -503,8 +512,6 @@ fn refuses_binary_data_and_unsupported_options_with_a_usage_status() {
             let out = t.run_pyn("", &["apply", flag, &patch(t, "fwd")], b"");
             assert_eq!(out.code, 129, "{flag}: {}", out.err());
         }
-        let out = t.run_pyn("", &["apply", "--whitespace=fix", &patch(t, "fwd")], b"");
-        assert_ne!(out.code, 0);
     });
 }
 
@@ -616,14 +623,207 @@ fn merges_with_three_way_like_git() {
 
 #[test]
 fn refuses_whitespace_settings_it_does_not_read() {
-    for (key, value) in [
-        ("apply.whitespace", "fix"),
-        ("apply.ignoreWhitespace", "change"),
-    ] {
+    each("c1", |t| {
+        t.both(&["config", "apply.ignoreWhitespace", "change"]);
+        let out = t.run_pyn("", &["apply", "--check", &patch(t, "fwd")], b"");
+        assert_eq!(out.code, 129, "{}", out.err());
+    });
+}
+
+/// Masks the line number after a patch file name: git continues counting across several inputs up to 2.43 and restarts for each file after.
+fn mask_patch_lines(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| match line.find(".patch:") {
+            Some(at) => {
+                let (head, rest) = line.split_at(at + ".patch:".len());
+                let digits = rest.chars().take_while(char::is_ascii_digit).count();
+                if digits > 0 && rest[digits..].starts_with(':') {
+                    format!("{head}N{}", &rest[digits..])
+                } else {
+                    line.to_string()
+                }
+            }
+            None => line.to_string(),
+        })
+        .collect()
+}
+
+/// `apply <args>` with both tools: the same status, standard output, standard error (their names and patch line numbers aside) and state.
+fn same_text(t: &Twin, args: &[&str], stdin: &[u8]) {
+    let mut full = vec!["apply"];
+    full.extend_from_slice(args);
+    let (want, got) = t.same("", &full, stdin);
+    assert_eq!(
+        mask_patch_lines(&got.err().replace("pyn", "git")),
+        mask_patch_lines(&want.err()),
+        "stderr of {args:?}"
+    );
+}
+
+const ACTIONS: [&str; 6] = ["nowarn", "warn", "error", "error-all", "fix", "strip"];
+
+#[test]
+fn every_whitespace_action_behaves_like_git() {
+    let patches = [
+        adding("x  "),
+        adding_all(&["a", "b ", "\tc"]),
+        adding_all(&["x  "; 7]),
+        EOF_BLANK.to_string(),
+        "--- a/a.txt\n+++ b/a.txt\n@@ -11,2 +11,6 @@\n line11\n line12\n+x \n+\n+  \n+\n"
+            .to_string(),
+        "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n line1 \n-line2\n+line2 changed\n".to_string(),
+    ];
+    for text in &patches {
+        for action in ACTIONS {
+            let option = format!("--whitespace={action}");
+            each("c1", |t| {
+                same_text(t, &[&option], text.as_bytes());
+                t.both(&["checkout", "-q", "."]);
+                same_text(t, &[&option, "--check"], text.as_bytes());
+                same_text(t, &[&option, "--stat"], text.as_bytes());
+                same_text(t, &["-R", &option], text.as_bytes());
+                t.both(&["checkout", "-q", "."]);
+                same_text(t, &["--index", &option], text.as_bytes());
+                t.both(&["reset", "-q", "--hard"]);
+                same_text(t, &["--cached", &option], text.as_bytes());
+            });
+        }
+    }
+}
+
+#[test]
+fn error_actions_apply_nothing_and_say_how_many_lines() {
+    each("c1", |t| {
+        for action in ["error", "error-all"] {
+            let option = format!("--whitespace={action}");
+            let out = t.run_pyn("", &["apply", &option], adding("x  ").as_bytes());
+            assert_eq!(out.code, 128, "{}", out.err());
+            assert!(out.err().contains("error: 1 line adds whitespace errors."));
+            assert_eq!(patchfix::snapshot(&t.pyn), patchfix::snapshot(&t.git));
+        }
+    });
+}
+
+#[test]
+fn the_apply_whitespace_setting_picks_the_action() {
+    let text = adding("x  ");
+    for value in ACTIONS {
+        for extra in [&[][..], &["--whitespace=warn"], &["--check"], &["--stat"]] {
+            each("c1", |t| {
+                t.both(&["config", "apply.whitespace", value]);
+                same_text(t, extra, text.as_bytes());
+            });
+        }
+    }
+    for value in ["bogus", "ERROR", ""] {
         each("c1", |t| {
-            t.both(&["config", key, value]);
-            let out = t.run_pyn("", &["apply", "--check", &patch(t, "fwd")], b"");
-            assert_eq!(out.code, 129, "{key}: {}", out.err());
+            t.both(&["config", "apply.whitespace", value]);
+            same_text(t, &["--whitespace=warn"], text.as_bytes());
         });
     }
+    each("c1", |t| {
+        let (want, got) = t.same("", &["apply", "--whitespace=bogus"], text.as_bytes());
+        assert_eq!((want.code, got.code), (129, 129));
+    });
+}
+
+#[test]
+fn fixing_follows_the_rules_of_core_whitespace() {
+    let rules = [
+        "",
+        "-trailing-space",
+        "tab-in-indent",
+        "tab-in-indent,tabwidth=4",
+        "indent-with-non-tab",
+        "indent-with-non-tab,tabwidth=4",
+        "-space-before-tab",
+        "cr-at-eol",
+        "-blank-at-eol,cr-at-eol",
+        "indent-with-non-tab,-space-before-tab,tabwidth=2",
+    ];
+    let added = [
+        "x  ",
+        "x \t ",
+        "x\r",
+        "x \r",
+        "\tx",
+        "\t\ty",
+        "  \tx",
+        " \t x",
+        "    x",
+        "        x",
+        "\t        x",
+        "    \t x \t ",
+        "   \tx ",
+        "\t  x",
+        "  ",
+        "x y\t",
+    ];
+    for rule in rules {
+        each("c1", |t| {
+            t.both(&["config", "core.whitespace", rule]);
+            for line in added {
+                same_text(t, &["--whitespace=fix"], adding(line).as_bytes());
+                t.both(&["checkout", "-q", "."]);
+            }
+        });
+    }
+}
+
+#[test]
+fn fix_matches_context_that_differs_only_in_whitespace() {
+    let patches = [
+        "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,3 @@\n line1\n+first\n line2 \n",
+        "--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\n line1 \n-line2\n+second\n line3\n",
+    ];
+    for text in patches {
+        each("c1", |t| {
+            for action in ["fix", "warn"] {
+                same_text(t, &[&format!("--whitespace={action}")], text.as_bytes());
+                t.both(&["checkout", "-q", "."]);
+            }
+        });
+    }
+    each("c1", |t| {
+        for dir in [&t.git, &t.pyn] {
+            write(
+                dir,
+                "a.txt",
+                &lines("line", 12).replace("line2\n", "line2 \n"),
+            );
+        }
+        let text = "--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\n line1\n line2\n-line3\n+three\n";
+        same_text(t, &["--whitespace=fix"], text.as_bytes());
+    });
+}
+
+#[test]
+fn fix_lets_trailing_blank_lines_of_the_patch_be_missing_from_the_file() {
+    let removing = "--- a/a.txt\n+++ b/a.txt\n@@ -11,4 +11,2 @@\n line11\n line12\n-\n-\n";
+    let keeping = "--- a/a.txt\n+++ b/a.txt\n@@ -11,4 +11,5 @@\n line11\n line12\n+x\n \n \n";
+    for text in [removing, keeping] {
+        for rule in ["", "-blank-at-eof"] {
+            each("c1", |t| {
+                t.both(&["config", "core.whitespace", rule]);
+                same_text(t, &["--whitespace=fix"], text.as_bytes());
+                t.both(&["checkout", "-q", "."]);
+                same_text(t, &["--whitespace=warn"], text.as_bytes());
+            });
+        }
+    }
+}
+
+#[test]
+fn several_inputs_share_one_summary_and_continue_the_line_numbers() {
+    each("c1", |t| {
+        let (one, two) = (t.root.join("one.patch"), t.root.join("two.patch"));
+        fs::write(&one, adding("x  ")).unwrap();
+        fs::write(&two, adding("y  ")).unwrap();
+        for action in ["warn", "fix", "error"] {
+            let option = format!("--whitespace={action}");
+            let (a, b) = (one.to_str().unwrap(), two.to_str().unwrap());
+            same_text(t, &[&option, "--check", a, b], b"");
+            same_text(t, &[&option, "--stat", a, b], b"");
+        }
+    });
 }

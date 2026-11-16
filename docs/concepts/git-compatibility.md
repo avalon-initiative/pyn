@@ -136,7 +136,7 @@ The commands named in decision #218.
 | `git diff --cached`, `--staged` | `pyn diff --cached`, `--staged` | different | The staged content against the last commit (the last update on a pyn server). On a git home it takes one optional commit to compare with, as git; on a pyn server it takes none. |
 | `git diff --shortstat`, `-w` (`--ignore-all-space`), `--check` | same | same | Both homes. `--shortstat` prints only the totals line. `-w` compares lines with all whitespace removed, prints context lines as they are in the new file, and leaves out a file that differs only in whitespace (so `--exit-code` is `0` when nothing else changed); `--name-only` and `--name-status` still list it, as git 2.43 does (newer git versions differ on this edge; pyn lists the file). `--check` prints `path:line: trailing whitespace.` (or `space before tab in indent.`, `indent with spaces.`, `tab in indent.`, or several) and the added line, `path:line: leftover conflict marker`, then `path:line: new blank line at EOF.`, for the rules of `core.whitespace` (git's default without it), and exits `2` if it printed anything (`3` with `--exit-code` when the files also differ, as git ORs the two statuses); `-w` does not affect it (newer git versions differ here too). `--check` replaces the other formats (`--stat`, `-p`, `--summary`, `--dirstat`), as in git; with `--name-only` or `--name-status` it is a usage error (`129`), where git refuses with `128`. |
 | `git diff -b`, `--ignore-space-change`, `--ignore-space-at-eol`, `--ignore-cr-at-eol`, `--ignore-blank-lines` | same | git home: supported | Git's output with the lines compared as git compares them; a file whose changes all fall away prints nothing (a change to blank lines only still counts as a difference for `--exit-code`). `--stat`, `--numstat`, `--shortstat`, `--name-only` and `--name-status` follow, and so do `show`, `log -p` and `stash show`. `--check` ignores them, as git does. `--raw`, `--name-only`, `--name-status` and `--check` still list a file that differs only in ignored whitespace (with zero ids in `--raw`), as git 2.43 does; newer git leaves it out and prints real ids. The line diff is a port of git's xdiff (the one `blame` uses), so ambiguous changes land where git puts them. |
-| `git diff -W` (`--function-context`), `--inter-hunk-context=<n>`, `--minimal`, `--diff-algorithm=default\|myers\|minimal\|patience\|histogram`, `--patience`, `--histogram`, `--indent-heuristic`, `--no-indent-heuristic` | same | git home: supported | A hunk grows to the whole function (a line starting with a letter, `_` or `$` begins one), hunks within the distance merge, and the algorithm flags change how the edit script is found. `diff.indentHeuristic` and `diff.algorithm` are read (`patience` and `histogram` included, ports of xdiff's, which fall back to Myers on a range with no usable anchor); `--anchored` is a usage error (`129`), as is an unknown algorithm name. |
+| `git diff -W` (`--function-context`), `--inter-hunk-context=<n>`, `--minimal`, `--diff-algorithm=default\|myers\|minimal\|patience\|histogram`, `--patience`, `--histogram`, `--indent-heuristic`, `--no-indent-heuristic` | same | git home: supported | A hunk grows to the whole function (a line starting with a letter, `_` or `$` begins one, or the driver's `funcname` pattern), hunks within the distance merge, and the algorithm flags change how the edit script is found. `diff.indentHeuristic` and `diff.algorithm` are read (`patience` and `histogram` included, ports of xdiff's, which fall back to Myers on a range with no usable anchor); `--anchored` is a usage error (`129`), as is an unknown algorithm name. |
 | `git diff --raw`, `-z`, `--full-index`, `--abbrev[=<n>]`, `--no-abbrev`, `--src-prefix`, `--dst-prefix`, `--no-prefix`, `-a` (`--text`), `-R`, `--diff-filter=<kinds>`, `-s` (`--no-patch`), `-p` | same | git home: supported | Git's output. `--raw` shows an id of zeros for a work tree file; `-z` ends the records of `--raw`, `--name-only`, `--name-status` and `--numstat` with NUL; `--raw` ids are shortened to seven digits unless `--abbrev=<n>` (at least 4) says otherwise, and `index` lines follow the [abbreviation policy](#log-on-a-git-home); `-R` swaps the sides and the `a/` and `b/` prefixes; `--diff-filter` takes upper case letters to keep and lower case to leave out (`*` and `log` are a usage error); `diff.noprefix` is read (not `diff.mnemonicPrefix`). `-p` joins `--stat`, `--shortstat`, `--numstat`, `--raw` and `--dirstat` (`--patch-with-stat` and `--patch-with-raw` too), a stat then a blank line then the patch; `--name-only`, `--name-status` and `--check` replace it, as in git, and `-s` with another format is a usage error (`129`); with `-z` the blank line before the patch is a NUL. `-u`, `--binary` and `--irreversible-delete` are a usage error (`129`). |
 | `git diff --word-diff[=plain\|color\|porcelain\|none]`, `--word-diff-regex=<regex>`, `--color-words[=<regex>]` | same | git home: supported | Git's word diff of each run of changed lines; words are runs of non-space characters, or the matches of an extended regular expression (`diff.wordRegex` too; matches never span a line). Output of `--word-diff=color` is colored whatever `color.ui` says. In `diff`, `show`, `log -p` and `stash show`. |
 | `git diff --color[=always\|never\|auto]`, `--no-color`, `--ws-error-highlight=<kinds>` | same | git home: supported | Git's colors for the headers, hunk headers, lines, whitespace errors, `--stat` and `--check`, and for the `commit` line of `show` and `log` (decorations and `--graph` are a usage error with color, `129`). `color.diff`, `color.ui` (`auto` is off when standard output is not a terminal), `color.diff.<slot>` (`meta`, `frag`, `func`, `old`, `new`, `context`, `whitespace`, `commit`), `core.whitespace` and `diff.wsErrorHighlight` are read; `--color-moved` is a usage error (`129`). |
@@ -1002,7 +1002,7 @@ a path from the index refreshes that entry's stat data, as git does. `-diff` mak
 `pyn convert --home git` keeps a work tree file's stat data in the new index only when its converted form is the committed blob.
 
 Not built: `working-tree-encoding`,
-`export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.command`, `diff.<name>.cachetextconv`. `diff --no-index` on a file outside the work tree of a repository (or with no
+`export-ignore`/`export-subst` (there is no `archive`), the built-in `diff=ini` driver, `diff.<name>.cachetextconv`. `diff --no-index` on a file outside the work tree of a repository (or with no
 repository) converts it by `core.autocrlf` and `core.eol` and the line-ending attributes of the global attributes file (`text`, `eol`, `crlf`), from the repository's config or the global one. The diff
 attributes (`diff`, `whitespace`) there come from the system and global attributes files only, as in git; the per-folder
 files and `info/attributes` do not apply. Covered by
@@ -1016,21 +1016,34 @@ The bare-repository default of reading `HEAD`'s attributes has an oracle test th
 
 #### Diff, merge and whitespace attributes
 
-`diff=<name>` picks a diff driver; `diff.<name>.binary`, `textconv`, `funcname`, `xfuncname` and `wordRegex` are read, and a name with
+`diff=<name>` picks a diff driver; `diff.<name>.binary`, `textconv`, `command`, `funcname`, `xfuncname` and `wordRegex` are read, and a name with
 no such settings changes nothing. `-diff` is binary and `diff` forces text, as before.
 
 - `textconv`: `diff`, `log -p` and `show` run the command on a temporary file holding each side (the file name is appended
   to the command, which goes through `sh -c`) and diff its output; the sides are not checked for binary content. Added and
-  deleted files convert one side. `--no-textconv` turns it off and `--textconv` turns it back on. It does not apply to
-  `--stat`, `--numstat`, `--check`, `format-patch` or `blame`. A command that fails stops the diff (`fatal: unable to read
+  deleted files convert one side, and a file replaced by a link (or the other way) is split into a deletion and a creation of which only
+  the file converts. `--no-textconv` turns it off and `--textconv` turns it back on. `blame` blames the converted text of every
+  version, the work tree file and `--contents` included (`--no-textconv` turns it off); `grep --textconv` searches the converted text
+  (off by default, as in git, and `--no-textconv` turns it off again). It does not apply to `--stat`, `--numstat`, `--check` or
+  `format-patch`, as in git. A command that fails stops the diff (`fatal: unable to read
   files to diff`). Only regular files are converted. The command runs at the top of the work tree, as git's does, wherever you are in it.
+- `command`: `diff.<name>.command` is an external diff program for the path, run by `diff` (and by `log` and `show` with `--ext-diff`;
+  `--no-ext-diff` turns it off) in place of the patch, for every changed path with the driver, including binary files, mode
+  changes, deletions and creations (the missing side is `/dev/null`) and both halves of a type change. It gets git's seven
+  arguments (`path old-file old-hex old-mode new-file new-hex new-mode`), plus the new name and the `similarity index` and
+  `rename from/to` (or `copy`) lines for a rename or copy, in the environment `GIT_DIFF_PATH_COUNTER` and `GIT_DIFF_PATH_TOTAL`.
+  A work tree file is passed as it is (by absolute path, where git gives a relative one) with a zero id, anything else in a
+  temporary file named after the path's last component, `.` for the id and mode of a missing side. A nonzero exit stops the diff
+  (`fatal: external diff died, stopping at <path>`, `128`). Its output is captured and printed in place of the patch, so
+  a program that needs a terminal does not get one, and output that is not UTF-8 is converted lossily. `GIT_EXTERNAL_DIFF` and
+  `diff.external` are not read, and `diff --no-index` does not run external diff programs.
 - `binary`: `diff.<name>.binary` true or false forces binary or text for every output that decides it.
 - `xfuncname` (extended expression) and `funcname` (basic expression) choose the heading after `@@`: the nearest line
   above the hunk that matches, shown as its first group or else its match, at most 80 bytes. Several patterns are separated
   by newlines in the value and the first that matches a line decides; one beginning with `!` rejects the line. A path
   with a pattern uses it instead of the default (a line starting with a letter, `_` or `$`). The expressions are
   translated onto the `regex` crate, as in `grep`. When both are set for a driver, the one read last from the
-  configuration wins. `-W` still grows a hunk to the default function lines.
+  configuration wins. `-W` finds the start of a function with the same pattern (a line it matches), else the default one.
   An invalid pattern is a fatal error, and so is a `funcname`, `xfuncname`, `textconv` or `wordRegex` with no value (`error: missing value`, exit `128`, as git).
 - `wordRegex`: `diff.<name>.wordRegex` is the word pattern of `--word-diff` and `--color-words` for the path (an extended expression, as
   `--word-diff-regex`). A regular expression on the command line wins over it, and it wins over `diff.wordRegex`.
@@ -2599,7 +2612,7 @@ What differs, all of it refused or documented rather than silently different:
 | Alternation with `-w` | The regex engine takes the first branch that matches, where the GNU library takes the longest: `grep -Ew 'a\|ab'` can miss a word git finds. Without `-w` a line matches either way. |
 | ``\` ``, `\'` | Refused (`128`): git's result depends on how it reads the file, not on the line. With `-i`, a backslash before a lowercase letter that is not an operator (`\a`) is refused: git matches nothing there. |
 | Locale | Matching is by characters in UTF-8, as in a UTF-8 locale; `[[:alpha:]]` and similar classes are ASCII only. A pattern that is not valid UTF-8 is refused. |
-| Binary attributes | `-diff` (and `binary`) makes a file binary and `diff` forces text, as in git; `textconv` and `diff=<driver>` settings are not consulted. |
+| Binary attributes | `-diff` (and `binary`) makes a file binary and `diff` forces text, as in git; `--textconv` searches the output of the driver's `textconv` (and a NUL in that output makes it binary), which is off without the flag. |
 | Revisions | Commits and tags that peel to one (`HEAD~2`, a branch, a hash); a tree such as `HEAD:sub` is not a revision here, so it is read as a path and fails with git's `ambiguous argument`. |
 | Not built (usage error `129`) | `--untracked`, `--no-index` (so also searching outside a repository), `--recurse-submodules`, `--exclude-standard`, `-o`, `-L`, `-z`, `-f`, `-m`, `-P`, `-A`, `-B`, `-C`, `-p`, `-W`, `--column`, `--heading`, `--break`, `--color`, `--all-match`, `--max-depth` and abbreviated long options. |
 
@@ -2699,7 +2712,7 @@ What differs, all of it refused or documented rather than silently different:
 | Diff algorithm | `--diff-algorithm=<name>` is checked (an unknown name is a usage error) and, as in git, changes nothing: blame always finds changes with Myers (`--minimal` aside), and `diff.algorithm` is not read (git 2.43 does the same; a newer git reads it, so a bad value can fail there). |
 | Colors | Whether lines of one commit split by a deleted source line count as one entry (and so get the repeated-line color) differs between git releases; pyn keeps them as separate entries, as git 2.43 does, and the tests do not compare that case. `color.blame.highlightRecent` dates are read as `--since` reads them. |
 | Abbreviation length | The [abbreviation policy](#log-on-a-git-home) (`core.abbrev`, else the object-count default), grown until the abbreviation of every blamed commit is unique, plus one for the boundary mark. |
-| Content filters | `textconv` is not applied. The work tree file (or `--contents`) is converted to its repository form first, so a file that differs only in line endings the attributes convert is not blamed on the work tree. |
+| Content filters | `textconv` is applied to every version and to the work tree file (`--no-textconv` turns it off), and the lines shown are the converted ones. The work tree file (or `--contents`) is converted to its repository form first, so a file that differs only in line endings the attributes convert is not blamed on the work tree. |
 | Commit encodings | Author names and subjects are printed as stored, without re-encoding from an `encoding` header. |
 | Renames | The single added path is matched as git's rename detection would, but `diff.renameLimit` is not applied. |
 
@@ -2862,12 +2875,12 @@ and `--max-cruft-size`.
 files written, exit statuses, whether standard error carries anything, the work tree, the index and, for `am`, the commit ids
 and the session files in `.git/rebase-apply`, so git can carry on a session pyn stopped and the other way round. Settings and
 options that are not listed are a usage error (`129`) where git would accept them; settings that change the result and are
-not read (`format.*`, `am.*`, `apply.whitespace`, `apply.ignoreWhitespace`) are refused the same way.
+not read (`format.*`, `am.*`, `apply.ignoreWhitespace`, and `apply.whitespace` for `am`) are refused the same way.
 
 | Command | Supported |
 | --- | --- |
 | `format-patch` | `<since>`, `<a>..<b>`, `-<n>` (alone, or ending at a revision), `--root`, `--stdout`, `-o <dir>`, `-n`/`--numbered`, `-N`/`--no-numbered`, `--subject-prefix`, `--cover-letter`, `-s`/`--signoff`, `--signature`, `--no-signature`, `--no-stat`/`-p`, `-U<n>`, `--suffix`, `-q`, `--no-renames`. Merge commits are skipped. Files are named `0001-subject.patch` as git names them and listed on standard output. Subjects and names are wrapped and encoded (`=?UTF-8?q?...?=`) as git does, with the MIME headers when the message is not ASCII. With no revision it uses `@{upstream}`, and prints nothing when there is none. |
-| `apply` | `--check`, `--stat`, `--numstat`, `--summary`, `--apply`, `--index`, `--cached`, `-R`, `-p<n>`, `-3`/`--3way`, `--whitespace=warn\|nowarn`, `--allow-empty`, patch files and `-` (standard input). |
+| `apply` | `--check`, `--stat`, `--numstat`, `--summary`, `--apply`, `--index`, `--cached`, `-R`, `-p<n>`, `-3`/`--3way`, `--whitespace=nowarn\|warn\|fix\|strip\|error\|error-all`, `--allow-empty`, patch files and `-` (standard input). |
 | `am` | mbox files and standard input, `--continue`/`-r`, `--skip`, `--abort`, `--quit`, `--show-current-patch[=diff\|raw]`, `-3`/`--3way`, `-s`/`--signoff`, `-q`, `--whitespace=warn\|nowarn`, `-S`/`--gpg-sign`, `--no-gpg-sign`. |
 
 `format-patch` ends each patch with `-- ` and `pyn <version>` where git prints its own version. A rename is a delete and a
@@ -2888,13 +2901,22 @@ anything is written, so a failure changes nothing (`1`; a malformed patch is `12
 copies, mode changes, symlinks and several patches (or several files) in one input, applies to the work tree alone, to the work
 tree and index (`--index`, which requires the work tree to match the index by content, where git compares file stat data) or to
 the index alone, and reports whitespace errors in added lines as `--whitespace=warn` does under the rules of `core.whitespace` and the `whitespace`
-attribute (git's default rules without them), but only when it applies the patch, as git does. `--3way` merges each file against the
+attribute (git's default rules without them), but only when it applies the patch, as git does. `--whitespace=<action>` and `apply.whitespace`
+(the option wins; an unknown value is `129` for the option and `128` for the setting) choose what to do: `nowarn` and `warn` as before;
+`fix` (also `strip`) fixes the added lines as git does for every rule (stripping trailing space and a carriage return before the
+newline, `space-before-tab`, `indent-with-non-tab`, `tab-in-indent` and `tabwidth`), removes the blank lines a hunk adds at the end of the
+file, matches context and removed lines that equal the file's once both are fixed (the context is then written fixed), lets blank
+lines at the end of a hunk's old side be missing from the file, and ends with `N lines applied after fixing whitespace errors`;
+`error` and `error-all` check the whole patch and the lines, print what they found (five findings for `error`, all for
+`error-all`, which stays on if a later option changes the action), write nothing, print `error: N lines add whitespace errors.` and exit `128`,
+still printing `--stat` and the like. In `-R` the removed lines are the ones checked. Several inputs share one count, one summary and
+one line numbering, which continues from one input to the next as git's does, and a new blank line at the end of the file counts
+among the errors. `apply.ignoreWhitespace` is still refused, and so is `am` with an action other than `warn` or `nowarn`. `--3way` merges each file against the
 blob the patch's `index` line names; conflicts are left as `ours`/`theirs` markers (with a base section when
 `merge.conflictStyle` is `diff3`; `zdiff3` is a usage error) and as unmerged index entries, with `U <path>` and exit `1`.
 Binary patches (`GIT binary patch`), submodule patches and these options are a usage error (`129`): `--reject`, `-C`,
 `--ignore-space-change`, `--ignore-whitespace`, `--unidiff-zero`, `--directory`, `--include`, `--exclude`, `-z`, `--recount`,
-`--inaccurate-eof`, `--build-fake-ancestor`, `-N`, `--unsafe-paths`, `-v`, `-q`, `--no-add` and `--whitespace=error`, `fix`
-and `strip`. A `Binary files a and b differ` patch without data is refused at apply time as git refuses it. `apply` runs only
+`--inaccurate-eof`, `--build-fake-ancestor`, `-N`, `--unsafe-paths`, `-v`, `-q` and `--no-add`. A `Binary files a and b differ` patch without data is refused at apply time as git refuses it. `apply` runs only
 inside a git repository.
 
 `am` reads UTF-8 and ASCII emails (`Content-Transfer-Encoding` 7bit or 8bit, no multipart) with RFC 2047 headers and the

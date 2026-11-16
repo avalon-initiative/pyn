@@ -344,6 +344,17 @@ fn path_string(path: &[u8]) -> String {
 }
 
 impl GitHome {
+    /// `data` of a regular file at `path` run through its `diff` driver's `textconv`, or as it is with none.
+    pub(crate) fn converted(&self, path: &[u8], data: Vec<u8>) -> Result<Vec<u8>> {
+        let driver = self.diff_driver(&String::from_utf8_lossy(path))?;
+        match driver.textconv.as_deref() {
+            Some(command) => {
+                crate::diff_driver::textconv(command, &data, driver.work_tree.as_deref())
+            }
+            None => Ok(data),
+        }
+    }
+
     fn new(repo: Repo, ws: Workspace) -> Self {
         let mut git = Self {
             repo,

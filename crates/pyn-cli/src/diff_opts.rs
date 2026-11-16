@@ -68,8 +68,11 @@ pub struct PatchFlags {
     /// Leave changed blocks where the diff first put them.
     #[arg(long = "no-indent-heuristic", overrides_with = "indent_heuristic")]
     no_indent_heuristic: bool,
-    /// Accepted: no external diff program is run.
-    #[arg(long = "no-ext-diff")]
+    /// Run the external diff programs of the files (`diff` does by default).
+    #[arg(long = "ext-diff", overrides_with = "no_ext_diff")]
+    ext_diff: bool,
+    /// Do not run external diff programs.
+    #[arg(long = "no-ext-diff", overrides_with = "ext_diff")]
     no_ext_diff: bool,
     /// Swap the two sides of the comparison.
     #[arg(short = 'R')]
@@ -161,6 +164,8 @@ pub struct Opts {
     pub dst_prefix: String,
     pub text: bool,
     pub no_textconv: bool,
+    /// `--ext-diff` or `--no-ext-diff`; `diff` runs external programs unless told not to, other commands only when told to.
+    pub ext_diff: Option<bool>,
     pub color: Choice,
     pub ws_highlight: Option<u32>,
     pub stat: StatSpec,
@@ -262,6 +267,7 @@ impl Default for Opts {
             dst_prefix: "b/".into(),
             text: false,
             no_textconv: false,
+            ext_diff: None,
             color: Choice::Config,
             ws_highlight: None,
             stat: StatSpec::default(),
@@ -417,6 +423,7 @@ impl PatchFlags {
             ("--histogram", self.histogram),
             ("--indent-heuristic", self.indent_heuristic),
             ("--no-indent-heuristic", self.no_indent_heuristic),
+            ("--ext-diff", self.ext_diff),
             ("--no-ext-diff", self.no_ext_diff),
             ("--no-textconv", self.no_textconv),
             ("--textconv", self.textconv),
@@ -481,6 +488,11 @@ impl PatchFlags {
             full_index: self.full_index,
             text: self.text,
             no_textconv: self.no_textconv,
+            ext_diff: match (self.ext_diff, self.no_ext_diff) {
+                (true, _) => Some(true),
+                (_, true) => Some(false),
+                _ => None,
+            },
             ..Opts::default()
         };
         o.color = match (self.no_color, self.color.as_deref()) {

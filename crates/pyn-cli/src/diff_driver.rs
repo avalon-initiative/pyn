@@ -15,6 +15,8 @@ pub struct DiffDriver {
     /// `Some(true)` forces binary, `Some(false)` forces text.
     pub binary: Option<bool>,
     pub textconv: Option<String>,
+    /// `diff.<name>.command`: an external diff program run in place of the patch.
+    pub command: Option<String>,
     pub funcname: Option<FuncMatcher>,
     /// `diff.<name>.wordRegex`: the word pattern of `--word-diff` for the path.
     pub word_regex: Option<String>,
@@ -45,7 +47,7 @@ impl DiffDriver {
         };
         let key = |k: &str| format!("diff.{name}.{k}");
         for e in config.entries() {
-            let valued = ["funcname", "xfuncname", "textconv", "wordregex"];
+            let valued = ["funcname", "xfuncname", "textconv", "wordregex", "command"];
             if e.section == "diff"
                 && e.subsection.as_deref() == Some(name.as_str())
                 && e.value.is_none()
@@ -58,6 +60,7 @@ impl DiffDriver {
         driver.word_regex = config.get(&key("wordregex")).map(str::to_string);
         driver.binary = config.get_bool(&key("binary")).ok().flatten();
         driver.textconv = config.get(&key("textconv")).map(str::to_string);
+        driver.command = config.get(&key("command")).map(str::to_string);
         let last = config.entries().iter().rev().find(|e| {
             e.section == "diff"
                 && e.subsection.as_deref() == Some(name.as_str())

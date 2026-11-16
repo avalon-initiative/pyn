@@ -12,9 +12,9 @@ use pyn_git::IndexEntry;
 use pyn_object::{FileMode, Kind, ObjectId};
 
 use super::GitHome;
-use super::apply_hunk::apply_hunks;
+use super::apply_hunk::{Fixing, apply_hunks};
 use super::apply_parse::{Binary, Fail, FilePatch, Reader, diag};
-use super::apply_ws::summarize;
+use super::apply_ws::{Action, Tally, report_eof, summarize};
 use super::conflict_style::Style;
 use super::convert;
 use super::mergedrv::{self, Driver};
@@ -27,12 +27,14 @@ use super::worktree::{check_writes, remove_entry_file, write_bytes};
 use crate::backend::Backend;
 use crate::diff_color;
 use crate::diffstat::{self, rename_name};
-use pyn_diff::whitespace::{BLANK_AT_EOF, Rule};
+use pyn_diff::whitespace::Rule;
 
 pub(super) const APPLY_SETTINGS: [(&str, Option<&str>); 2] = [
     ("apply", Some("whitespace")),
     ("apply", Some("ignorewhitespace")),
 ];
+
+const UNREAD_SETTINGS: [(&str, Option<&str>); 1] = [("apply", Some("ignorewhitespace"))];
 
 /// Apply a patch to files and the index.
 #[derive(Debug, Args)]
@@ -67,7 +69,7 @@ pub struct ApplyArgs {
     /// Fall back on a three-way merge for files that do not apply.
     #[arg(short = '3', long = "3way")]
     three_way: bool,
-    /// What to do about whitespace errors in added lines: `warn` (the default) or `nowarn`.
+    /// What to do about whitespace errors in added lines: `nowarn`, `warn` (the default), `fix` (or `strip`), `error` or `error-all`.
     #[arg(long, value_name = "ACTION")]
     whitespace: Option<String>,
     /// Do not fail when the input has no patch.
@@ -88,7 +90,9 @@ pub(super) struct Options {
     pub index: bool,
     pub cached: bool,
     pub three_way: bool,
-    pub ws: bool,
+    pub ws: Action,
+    /// `error-all` was given, by the option or the configuration.
+    pub all_errors: bool,
     pub allow_empty: bool,
     /// The folder the command runs in, from the root; patches elsewhere are skipped.
     pub prefix: Vec<u8>,
@@ -117,6 +121,8 @@ pub(super) struct Session<'g> {
     /// Contents standing in for the work tree and index, to apply patches to a reconstructed base.
     fixed: Option<HashMap<Vec<u8>, Slot>>,
     pub conflicted: bool,
+    pub tally: Tally,
+    next_line: usize,
 }
 
 /// Stops with a usage status when a setting that changes the result is present, since it is not read.
@@ -141,17 +147,21 @@ fn show(name: &[u8]) -> String {
 }
 
 pub(super) fn apply(git: &GitHome, cwd: &Path, args: ApplyArgs) -> Result<()> {
-    refuse_settings(git, "apply", &APPLY_SETTINGS);
+    refuse_settings(git, "apply", &UNREAD_SETTINGS);
     let listing = args.stat || args.numstat || args.summary;
     let applying = args.apply || !(listing || args.check);
-    let ws = match args.whitespace.as_deref() {
-        None => applying,
-        Some("nowarn") => false,
-        Some("warn") => true,
-        Some(other) => super::plumbing::usage(&format!(
-            "--whitespace={other} is not supported yet; use warn or nowarn"
-        )),
-    };
+    let configured = configured_action(git)?;
+    let given = args.whitespace.as_deref().map(|text| {
+        Action::parse(text).unwrap_or_else(|| {
+            super::plumbing::usage(&format!("unrecognized whitespace option '{text}'"))
+        })
+    });
+    let ws = given.or(configured).unwrap_or(if applying {
+        Action::Warn
+    } else {
+        Action::Nowarn
+    });
+    let all_errors = [given, configured].contains(&Some(Action::ErrorAll));
     let opts = Options {
         strip: args.strip.unwrap_or(1),
         reverse: args.reverse,
@@ -164,6 +174,7 @@ pub(super) fn apply(git: &GitHome, cwd: &Path, args: ApplyArgs) -> Result<()> {
         cached: args.cached,
         three_way: args.three_way,
         ws,
+        all_errors,
         allow_empty: args.allow_empty,
         prefix: prefix(git, cwd).unwrap_or_default(),
     };
@@ -188,11 +199,35 @@ pub(super) fn apply(git: &GitHome, cwd: &Path, args: ApplyArgs) -> Result<()> {
             }
         };
         if let Err(Fail(code)) = session.run(&buf, &label) {
+            if session.conflicted {
+                session.summarize();
+            }
             let _ = std::io::Write::flush(&mut std::io::stdout());
             std::process::exit(code);
         }
     }
+    session.summarize();
     Ok(())
+}
+
+/// `apply.whitespace`, when set; an unknown value is fatal.
+fn configured_action(git: &GitHome) -> Result<Option<Action>> {
+    let Some(entry) = git.config().entries().iter().rev().find(|e| {
+        e.section.eq_ignore_ascii_case("apply") && e.key.eq_ignore_ascii_case("whitespace")
+    }) else {
+        return Ok(None);
+    };
+    let Some(value) = entry.value.as_deref() else {
+        eprintln!("error: missing value for 'apply.whitespace'");
+        bail!("bad config variable 'apply.whitespace'");
+    };
+    match Action::parse(value) {
+        Some(action) => Ok(Some(action)),
+        None => {
+            eprintln!("error: unrecognized whitespace option '{value}'");
+            std::process::exit(128);
+        }
+    }
 }
 
 fn io_message(e: &std::io::Error) -> String {
@@ -222,6 +257,7 @@ impl<'g> Session<'g> {
             .filter(|e| e.stage == 0)
             .map(|e| (e.path.clone(), (e.mode, e.id)))
             .collect();
+        let tally = Tally::new(opts.all_errors);
         Ok(Self {
             git,
             opts,
@@ -231,6 +267,8 @@ impl<'g> Session<'g> {
             label: String::new(),
             fixed: None,
             conflicted: false,
+            tally,
+            next_line: 1,
         })
     }
 
@@ -238,7 +276,17 @@ impl<'g> Session<'g> {
     pub fn run(&mut self, buf: &[u8], label: &str) -> std::result::Result<(), Fail> {
         self.label = label.to_string();
         let rules = |name: &[u8]| self.rule_for(name);
-        let parsed = Reader::new(buf, label, self.opts.strip, self.opts.ws, &rules).parse()?;
+        let reading = (self.opts.ws, self.tally.limit, self.opts.reverse);
+        let parsed = Reader::new(
+            buf,
+            label,
+            self.opts.strip,
+            reading,
+            (&rules, self.tally.errors, self.next_line),
+        )
+        .parse()?;
+        self.tally.errors = parsed.ws_errors;
+        self.next_line = parsed.next_line;
         let mut list: Vec<FilePatch> = parsed.patches;
         if list.is_empty() {
             if self.opts.allow_empty {
@@ -255,20 +303,27 @@ impl<'g> Session<'g> {
             let pre = self.opts.prefix.clone();
             list.retain(|p| p.name().starts_with(&pre));
         }
-        if self.opts.check || self.opts.apply {
+        let dies = self.opts.ws.dies();
+        if self.opts.check || (self.opts.apply && !(dies && self.tally.errors > 0)) {
             for patch in &list {
                 self.check_patch(patch)?;
             }
         }
         self.listings(&list);
-        if self.opts.apply {
+        if self.opts.apply && !(dies && self.tally.errors > 0) {
             self.write()?;
+        } else {
+            self.overlay.clear();
         }
-        summarize(parsed.ws_errors);
         if self.conflicted {
             return Err(Fail(1));
         }
         Ok(())
+    }
+
+    /// The whitespace summary, once every input is read.
+    pub fn summarize(&self) {
+        summarize(self.opts.ws, &self.tally, self.opts.apply);
     }
 
     fn quote(&self, name: &[u8]) -> String {
@@ -498,14 +553,19 @@ impl<'g> Session<'g> {
         } else if patch.hunks.is_empty() {
             (base, None)
         } else {
-            match apply_hunks(&base, patch) {
+            let rule = self.rule_for(&new_name);
+            let fixing = Fixing {
+                rule: &rule,
+                fix: self.opts.ws == Action::Fix,
+            };
+            match apply_hunks(&base, patch, &fixing) {
                 Ok(done) => {
-                    if self.opts.ws
-                        && self.rule_for(&new_name).bits & BLANK_AT_EOF != 0
-                        && let Some(line) = done.blank_at_eof
-                    {
-                        diag!("{}:{line}: new blank line at EOF.\n+", self.label);
+                    if self.opts.ws.reports() {
+                        for line in done.blank_at_eof {
+                            report_eof(&self.label, line, &mut self.tally);
+                        }
                     }
+                    self.tally.fixed += done.fixed;
                     (done.bytes, None)
                 }
                 Err(oldpos) => {
@@ -810,7 +870,12 @@ impl Session<'_> {
             lacking();
             return Ok(None);
         };
-        let Ok(post) = apply_hunks(&base, patch) else {
+        let rule = self.rule_for(patch.name());
+        let fixing = Fixing {
+            rule: &rule,
+            fix: self.opts.ws == Action::Fix,
+        };
+        let Ok(post) = apply_hunks(&base, patch, &fixing) else {
             diag!("error: patch failed: {}", show(patch.name()));
             return Ok(None);
         };
@@ -869,7 +934,15 @@ impl Session<'_> {
 /// The patches in `buf`, for a caller that needs more than applying them.
 pub(super) fn parse_patches(buf: &[u8], strip: usize) -> Result<Vec<FilePatch>, Fail> {
     let rules = |_: &[u8]| Rule::default();
-    Ok(Reader::new(buf, "", strip, false, &rules).parse()?.patches)
+    Ok(Reader::new(
+        buf,
+        "",
+        strip,
+        (Action::Nowarn, usize::MAX, false),
+        (&rules, 0, 1),
+    )
+    .parse()?
+    .patches)
 }
 
 /// The patches applied to `base` in memory: the content each touched path ends with, `None` for a removed one.
@@ -889,7 +962,8 @@ pub(super) fn patched(
         index: false,
         cached: false,
         three_way: false,
-        ws: false,
+        ws: Action::Nowarn,
+        all_errors: false,
         allow_empty: false,
         prefix: Vec::new(),
     };

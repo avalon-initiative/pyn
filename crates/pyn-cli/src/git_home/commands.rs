@@ -64,7 +64,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             if let Some(when) = &ignore_submodules {
                 git.repo.force_submodule_ignore(when)?;
             }
-            let format = format.format().silenced(no_patch);
+            let format = format.format().with_external().silenced(no_patch);
             let differs = diff(git, cwd, &args, &paths, &format, quiet, cached)?;
             diff::exit_for_diff(differs && (exit_code || quiet));
             Ok(())

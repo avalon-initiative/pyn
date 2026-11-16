@@ -56,12 +56,23 @@ pub fn unified(
     layout: &pyn_diff::Layout,
     ws: &pyn_diff::Ws,
 ) -> Vec<pyn_diff::Hunk> {
+    unified_with(old, new, layout, ws, &pyn_diff::is_function_line)
+}
+
+/// As `unified`, where `-W` finds function starts with `is_function`.
+pub fn unified_with(
+    old: &[u8],
+    new: &[u8],
+    layout: &pyn_diff::Layout,
+    ws: &pyn_diff::Ws,
+    is_function: &dyn Fn(&[u8]) -> bool,
+) -> Vec<pyn_diff::Hunk> {
     let trim = layout.context == 0 && !layout.function;
     let script = hunks_trimmed(old, new, ws, true, trim)
         .iter()
         .map(|h| (h.a_start, h.a_count, h.b_start, h.b_count))
         .collect::<Vec<_>>();
-    pyn_diff::hunks_from_script(old, new, layout, ws, &script)
+    pyn_diff::hunks_from_script_with(old, new, layout, ws, &script, is_function)
 }
 
 /// Lines added and deleted going from `old` to `new`, as the diffstat counts them.

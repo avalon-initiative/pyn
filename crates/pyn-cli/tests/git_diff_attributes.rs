@@ -349,7 +349,7 @@ fn an_invalid_funcname_pattern_is_an_error() {
 
 #[test]
 fn a_driver_setting_with_no_value_is_a_fatal_config_error() {
-    for key in ["funcname", "xfuncname", "textconv", "wordRegex"] {
+    for key in ["funcname", "xfuncname", "textconv", "wordRegex", "command"] {
         let script = format!(
             "printf 'f diff=fn\\n' >.gitattributes; printf 'one\\ntwo\\n' >f; git add -A .; git commit -qm base\n\
              printf 'one\\nTWO\\n' >f; printf '[diff \"fn\"]\\n\\t{key}\\n' >>.git/config\n"
@@ -439,5 +439,207 @@ fn the_whitespace_attribute_decides_what_diff_check_reports() {
                 p.same(&["diff", "--color=always"]);
             });
         }
+    }
+}
+
+/// A repository where `f` is committed twice with a textconv that upper-cases, then left clean.
+const CLEAN_UPPER: &str = "printf 'f diff=up\\n' >.gitattributes; git config diff.up.textconv 'tr a-z A-Z <'\n\
+    printf 'one\\ntwo\\nthree\\n' >f; git add -A .; git commit -qm base\n\
+    printf 'one\\ntwo changed\\nthree\\nfour\\n' >f; git commit -qam second\n";
+
+#[test]
+fn blame_blames_the_converted_text() {
+    each(CLEAN_UPPER, |p| {
+        for args in [
+            &["blame", "f"][..],
+            &["blame", "--no-textconv", "f"],
+            &["blame", "--textconv", "f"],
+            &["blame", "-L", "2,3", "f"],
+            &["blame", "--porcelain", "f"],
+            &["blame", "-C", "f"],
+        ] {
+            p.same(args);
+        }
+    });
+}
+
+#[test]
+fn blame_converts_a_work_tree_file_and_follows_a_rename() {
+    each(CLEAN_UPPER, |p| {
+        for dir in [&p.git, &p.pyn] {
+            fs::rename(dir.join("f"), dir.join("g")).unwrap();
+            fs::write(dir.join(".gitattributes"), "* diff=up\n").unwrap();
+        }
+        p.git_in(&p.git, &["add", "-A"]);
+        p.git_in(&p.pyn, &["add", "-A"]);
+        for dir in [&p.git, &p.pyn] {
+            let out = p.git_in(dir, &["commit", "-qm", "rename"]);
+            assert!(out.status.success());
+        }
+        p.same(&["blame", "g"]);
+        p.same(&["blame", "--no-textconv", "g"]);
+    });
+}
+
+#[test]
+fn grep_converts_only_when_asked() {
+    each(CLEAN_UPPER, |p| {
+        for args in [
+            &["grep", "-n", "TWO"][..],
+            &["grep", "-n", "--textconv", "TWO"],
+            &["grep", "-n", "--textconv", "--no-textconv", "TWO"],
+            &["grep", "--textconv", "-c", "O"],
+            &["grep", "--textconv", "-l", "FOUR", "HEAD", "HEAD~1"],
+            &["grep", "--textconv", "--cached", "-n", "ONE"],
+            &["grep", "--textconv", "-n", "-i", "four", "HEAD"],
+        ] {
+            p.same(args);
+        }
+    });
+}
+
+#[test]
+fn a_file_replaced_by_a_link_is_split_and_only_the_file_converts() {
+    let script = format!("{CLEAN_UPPER}rm f; ln -s elsewhere f\n");
+    each(&script, |p| {
+        for args in [
+            &["diff"][..],
+            &["diff", "--stat"],
+            &["diff", "--no-textconv"],
+            &["diff", "-R"],
+            &["diff", "--raw"],
+        ] {
+            p.same(args);
+        }
+        p.git_in(&p.git, &["add", "-A"]);
+        p.git_in(&p.pyn, &["add", "-A"]);
+        p.same(&["diff", "--cached"]);
+        p.same(&["diff", "HEAD"]);
+    });
+}
+
+const SECTIONS: &str = "printf 'sec one\\n a\\n b\\n c\\n d\\n e\\n f\\n g\\n h\\nsec two\\n i\\n j\\n k\\n l\\n m\\n n\\n o\\n p\\nsec three\\n x\\n' >f.x\n\
+    git add -A .; git commit -qm base\n\
+    printf 'sec one\\n a\\n b\\n c\\n d\\n e\\n f\\n g\\n h\\nsec two\\n i\\n j\\n k\\n l\\n m\\n n\\n O\\n p\\nsec three\\n x\\n' >f.x\n";
+
+#[test]
+fn function_context_finds_the_function_start_with_the_driver_pattern() {
+    for config in [
+        "git config diff.fn.xfuncname '^(sec .*)$'",
+        "git config diff.fn.funcname '^sec'",
+        "git config diff.fn.xfuncname '^sec t.*'",
+        "git config diff.fn.xfuncname '!^sec one\n^sec .*'",
+    ] {
+        let script = format!("printf '*.x diff=fn\\n' >.gitattributes; {config}\n{SECTIONS}");
+        each(&script, |p| {
+            for args in [
+                &["diff", "-W"][..],
+                &["diff", "-W", "-U0"],
+                &["diff", "-W", "-U1"],
+                &["diff", "--function-context", "--inter-hunk-context=9"],
+                &["diff", "-W", "--no-textconv", "-R"],
+            ] {
+                p.same(args);
+            }
+        });
+    }
+    let default = format!("printf '*.x diff=nonesuch\\n' >.gitattributes\n{SECTIONS}");
+    each(&default, |p| p.same(&["diff", "-W"]));
+}
+
+#[test]
+fn no_index_check_reads_the_whitespace_attribute_of_the_global_file() {
+    let script = "printf '[core]\\n\\tattributesFile = %s/ga\\n' \"$HOME\" >\"$HOME/.gitconfig\"\n\
+        printf '*.t whitespace=-trailing-space\\n*.u whitespace=blank-at-eof\\n' >\"$HOME/ga\"\n\
+        printf 'a\\n' >o.t; printf 'a\\nb \\n' >n.t; printf 'a\\n' >o.u; printf 'a\\nb \\n\\n\\n' >n.u\n\
+        printf 'a\\n' >o.v; printf 'a\\nb \\n' >n.v; git add -A .; git commit -qm base\n";
+    each(script, |p| {
+        for (old, new) in [("o.t", "n.t"), ("o.u", "n.u"), ("o.v", "n.v")] {
+            p.same(&["diff", "--no-index", "--check", old, new]);
+        }
+    });
+}
+
+/// A shell script that prints what an external diff program gets, with the ids and the temporary names masked.
+fn external_program(dir: &Path, name: &str, body: &str) -> String {
+    let file = dir.join(name);
+    fs::write(&file, body).unwrap();
+    format!("sh {}", file.display())
+}
+
+const SHOW_ARGS: &str = r#"echo "args=$# path=$1"
+mask() { case "$1" in .) echo . ;; *[!0-9a-f]*) echo "$1" ;; *) echo ID ;; esac; }
+if [ "$2" = /dev/null ]; then echo "old=null"; else echo "old=$(basename "$2") $(mask "$3") $4"; fi
+if [ "$5" = /dev/null ]; then echo "new=null"; else echo "new=$(basename "$5") $(mask "$6") $7"; fi
+if [ $# -gt 7 ]; then echo "to=$8"; printf '%s' "$9"; fi
+echo "old-content: $(cat "$2" | tr '\n' '|')"
+echo "new-content: $(cat "$5" | tr '\n' '|')"
+echo "counter=$GIT_DIFF_PATH_COUNTER/$GIT_DIFF_PATH_TOTAL"
+"#;
+
+const EXTERNAL_HISTORY: &str = "printf '*.x diff=ex\\n' >.gitattributes\n\
+    mkdir d; printf 'a\\nb\\n' >f.x; printf 'plain\\n' >p.txt; printf 'q\\n' >d/h.x; git add -A .; git commit -qm base\n\
+    printf 'a\\nc\\n' >f.x; printf 'plain2\\n' >p.txt; printf 'new\\n' >g.x; git add -A .; git commit -qm second\n\
+    git mv d/h.x d/i.x; printf 'q\\nr\\n' >d/i.x; printf 'a\\nd\\n' >f.x; printf 'new\\n' >n.x; git add -N n.x\n";
+
+#[test]
+fn an_external_diff_program_gets_each_side_of_a_changed_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let command = external_program(tmp.path(), "show.sh", SHOW_ARGS);
+    let script = format!("git config diff.ex.command '{command}'\n{EXTERNAL_HISTORY}");
+    each(&script, |p| {
+        for args in [
+            &["diff"][..],
+            &["diff", "--cached"],
+            &["diff", "HEAD"],
+            &["diff", "-R"],
+            &["diff", "HEAD~1", "HEAD"],
+            &["diff", "-M", "HEAD"],
+            &["diff", "-C", "HEAD"],
+            &["diff", "--stat", "-p"],
+            &["diff", "--no-ext-diff"],
+            &["diff", "--ext-diff"],
+            &["diff", "--exit-code"],
+            &["diff", "--quiet"],
+            &["diff", "--name-only"],
+            &["diff", "--", "f.x"],
+            &["log", "-p", "-2"],
+            &["log", "-p", "-2", "--ext-diff"],
+            &["show", "HEAD"],
+            &["show", "--ext-diff", "HEAD"],
+        ] {
+            p.same(args);
+        }
+    });
+}
+
+#[test]
+fn an_external_diff_program_sees_a_binary_file_and_a_type_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let command = external_program(tmp.path(), "show.sh", SHOW_ARGS);
+    let script = format!(
+        "git config diff.ex.command '{command}'; printf '*.x diff=ex\\n' >.gitattributes\n\
+         printf 'a\\0b\\n' >bin.x; printf 'text\\n' >t.x; git add -A .; git commit -qm base\n\
+         printf 'a\\0c\\n' >bin.x; rm t.x; ln -s target t.x\n"
+    );
+    each(&script, |p| {
+        p.same(&["diff"]);
+        p.same(&["diff", "-R"]);
+    });
+}
+
+#[test]
+fn a_failing_external_diff_program_stops_the_diff() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, body) in [
+        ("fail.sh", "echo partial\nexit 3\n"),
+        ("quiet.sh", "exit 0\n"),
+    ] {
+        let command = external_program(tmp.path(), name, body);
+        let script = format!("git config diff.ex.command '{command}'\n{EXTERNAL_HISTORY}");
+        each(&script, |p| {
+            p.same(&["diff"]);
+            p.same(&["diff", "--", "p.txt", "g.x"]);
+        });
     }
 }

@@ -684,17 +684,23 @@ fn is_empty_record(line: &[u8]) -> bool {
     line.iter().all(|c| is_space(*c))
 }
 
-fn is_function_line(line: &[u8]) -> bool {
+/// git's default function-line test: a line starting with a letter, `_` or `$`.
+pub fn is_function_line(line: &[u8]) -> bool {
     line.first()
         .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_' || *b == b'$')
 }
 
 /// The nearest function line from `start` towards `limit` (exclusive); `limit` below `start` searches backwards.
-fn function_line(a: &[&[u8]], start: isize, limit: isize) -> Option<usize> {
+fn function_line(
+    a: &[&[u8]],
+    start: isize,
+    limit: isize,
+    is_function: &dyn Fn(&[u8]) -> bool,
+) -> Option<usize> {
     let step = if start > limit { -1 } else { 1 };
     let mut l = start;
     while l != limit && l >= 0 && (l as usize) < a.len() {
-        if is_function_line(a[l as usize]) {
+        if is_function(a[l as usize]) {
             return Some(l as usize);
         }
         l += step;
@@ -734,6 +740,18 @@ pub fn hunks_from_script(
     ws: &Ws,
     script: &[Edit],
 ) -> Vec<Hunk> {
+    hunks_from_script_with(old, new, layout, ws, script, &is_function_line)
+}
+
+/// As `hunks_from_script`, where `-W` finds a function start with `is_function`.
+pub fn hunks_from_script_with(
+    old: &[u8],
+    new: &[u8],
+    layout: &Layout,
+    ws: &Ws,
+    script: &[Edit],
+    is_function: &dyn Fn(&[u8]) -> bool,
+) -> Vec<Hunk> {
     let (a, b) = (split_lines(old), split_lines(new));
     let mut changes: Vec<Change> = script
         .iter()
@@ -767,19 +785,15 @@ pub fn hunks_from_script(
         if layout.function {
             // An appended block needs no pre-context when a function starts in it.
             let appended = head.i1 >= a.len();
-            let whole = appended
-                && b[head.i2.min(b.len())..]
-                    .iter()
-                    .any(|l| is_function_line(l));
+            let whole = appended && b[head.i2.min(b.len())..].iter().any(|l| is_function(l));
             if !whole {
                 let at = if appended {
                     a.len() as isize - 1
                 } else {
                     head.i1 as isize
                 };
-                let mut start = function_line(&a, at, -1).unwrap_or(0);
-                while start > 0 && !is_empty_record(a[start - 1]) && !is_function_line(a[start - 1])
-                {
+                let mut start = function_line(&a, at, -1, is_function).unwrap_or(0);
+                while start > 0 && !is_empty_record(a[start - 1]) && !is_function(a[start - 1]) {
                     start -= 1;
                 }
                 if start < s1 {
@@ -800,7 +814,12 @@ pub fn hunks_from_script(
                 break;
             }
             let mut fe1 = a.len();
-            if let Some(f) = function_line(&a, (tail.i1 + tail.chg1) as isize, a.len() as isize) {
+            if let Some(f) = function_line(
+                &a,
+                (tail.i1 + tail.chg1) as isize,
+                a.len() as isize,
+                is_function,
+            ) {
                 fe1 = f;
                 while fe1 > 0 && is_empty_record(a[fe1 - 1]) {
                     fe1 -= 1;
@@ -814,7 +833,7 @@ pub fn hunks_from_script(
                 Some(next) => {
                     let l = next.i1.min(a.len().saturating_sub(1));
                     if l.saturating_sub(ctx) <= e1
-                        || function_line(&a, l as isize, e1 as isize).is_none()
+                        || function_line(&a, l as isize, e1 as isize, is_function).is_none()
                     {
                         last += 1;
                         continue;

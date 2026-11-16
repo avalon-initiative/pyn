@@ -470,7 +470,12 @@ fn apply_patch(
         index: true,
         cached: false,
         three_way: false,
-        ws: warn_ws,
+        ws: if warn_ws {
+            super::apply_ws::Action::Warn
+        } else {
+            super::apply_ws::Action::Nowarn
+        },
+        all_errors: false,
         allow_empty: false,
         prefix: Vec::new(),
     };

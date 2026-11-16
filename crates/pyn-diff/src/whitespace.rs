@@ -76,6 +76,100 @@ pub fn check(line: &[u8], rule: &Rule) -> u32 {
     mark(line, rule, None)
 }
 
+/// `line` with its whitespace errors fixed as `ws_fix_copy` does, and whether git counts it as fixed (a carriage
+/// return dropped before the newline alone does not count). Unchanged when `check` finds no error.
+pub fn fix(line: &[u8], rule: &Rule) -> (Vec<u8>, bool) {
+    if check(line, rule) & !BLANK_AT_EOF == 0 {
+        return (line.to_vec(), false);
+    }
+    let mut len = line.len();
+    let newline = len > 0 && line[len - 1] == b'\n';
+    let mut cr = false;
+    if newline {
+        len -= 1;
+        if len > 0 && line[len - 1] == b'\r' {
+            cr = rule.has(CR_AT_EOL);
+            len -= 1;
+        }
+    }
+    let mut counted = false;
+    if rule.has(BLANK_AT_EOL) {
+        while len > 0 && is_space(line[len - 1]) {
+            len -= 1;
+            counted = true;
+        }
+    }
+    let src = &line[..len];
+    let (mut last_tab, mut last_space) = (None::<usize>, None::<usize>);
+    let (mut need, mut i) = (false, 0);
+    while i < src.len() {
+        match src[i] {
+            b'\t' => {
+                last_tab = Some(i);
+                need |= rule.has(SPACE_BEFORE_TAB) && last_space.is_some();
+            }
+            b' ' => {
+                last_space = Some(i);
+                let since = last_tab.map_or(i + 1, |t| i - t);
+                need |= rule.has(INDENT_WITH_NON_TAB) && rule.tab_width <= since;
+            }
+            _ => break,
+        }
+        i += 1;
+    }
+    let mut out = Vec::with_capacity(line.len());
+    if need {
+        let mut last = last_tab.map_or(0, |t| t + 1);
+        if rule.has(INDENT_WITH_NON_TAB) {
+            last = match (last_tab, last_space) {
+                (t, Some(s)) if t.is_none_or(|t| t < s) => s + 1,
+                (Some(t), _) => t + 1,
+                _ => 0,
+            };
+        }
+        let mut spaces = 0;
+        for &c in &src[..last] {
+            if c == b' ' {
+                spaces += 1;
+                if spaces == rule.tab_width {
+                    out.push(b'\t');
+                    spaces = 0;
+                }
+            } else {
+                spaces = 0;
+                out.push(c);
+            }
+        }
+        out.extend(std::iter::repeat_n(b' ', spaces));
+        out.extend_from_slice(&src[last..]);
+        counted = true;
+    } else if rule.has(TAB_IN_INDENT) && last_tab.is_some() {
+        let mut col = 0;
+        let mut j = 0;
+        while j < src.len() && matches!(src[j], b' ' | b'\t') {
+            let n = if src[j] == b'\t' {
+                rule.tab_width - col % rule.tab_width
+            } else {
+                1
+            };
+            out.extend(std::iter::repeat_n(b' ', n));
+            col += n;
+            j += 1;
+        }
+        out.extend_from_slice(&src[j..]);
+        counted = true;
+    } else {
+        out.extend_from_slice(src);
+    }
+    if cr {
+        out.push(b'\r');
+    }
+    if newline {
+        out.push(b'\n');
+    }
+    (out, counted)
+}
+
 /// Colors for `emit`: `set` for the text, `ws` for errors, `reset` after each run.
 pub struct Paint<'a> {
     pub set: &'a str,
@@ -244,6 +338,37 @@ mod tests {
         assert_eq!(r.bits, SPACE_BEFORE_TAB | TAB_IN_INDENT);
         assert_eq!(r.tab_width, 4);
         assert!(Rule::parse("nonsense").is_none());
+    }
+
+    #[test]
+    fn fix_strips_trailing_space_and_fixes_the_indent() {
+        let fixed = |line: &[u8], spec: &str| fix(line, &Rule::parse(spec).unwrap());
+        assert_eq!(fixed(b"x \t\n", "trailing-space"), (b"x\n".to_vec(), true));
+        assert_eq!(fixed(b"x\r\n", "trailing-space").0, b"x\n");
+        assert!(!fixed(b"x\r\n", "trailing-space").1);
+        assert_eq!(fixed(b"x\r\n", "cr-at-eol").0, b"x\r\n");
+        assert_eq!(fixed(b"  \tc\n", "space-before-tab").0, b"\tc\n");
+        assert_eq!(fixed(b"        y\n", "indent-with-non-tab").0, b"\ty\n");
+        assert_eq!(fixed(b"    x\n", "indent-with-non-tab").0, b"    x\n");
+        assert_eq!(fixed(b"\t  z\n", "tab-in-indent").0, b"          z\n");
+        assert_eq!(fixed(b"\ta\n", "tab-in-indent,tabwidth=4").0, b"    a\n");
+        assert_eq!(
+            fixed(
+                b"    \t x \t \n",
+                "blank-at-eol,indent-with-non-tab,tabwidth=2"
+            )
+            .0,
+            b"\t\t\t x\n"
+        );
+        assert_eq!(
+            fixed(
+                b"    \t x\n",
+                "indent-with-non-tab,-space-before-tab,tabwidth=2"
+            )
+            .0,
+            b"    \t x\n"
+        );
+        assert_eq!(fixed(b"fine\n", "trailing-space").0, b"fine\n");
     }
 
     #[test]
