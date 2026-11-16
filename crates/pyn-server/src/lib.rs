@@ -327,6 +327,7 @@ struct RepoAddress {
         api::Account,
         api::Profile,
         api::UpdateProfileRequest,
+        api::ProfileVisibility,
         api::PublicProfile,
         api::MyLock,
         api::Me,

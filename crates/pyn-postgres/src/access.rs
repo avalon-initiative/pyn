@@ -10,8 +10,8 @@ use pyn_core::{
     ExternalCreate, ExternalIdentity, IdentityUnlink, InvitationAccept, InvitationCreate, InviteId,
     InviteRecord, Limits, LimitsChange, LimitsEvent, MemberCreation, NameReservation, NewAccount,
     NewExternalAccount, OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgRole,
-    Permission, PrimaryChange, Profile, ProfileFields, PynError, RateLimitStore, RateState,
-    RegistrationMode, RenameOutcome, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
+    Permission, PrimaryChange, Profile, ProfileFields, ProfileVisibility, PynError, RateLimitStore,
+    RateState, RegistrationMode, RenameOutcome, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
     ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
     SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord, UserId,
     VerificationRecord,
@@ -727,6 +727,15 @@ impl AccessStore for PgMetadataStore {
         now: DateTime<Utc>,
     ) -> Result<()> {
         self.put_profile_fields(user, fields, now).await
+    }
+
+    async fn set_profile_visibility(
+        &self,
+        user: &UserId,
+        visibility: &ProfileVisibility,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.put_visibility(user, visibility, now).await
     }
 
     async fn set_avatar(

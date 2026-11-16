@@ -698,6 +698,44 @@ pub struct Profile {
     /// Where the avatar image is served, with a `v` parameter that changes when the image does; absent when the
     /// account has none.
     pub avatar_url: Option<String>,
+    /// Which fields others may see. Present only for the account's own view; the other fields are already filtered
+    /// by it, so a hidden one is absent (null, empty or no `avatar_url`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<ProfileVisibility>,
+}
+
+fn visible() -> bool {
+    true
+}
+
+/// Per-field visibility of a profile. A missing field is visible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProfileVisibility {
+    #[serde(default = "visible")]
+    pub display_name: bool,
+    #[serde(default = "visible")]
+    pub bio: bool,
+    #[serde(default = "visible")]
+    pub location: bool,
+    #[serde(default = "visible")]
+    pub company: bool,
+    #[serde(default = "visible")]
+    pub links: bool,
+    #[serde(default = "visible")]
+    pub avatar: bool,
+}
+
+impl Default for ProfileVisibility {
+    fn default() -> Self {
+        Self {
+            display_name: true,
+            bio: true,
+            location: true,
+            company: true,
+            links: true,
+            avatar: true,
+        }
+    }
 }
 
 /// The new profile text: every field is replaced, and one left out or blank is cleared.
@@ -709,6 +747,9 @@ pub struct UpdateProfileRequest {
     pub company: Option<String>,
     #[serde(default)]
     pub links: Vec<String>,
+    /// Left out, the stored visibility is kept; given, it replaces it (a field missing from it is visible).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<ProfileVisibility>,
 }
 
 /// An account's public profile as the caller may see it: no email address, and only the repositories and
