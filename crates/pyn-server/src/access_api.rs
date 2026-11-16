@@ -41,21 +41,28 @@ async fn token_info(s: &AppState, t: TokenRecord) -> ApiResult<api::TokenInfo> {
     })
 }
 
-#[utoipa::path(get, path = "/v1/me", responses((status = 200, body = api::Account), (status = 401, body = api::ErrorBody)))]
+#[utoipa::path(get, path = "/v1/me", responses(
+    (status = 200, body = api::Account, description = "a full-scope credential gets its own full view; any narrower credential (a repository-scoped token) gets the public profile view, no visibility settings, no has_password and admin false"),
+    (status = 401, body = api::ErrorBody),
+))]
 pub(crate) async fn me(
     State(s): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<api::Account>> {
     let who = identify(&s, &headers).await?;
+    let full = who.is_full_scope();
     Ok(Json(api::Account {
         id: s.access.account_id(&who.user).await?.to_string(),
         user: who.user.to_string(),
         admin: s.access.is_server_admin(&who).await?,
-        has_password: s.access.has_password(&who.user).await?,
+        has_password: match full {
+            true => Some(s.access.has_password(&who.user).await?),
+            false => None,
+        },
         profile: crate::profile_api::profile_dto(
             &who.user,
-            s.access.profile_of(&who.user).await?,
-            true,
+            s.access.profile_for(&who).await?,
+            full,
         ),
     }))
 }

@@ -113,6 +113,7 @@ impl AccessService {
 
     /// The deletion scheduled for the signed-in account, if any.
     pub async fn deletion_status(&self, actor: &Identity) -> Result<Option<AccountDeletion>> {
+        actor.require_full_scope()?;
         let account = self.existing_account(&actor.user).await?;
         Ok(match account.disabled_at {
             Some(_) => self.store.account_deletion(&actor.user).await?,

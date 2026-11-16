@@ -673,9 +673,10 @@ pub struct Account {
     #[serde(default)]
     pub admin: bool,
     /// Whether the account has a password. False for an account created through external sign-in until it sets
-    /// one, in which case `PUT /v1/me/password` takes no current password.
-    #[serde(default)]
-    pub has_password: bool,
+    /// one, in which case `PUT /v1/me/password` takes no current password. Absent for a credential that is not
+    /// full-scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_password: Option<bool>,
     /// The account's profile; the email address is never part of it.
     #[serde(default)]
     pub profile: Profile,

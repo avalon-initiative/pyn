@@ -77,6 +77,16 @@ impl AccessService {
         self.store.profile(user).await
     }
 
+    /// The profile the credential may read of its own account: everything for a full-scope one, else the public view.
+    pub async fn profile_for(&self, who: &Identity) -> Result<Profile> {
+        let profile = self.store.profile(&who.user).await?;
+        Ok(if who.is_full_scope() {
+            profile
+        } else {
+            profile.public_view()
+        })
+    }
+
     /// Whether the account can sign in with a password.
     pub async fn has_password(&self, user: &UserId) -> Result<bool> {
         Ok(self.store.password_hash(user).await?.is_some())

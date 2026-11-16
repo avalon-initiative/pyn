@@ -160,7 +160,7 @@ async fn me_reports_whether_the_account_has_a_password() {
     let me = call(&app, &alice, "GET", "/v1/me", None)
         .await
         .json::<api::Account>();
-    assert!(me.has_password);
+    assert_eq!(me.has_password, Some(true));
     assert_eq!(
         me.profile,
         api::Profile {
@@ -173,7 +173,7 @@ async fn me_reports_whether_the_account_has_a_password() {
         .await
         .json::<api::Account>();
     assert!(
-        !me.has_password,
+        me.has_password == Some(false),
         "no password has been set for this account"
     );
 }

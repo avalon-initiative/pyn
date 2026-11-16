@@ -402,6 +402,11 @@ permissions) is refused with `403 forbidden`; it keeps working for its own scope
 outlives it: the new token's expiry is capped at its own, and it never holds more permissions or repositories than the creator.
 A web session may create any token its owner could.
 
+Two reads follow the same rule. `GET /v1/account/deletion` (the deletion status) needs a full-scope credential, like scheduling and
+restoring a deletion (a pending account's own session and sign-in tokens are full-scope, so they still reach it). `GET /v1/me` is open
+to every credential because a CI token may ask who it is, but a narrower one gets only the account name and id and the public profile
+view, never the owner's hidden fields, visibility settings or `has_password` ([profiles](profiles.md)).
+
 The organization-wide reads need the same credential, because they expose data beyond one repository: the organization list
 (`GET /v1/orgs`, `GET /v1/me/orgs`), members, audit log, teams and the repository-creation policy, and the people directory (`GET /v1/users`). A narrower token or a service
 credential is refused (`403`). A team's `repos` hold only repositories the caller could open (public ones, or any in which they hold a
