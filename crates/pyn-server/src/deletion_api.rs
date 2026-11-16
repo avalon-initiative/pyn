@@ -43,6 +43,7 @@ async fn identify_pending_ok(s: &AppState, headers: &HeaderMap) -> ApiResult<Ide
 #[utoipa::path(get, path = "/v1/account/deletion", responses(
     (status = 200, body = api::AccountDeletionStatus, description = "works while the account is scheduled for deletion"),
     (status = 401, body = api::ErrorBody, description = "unauthenticated"),
+    (status = 403, body = api::ErrorBody, description = "a token that is not full-scope, or a service credential"),
 ))]
 pub(crate) async fn account_deletion_status(
     State(s): State<AppState>,

@@ -9,8 +9,9 @@ use pyn_core::memory::{
 };
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AccountStatus, AuditAction, AuditQuery, AuditScope,
-    AuditStore, Credential, Identity, ManualClock, PynError, Registration, RegistrationMode,
-    Repositories, Rules, UserId,
+    AuditStore, Credential, Identity, ManualClock, Permission, ProfileFields, ProfileVisibility,
+    PynError, Registration, RegistrationMode, RepoId, Repositories, Rules, TokenId, TokenRecord,
+    UserId,
 };
 
 const PASSWORD: &str = "correct horse battery";
@@ -804,4 +805,74 @@ async fn a_rename_cannot_take_a_purged_accounts_reserved_name() {
         .rename_account(&session("bob"), "robert", Some(PASSWORD))
         .await
         .unwrap();
+}
+
+fn token_identity(name: &str, perms: &[Permission], repos: &[&str]) -> Identity {
+    Identity {
+        user: user(name),
+        credential: Credential::Token(TokenRecord {
+            id: TokenId("t1".into()),
+            user: user(name),
+            name: "ci".into(),
+            secret_hash: String::new(),
+            permissions: perms.iter().copied().collect(),
+            repos: repos.iter().map(|r| RepoId::new(*r)).collect(),
+            created_at: Utc::now(),
+            expires_at: None,
+            revoked_at: None,
+            last_used_at: None,
+            sign_in: false,
+        }),
+    }
+}
+
+#[tokio::test]
+async fn the_deletion_status_needs_a_full_scope_credential() {
+    let w = world();
+    sign_up(&w, "alice").await;
+    let full = token_identity("alice", &Permission::ALL, &[]);
+    assert!(w.access.deletion_status(&full).await.unwrap().is_none());
+    assert!(w.access.deletion_status(&session("alice")).await.is_ok());
+
+    let scoped = token_identity("alice", &Permission::ALL, &["alice/game"]);
+    let read_only = token_identity("alice", &[Permission::Read], &[]);
+    for who in [scoped, read_only] {
+        assert_eq!(code(w.access.deletion_status(&who).await), "forbidden");
+    }
+    w.access
+        .schedule_own_deletion(&session("alice"), PASSWORD)
+        .await
+        .unwrap();
+    let scoped = token_identity("alice", &[Permission::Read], &["alice/game"]);
+    assert_eq!(code(w.access.deletion_status(&scoped).await), "forbidden");
+    assert!(w.access.deletion_status(&full).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn profile_for_gives_only_a_full_scope_credential_the_hidden_fields() {
+    let w = world();
+    sign_up(&w, "alice").await;
+    let fields = ProfileFields {
+        bio: Some("secret".into()),
+        company: Some("Acme".into()),
+        ..Default::default()
+    };
+    let hidden = ProfileVisibility {
+        bio: false,
+        ..Default::default()
+    };
+    w.access
+        .update_profile(&session("alice"), fields, Some(hidden))
+        .await
+        .unwrap();
+
+    let own = w.access.profile_for(&session("alice")).await.unwrap();
+    assert_eq!(own.fields.bio.as_deref(), Some("secret"));
+    assert!(!own.visibility.bio);
+    let scoped = token_identity("alice", &Permission::ALL, &["alice/game"]);
+    for who in [scoped, token_identity("alice", &[Permission::Read], &[])] {
+        let seen = w.access.profile_for(&who).await.unwrap();
+        assert_eq!(seen.fields.bio, None);
+        assert_eq!(seen.fields.company.as_deref(), Some("Acme"));
+    }
 }

@@ -30,7 +30,7 @@ default, so existing accounts and clients are unchanged. The setting is a `visib
 
 - `PUT /v1/me/profile` takes an optional `visibility`. Left out, the stored setting is kept (so a client that does not know
   about it never resets it); given, it replaces the setting, and a key missing from it is visible.
-- `GET /v1/me` and the owner's own `GET /v1/users/{user}` carry `visibility` and every field. Any other viewer gets the
+- `GET /v1/me` and the owner's own `GET /v1/users/{user}` (through a full-scope credential) carry `visibility` and every field. Any other viewer gets the
   profile without the hidden fields and without a `visibility` object: a hidden text field is `null`, hidden `links` is
   empty, a hidden avatar has no `avatar_url` and `GET /v1/users/{user}/avatar` answers `404 avatar_not_found`. Nothing
   tells a viewer whether a field is hidden or just empty.
@@ -52,11 +52,16 @@ lifetime.
 | `PUT /v1/me/profile` | Replaces your display name, bio, location, company and links. A field left out is cleared. |
 | `PUT /v1/me/avatar` | Sets your avatar from the request body (the raw image bytes). |
 | `DELETE /v1/me/avatar` | Removes your avatar. |
-| `GET /v1/me` | Your account, with `has_password` and your `profile`. |
+| `GET /v1/me` | Your account, with `has_password` and your `profile`. A credential that is not full-scope gets only the account `id` and `user` and the public view of the profile. |
 
 Editing needs a full-scope credential (a session, or a token with every permission and no repository restriction).
 
-`GET /v1/me` reports `has_password`. It is false for an account created through
+`GET /v1/me` through a credential that is not full-scope (a repository-scoped or read-only token) answers "who am I" and nothing
+more: the account name and id, `admin` false, and the profile as a stranger sees it (hidden fields absent, no `visibility`
+object), with no `has_password`. A CI token can therefore identify its owner without reading what the owner hid. Full-scope
+credentials get the full own view.
+
+`GET /v1/me` reports `has_password` to a full-scope credential. It is false for an account created through
 [external sign-in](external-sign-in.md) that has not set one; such an account sets its first password with
 `PUT /v1/me/password` and no current password, from a signed-in web session.
 

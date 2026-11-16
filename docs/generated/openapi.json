@@ -53,6 +53,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "a token that is not full-scope, or a service credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       },
@@ -1974,6 +1984,7 @@
         "operationId": "me",
         "responses": {
           "200": {
+            "description": "a full-scope credential gets its own full view; any narrower credential (a repository-scoped token) gets the public profile view, no visibility settings, no has_password and admin false",
             "content": {
               "application/json": {
                 "schema": {
@@ -9296,8 +9307,11 @@
             "description": "Runs the server: may approve and disable accounts under `/v1/admin`."
           },
           "has_password": {
-            "type": "boolean",
-            "description": "Whether the account has a password. False for an account created through external sign-in until it sets\none, in which case `PUT /v1/me/password` takes no current password."
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the account has a password. False for an account created through external sign-in until it sets\none, in which case `PUT /v1/me/password` takes no current password. Absent for a credential that is not\nfull-scope."
           },
           "id": {
             "type": "string",
