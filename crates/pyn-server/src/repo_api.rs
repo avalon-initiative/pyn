@@ -99,7 +99,7 @@ pub(crate) struct ExploreQuery {
 #[utoipa::path(get, path = "/v1/explore/repos",
     params(("after" = Option<String>, Query, description = "return repositories after this `owner/name`"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
-    responses((status = 200, body = api::RepoPage, description = "public repositories; `role` is the caller's, if they have one"),
+    responses((status = 200, body = api::RepoPage, description = "public repositories; `role` is the caller's, if they have one (a scoped token has none outside its repositories)"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: a malformed `after`"),
               (status = 401, body = api::ErrorBody, description = "credentials were sent but are not valid")))]
 pub(crate) async fn explore_repos(
@@ -122,7 +122,7 @@ pub(crate) async fn explore_repos(
 }
 
 #[utoipa::path(get, path = "/v1/me/locks",
-    responses((status = 200, body = Vec<api::MyLock>, description = "live locks in repositories the caller can read, ordered by repository then path"),
+    responses((status = 200, body = Vec<api::MyLock>, description = "live locks in repositories the caller can read (a scoped token: only its repositories), ordered by repository then path"),
               (status = 401, body = api::ErrorBody)))]
 pub(crate) async fn my_locks(
     State(s): State<AppState>,
@@ -193,10 +193,7 @@ pub(crate) async fn get_repo(
 ) -> ApiResult<Json<api::RepoInfo>> {
     let who = identify_optional(&s, &headers).await?;
     let (open, _) = open_visible(&s, who.as_ref(), &owner, &name).await?;
-    let role = match &who {
-        Some(who) => s.access.role_in(&open.record.id, &who.user).await?,
-        None => None,
-    };
+    let role = s.access.role_for(&open.record.id, who.as_ref()).await?;
     let limit = open.service.lock_limit();
     Ok(Json(repo_info(&s, open.record, role, limit).await?))
 }

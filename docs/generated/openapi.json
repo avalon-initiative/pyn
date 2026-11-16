@@ -1763,7 +1763,7 @@
         ],
         "responses": {
           "200": {
-            "description": "public repositories; `role` is the caller's, if they have one",
+            "description": "public repositories; `role` is the caller's, if they have one (a scoped token has none outside its repositories)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2569,7 +2569,7 @@
         "operationId": "my_locks",
         "responses": {
           "200": {
-            "description": "live locks in repositories the caller can read, ordered by repository then path",
+            "description": "live locks in repositories the caller can read (a scoped token: only its repositories), ordered by repository then path",
             "content": {
               "application/json": {
                 "schema": {

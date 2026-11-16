@@ -413,6 +413,10 @@ restoring a deletion (a pending account's own session and sign-in tokens are ful
 to every credential because a CI token may ask who it is, but a narrower one gets only the account name and id and the public profile
 view, never the owner's hidden fields, visibility settings or `has_password` ([profiles](profiles.md)).
 
+A token limited to repositories may still read any public repository, but it learns nothing of the owner's standing outside its grant:
+the `role` on `GET /v1/repos/{owner}/{name}`, `GET /v1/explore/repos` and `GET /v1/users/{user}` is absent for a repository the
+token does not name (as for a stranger), and `GET /v1/me/locks` lists only locks in the token's repositories.
+
 The organization-wide reads need the same credential, because they expose data beyond one repository: the organization list
 (`GET /v1/orgs`, `GET /v1/me/orgs`), members, audit log, teams and the repository-creation policy, and the people directory (`GET /v1/users`). A narrower token or a service
 credential is refused (`403`). A team's `repos` hold only repositories the caller could open (public ones, or any in which they hold a

@@ -562,7 +562,7 @@ impl Repositories {
         };
         let mut out = Vec::new();
         for record in all.into_iter().filter(|r| member.contains(&r.id)) {
-            let role = self.access.role_in(&record.id, &who.user).await?;
+            let role = self.access.role_for(&record.id, Some(who)).await?;
             out.push((record, role));
         }
         Ok(out)
@@ -594,20 +594,20 @@ impl Repositories {
         });
         let mut out = Vec::with_capacity(found.len());
         for record in found {
-            let role = match who {
-                Some(who) => self.access.role_in(&record.id, &who.user).await?,
-                None => None,
-            };
+            let role = self.access.role_for(&record.id, who).await?;
             out.push((record, role));
         }
         Ok((out, next))
     }
 
-    /// The caller's live locks in every repository they can read, ordered by address then path.
+    /// The caller's live locks in every repository they can read and the credential covers, ordered by address then path.
     pub async fn locks_of(&self, who: &Identity) -> Result<Vec<(RepoRecord, Lock)>> {
         let mut out = Vec::new();
         let mut readable: HashMap<crate::RepoId, Option<RepoRecord>> = HashMap::new();
         for (id, lock) in self.meta.list_locks_of(&who.user, self.clock.now()).await? {
+            if !who.covers_repo(&id) {
+                continue;
+            }
             if !readable.contains_key(&id) {
                 let record = match self.meta.get_repo(&id).await? {
                     Some(r) => match self.principal_for(&r, Some(who)).await? {

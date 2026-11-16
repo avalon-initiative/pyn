@@ -15,10 +15,7 @@ impl Repositories {
             if self.principal_for(&record, who).await?.is_none() {
                 continue;
             }
-            let role = match who {
-                Some(who) => self.access.role_in(&record.id, &who.user).await?,
-                None => None,
-            };
+            let role = self.access.role_for(&record.id, who).await?;
             out.push((record, role));
         }
         Ok(out)

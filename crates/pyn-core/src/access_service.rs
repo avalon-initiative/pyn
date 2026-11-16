@@ -2534,6 +2534,14 @@ impl AccessService {
         self.effective_role(repo, user).await
     }
 
+    /// The caller's role in `repo`, absent for a repository the credential does not cover.
+    pub async fn role_for(&self, repo: &RepoId, who: Option<&Identity>) -> Result<Option<Role>> {
+        match who {
+            Some(who) if who.covers_repo(repo) => self.effective_role(repo, &who.user).await,
+            _ => Ok(None),
+        }
+    }
+
     /// Removes a deleted repository's memberships, role overrides and invitations. Its audit log stays.
     pub async fn forget_repo(&self, repo: &RepoId) -> Result<()> {
         self.store.delete_repo_access(repo).await
