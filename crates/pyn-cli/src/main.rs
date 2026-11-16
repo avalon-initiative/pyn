@@ -41,6 +41,7 @@ mod local_sync;
 mod local_tags;
 mod local_view;
 mod localfile;
+mod lockcheck;
 mod log_filter;
 mod ls_remote;
 mod merging;
@@ -392,7 +393,12 @@ enum Command {
         #[arg(long, requires = "force")]
         reason: Option<String>,
     },
-    /// Stage changes for the next commit: paths, folders or `.`. Exclusive paths need your lock first.
+    /// Make a read-only exclusive file writable for offline work, without the server and without taking a lock.
+    Edit {
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Stage changes for the next commit: paths, folders or `.`. An exclusive path needs your lock only to publish.
     Add {
         paths: Vec<String>,
         #[command(flatten)]
@@ -2597,6 +2603,14 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 println!("locked {} until {}", l.path, time::local(l.expires_at));
             }
+        }
+        Command::Edit { paths } => {
+            let w = in_workspace("edit")?;
+            let paths = paths
+                .iter()
+                .map(|p| w.repo_prefix(&cwd, p))
+                .collect::<Result<Vec<_>>>()?;
+            sync::edit(w, &paths)?;
         }
         Command::Add { patch: true, .. } => {
             usage_error("`add --patch` needs a git repository; a pyn server stages whole files")

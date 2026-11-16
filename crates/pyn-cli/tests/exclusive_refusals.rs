@@ -113,9 +113,10 @@ fn commit_while_another_user_holds_the_lock_names_the_holder() {
         err.contains("lock_held (409)") && err.contains("Content/m.umap is locked by bob until"),
         "{err}"
     );
-    let (code, err) = refused(&env, &ws, "alice", &["add", MAP]);
-    assert_eq!(code, 128);
-    assert!(err.contains("locked by bob"), "{err}");
+    let out = env.run(&ws, "alice", &["add", MAP]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("locked by bob"));
+    env.ok(&ws, "alice", &["restore", "--staged", MAP]);
     let (code, err) = refused(&env, &ws, "alice", &["commit", "-a", "-m", "x"]);
     assert_eq!(code, 128);
     assert!(err.contains("locked by bob"), "{err}");

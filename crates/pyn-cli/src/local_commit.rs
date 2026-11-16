@@ -104,6 +104,21 @@ impl LocalStore {
         })
     }
 
+    /// The policy file at the tip of the local branch; none when there is no file or it does not parse.
+    pub(crate) fn declared_policy_at_tip(
+        &self,
+        branch: &str,
+    ) -> Result<Option<crate::policy::Policy>> {
+        let tree = self.tree_of(self.tip(branch)?)?;
+        let files = self.repo().flatten(tree.as_ref(), &Pathspec::default())?;
+        Ok(files
+            .get(crate::policy::POLICY_PATH.as_bytes())
+            .and_then(|e| {
+                let blob = self.repo().blob(&e.id).ok()?;
+                crate::policy::Policy::parse(&String::from_utf8_lossy(&blob))
+            }))
+    }
+
     /// Points the local branch at `to`, if it still is at `from`.
     pub(crate) fn move_tip(&self, branch: &str, from: ObjectId, to: ObjectId) -> Result<()> {
         self.repo()

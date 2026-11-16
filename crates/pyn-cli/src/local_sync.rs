@@ -19,6 +19,7 @@ use crate::git_home::ServerPush;
 use crate::local_commit::signature;
 use crate::local_merge::{self, Control};
 use crate::local_store::{ALGORITHM, Files, LocalStore, build_trees, parse_id};
+use crate::lockcheck::{Gap, Locks};
 use crate::snapshot::{self, short};
 use crate::staging::Index;
 use crate::stranded;
@@ -342,6 +343,34 @@ impl LocalStore {
             parent = Some(*id);
         }
         Ok((blobs, commits, trees))
+    }
+
+    /// The paths the outgoing commits change or delete, leaving out what a merge commit takes from its second parent.
+    fn outgoing_paths(&self, outgoing: &Outgoing) -> Result<std::collections::BTreeSet<String>> {
+        let mut out = std::collections::BTreeSet::new();
+        let mut parent = outgoing.base;
+        for id in &outgoing.commits {
+            let commit = self.repo().commit(id)?;
+            let before = self.tree_of(parent)?;
+            let merged_in = match commit.parents.get(1) {
+                Some(other) => {
+                    let tree = self.tree_of(Some(*other))?;
+                    self.repo().flatten(tree.as_ref(), &Pathspec::default())?
+                }
+                None => Default::default(),
+            };
+            for change in
+                self.repo()
+                    .diff_trees(before.as_ref(), Some(&commit.tree), &Pathspec::default())?
+            {
+                if change.new.is_some() && merged_in.get(&change.path) == change.new.as_ref() {
+                    continue;
+                }
+                out.insert(String::from_utf8_lossy(&change.path).into_owned());
+            }
+            parent = Some(*id);
+        }
+        Ok(out)
     }
 
     /// The lowest common ancestors of `a` and `b`: common commits that no other common commit descends from.
@@ -1103,6 +1132,7 @@ fn push_branch(
             branch,
         ));
     }
+    check_locks(backend, store, &outgoing, (local, branch))?;
     let (blobs, commits, trees) = store.plan(&outgoing)?;
     for id in &blobs {
         let bytes = store
@@ -1157,6 +1187,48 @@ fn push_branch(
         ws.save_state(&state)?;
     }
     print_pushed(backend, (published, head), (local, branch), &response)
+}
+
+/// Refuses before sending when an exclusive path in the unpublished commits lacks the pusher's live lock; the server
+/// makes the same check. A push that changes the policy is left to the server.
+fn check_locks(
+    backend: &dyn Backend,
+    store: &LocalStore,
+    outgoing: &Outgoing,
+    (local, branch): (&str, &str),
+) -> Result<()> {
+    let paths = store.outgoing_paths(outgoing)?;
+    if paths.is_empty() || paths.contains(crate::policy::POLICY_PATH) {
+        return Ok(());
+    }
+    let locks = Locks::fetch(backend)?;
+    let declared = store.declared_policy_at_tip(local)?;
+    let gaps: Vec<Gap> = paths
+        .iter()
+        .filter_map(|p| locks.gap(p, declared.as_ref().map(|d| d.mode_for(p))))
+        .collect();
+    if gaps.is_empty() {
+        return Ok(());
+    }
+    let others = gaps.iter().any(|g| g.holder.is_some());
+    let why = if others {
+        "locked by someone else"
+    } else {
+        "lock required"
+    };
+    let lines: String = gaps
+        .iter()
+        .map(|g| format!("\n  {}", g.describe()))
+        .collect();
+    let hint = if others {
+        "Wait for the holder to release the path, or ask them; for any path without your lock run `pyn lock <path>`, then push again."
+    } else {
+        "Run `pyn lock <path>` for each path named above, then push again."
+    };
+    Err(LockRejected(format!(
+        " ! [rejected]        {branch} -> {branch} ({why})\nerror: failed to push some refs: an exclusive path in your commits needs your lock{lines}\nhint: {hint}\nnothing was pushed; the server is unchanged"
+    ))
+    .into())
 }
 
 fn print_pushed(

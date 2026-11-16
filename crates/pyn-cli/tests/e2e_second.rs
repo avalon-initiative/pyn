@@ -142,12 +142,6 @@ fn staging_flow_with_an_exclusive_path_refused_then_accepted_with_a_lock() {
     assert!(status.contains("1 untracked"), "{status}");
     assert!(status.contains("0 staged"), "{status}");
 
-    let (_, err) = server.fails(&ws, "alice", &["add", "."]);
-    assert!(
-        err.contains("Content/m.umap is exclusive and you do not hold its lock")
-            && err.contains("pyn lock Content/m.umap"),
-        "{err}"
-    );
     let (_, err) = server.fails(&ws, "alice", &["commit", "-a", "-m", "x"]);
     assert!(err.contains("pyn lock Content/m.umap"), "{err}");
     let status = server.ok(&ws, "alice", &["status"]);
@@ -156,11 +150,7 @@ fn staging_flow_with_an_exclusive_path_refused_then_accepted_with_a_lock() {
         "a refusal stages nothing: {status}"
     );
 
-    let (_, err) = {
-        server.ok(&ws, "bob", &["lock", "Content/m.umap"]);
-        server.fails(&ws, "alice", &["add", "Content/m.umap"])
-    };
-    assert!(err.contains("locked by bob"), "{err}");
+    server.ok(&ws, "bob", &["lock", "Content/m.umap"]);
     server.ok(&ws, "bob", &["unlock", "Content/m.umap"]);
 
     server.ok(&ws, "alice", &["lock", "Content/m.umap"]);

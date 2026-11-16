@@ -193,19 +193,13 @@ fn an_exclusive_path_cannot_be_staged_without_its_lock() {
     write(&ws, "Content/m.umap", "map two");
     write(&ws, "Source/a.cpp", "two");
 
-    let err = env.fails(&ws, "alice", &["add", "."]);
-    assert!(
-        err.contains("Content/m.umap is exclusive and you do not hold its lock")
-            && err.contains("pyn lock Content/m.umap"),
-        "{err}"
-    );
+    let err = env.fails(&ws, "alice", &["commit", "-am", "x"]);
+    assert!(err.contains("pyn lock Content/m.umap"), "{err}");
     assert_eq!(
         staged_cell(&env, &ws, "Source/a.cpp"),
         "-",
-        "nothing is staged when one path is refused"
+        "nothing is staged when a publishing commit refuses a path"
     );
-    let err = env.fails(&ws, "alice", &["commit", "-am", "x"]);
-    assert!(err.contains("pyn lock Content/m.umap"), "{err}");
 
     env.ok(&env.dir("home"), "bob", &["lock", "Content/other.umap"]);
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
@@ -224,7 +218,7 @@ fn an_exclusive_path_cannot_be_staged_without_its_lock() {
 }
 
 #[test]
-fn another_users_lock_is_named_when_add_refuses() {
+fn another_users_lock_is_named_when_add_notes_it() {
     let env = start();
     env.seed("alice", "Content/m.umap", "one", None);
     let ws = clone(&env);
@@ -234,8 +228,9 @@ fn another_users_lock_is_named_when_add_refuses() {
         &["lock", "Content/m.umap", "--base", "1"],
     );
     write(&ws, "Content/m.umap", "two");
-    let err = env.fails(&ws, "alice", &["add", "Content/m.umap"]);
-    assert!(err.contains("locked by bob"), "{err}");
+    let out = env.run(&ws, "alice", &["add", "Content/m.umap"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("locked by bob"));
 }
 
 #[test]
@@ -434,12 +429,6 @@ fn a_deleted_exclusive_file_needs_its_lock_and_can_be_restored() {
     make_writable(&map);
     std::fs::remove_file(&map).unwrap();
 
-    let err = env.fails(&ws, "alice", &["add", "-u"]);
-    assert!(
-        err.contains("Content/m.umap is exclusive and you do not hold its lock")
-            && err.contains("pyn lock Content/m.umap"),
-        "{err}"
-    );
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     std::fs::remove_file(&map).ok();
     env.ok(&ws, "alice", &["add", "-u"]);

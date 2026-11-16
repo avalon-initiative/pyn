@@ -171,18 +171,13 @@ fn rm_of_a_folder_needs_dash_r_and_unmatched_paths_are_errors() {
 }
 
 #[test]
-fn rm_of_an_exclusive_path_needs_the_lock_like_add() {
+fn rm_of_an_exclusive_path_still_needs_the_lock() {
     let env = start();
     env.seed("alice", "Content/m.umap", "map one", None);
     env.seed("alice", "Source/a.cpp", "one", None);
     let ws = clone(&env);
     let (code, err) = refused(&env, &ws, &["rm", "Content/m.umap", "Source/a.cpp"]);
-    let (add_code, add_err) = {
-        write(&ws, "Content/m.umap", "map two");
-        refused(&env, &ws, &["add", "Content/m.umap"])
-    };
-    assert_eq!(code, add_code);
-    assert_eq!(err, add_err);
+    assert_eq!(code, 128);
     assert!(
         err.contains("Content/m.umap is exclusive and you do not hold its lock")
             && err.contains("pyn lock Content/m.umap"),

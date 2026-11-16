@@ -338,7 +338,28 @@ pub(crate) fn require_locks(backend: &dyn Backend, paths: &[&String]) -> Result<
 }
 
 /// `pyn add`: stages the changed files under the paths; true when some named path was refused (exit status 1).
+/// An exclusive path needs no lock to be staged: the lock is checked when publishing.
 pub fn add(backend: &dyn Backend, ws: &Workspace, cwd: &Path, args: &AddArgs) -> Result<bool> {
+    stage(backend, ws, cwd, args, Locks::Note)
+}
+
+/// What staging does about an exclusive path without the lock.
+enum Locks {
+    /// Say that publishing needs the lock.
+    Note,
+    /// Say nothing: the commit that follows says it.
+    Silent,
+    /// Refuse: the commit that follows goes straight to the server.
+    Require,
+}
+
+fn stage(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    cwd: &Path,
+    args: &AddArgs,
+    locks: Locks,
+) -> Result<bool> {
     let mut index = Index::load(ws)?;
     let specs = Specs::resolve(ws, cwd, &args.paths)?;
     let state = ws.load_state()?;
@@ -360,7 +381,11 @@ pub fn add(backend: &dyn Backend, ws: &Workspace, cwd: &Path, args: &AddArgs) ->
         })
         .map(|(p, _)| p)
         .collect();
-    require_locks(backend, &puts)?;
+    match locks {
+        Locks::Require => require_locks(backend, &puts)?,
+        Locks::Note if !args.dry_run => crate::lockcheck::note_offline(backend, &puts),
+        _ => {}
+    }
     for (path, op) in plan.ops {
         match op {
             Op::Put { file_mode, bytes } => {
@@ -492,7 +517,17 @@ pub fn commit(
             force: false,
             new_only: untracked && !all,
         };
-        add(backend, ws, ws.root.as_path(), &args)?;
+        stage(
+            backend,
+            ws,
+            ws.root.as_path(),
+            &args,
+            if LocalStore::open(ws).is_none() {
+                Locks::Require
+            } else {
+                Locks::Silent
+            },
+        )?;
     }
     let index = Index::load(ws)?;
     if index.entries.is_empty() {
@@ -593,7 +628,7 @@ fn commit_local(
     flags: &GitCommitArgs,
 ) -> Result<()> {
     let paths: Vec<&String> = index.entries.keys().collect();
-    require_locks(backend, &paths)?;
+    crate::lockcheck::note_offline(backend, &paths);
     let state = ws.load_state()?;
     let mut changes = Vec::new();
     for (path, staged) in &index.entries {

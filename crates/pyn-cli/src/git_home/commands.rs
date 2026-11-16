@@ -338,6 +338,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             bail!("`pyn lock --base` compares revisions, which a git repository does not have")
         }
         Command::Lock { path, .. } => super::lfs_lock::lock(git, cwd, &path),
+        Command::Edit { paths } => super::lfs_lock::edit(git, cwd, &paths),
         Command::Unlock { path, force, .. } => super::lfs_lock::unlock(git, cwd, &path, force),
         Command::Policy(PolicyCommand::Lint { policy }) => {
             super::lfs_lock::lint_lockable(git, policy.as_deref())

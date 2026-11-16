@@ -152,6 +152,22 @@ fn lock_unlocks_a_lockable_file_and_unlock_locks_it_again() {
 }
 
 #[test]
+fn edit_makes_a_lockable_file_writable_without_a_lock() {
+    let r = Repo::seeded();
+    r.ok(&["switch", "-q", "-c", "work"]);
+    assert!(!r.writable("art/hero.psd"));
+    let o = r.ok(&["edit", "art/hero.psd"]);
+    assert!(
+        o.out.contains("art/hero.psd") && o.out.contains("pyn lock"),
+        "{}",
+        o.out
+    );
+    assert!(r.writable("art/hero.psd"));
+    assert!(r.srv.held().is_empty());
+    r.ok(&["edit", "notes.txt"]);
+}
+
+#[test]
 fn paths_are_taken_from_the_working_directory() {
     let r = Repo::seeded();
     let sub = r.dir.join("art");

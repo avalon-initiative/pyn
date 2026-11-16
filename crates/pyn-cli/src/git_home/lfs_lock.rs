@@ -180,6 +180,30 @@ pub fn lock(git: &GitHome, cwd: &Path, arg: &str) -> Result<()> {
     Ok(())
 }
 
+/// `pyn edit <path>...`: makes `lockable` files writable without the server and without taking a lock.
+pub fn edit(git: &GitHome, cwd: &Path, args: &[String]) -> Result<()> {
+    let lockable = lockable_paths(git);
+    let root = git.repo.root()?;
+    for arg in args {
+        let path = git.ws.repo_prefix(cwd, arg)?;
+        let under = format!("{}/", path.trim_end_matches('/'));
+        let hits: Vec<&String> = lockable
+            .iter()
+            .filter(|p| **p == path || p.starts_with(&under) || path.is_empty())
+            .collect();
+        if hits.is_empty() {
+            println!("{path} is not lockable, so it is already writable");
+        }
+        for hit in hits {
+            set_writable(root, hit, true);
+            println!(
+                "{hit} is writable for offline work; publishing a change needs its lock: `pyn lock {hit}`"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// `pyn unlock <path>`: releases the lock and makes a `lockable` file read-only again; `force` removes another user's.
 pub fn unlock(git: &GitHome, cwd: &Path, arg: &str, force: bool) -> Result<()> {
     let path = git.ws.repo_prefix(cwd, arg)?;

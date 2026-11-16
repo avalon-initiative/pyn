@@ -148,7 +148,7 @@ fn lock_state_stays_out_of_short_and_porcelain_output() {
                 "exclusive",
                 "r1",
                 "-",
-                "modified",
+                "modified, needs lock to push",
                 "-",
                 "Content/expired.umap"
             ],
@@ -164,12 +164,15 @@ fn lock_state_stays_out_of_short_and_porcelain_output() {
                 "exclusive",
                 "r1",
                 "-",
-                "modified",
+                "modified, push blocked: locked by bob",
                 "bob",
                 "Content/theirs.umap"
             ],
             vec![
                 "1 staged, 2 modified, 0 behind, 0 new, 0 untracked, 1 locked by you, 1 locked by others"
+            ],
+            vec![
+                "2 exclusive file(s) changed without your lock (1 held by others); `pyn push` refuses them: take the lock with `pyn lock <path>`"
             ],
         ],
         "{out}"
