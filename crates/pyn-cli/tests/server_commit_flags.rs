@@ -112,7 +112,7 @@ fn a_message_file_works_without_the_local_store() {
 }
 
 #[test]
-fn an_exclusive_path_still_needs_its_lock_with_a_message_file() {
+fn an_exclusive_path_commits_offline_with_a_message_file_and_names_the_holder() {
     let (env, ws) = seeded(&["--local-store"]);
     std::fs::set_permissions(
         ws.join("Content/m.umap"),
@@ -122,10 +122,11 @@ fn an_exclusive_path_still_needs_its_lock_with_a_message_file() {
     std::fs::write(ws.join("Content/m.umap"), "edited").unwrap();
     std::fs::write(ws.join("msg.txt"), "x\n").unwrap();
     env.ok(&ws, "bob", &["lock", "Content/m.umap"]);
-    let err = env.fails(&ws, "alice", &["add", "Content/m.umap"]);
-    assert!(err.contains("locked by bob"), "{err}");
-    let err = env.fails(&ws, "alice", &["commit", "-a", "-F", "msg.txt"]);
-    assert!(err.contains("locked by bob"), "{err}");
+    env.ok(&ws, "alice", &["add", "Content/m.umap"]);
+    env.ok(&ws, "alice", &["restore", "--staged", "Content/m.umap"]);
+    let out = env.run(&ws, "alice", &["commit", "-a", "-F", "msg.txt"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("locked by bob"));
 }
 
 #[test]
@@ -302,7 +303,7 @@ fn author_and_date_survive_a_push_and_show_in_log_and_show() {
 }
 
 #[test]
-fn an_exclusive_path_with_a_foreign_author_still_needs_the_lock() {
+fn an_exclusive_path_with_a_foreign_author_commits_offline_and_is_pushed_under_the_lock() {
     let (env, ws) = seeded(&["--local-store"]);
     std::fs::set_permissions(
         ws.join("Content/m.umap"),
@@ -310,22 +311,6 @@ fn an_exclusive_path_with_a_foreign_author_still_needs_the_lock() {
     )
     .unwrap();
     std::fs::write(ws.join("Content/m.umap"), "edited").unwrap();
-    env.ok(&ws, "bob", &["lock", "Content/m.umap"]);
-    let err = env.fails(
-        &ws,
-        "alice",
-        &[
-            "commit",
-            "-a",
-            "-m",
-            "x",
-            "--author",
-            "Bob <bob@example.org>",
-        ],
-    );
-    assert!(err.contains("locked by bob"), "{err}");
-    env.ok(&ws, "bob", &["unlock", "Content/m.umap"]);
-    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     env.ok(
         &ws,
         "alice",
@@ -338,6 +323,7 @@ fn an_exclusive_path_with_a_foreign_author_still_needs_the_lock() {
             "Bob <bob@example.org>",
         ],
     );
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     env.ok(&ws, "alice", &["push"]);
     assert_eq!(
         git(&ws, &["log", "-1", "--format=%an|%cn", "main"]),

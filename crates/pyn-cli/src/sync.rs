@@ -200,6 +200,7 @@ pub fn status(
     let (mut staged, mut modified, mut behind, mut ahead, mut new, mut untracked) =
         (0, 0, 0, 0, 0, 0);
     let (mut mine, mut theirs) = (0, 0);
+    let (mut needs_lock, mut blocked) = (0, 0);
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut json_files: Vec<serde_json::Value> = Vec::new();
     for path in paths {
@@ -367,6 +368,24 @@ pub fn status(
                 |e| mode_name(e.mode),
             )
         });
+        let changed = states.iter().any(|s| {
+            matches!(*s, "modified" | "deleted_locally" | "local_commit") || staged_entry.is_some()
+        });
+        if mode == "exclusive" && changed {
+            match entry.and_then(|e| e.lock.as_ref()) {
+                Some(l) if l.owner == me => {}
+                Some(l) => {
+                    blocked += 1;
+                    notes.push(format!("push blocked: locked by {}", l.owner));
+                    states.push("blocked_by_lock");
+                }
+                None => {
+                    needs_lock += 1;
+                    notes.push("needs lock to push".into());
+                    states.push("needs_lock");
+                }
+            }
+        }
         json_files.push(serde_json::json!({
             "path": path,
             "mode": mode,
@@ -417,6 +436,7 @@ pub fn status(
                 "staged": staged, "modified": modified, "behind": behind, "ahead": ahead,
                 "unmerged": unmerged.len(), "new": new, "untracked": untracked,
                 "locked_by_you": mine, "locked_by_others": theirs,
+                "needs_lock": needs_lock, "blocked_by_lock": blocked,
             },
             "unpublished_commits": unpublished.ahead,
         }));
@@ -445,6 +465,12 @@ pub fn status(
         "{staged} staged, {modified} modified, {behind} behind, {ahead}{unmerged}{new} new, \
          {untracked} untracked, {mine} locked by you, {theirs} locked by others"
     );
+    if needs_lock + blocked > 0 {
+        println!(
+            "{} exclusive file(s) changed without your lock ({blocked} held by others); `pyn push` refuses them: take the lock with `pyn lock <path>`",
+            needs_lock + blocked
+        );
+    }
     print_unpublished(&unpublished);
     Ok(())
 }
@@ -592,6 +618,37 @@ fn local_changes(known: &FileState, path: &Path) -> Result<bool> {
 
 pub fn after_lock(ws: &Workspace, path: &str) -> Result<()> {
     set_read_only(&ws.dest(path)?, false)
+}
+
+/// `pyn edit`: makes the read-only exclusive files at `paths` (files or folders) writable, with no server and no lock.
+pub fn edit(ws: &Workspace, paths: &[String]) -> Result<()> {
+    let state = ws.load_state()?;
+    for path in paths {
+        let under = format!("{}/", path.trim_end_matches('/'));
+        let hits: Vec<&String> = state
+            .keys()
+            .filter(|p| *p == path || p.starts_with(&under) || path.is_empty())
+            .collect();
+        if hits.is_empty() {
+            bail!("'{path}' is not a file pyn tracks in this workspace");
+        }
+        for hit in hits {
+            let target = ws.dest(hit)?;
+            if state[hit].mode != "exclusive" {
+                println!("{hit} is shared and already writable");
+            } else if !localfile::exists(&target) {
+                bail!("{hit} is not in the work tree; run `pyn update` first");
+            } else if !std::fs::metadata(&target)?.permissions().readonly() {
+                println!("{hit} is already writable");
+            } else {
+                set_read_only(&target, false)?;
+                println!(
+                    "{hit} is writable for offline work; it is still exclusive, so publishing needs the lock: `pyn lock {hit}`"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn after_unlock(ws: &Workspace, path: &str) -> Result<()> {

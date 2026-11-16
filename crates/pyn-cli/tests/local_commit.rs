@@ -183,22 +183,20 @@ fn update_keeps_local_commits_and_their_files_when_the_server_moves() {
 }
 
 #[test]
-fn an_exclusive_path_needs_the_lock_at_commit() {
+fn an_exclusive_path_commits_locally_without_the_lock_and_says_so() {
     let (env, ws) = seeded();
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     std::fs::write(ws.join("Content/m.umap"), "map2").unwrap();
     env.ok(&ws, "alice", &["add", "Content/m.umap"]);
     env.ok(&ws, "alice", &["unlock", "Content/m.umap"]);
-    let err = env.fails(&ws, "alice", &["commit", "-m", "map"]);
-    assert!(err.contains("exclusive") && err.contains("lock"), "{err}");
-    assert_eq!(
-        git(&ws, &["rev-list", "--count", "origin/main..main"]),
-        "0\n"
+    let out = env.run(&ws, "alice", &["commit", "-m", "map"]);
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("Content/m.umap") && err.contains("pyn lock"),
+        "{err}"
     );
-
-    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
-    let out = env.ok(&ws, "alice", &["commit", "-m", "map"]);
-    assert!(out.contains("not yet published"), "{out}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("not yet published"));
     assert_eq!(
         git(&ws, &["cat-file", "blob", "main:Content/m.umap"]),
         "map2"
@@ -206,13 +204,18 @@ fn an_exclusive_path_needs_the_lock_at_commit() {
 }
 
 #[test]
-fn an_unlocked_exclusive_path_is_refused_at_add() {
+fn an_unlocked_exclusive_path_is_staged_with_a_note_that_the_lock_is_needed() {
     let (env, ws) = seeded();
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     std::fs::write(ws.join("Content/m.umap"), "map2").unwrap();
     env.ok(&ws, "alice", &["unlock", "Content/m.umap"]);
-    let err = env.fails(&ws, "alice", &["add", "Content/m.umap"]);
-    assert!(err.contains("exclusive"), "{err}");
+    let out = env.run(&ws, "alice", &["add", "Content/m.umap"]);
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("Content/m.umap") && err.contains("pyn lock"),
+        "{err}"
+    );
 }
 
 #[test]

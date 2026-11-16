@@ -77,7 +77,10 @@ a folder named after the repository, downloads every file at its head revision (
 you are inside the workspace and take paths relative to your current directory.
 
 - **Read-only exclusive files.** Exclusive files are read-only until you hold the lock. `pyn lock` makes the file
-  writable; `pyn commit` and `pyn unlock` make it read-only again. Shared files are always writable.
+  writable; `pyn commit` and `pyn unlock` make it read-only again. Shared files are always writable. The read-only bit is a
+  courtesy and not the guarantee (anyone can `chmod` the file); the server still publishes an exclusive path only for the
+  account that holds its lock. To work offline, `pyn edit <path>...` (files or folders) makes the exclusive files writable
+  with no server and no lock, and says the lock is needed to publish; it does not take one.
 - **No base revisions to remember.** `lock` and `commit` use the revision the workspace has, so `--base` is only for
   working outside a workspace. If the server has moved on, the command tells you to run `pyn update`.
 - **Branches.** A workspace is on one [branch](branches.md), `main` until `pyn switch` or `pyn checkout` changes it, and every
@@ -90,6 +93,10 @@ you are inside the workspace and take paths relative to your current directory.
   own locks) and the time left, for example `alice · 7h 59m`. A path that is locked but has no revision yet shows
   `locked, not checked in yet`; `pyn update` has nothing to fetch for it. Clean, unlocked files are left out, and a
   workspace with no differences and no locks prints `everything is up to date`.
+- **Exclusive work offline.** `pyn add` and `pyn commit` accept an exclusive path without the lock and print a note per path
+  that publishing needs it (`pyn lock <path>`; another holder is named). `pyn status` marks such a file: `STATE` says
+  `needs lock to push`, or `push blocked: locked by <owner>` when someone else holds it, and a line under the counts says how
+  many files `pyn push` will refuse. A lock held by you shows nothing. See [Local commits](#local-commits).
 - **`pyn update`** downloads new and newer files. A file with local changes is never overwritten; it is reported as skipped.
   `--revision <commit>` brings the workspace to a past (or newer) commit instead, and `pyn status --revision <commit>` compares
   with it; `pyn diff` shows the changes themselves. See [commits](commits.md).
@@ -113,14 +120,16 @@ changed tracked file first, deletions included; new files are not included. `pyn
 leaves the files alone. `pyn diff --cached` shows what is staged against the last update, and `pyn diff` shows the edits made
 since. A tracked file that was deleted is staged as a removal (`add <path>`, `add -u`, `commit -a`; `-n` prints `remove '<path>'`),
 and `pyn commit` sends it with the rest as a deletion in the changeset; the commit then prints `<path> was deleted at revision N` and the
-workspace stops tracking the path. `pyn diff --cached` shows it as a deleted file. Deleting an exclusive file is staged like
+workspace stops tracking the path. `pyn diff --cached` shows it as a deleted file. Deleting an exclusive file is published like
 changing one, only with the lock held, and the commit consumes the lock. `pyn update` removes a file the server deleted when the
 workspace has no changes to it, and reports it as skipped when it has. See [deleting a path](README.md#deleting-a-path).
 
-Exclusive files are different. `pyn add` on an exclusive path fails early, staging nothing, unless you hold its lock, and
-the message names `pyn lock <path>`. Lock, edit, commit stays the exclusive flow, and the commit releases the lock. The check
-is a convenience: the server still enforces the lock when it receives the commit. A new file's mode is only known to the
-server, so `add` cannot refuse it, and the commit is where an unlocked exclusive path is turned away.
+Exclusive files are different only where they are published (decision #1062). `pyn add` stages an exclusive path without
+its lock and prints a note naming `pyn lock <path>`; the lock is what publishing needs. Lock, edit, commit stays the
+exclusive flow, and the commit releases the lock. Without the local store a commit goes straight to the server, so there it
+(and `commit -a`) still refuses an exclusive path you do not hold, naming `pyn lock <path>`; with the store the commit is
+local and the lock is checked at `pyn push`. The server enforces the lock either way, and `pyn rm` and `pyn mv` still ask for
+it up front.
 
 `add` copies the file's content aside when it stages it, so an edit made afterwards stays unstaged and the commit sends what
 was staged. The staging index is `.pyn/local_only/state/index.toml`:
@@ -299,14 +308,20 @@ server's side.
 
 With the store on, `add`, `commit`, `status` and `branch` work against the store (decision #300, slice #336):
 
-- `pyn add` stages as before; an exclusive path still needs your lock to be staged.
+- `pyn add` stages as before; an exclusive path needs no lock to be staged, and `add` says the lock is needed to publish.
 - `pyn commit` records one commit on the local branch in `store/` and publishes nothing: the commit is git-encoded with
   SHA-256 ids, so the id is the one the server will accept on push, and the blobs of the staged files go into the store.
   The output says the commit is local and not yet published. The author and committer are your account name with the
   placeholder email `<name>@pyn.invalid` the server uses for an account without one.
-- Before it commits, `pyn commit` checks that every exclusive path it changes is locked by you and refuses otherwise.
-  This is a convenience for the client: the server enforces the lock when the commits are pushed (decision #300 item 5),
-  and a lock is a lease that can lapse while you work offline. Shared paths need no lock.
+- `pyn commit` commits an exclusive path without its lock and prints a note naming `pyn lock <path>` (decisions #1062,
+  #300 item 5). Taking a lock needs the server, a lease can lapse while you work, and an exclusive path is published only
+  by the account that holds a live lock, so the lock is checked when the commits are pushed. Shared paths need no lock.
+- Before it sends anything, `pyn push` checks every exclusive path in the unpublished commits: one held by someone else, one
+  with no live lock (never taken, or the lease lapsed) and a clean fast-forward are all refused, naming the paths, exit
+  `128`, nothing sent, with the hint to run `pyn lock <path>` (a path someone else holds has to be released first). A path
+  the server does not list yet is judged by the policy file in your commits, and a push that changes `.pyn/pyn.toml` is left
+  to the server. The server makes the same check and stays the guarantee. With the server unreachable the push cannot
+  happen, and the commits stay local.
 - `pyn status` adds `added|modified|deleted in a local commit` to the paths the unpublished commits changed, and a
   closing line with the number of local commits the server lacks.
 - `pyn update` brings the server's tip and its history into the store but leaves the local branch and the files that

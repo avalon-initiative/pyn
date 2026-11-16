@@ -36,6 +36,14 @@ role of a member who ranks above them. The account that owns a user-owned reposi
 that account or a server administrator changes it. A server administrator and an owner of the owning organization are
 exempt from the rank check. The same rule applies to changing or removing a team's role in a repository.
 
+## Exclusive paths and the lock
+
+An exclusive path is published only by an account that holds a live lock on it (the `lock` permission takes one). Another
+holder always blocks a push, and so does no lock at all, even when the push would be a clean fast-forward; the refusal is
+`lock_held` or `lock_required`. The CLI is a convenience on top of that rule: `pyn add`, `pyn commit` and `pyn edit` work
+on an exclusive file without the lock, so work can happen offline, `pyn status` marks what will be refused, and `pyn push`
+checks the locks before sending and hints at `pyn lock <path>`. The server's own refusals stay the guarantee ([workspace](workspace.md#working-in-a-workspace)).
+
 ## Effective role
 
 What someone may do in a repository is decided by one function in the server: the highest role among the sources below.

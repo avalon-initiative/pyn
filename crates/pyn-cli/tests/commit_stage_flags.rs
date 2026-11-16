@@ -247,7 +247,7 @@ fn untracked_alone_leaves_tracked_changes_unstaged_and_flag_order_is_free() {
 }
 
 #[test]
-fn untracked_and_all_still_need_the_lock_of_an_exclusive_path() {
+fn untracked_and_all_commit_an_exclusive_path_offline_and_say_the_lock_is_needed() {
     let (env, ws) = seeded(&["--local-store"]);
     std::fs::set_permissions(
         ws.join("Content/m.umap"),
@@ -258,9 +258,11 @@ fn untracked_and_all_still_need_the_lock_of_an_exclusive_path() {
     fs::write(ws.join("new.txt"), "n").unwrap();
     env.ok(&ws, "bob", &["lock", "Content/m.umap"]);
     let before = store_git(&ws, &["rev-parse", "main"]);
-    let err = env.fails(&ws, "alice", &["commit", "-uam", "x"]);
+    let out = env.run(&ws, "alice", &["commit", "-uam", "x"]);
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("locked by bob"), "{err}");
-    assert_eq!(store_git(&ws, &["rev-parse", "main"]), before);
+    assert_ne!(store_git(&ws, &["rev-parse", "main"]), before);
 }
 
 #[test]

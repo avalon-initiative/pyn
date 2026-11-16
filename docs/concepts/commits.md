@@ -123,7 +123,8 @@ Errors, as `{code, message}`: `not_fast_forward` (409), `lock_required` and `loc
 `storage_limit_reached` (409), `push_invalid` (400, an id that does not hash, bytes that are not a git object, a missing tree, a merge of a commit the
 repository lacks, or a commit already stored), `merge_conflict` (409, a merge commit that leaves a diverged exclusive path unresolved), `object_missing` (400), `invalid_request` (400, an empty push or bad base64), `invalid_rules` (400, a policy file on the default branch that does not validate), `push_unsupported` (422), `push_too_large` (413, a commit changing more than 10000 files or a push more than 50000, see [limits](limits.md#request-size-bounds)),
 `branch_exists` (409), `invalid_branch_name` (400), `commit_not_found` (404), `forbidden` (403, also for a policy change without the `edit_policy` permission). No offline lock guarantee exists: a lock is judged when the
-push arrives.
+push arrives, and `pyn add` and `pyn commit` take no lock, so exclusive work done offline is published only once the
+author holds the lock.
 
 A push is audited like the checkins it makes: one `checkin` entry per revision, with the authenticated pusher as the actor and
 `(push)` in the detail. The commit's author is recorded on the revision as its person, not as the actor.
@@ -275,7 +276,8 @@ says there is nothing to push).
 - A refused push prints a git-style `! [rejected]` line, the server's message, a hint and exits `1`:
   `not_fast_forward` and `stale_base` (also detected locally when the local branch does not build on the fetched tip) tell the
   person to run `pyn pull` and push again; `lock_required` (including a lapsed lease) says to lock the path; `lock_held`
-  names that someone else holds it; `invalid_rules` (an invalid policy file, nothing pushed) and `forbidden` (also a policy
+  names that someone else holds it (the client makes the same check before sending, [workspace](workspace.md#local-commits),
+  and an exclusive path needs the pusher's lock even when nobody holds it and the push would fast-forward, decision #1062); `invalid_rules` (an invalid policy file, nothing pushed) and `forbidden` (also a policy
   change without the `edit_policy` permission) are named; so are `object_missing`, `push_invalid`, `push_unsupported`,
   `storage_limit_reached` and `merge_conflict` (a merge commit leaves a diverged exclusive path unresolved: lock it and
   pull again).

@@ -51,15 +51,18 @@ and `lock` null when unlocked. `TreeEntry` is `{name, path, kind, mode, last_cha
     }
   ],
   "counts": {"staged": 0, "modified": 1, "behind": 1, "ahead": 0, "unmerged": 0, "new": 0, "untracked": 0,
-             "locked_by_you": 1, "locked_by_others": 0},
+             "locked_by_you": 1, "locked_by_others": 0, "needs_lock": 0, "blocked_by_lock": 0},
   "unpublished_commits": 0
 }
 ```
 
 Like the table, `files` lists only paths that differ, are staged or are locked. `revision` is null for a file the
 workspace has not synced. `staged` is `-`, `added`, `modified` or `deleted`. `states` holds stable tokens: `modified`,
-`behind`, `ahead`, `deleted_locally`, `untracked`, `new`, `locked_unpublished`, `local_commit`, `unmerged`, `merged`.
-`lock.mine` is true when the signed-in user holds it.
+`behind`, `ahead`, `deleted_locally`, `untracked`, `new`, `locked_unpublished`, `local_commit`, `unmerged`, `merged`,
+`needs_lock` and `blocked_by_lock`. The last two are for an exclusive file that is modified, deleted, staged or in a local
+commit while the signed-in user holds no lock on it: `needs_lock` when nobody holds it, `blocked_by_lock` when someone else
+does (`lock.owner` names them). `pyn push` refuses both; `counts.needs_lock` and `counts.blocked_by_lock` total them.
+`lock.mine` is true when the signed-in user holds it. `pyn edit` has no `--json` document.
 
 ## Errors
 
