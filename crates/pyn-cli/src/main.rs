@@ -588,13 +588,13 @@ struct DiffFormat {
     #[arg(short = 'U', long = "unified", value_name = "N", default_value_t = 3)]
     context: usize,
     /// Show a diffstat instead of the patch, optionally `=<width>[,<name-width>[,<count>]]`.
-    #[arg(long, value_name = "WIDTHS", num_args = 0..=1, require_equals = true, default_missing_value = "", conflicts_with_all = ["name_only", "name_status", "check"])]
+    #[arg(long, value_name = "WIDTHS", num_args = 0..=1, require_equals = true, default_missing_value = "")]
     stat: Option<String>,
     /// Show only the totals line of the diffstat.
-    #[arg(long, conflicts_with_all = ["stat", "name_only", "name_status", "check"])]
+    #[arg(long)]
     shortstat: bool,
     /// Show added and deleted line counts per file.
-    #[arg(long, conflicts_with_all = ["stat", "shortstat", "name_only", "name_status", "check"])]
+    #[arg(long)]
     numstat: bool,
     /// Report trailing whitespace and space before tab in added lines; exit with 2 if any.
     #[arg(long, conflicts_with_all = ["name_only", "name_status"])]
@@ -606,7 +606,7 @@ struct DiffFormat {
     #[arg(long)]
     name_status: bool,
     /// Show creations, deletions, renames and mode changes.
-    #[arg(long, conflicts_with = "check")]
+    #[arg(long)]
     summary: bool,
     #[command(flatten)]
     renames: rename::Flags,
@@ -621,15 +621,10 @@ impl DiffFormat {
     }
 
     fn format(&self) -> diff::Format {
-        if self.stat.is_none()
-            && self.extra.stat_implied()
-            && (self.shortstat
-                || self.numstat
-                || self.name_only
-                || self.name_status
-                || self.check
-                || self.extra.raw())
-        {
+        if self.check || self.name_only || self.name_status {
+            return self.build();
+        }
+        if self.stat.is_none() && self.extra.stat_implied() && self.extra.raw() {
             usage_error("a --stat option does not combine with another output format");
         }
         if self.extra.dirstat_given()
@@ -659,23 +654,31 @@ impl DiffFormat {
         format
     }
 
+    /// `--check`, `--name-only` and `--name-status` replace every other output format, as in git.
     fn build(&self) -> diff::Format {
-        let kind = if self.extra.dirstat_given() {
-            diff::Kind::Dirstat
-        } else if self.extra.raw() || self.extra.patch_with_raw() {
-            diff::Kind::Raw
-        } else if self.check {
+        let mut stats = Vec::new();
+        if self.stat_given() || self.extra.patch_with_stat() {
+            stats.push(diff::Kind::Stat);
+        }
+        if self.shortstat {
+            stats.push(diff::Kind::ShortStat);
+        }
+        if self.numstat {
+            stats.push(diff::Kind::NumStat);
+        }
+        let named = self.check || self.name_only || self.name_status;
+        let kind = if self.check {
             diff::Kind::Check
-        } else if self.stat_given() || self.extra.patch_with_stat() {
-            diff::Kind::Stat
-        } else if self.shortstat {
-            diff::Kind::ShortStat
-        } else if self.numstat {
-            diff::Kind::NumStat
         } else if self.name_only {
             diff::Kind::NameOnly
         } else if self.name_status {
             diff::Kind::NameStatus
+        } else if self.extra.dirstat_given() {
+            diff::Kind::Dirstat
+        } else if self.extra.raw() || self.extra.patch_with_raw() {
+            diff::Kind::Raw
+        } else if let Some(first) = stats.first() {
+            *first
         } else if self.summary {
             diff::Kind::Summary
         } else {
@@ -686,8 +689,13 @@ impl DiffFormat {
             kind,
             opts: self.extra.opts(),
             renames: self.renames.request(),
-            summary: self.summary,
+            summary: self.summary && !named,
             with_patch: false,
+            also: if stats.contains(&kind) {
+                stats.split_off(1)
+            } else {
+                Vec::new()
+            },
             kept: Vec::new(),
             unmerged: Vec::new(),
         }
@@ -1683,9 +1691,7 @@ fn run(cli: Cli) -> Result<()> {
     {
         let operands: Vec<String> = args.iter().chain(paths).cloned().collect();
         let shown = format.format().silenced(*no_patch);
-        if no_index::run(&operands, &shown, *quiet, git.as_ref())? {
-            std::process::exit(1);
-        }
+        diff::exit_for_diff(no_index::run(&operands, &shown, *quiet, git.as_ref())?);
         return Ok(());
     }
     if let Command::Commit { git: opts, .. } = &cli.command
@@ -2479,9 +2485,7 @@ fn run(cli: Cli) -> Result<()> {
                 &format.format().silenced(no_patch),
                 quiet,
             )?;
-            if differs && (exit_code || quiet) {
-                std::process::exit(1);
-            }
+            diff::exit_for_diff(differs && (exit_code || quiet));
         }
         Command::Show {
             args,
@@ -3267,7 +3271,7 @@ fn diff_command(
     let differs = diff::compare(backend, &old, &new, &[], format, &mut out)?;
     if !quiet {
         print!("{out}");
-        diff::exit_if_check_failed(format, &out);
+        diff::note_check_failed(format, &out);
     }
     Ok(differs)
 }

@@ -168,6 +168,14 @@ const COMBINED_FORMS: &[&[&str]] = &[
     &["diff", "--summary"],
     &["diff", "--check"],
     &["diff", "--quiet", "--check"],
+    &["diff", "--check", "--exit-code"],
+    &["diff", "--raw", "-p"],
+    &["diff", "--patch-with-raw"],
+    &["diff", "--raw", "-p", "-z"],
+    &["diff", "--raw", "-p", "--abbrev=12"],
+    &["diff", "--raw", "-p", "--exit-code"],
+    &["diff", "--raw", "-p", "--", "f"],
+    &["diff", "--raw"],
 ];
 
 #[test]
