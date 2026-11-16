@@ -34,6 +34,7 @@ pub mod host_admin;
 mod lfs_api;
 mod limits_api;
 mod merge_api;
+pub mod observe;
 mod oidc_api;
 mod org_api;
 pub mod origin;
@@ -435,7 +436,16 @@ pub fn router(state: AppState) -> Router {
 }
 
 pub fn router_with(state: AppState, limits: request_limits::RequestLimits) -> Router {
-    request_limits::apply(routes(state), limits)
+    router_with_log(state, limits, observe::LogConfig::default())
+}
+
+pub fn router_with_log(
+    state: AppState,
+    limits: request_limits::RequestLimits,
+    log: observe::LogConfig,
+) -> Router {
+    let app = request_limits::apply(routes(state.clone()), limits);
+    observe::layer(app, state, log)
 }
 
 fn routes(state: AppState) -> Router {
@@ -797,6 +807,7 @@ fn routes(state: AppState) -> Router {
             setup_api::guard,
         ))
         .layer(axum::middleware::from_fn(log_internal))
+        .layer(axum::middleware::from_fn(observe::route_info))
         .with_state(state)
 }
 
@@ -1020,7 +1031,7 @@ pub(crate) async fn identify_admin(state: &AppState, headers: &HeaderMap) -> Api
     let dev_user = headers
         .get(api::DEV_USER_HEADER)
         .and_then(|v| v.to_str().ok());
-    Ok(match (bearer_token(headers), &state.dev_auth, dev_user) {
+    let who = match (bearer_token(headers), &state.dev_auth, dev_user) {
         (Some(token), _, _) => state.auth.authenticate(token).await?,
         (None, Some(dev), Some(user)) => {
             let who = dev.authenticate(user).await?;
@@ -1031,7 +1042,9 @@ pub(crate) async fn identify_admin(state: &AppState, headers: &HeaderMap) -> Api
             Some(cookie) => state.access.authenticate_session(cookie).await?.0,
             None => return Err(PynError::Unauthenticated("missing credentials".into()).into()),
         },
-    })
+    };
+    observe::note_account(&who.user);
+    Ok(who)
 }
 
 /// Like `identify`, but a request with no credential at all is anonymous (`None`); a bad one still fails.

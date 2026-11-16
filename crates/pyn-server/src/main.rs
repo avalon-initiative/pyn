@@ -17,10 +17,11 @@ use pyn_oidc::{HttpOidcProvider, OidcConfig};
 use pyn_postgres::{PgMetadataStore, TimeSource};
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::email::LogEmailSender;
+use pyn_server::observe::{LogConfig, LogFormat, LoggedAudit};
 use pyn_server::passwords::PooledPasswords;
 use pyn_server::request_limits::RequestLimits;
 use pyn_server::webhook_delivery::{DeliveryWorker, SafeSender, WorkerConfig};
-use pyn_server::{AppState, router_with};
+use pyn_server::{AppState, router_with_log};
 
 fn flag(name: &str) -> bool {
     flag_or(name, false)
@@ -320,15 +321,22 @@ async fn main() -> anyhow::Result<()> {
     }
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    if host_command.is_some() {
+    let log_format = match std::env::var("PYN_LOG_FORMAT") {
+        Ok(v) => v.parse::<LogFormat>().map_err(anyhow::Error::msg)?,
+        Err(_) => LogFormat::default(),
+    };
+    let log_config = LogConfig {
+        access: strict_flag("PYN_ACCESS_LOG", true)?,
+        client: strict_flag("PYN_ACCESS_LOG_CLIENT", false)?,
+    };
+    let audit_log = strict_flag("PYN_AUDIT_LOG", false)?;
+    let subscriber = if host_command.is_some() {
         // Standard output carries a generated password and nothing else.
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(std::io::stderr)
-            .init();
+        pyn_server::observe::subscriber(log_format, filter, std::io::stderr)
     } else {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
-    }
+        pyn_server::observe::subscriber(log_format, filter, std::io::stdout)
+    };
+    tracing::subscriber::set_global_default(subscriber)?;
     if let Some(command) = host_command {
         return pyn_server::host_admin::run(command).await;
     }
@@ -361,6 +369,11 @@ async fn main() -> anyhow::Result<()> {
         postgres,
         kind: meta_kind,
     } = stores(time).await?;
+    let audit: Arc<dyn AuditStore> = if audit_log {
+        Arc::new(LoggedAudit(audit))
+    } else {
+        audit
+    };
     let instances: u32 = number("PYN_INSTANCES", 1)?;
     anyhow::ensure!(instances >= 1, "PYN_INSTANCES must be at least 1");
     anyhow::ensure!(
@@ -587,7 +600,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
-    let app = router_with(
+    let app = router_with_log(
         AppState {
             repos,
             objects,
@@ -597,6 +610,7 @@ async fn main() -> anyhow::Result<()> {
             trust_forwarded: flag("PYN_TRUST_FORWARDED_FOR"),
         },
         request_limits,
+        log_config,
     );
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
