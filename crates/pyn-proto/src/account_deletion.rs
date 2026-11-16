@@ -71,4 +71,14 @@ pub struct AccountDeletionSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AdminSettings {
     pub account_deletion: AccountDeletionSettings,
+    pub administrators: AdministratorSummary,
+}
+
+/// How many active server administrators exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AdministratorSummary {
+    /// Active accounts holding the administrator flag.
+    pub active: u32,
+    /// True when exactly one does: one lost credential from needing host recovery.
+    pub single: bool,
 }

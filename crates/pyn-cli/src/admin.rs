@@ -146,6 +146,9 @@ pub fn setup(api: &Api, args: SetupArgs, interactive: bool) -> Result<()> {
         "{} is set up with {} as its first administrator; sign in with `pyn login {}`",
         api.base, done.user, done.user
     );
+    eprintln!(
+        "next: sign in and make a second administrator with `pyn admin grant <user>`, so one lost account does not need host recovery"
+    );
     Ok(())
 }
 

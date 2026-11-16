@@ -281,8 +281,8 @@ identities are left as they are. Other accounts are not touched. When the admini
 Each recovery is written to the server audit log (`GET /v1/admin/audit`) as `admin_granted`, plus `account_enabled` when
 it lifted a disable, with the actor `@host-recovery`, and to the server log as a `host recovery` warning.
 
-The server warns once at start when exactly one active administrator exists. Add a second one so a single lost account does
-not need this.
+The server warns once at start when exactly one active administrator exists. Add a second one (`pyn admin grant <user>`) so a single lost account does
+not need this; the installer and `pyn setup` suggest it, and `GET /v1/admin/settings` reports `administrators.single` for a client to warn.
 
 ### Lost secret key
 

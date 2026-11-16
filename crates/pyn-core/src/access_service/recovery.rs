@@ -104,6 +104,13 @@ impl AccessService {
         })
     }
 
+    /// Active administrators, for an administrator (or a `manage_accounts` credential) to read.
+    pub async fn active_admin_count(&self, actor: &Identity) -> Result<u64> {
+        self.require_admin_scope(actor, ServiceScope::ManageAccounts)
+            .await?;
+        self.store.active_admin_count().await
+    }
+
     /// A warning when exactly one active administrator exists, which is one lost credential from a locked-out server.
     pub async fn single_admin_warning(&self) -> Result<Option<String>> {
         Ok((self.store.active_admin_count().await? == 1).then(|| {
