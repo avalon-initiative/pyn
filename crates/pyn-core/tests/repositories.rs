@@ -435,12 +435,7 @@ async fn an_invitation_belongs_to_its_repository() {
 
     let (record, _) = w
         .access
-        .create_invite(
-            &admin_of(&one).await,
-            &one.id,
-            Role::Writer,
-            Duration::days(1),
-        )
+        .create_invite(&alice, &one.id, Role::Writer, Duration::days(1))
         .await
         .unwrap();
     let err = w

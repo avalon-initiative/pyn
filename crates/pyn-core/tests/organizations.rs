@@ -1006,20 +1006,18 @@ async fn invitations_for_organization_repositories_cannot_be_made_or_redeemed_by
         .create(&alice, &user("alice"), "notes", None, None)
         .await
         .unwrap();
-    let root = w.access.principal_in(&game.id, &alice).await.unwrap();
 
     let err = w
         .access
-        .create_invite(&root, &game.id, Role::Reader, chrono::Duration::hours(1))
+        .create_invite(&alice, &game.id, Role::Reader, chrono::Duration::hours(1))
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidInvite(_)), "{err}");
 
-    let mine = w.access.principal_in(&personal.id, &alice).await.unwrap();
     let (_, code) = w
         .access
         .create_invite(
-            &mine,
+            &alice,
             &personal.id,
             Role::Reader,
             chrono::Duration::hours(1),

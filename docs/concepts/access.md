@@ -267,6 +267,12 @@ creation and needs only `manage_users`. An invitation is a one-time code
 is shown once, can be revoked only in the repository it belongs to, and cannot grant a role above the level of the person
 creating it. The new person runs `pyn register <name> --invite <code>` and gets that role in that repository.
 
+An invitation lets someone create an account on the server even when registration is closed, so creating one is not an action
+on the repository: it needs a [full-scope credential](#full-scope-credentials) as well as `manage_users`. A token limited to
+repositories or to fewer permissions is refused with `403 forbidden`, even one that holds `manage_users` there and even one
+of a server administrator, and a service credential with `403 service_credential_not_allowed`. Listing and revoking a
+repository's invitations stay `manage_users` actions in that repository.
+
 ## Protecting open registration
 
 An open server attracts bots and password guessing, so it layers these protections. Each is server-side; clients only
@@ -397,7 +403,7 @@ the server log with the method and path of the request. Every other error keeps 
 
 Account management is limited to a full-scope credential: a web session, or a token that names no repository and holds every
 permission (the sign-in tokens from `pyn login`). It covers SSH keys (add, list, remove), tokens (create, list, revoke), the
-password, linking or unlinking an external identity, and creating an account with `POST /v1/repos/{owner}/{name}/users`. A narrower token (read-only, limited to repositories, or with fewer
+password, linking or unlinking an external identity, creating an account with `POST /v1/repos/{owner}/{name}/users`, and creating an invitation. A narrower token (read-only, limited to repositories, or with fewer
 permissions) is refused with `403 forbidden`; it keeps working for its own scope. A token credential cannot create a token that
 outlives it: the new token's expiry is capped at its own, and it never holds more permissions or repositories than the creator.
 A web session may create any token its owner could.

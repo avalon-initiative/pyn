@@ -6762,7 +6762,7 @@
             }
           },
           "403": {
-            "description": "needs manage_users and every permission the role grants",
+            "description": "needs a full-scope credential, manage_users and every permission the role grants",
             "content": {
               "application/json": {
                 "schema": {

@@ -202,7 +202,7 @@ async fn admin_writes(w: &World, who: &str, repo: &RepoRecord) {
     );
     frozen(
         w.access
-            .create_invite(&principal, &repo.id, Role::Reader, Duration::hours(2))
+            .create_invite(&id, &repo.id, Role::Reader, Duration::hours(2))
             .await,
         owner,
     );
@@ -353,7 +353,7 @@ async fn a_frozen_user_owner_refuses_every_write_under_it_and_stays_readable() {
         .unwrap();
     let (invite, _) = w
         .access
-        .create_invite(&principal, &repo.id, Role::Reader, Duration::hours(2))
+        .create_invite(&alice, &repo.id, Role::Reader, Duration::hours(2))
         .await
         .unwrap();
     let open = w.repos.open("alice", "game").await.unwrap();
@@ -696,14 +696,14 @@ async fn an_invitation_to_a_frozen_owners_repository_cannot_be_redeemed() {
         .create(&session("alice"), &user("alice"), "game", None, None)
         .await
         .unwrap();
-    let principal = w
-        .access
-        .principal_in(&repo.id, &session("alice"))
-        .await
-        .unwrap();
     let (_, code) = w
         .access
-        .create_invite(&principal, &repo.id, Role::Reader, Duration::hours(2))
+        .create_invite(
+            &session("alice"),
+            &repo.id,
+            Role::Reader,
+            Duration::hours(2),
+        )
         .await
         .unwrap();
 

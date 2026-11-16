@@ -403,7 +403,7 @@ pub(crate) async fn add_user(
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/invites", params(RepoAddress), request_body = api::CreateInviteRequest, responses(
     (status = 200, body = api::CreatedInvite),
-    (status = 403, body = api::ErrorBody, description = "needs manage_users and every permission the role grants"),
+    (status = 403, body = api::ErrorBody, description = "needs a full-scope credential, manage_users and every permission the role grants"),
 ))]
 pub(crate) async fn create_invite(
     State(s): State<AppState>,
@@ -411,7 +411,8 @@ pub(crate) async fn create_invite(
     Path((owner, name)): Path<(String, String)>,
     Json(req): Json<api::CreateInviteRequest>,
 ) -> ApiResult<Json<api::CreatedInvite>> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
+    let who = identify(&s, &headers).await?;
+    let (repo, _) = open_visible(&s, Some(&who), &owner, &name).await?;
     let role = Role::from_str(&req.role)?;
     let valid_for = Duration::try_hours(req.hours).ok_or_else(|| {
         PynError::InvalidRequest(format!(

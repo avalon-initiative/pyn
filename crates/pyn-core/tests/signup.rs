@@ -685,16 +685,20 @@ async fn disabling_is_for_server_administrators_and_never_for_oneself() {
 #[tokio::test]
 async fn invite_only_servers_need_no_email_and_skip_verification() {
     let w = world_with(|c| c.registration = RegistrationMode::InviteOnly);
-    let root = admin(&w).await;
+    admin(&w).await;
     let repo = pyn_core::RepoId::new("game");
     w.svc
         .add_creator(&repo, &UserId::new("root"))
         .await
         .unwrap();
-    let principal = w.svc.principal(&repo, &root.user).await.unwrap();
     let (_, code) = w
         .svc
-        .create_invite(&principal, &repo, pyn_core::Role::Writer, Duration::days(1))
+        .create_invite(
+            &identity("root"),
+            &repo,
+            pyn_core::Role::Writer,
+            Duration::days(1),
+        )
         .await
         .unwrap();
     let up = w
