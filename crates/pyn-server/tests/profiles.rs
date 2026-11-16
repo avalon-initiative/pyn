@@ -161,7 +161,13 @@ async fn me_reports_whether_the_account_has_a_password() {
         .await
         .json::<api::Account>();
     assert!(me.has_password);
-    assert_eq!(me.profile, api::Profile::default());
+    assert_eq!(
+        me.profile,
+        api::Profile {
+            visibility: Some(api::ProfileVisibility::default()),
+            ..Default::default()
+        }
+    );
 
     let me = call(&app, "dev-user", "GET", "/v1/me", None)
         .await
@@ -197,13 +203,21 @@ async fn the_owner_edits_the_profile_and_me_and_the_public_page_show_it() {
     let page = call(&app, "", "GET", "/v1/users/alice", None).await;
     assert_eq!(page.status, StatusCode::OK, "signed out");
     let page = page.json::<api::PublicProfile>();
-    assert_eq!((page.user.as_str(), page.profile), ("alice", saved));
+    let public = api::Profile {
+        visibility: None,
+        ..saved.clone()
+    };
+    assert_eq!((page.user.as_str(), page.profile), ("alice", public));
+    assert_eq!(saved.visibility, Some(api::ProfileVisibility::default()));
     assert_eq!(page.id, me.id);
 
     let r = call(&app, &alice, "PUT", "/v1/me/profile", Some(json!({}))).await;
     assert_eq!(
         r.json::<api::Profile>(),
-        api::Profile::default(),
+        api::Profile {
+            visibility: Some(api::ProfileVisibility::default()),
+            ..Default::default()
+        },
         "replaces all"
     );
 }
@@ -574,4 +588,69 @@ async fn lists_of_people_carry_their_public_identity() {
     let first = page.entries.iter().find(|e| e.actor == "alice").unwrap();
     let who = first.actor_public.as_ref().expect("actor identity");
     assert_eq!(who.display_name.as_deref(), Some("Alice A."));
+}
+
+#[tokio::test]
+async fn hidden_fields_are_absent_for_others_and_in_lists_but_the_owner_sees_them() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    let bob = token_for(&app, "bob").await;
+    let body = json!({
+        "display_name": "Alice A.", "bio": "builds tools", "location": "Lisbon",
+        "links": ["https://alice.example"],
+        "visibility": {"display_name": false, "bio": false, "links": false, "avatar": false},
+    });
+    let r = call(&app, &alice, "PUT", "/v1/me/profile", Some(body)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let vis = r.json::<api::Profile>().visibility.unwrap();
+    assert!(!vis.display_name && !vis.avatar && vis.location && vis.company);
+    put_avatar(&app, &alice, "image/png", png()).await;
+
+    for viewer in ["", bob.as_str(), "root"] {
+        let page = call(&app, viewer, "GET", "/v1/users/alice", None).await;
+        let p = page.json::<api::PublicProfile>().profile;
+        assert_eq!((p.display_name, p.bio), (None, None), "viewer {viewer:?}");
+        assert!(p.links.is_empty() && p.avatar_url.is_none() && p.visibility.is_none());
+        assert_eq!(p.location.as_deref(), Some("Lisbon"));
+        let r = call(&app, viewer, "GET", "/v1/users/alice/avatar", None).await;
+        assert_eq!(r.code(), "avatar_not_found", "viewer {viewer:?}");
+    }
+
+    let own = call(&app, &alice, "GET", "/v1/users/alice", None).await;
+    let own = own.json::<api::PublicProfile>().profile;
+    assert_eq!(own.display_name.as_deref(), Some("Alice A."));
+    assert!(own.avatar_url.is_some() && own.visibility == Some(vis.clone()));
+    let r = call(&app, &alice, "GET", "/v1/users/alice/avatar", None).await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs",
+        Some(json!({"name": "acme"})),
+    )
+    .await;
+    let invite = json!({"user": "bob", "role": "member"});
+    call(&app, &alice, "POST", "/v1/orgs/acme/members", Some(invite)).await;
+    call(&app, &bob, "POST", "/v1/me/invitations/acme/accept", None).await;
+    let r = call(&app, &bob, "GET", "/v1/orgs/acme/members", None).await;
+    let members = r.json::<Vec<api::OrgMember>>();
+    let a = members.iter().find(|m| m.user == "alice").unwrap();
+    let a = a.identity.clone().expect("alice is still an account");
+    assert_eq!((a.display_name, a.avatar_url), (None, None));
+
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        "/v1/me/profile",
+        Some(json!({"bio": "x"})),
+    )
+    .await;
+    assert_eq!(
+        r.json::<api::Profile>().visibility,
+        Some(vis),
+        "kept when omitted"
+    );
 }

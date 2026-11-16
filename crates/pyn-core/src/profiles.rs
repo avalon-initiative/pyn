@@ -21,10 +21,17 @@ pub struct PublicProfile {
     pub user: UserId,
     pub created_at: DateTime<Utc>,
     pub profile: Profile,
+    /// Whether the viewer is the account itself, who sees every field whatever its visibility.
+    pub own: bool,
     /// The repositories the user owns that the viewer may see, each with the viewer's role.
     pub repositories: Vec<(RepoRecord, Option<Role>)>,
     /// The organizations the user belongs to that the viewer belongs to as well, with the viewer's role.
     pub organizations: Vec<(AccountRecord, OrgRole)>,
+}
+
+/// The viewer is the account itself through a full-scope credential.
+fn is_owner(viewer: Option<&Identity>, user: &UserId) -> bool {
+    viewer.is_some_and(|v| v.is_full_scope() && v.user == *user)
 }
 
 pub struct Profiles<'a> {
@@ -48,8 +55,11 @@ impl Profiles<'_> {
                 }
             }
         }
+        let own = is_owner(viewer, &account.user);
+        let profile = self.access.profile_of(&account.user).await?;
         Ok(PublicProfile {
-            profile: self.access.profile_of(&account.user).await?,
+            profile: if own { profile } else { profile.public_view() },
+            own,
             id: account.id,
             user: account.user,
             created_at: account.created_at,
@@ -81,17 +91,18 @@ impl Profiles<'_> {
         self.access.update_avatar(actor, None).await
     }
 
-    /// The active user's avatar and its bytes; `AvatarNotFound` when there is none.
-    pub async fn avatar(&self, user: &str) -> Result<(Avatar, Vec<u8>)> {
+    /// The active user's avatar and its bytes; `AvatarNotFound` when there is none or `viewer` may not see it.
+    pub async fn avatar(&self, user: &str, viewer: Option<&Identity>) -> Result<(Avatar, Vec<u8>)> {
         let user = UserId::new(user);
         let account = self.access.active_user(&user).await?;
         let none = || PynError::AvatarNotFound(account.user.to_string());
-        let avatar = self
-            .access
-            .profile_of(&account.user)
-            .await?
-            .avatar
-            .ok_or_else(none)?;
+        let profile = self.access.profile_of(&account.user).await?;
+        let profile = if is_owner(viewer, &account.user) {
+            profile
+        } else {
+            profile.public_view()
+        };
+        let avatar = profile.avatar.ok_or_else(none)?;
         let read = self
             .objects
             .read(&avatar.content, None)

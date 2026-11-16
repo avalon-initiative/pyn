@@ -1,7 +1,7 @@
 //! Account profiles: reading them, and the signed-in user's own edits.
 
 use super::*;
-use crate::profile::{Avatar, Profile, ProfileFields};
+use crate::profile::{Avatar, Profile, ProfileFields, ProfileVisibility};
 
 /// Avatar changes one account may make per hour.
 const AVATAR_CHANGES_PER_HOUR: u32 = 30;
@@ -25,7 +25,10 @@ impl AccessService {
         let mut out = Vec::with_capacity(users.len());
         for user in users {
             out.push(match self.active_user(user).await {
-                Ok(a) => Some((a.user.clone(), self.store.profile(&a.user).await?)),
+                Ok(a) => Some((
+                    a.user.clone(),
+                    self.store.profile(&a.user).await?.public_view(),
+                )),
                 Err(PynError::UserNotFound(_)) => None,
                 Err(e) => return Err(e),
             });
@@ -42,14 +45,24 @@ impl AccessService {
         Ok(self.store.password_hash(user).await?.is_some())
     }
 
-    /// Replaces the actor's profile text with the validated `fields`.
-    pub async fn update_profile(&self, actor: &Identity, fields: ProfileFields) -> Result<Profile> {
+    /// Replaces the actor's profile text with the validated `fields`; `visibility` is left as is when `None`.
+    pub async fn update_profile(
+        &self,
+        actor: &Identity,
+        fields: ProfileFields,
+        visibility: Option<ProfileVisibility>,
+    ) -> Result<Profile> {
         actor.require_full_scope()?;
         let fields = fields.validated()?;
         self.account_id(&actor.user).await?;
         self.store
             .set_profile(&actor.user, &fields, self.clock.now())
             .await?;
+        if let Some(v) = visibility {
+            self.store
+                .set_profile_visibility(&actor.user, &v, self.clock.now())
+                .await?;
+        }
         self.store.profile(&actor.user).await
     }
 

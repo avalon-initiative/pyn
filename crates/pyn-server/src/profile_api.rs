@@ -7,7 +7,7 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_N
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use pyn_core::profiles::Profiles;
-use pyn_core::{Profile, ProfileFields, PynError, UserId};
+use pyn_core::{Profile, ProfileFields, ProfileVisibility, PynError, UserId};
 use pyn_proto as api;
 use serde::Deserialize;
 
@@ -23,8 +23,21 @@ pub(crate) fn profiles(s: &AppState) -> Profiles<'_> {
     }
 }
 
-/// The wire form of a profile. The avatar URL carries the start of the image's hash so a new image is a new URL.
-pub(crate) fn profile_dto(user: &UserId, profile: Profile) -> api::Profile {
+fn visibility_dto(v: ProfileVisibility) -> api::ProfileVisibility {
+    api::ProfileVisibility {
+        display_name: v.display_name,
+        bio: v.bio,
+        location: v.location,
+        company: v.company,
+        links: v.links,
+        avatar: v.avatar,
+    }
+}
+
+/// The wire form of a profile; `own` adds its visibility settings. The avatar URL carries the start of the
+/// image's hash so a new image is a new URL.
+pub(crate) fn profile_dto(user: &UserId, profile: Profile, own: bool) -> api::Profile {
+    let visibility = own.then(|| visibility_dto(profile.visibility));
     let f = profile.fields;
     api::Profile {
         display_name: f.display_name,
@@ -35,12 +48,13 @@ pub(crate) fn profile_dto(user: &UserId, profile: Profile) -> api::Profile {
         avatar_url: profile
             .avatar
             .map(|a| format!("/v1/users/{user}/avatar?v={}", &a.content.to_hex()[..16])),
+        visibility,
     }
 }
 
 #[utoipa::path(get, path = "/v1/users/{user}",
     params(("user" = String, Path, description = "the account's name")),
-    responses((status = 200, body = api::PublicProfile, description = "readable signed out; never includes an email address, and lists only the repositories and organizations the caller may see"),
+    responses((status = 200, body = api::PublicProfile, description = "readable signed out; never includes an email address, hides the fields the user made private (everyone but the user sees them absent, an administrator included), and lists only the repositories and organizations the caller may see"),
               (status = 401, body = api::ErrorBody, description = "credentials were sent but are not valid"),
               (status = 404, body = api::ErrorBody, description = "user_not_found: no such user, or an organization, or an account that is disabled or not yet approved")))]
 pub(crate) async fn get_profile(
@@ -65,7 +79,7 @@ pub(crate) async fn get_profile(
         user: found.user.to_string(),
         created_at: found.created_at,
         repository_count: repositories.len() as u64,
-        profile: profile_dto(&found.user, found.profile),
+        profile: profile_dto(&found.user, found.profile, found.own),
         repositories,
         organizations,
     }))
@@ -89,8 +103,16 @@ pub(crate) async fn update_profile(
         company: req.company,
         links: req.links,
     };
-    let saved = s.access.update_profile(&who, fields).await?;
-    Ok(Json(profile_dto(&who.user, saved)))
+    let visibility = req.visibility.map(|v| ProfileVisibility {
+        display_name: v.display_name,
+        bio: v.bio,
+        location: v.location,
+        company: v.company,
+        links: v.links,
+        avatar: v.avatar,
+    });
+    let saved = s.access.update_profile(&who, fields, visibility).await?;
+    Ok(Json(profile_dto(&who.user, saved, true)))
 }
 
 /// The bytes the client sends as the avatar, refused early when they declare or hold more than the limit.
@@ -127,7 +149,7 @@ pub(crate) async fn put_avatar(
     let who = identify(&s, &headers).await?;
     let bytes = avatar_bytes(&headers, body).await?;
     let saved = profiles(&s).set_avatar(&who, bytes).await?;
-    Ok(Json(profile_dto(&who.user, saved)))
+    Ok(Json(profile_dto(&who.user, saved, true)))
 }
 
 #[utoipa::path(delete, path = "/v1/me/avatar",
@@ -140,7 +162,7 @@ pub(crate) async fn delete_avatar(
 ) -> ApiResult<Json<api::Profile>> {
     let who = identify(&s, &headers).await?;
     let saved = profiles(&s).remove_avatar(&who).await?;
-    Ok(Json(profile_dto(&who.user, saved)))
+    Ok(Json(profile_dto(&who.user, saved, true)))
 }
 
 #[derive(Deserialize)]
@@ -153,14 +175,16 @@ pub(crate) struct AvatarQuery {
            ("v" = Option<String>, Query, description = "the version from `avatar_url`; when it is the current one the image is cached for a year")),
     responses((status = 200, content_type = "image/png", body = inline(FileContent), description = "the image, as `image/png`, `image/jpeg` or `image/webp` according to its bytes; readable signed out, with an `ETag` and `Cache-Control`"),
               (status = 304, description = "`If-None-Match` matches the current image"),
-              (status = 404, body = api::ErrorBody, description = "user_not_found, or avatar_not_found when the user has none")))]
+              (status = 401, body = api::ErrorBody, description = "credentials were sent but are not valid"),
+              (status = 404, body = api::ErrorBody, description = "user_not_found, or avatar_not_found when the user has none or hides it from the caller")))]
 pub(crate) async fn get_avatar(
     State(s): State<AppState>,
     headers: HeaderMap,
     Path(user): Path<String>,
     Query(q): Query<AvatarQuery>,
 ) -> ApiResult<Response> {
-    let (avatar, bytes) = profiles(&s).avatar(&user).await?;
+    let who = identify_optional(&s, &headers).await?;
+    let (avatar, bytes) = profiles(&s).avatar(&user, who.as_ref()).await?;
     let hash = avatar.content.to_hex();
     let etag = format!("\"{hash}\"");
     let current =

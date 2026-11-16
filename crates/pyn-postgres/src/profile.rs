@@ -1,7 +1,10 @@
 //! Account profile rows.
 
 use chrono::{DateTime, Utc};
-use pyn_core::{Avatar, ImageKind, ObjectId, Profile, ProfileFields, PynError, Result, UserId};
+use pyn_core::{
+    Avatar, ImageKind, ObjectId, Profile, ProfileFields, ProfileVisibility, PynError, Result,
+    UserId,
+};
 use sqlx::Row;
 
 use crate::{PgMetadataStore, db};
@@ -9,7 +12,8 @@ use crate::{PgMetadataStore, db};
 impl PgMetadataStore {
     pub(crate) async fn profile_row(&self, user: &UserId) -> Result<Profile> {
         let row = sqlx::query(
-            "SELECT display_name, bio, location, company, links, avatar_content, avatar_type, avatar_size
+            "SELECT display_name, bio, location, company, links, avatar_content, avatar_type, avatar_size,
+                    show_display_name, show_bio, show_location, show_company, show_links, show_avatar
              FROM account_profiles WHERE user_id = $1",
         )
         .bind(user.as_str())
@@ -46,6 +50,14 @@ impl PgMetadataStore {
                 links: row.get("links"),
             },
             avatar,
+            visibility: ProfileVisibility {
+                display_name: row.get("show_display_name"),
+                bio: row.get("show_bio"),
+                location: row.get("show_location"),
+                company: row.get("show_company"),
+                links: row.get("show_links"),
+                avatar: row.get("show_avatar"),
+            },
         })
     }
 
@@ -67,6 +79,33 @@ impl PgMetadataStore {
         .bind(&fields.location)
         .bind(&fields.company)
         .bind(&fields.links)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    pub(crate) async fn put_visibility(
+        &self,
+        user: &UserId,
+        v: &ProfileVisibility,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO account_profiles (user_id, show_display_name, show_bio, show_location, show_company,
+                 show_links, show_avatar, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (user_id) DO UPDATE SET show_display_name = $2, show_bio = $3, show_location = $4,
+                 show_company = $5, show_links = $6, show_avatar = $7, updated_at = $8",
+        )
+        .bind(user.as_str())
+        .bind(v.display_name)
+        .bind(v.bio)
+        .bind(v.location)
+        .bind(v.company)
+        .bind(v.links)
+        .bind(v.avatar)
         .bind(now)
         .execute(&self.pool)
         .await
