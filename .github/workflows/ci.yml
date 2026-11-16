@@ -30,8 +30,8 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Format, docs links and public boundary
-        run: make fmt-check docs-check boundary-check
+      - name: Format, docs links, public boundary and oracle text
+        run: make fmt-check docs-check boundary-check oracle-text-check
 
   clippy:
     runs-on: ubuntu-24.04

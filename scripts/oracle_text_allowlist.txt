@@ -1,0 +1,38 @@
+# Test files that still compare git's message text or branch on its version; migrated in #1037 and #1038.
+# The list only shrinks: scripts/check_oracle_text.py fails on a listed file that no longer violates. Format: path  # rules.
+crates/pyn-cli/tests/git_abbrev.rs  # git-stderr
+crates/pyn-cli/tests/git_add_interactive.rs  # git-version
+crates/pyn-cli/tests/git_am.rs  # git-stdout
+crates/pyn-cli/tests/git_bare.rs  # git-stdout
+crates/pyn-cli/tests/git_branch_flags.rs  # git-stderr, git-stdout, replace-pyn
+crates/pyn-cli/tests/git_check_attr.rs  # git-stdout
+crates/pyn-cli/tests/git_checkout_guess.rs  # git-stdout
+crates/pyn-cli/tests/git_clone.rs  # git-stderr
+crates/pyn-cli/tests/git_detached.rs  # git-stderr, replace-pyn
+crates/pyn-cli/tests/git_diff_attributes.rs  # git-stdout
+crates/pyn-cli/tests/git_diff_flags.rs  # git-stdout
+crates/pyn-cli/tests/git_diff_options.rs  # git-stdout
+crates/pyn-cli/tests/git_fetch.rs  # git-stderr
+crates/pyn-cli/tests/git_format_patch.rs  # git-stdout
+crates/pyn-cli/tests/git_format_patch_binary.rs  # git-stdout
+crates/pyn-cli/tests/git_grep.rs  # git-stdout
+crates/pyn-cli/tests/git_local_remote.rs  # git-stderr
+crates/pyn-cli/tests/git_log.rs  # git-stdout
+crates/pyn-cli/tests/git_merge_diff.rs  # git-stderr, git-stdout
+crates/pyn-cli/tests/git_merge_flags.rs  # git-stdout
+crates/pyn-cli/tests/git_merge_squash.rs  # git-stdout
+crates/pyn-cli/tests/git_merge_stat.rs  # git-stderr, git-stdout
+crates/pyn-cli/tests/git_merge_strategies.rs  # git-version
+crates/pyn-cli/tests/git_partial.rs  # git-stderr, git-stdout
+crates/pyn-cli/tests/git_patch.rs  # git-stderr, git-stdout, git-version
+crates/pyn-cli/tests/git_pull.rs  # git-stderr
+crates/pyn-cli/tests/git_push.rs  # git-stderr
+crates/pyn-cli/tests/git_rebase.rs  # git-stderr, git-version
+crates/pyn-cli/tests/git_reflog.rs  # git-stdout
+crates/pyn-cli/tests/git_remote.rs  # git-stderr, git-stdout
+crates/pyn-cli/tests/git_remote_query.rs  # git-stdout
+crates/pyn-cli/tests/git_restore_sides.rs  # git-stdout
+crates/pyn-cli/tests/git_revision_forms.rs  # git-stdout
+crates/pyn-cli/tests/git_shallow.rs  # git-stderr, git-stdout
+crates/pyn-cli/tests/git_stash.rs  # git-stderr, git-stdout
+crates/pyn-cli/tests/git_submodules.rs  # git-stderr, git-stdout
