@@ -1,8 +1,9 @@
 //! Account profiles in an `AccessStore`: text fields and the avatar record are stored apart and survive each other.
 
 use super::{Access, at, user};
-use crate::ObjectId;
+use crate::access::SignupStage;
 use crate::profile::{Avatar, ImageKind, ProfileFields, ProfileVisibility};
+use crate::{AccountDeletion, ObjectId};
 
 fn fields(name: &str) -> ProfileFields {
     ProfileFields {
@@ -212,5 +213,94 @@ pub async fn org_profiles_are_apart_from_user_profiles_and_go_with_the_org(store
         store.org_profile(&acme).await.unwrap(),
         Default::default(),
         "a recreated organization starts empty"
+    );
+}
+
+pub async fn the_people_search_lists_active_accounts_and_matches_only_what_is_visible(
+    store: Access,
+) {
+    for (i, n) in ["alice", "bob", "carol", "dave", "erin", "Frank"]
+        .iter()
+        .enumerate()
+    {
+        store.create_user(&user(n), at(i as i64)).await.unwrap();
+    }
+    let named = |n: &str| ProfileFields {
+        display_name: Some(n.into()),
+        ..Default::default()
+    };
+    store
+        .set_profile(&user("alice"), &named("Zed Quartz"), at(9))
+        .await
+        .unwrap();
+    store
+        .set_profile(&user("bob"), &named("Secret Plum"), at(9))
+        .await
+        .unwrap();
+    let hidden = ProfileVisibility {
+        display_name: false,
+        ..Default::default()
+    };
+    store
+        .set_profile_visibility(&user("bob"), &hidden, at(9))
+        .await
+        .unwrap();
+    store
+        .set_disabled(&user("carol"), Some((at(9), None)))
+        .await
+        .unwrap();
+    store
+        .set_signup(&user("dave"), SignupStage::PendingApproval)
+        .await
+        .unwrap();
+    let deletion = AccountDeletion {
+        user: user("erin"),
+        requested_by: user("erin"),
+        by_owner: true,
+        reason: None,
+        scheduled_at: at(9),
+        purge_at: at(99),
+    };
+    store
+        .schedule_account_deletion_with_events(deletion, false, &[])
+        .await
+        .unwrap();
+
+    let names = |found: Vec<crate::UserId>| -> Vec<String> {
+        found.iter().map(|u| u.to_string()).collect()
+    };
+    let all = store.search_people(None, None, 10).await.unwrap();
+    assert_eq!(
+        names(all),
+        ["Frank", "alice", "bob"],
+        "active only, by name"
+    );
+    let page = store.search_people(None, None, 2).await.unwrap();
+    assert_eq!(names(page), ["Frank", "alice"]);
+    let next = store
+        .search_people(None, Some(&user("alice")), 2)
+        .await
+        .unwrap();
+    assert_eq!(names(next), ["bob"], "strictly after the cursor");
+
+    let hit = |q: &'static str| {
+        let store = store.clone();
+        async move { names(store.search_people(Some(q), None, 10).await.unwrap()) }
+    };
+    assert_eq!(hit("ali").await, ["alice"], "by account name");
+    assert_eq!(hit("frank").await, ["Frank"], "case-insensitive");
+    assert_eq!(hit("quartz").await, ["alice"], "by a visible display name");
+    assert!(
+        hit("plum").await.is_empty(),
+        "a hidden display name matches nothing"
+    );
+    assert!(hit("secret").await.is_empty());
+    assert_eq!(hit("bob").await, ["bob"], "its account name still does");
+    for gone in ["carol", "dave", "erin"] {
+        assert!(hit(gone).await.is_empty(), "{gone} is not listed");
+    }
+    assert!(
+        hit("%").await.is_empty() && hit("_").await.is_empty(),
+        "no wildcards"
     );
 }

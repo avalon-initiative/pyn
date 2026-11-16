@@ -46,6 +46,7 @@ lifetime.
 
 | Route | What it does |
 | --- | --- |
+| `GET /v1/users` | The people directory: browse and search accounts. Signed-in only. |
 | `GET /v1/users/{user}` | The public profile. Works signed out. |
 | `GET /v1/users/{user}/avatar` | The avatar image. Works signed out. |
 | `PUT /v1/me/profile` | Replaces your display name, bio, location, company and links. A field left out is cleared. |
@@ -75,6 +76,22 @@ Editing needs a full-scope credential (a session, or a token with every permissi
 A name that is no account, an organization name, and an account that is disabled or not yet approved all answer
 `404 user_not_found`, with the same message, so a disabled account is indistinguishable from a missing one. A frozen
 owner stays visible: freezing refuses writes, not reads.
+
+## People directory
+
+`GET /v1/users` lists accounts for any signed-in caller (any valid credential; signed out is `401`). Query: `q` (optional
+search), `after` (an account name; the page starts strictly after it) and `limit` (default 30, at most 100). The response is
+`{ "people": [...], "next_after": "name" | null }`, ordered by account name (byte order, so capitals sort first); pass
+`next_after` back as `after` for the next page. Each entry is `identity` (`PublicIdentity`) plus `bio`, `location`, `company`
+and `links`, as a stranger sees them.
+
+- Only active user accounts are listed: never a disabled account, one not yet approved, one with a deletion scheduled,
+  or an organization. There is no email address, repository, count or role in an entry, and no visibility object.
+- `q` (at most 64 characters, trimmed, else `400 invalid_request`) keeps accounts whose name or display name contains it,
+  ignoring case; it is a plain substring, with no wildcards. A display name its owner hides is not searched, so a search
+  cannot reveal it. Bio, location, company and links are not searched. A blank `q` lists everyone.
+- Repositories stay out of it: a private repository appears in no list, count or search, and asking for one by address is
+  the same `404 repo_not_found` as for a missing one.
 
 ## Public identity in lists
 

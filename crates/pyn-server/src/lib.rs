@@ -111,6 +111,7 @@ struct RepoAddress {
         access_api::delete_key,
         access_api::me,
         profile_api::get_profile,
+        profile_api::list_people,
         profile_api::update_profile,
         profile_api::put_avatar,
         profile_api::delete_avatar,
@@ -292,6 +293,8 @@ struct RepoAddress {
         api::FileEntry,
         api::FilePage,
         api::RepoPage,
+        api::PeoplePage,
+        api::PersonEntry,
         api::TreeEntryKind,
         api::TreeMode,
         api::TreeEntry,
@@ -578,6 +581,7 @@ fn routes(state: AppState) -> Router {
             "/v1/me/avatar",
             put(profile_api::put_avatar).delete(profile_api::delete_avatar),
         )
+        .route("/v1/users", get(profile_api::list_people))
         .route("/v1/users/{user}", get(profile_api::get_profile))
         .route("/v1/users/{user}/avatar", get(profile_api::get_avatar))
         .route(

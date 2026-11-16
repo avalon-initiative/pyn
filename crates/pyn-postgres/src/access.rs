@@ -769,6 +769,30 @@ impl AccessStore for PgMetadataStore {
         self.put_avatar(user, avatar, now).await
     }
 
+    async fn search_people(
+        &self,
+        query: Option<&str>,
+        after: Option<&UserId>,
+        limit: usize,
+    ) -> Result<Vec<UserId>> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT u.id FROM users u LEFT JOIN account_profiles p ON p.user_id = u.id
+             WHERE u.kind = 'user' AND u.disabled_at IS NULL AND u.signup = 'active'
+               AND NOT EXISTS (SELECT 1 FROM account_deletions d WHERE d.user_id = u.id)
+               AND ($1::text IS NULL OR u.id COLLATE \"C\" > $1)
+               AND ($2::text IS NULL OR strpos(lower(u.id), $2) > 0
+                    OR (COALESCE(p.show_display_name, true) AND strpos(lower(COALESCE(p.display_name, '')), $2) > 0))
+             ORDER BY u.id COLLATE \"C\" LIMIT $3",
+        )
+        .bind(after.map(UserId::as_str))
+        .bind(query)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.into_iter().map(UserId::new).collect())
+    }
+
     async fn password_hash(&self, user: &UserId) -> Result<Option<String>> {
         let hash: Option<Option<String>> =
             sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")

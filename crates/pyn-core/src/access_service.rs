@@ -405,6 +405,15 @@ pub trait AccessStore: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<()>;
 
+    /// Active user accounts ordered by name, strictly after `after`, whose name or visible display name contains
+    /// `query` (lowercase, case-insensitive); none with a pending deletion. A hidden display name never matches.
+    async fn search_people(
+        &self,
+        query: Option<&str>,
+        after: Option<&UserId>,
+        limit: usize,
+    ) -> Result<Vec<UserId>>;
+
     async fn create_invite(&self, invite: InviteRecord) -> Result<()>;
 
     async fn get_invite(&self, id: &InviteId) -> Result<Option<InviteRecord>>;

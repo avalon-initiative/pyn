@@ -922,6 +922,26 @@ pub struct PublicIdentity {
     pub avatar_url: Option<String>,
 }
 
+/// A person in the people directory: the public identity and the profile fields their owner shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PersonEntry {
+    pub identity: PublicIdentity,
+    pub bio: Option<String>,
+    pub location: Option<String>,
+    pub company: Option<String>,
+    #[serde(default)]
+    pub links: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PeoplePage {
+    /// Ordered by account name.
+    pub people: Vec<PersonEntry>,
+    /// Pass as `after` to fetch the next page; null on the last page.
+    #[schema(required = true)]
+    pub next_after: Option<String>,
+}
+
 /// A person in an organization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OrgMember {

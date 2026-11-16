@@ -5,6 +5,9 @@ use crate::profile::{
     Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility, validate_org_description,
 };
 
+/// The longest people search, in characters.
+pub const MAX_PEOPLE_QUERY_CHARS: usize = 64;
+
 /// Avatar changes one account may make per hour.
 const AVATAR_CHANGES_PER_HOUR: u32 = 30;
 
@@ -36,6 +39,38 @@ impl AccessService {
             });
         }
         Ok(out)
+    }
+
+    /// One page of the people directory: active accounts by name with their public profile, and the cursor for the
+    /// next page. `query` matches account names and visible display names, case-insensitively.
+    pub async fn people(
+        &self,
+        query: Option<&str>,
+        after: Option<&UserId>,
+        limit: usize,
+    ) -> Result<(Vec<(UserId, Profile)>, Option<String>)> {
+        let query = query.map(str::trim).filter(|q| !q.is_empty());
+        if query.is_some_and(|q| q.chars().count() > MAX_PEOPLE_QUERY_CHARS) {
+            return Err(PynError::InvalidRequest(format!(
+                "a search is at most {MAX_PEOPLE_QUERY_CHARS} characters"
+            )));
+        }
+        let query = query.map(str::to_lowercase);
+        let limit = limit.max(1);
+        let mut found = self
+            .store
+            .search_people(query.as_deref(), after, limit + 1)
+            .await?;
+        let next = (found.len() > limit).then(|| {
+            found.truncate(limit);
+            found[limit - 1].to_string()
+        });
+        let mut out = Vec::with_capacity(found.len());
+        for user in found {
+            let profile = self.store.profile(&user).await?.public_view();
+            out.push((user, profile));
+        }
+        Ok((out, next))
     }
 
     pub async fn profile_of(&self, user: &UserId) -> Result<Profile> {
