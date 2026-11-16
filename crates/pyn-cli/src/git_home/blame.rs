@@ -86,6 +86,7 @@ struct Parsed {
     incremental: bool,
     show_stats: bool,
     reverse: bool,
+    no_textconv: bool,
     ignore_revs: Vec<String>,
     ignore_files: Vec<String>,
     progress: Option<bool>,
@@ -166,6 +167,8 @@ fn parse_args(args: Vec<OsString>, annotate: bool) -> Parsed {
                 ("color-by-age", None) => p.color_by_age = true,
                 ("no-color-by-age", None) => p.color_by_age = false,
                 ("reverse", None) => p.reverse = true,
+                ("textconv", None) => p.no_textconv = false,
+                ("no-textconv", None) => p.no_textconv = true,
                 ("progress", None) => p.progress = Some(true),
                 ("no-progress", None) => p.progress = Some(false),
                 ("ignore-rev", v) => p.ignore_revs.push(value_of(&mut it, v, name, annotate)),
@@ -428,7 +431,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     if positive.is_none() && git.is_bare() && p.contents.is_none() {
         positive = git.repo.head_commit()?.map(|id| ("HEAD".to_string(), id));
     }
-    let (content, mode, blob, final_commit, fake) = if let Some((name, id)) =
+    let (content, mode, blob, final_commit, mut fake) = if let Some((name, id)) =
         positive.clone().filter(|_| p.contents.is_none())
     {
         let tree = git.repo.commit(&id)?.tree;
@@ -446,6 +449,15 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
         (content, mode, blob, zero, Some(fake))
     };
 
+    let content = if p.no_textconv || !matches!(mode, FileMode::Regular | FileMode::Executable) {
+        content
+    } else {
+        let converted = Rc::new(git.converted(&path, content.to_vec())?);
+        if let Some(f) = fake.as_mut() {
+            f.content = converted.clone();
+        }
+        converted
+    };
     let lines = pyn_diff::split_lines(&content);
     let mut ranges = std::mem::take(&mut p.ranges);
     if !lines.is_empty() && ranges.is_empty() {
@@ -497,6 +509,7 @@ pub(super) fn blame(git: &GitHome, cwd: &Path, args: BlameArgs, annotate: bool) 
     let ignore = ignore_list(git, cwd, &p, &resolver)?;
     let selected_lines: Vec<usize> = (0..lines.len()).filter(|l| selected[*l]).collect();
     let mut board = Board::new(git, &hidden, settings, fake.map(|f| (zero, f)), lines.len());
+    board.with_textconv(!p.no_textconv);
     board.ignoring(ignore);
     board.with_final_text(content.clone());
     board.with_grafts(grafts.clone());

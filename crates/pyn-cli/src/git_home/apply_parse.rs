@@ -3,7 +3,7 @@
 
 use std::sync::atomic::AtomicBool;
 
-use super::apply_ws::check_added;
+use super::apply_ws::{Action, check_added};
 use pyn_diff::whitespace::Rule;
 
 /// While set, diagnostics are not printed: `am --3way` tries a plain apply first without reporting it.
@@ -37,11 +37,10 @@ pub(super) struct Hunk {
     pub oldlines: usize,
     pub newpos: usize,
     pub newlines: usize,
-    pub leading: usize,
     pub trailing: usize,
     pub lines: Vec<(u8, Vec<u8>)>,
-    /// The patch line number of the hunk header.
-    pub line: usize,
+    /// The patch line number of each of `lines`.
+    pub numbers: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +115,6 @@ impl FilePatch {
         for h in &mut self.hunks {
             std::mem::swap(&mut h.oldpos, &mut h.newpos);
             std::mem::swap(&mut h.oldlines, &mut h.newlines);
-            std::mem::swap(&mut h.leading, &mut h.trailing);
             for (marker, _) in &mut h.lines {
                 *marker = match *marker {
                     b'+' => b'-',
@@ -128,9 +126,14 @@ impl FilePatch {
     }
 }
 
+/// The whitespace rule for a path.
+pub(super) type Rules<'a> = &'a dyn Fn(&[u8]) -> Rule;
+
 pub(super) struct Parsed {
     pub patches: Vec<FilePatch>,
     pub ws_errors: usize,
+    /// The line number after the last one read, which the next input continues from, as git's does.
+    pub next_line: usize,
 }
 
 pub(super) struct Reader<'a> {
@@ -140,9 +143,11 @@ pub(super) struct Reader<'a> {
     line: usize,
     strip: usize,
     label: &'a str,
-    ws: bool,
+    action: Action,
+    limit: usize,
+    reverse: bool,
     /// The whitespace rule for a path.
-    rules: &'a dyn Fn(&[u8]) -> Rule,
+    rules: Rules<'a>,
     ws_errors: usize,
 }
 
@@ -299,18 +304,20 @@ impl<'a> Reader<'a> {
         buf: &'a [u8],
         label: &'a str,
         strip: usize,
-        ws: bool,
-        rules: &'a dyn Fn(&[u8]) -> Rule,
+        (action, limit, reverse): (Action, usize, bool),
+        (rules, ws_errors, first_line): (Rules<'a>, usize, usize),
     ) -> Self {
         Self {
             buf,
             pos: 0,
-            line: 1,
+            line: first_line,
             strip,
             label,
-            ws,
+            action,
+            limit,
+            reverse,
             rules,
-            ws_errors: 0,
+            ws_errors,
         }
     }
 
@@ -338,6 +345,7 @@ impl<'a> Reader<'a> {
         Ok(Parsed {
             patches,
             ws_errors: self.ws_errors,
+            next_line: self.line,
         })
     }
 
@@ -609,14 +617,14 @@ impl<'a> Reader<'a> {
     }
 
     fn hunk(&mut self, patch: &FilePatch) -> Result<Hunk, Fail> {
-        let header_line = self.line;
         let Some((oldpos, oldlines, newpos, newlines)) = hunk_header(self.peek()) else {
             return Err(self.corrupt());
         };
         self.advance();
         let (mut old_left, mut new_left) = (oldlines, newlines);
-        let (mut leading, mut trailing, mut changed) = (0, 0, false);
+        let (mut trailing, mut changed) = (0, false);
         let mut lines: Vec<(u8, Vec<u8>)> = Vec::new();
+        let mut numbers = Vec::new();
         while old_left > 0 || new_left > 0 {
             if self.done() {
                 return Err(self.corrupt());
@@ -632,12 +640,13 @@ impl<'a> Reader<'a> {
                     }
                     old_left -= 1;
                     new_left -= 1;
-                    if !changed {
-                        leading += 1;
-                    }
                     trailing += 1;
                     let body = if line[0] == b'\n' { line } else { &line[1..] };
+                    if self.action == Action::Fix && !self.reverse {
+                        self.check_line(patch, body);
+                    }
                     lines.push((b' ', body.to_vec()));
+                    numbers.push(self.line);
                 }
                 b'-' => {
                     if old_left == 0 {
@@ -646,23 +655,24 @@ impl<'a> Reader<'a> {
                     old_left -= 1;
                     trailing = 0;
                     changed = true;
+                    if self.action.reports() && self.reverse {
+                        self.check_line(patch, &line[1..]);
+                    }
                     lines.push((b'-', line[1..].to_vec()));
+                    numbers.push(self.line);
                 }
                 b'+' => {
                     if new_left == 0 {
                         return Err(self.corrupt());
                     }
-                    if self.ws {
-                        let name = patch.new_name.as_deref().or(patch.old_name.as_deref());
-                        let rule = (self.rules)(name.unwrap_or_default());
-                        let reported =
-                            check_added(&line[1..], &rule, self.label, self.line, self.ws_errors);
-                        self.ws_errors += usize::from(reported);
+                    if self.action.reports() && !self.reverse {
+                        self.check_line(patch, &line[1..]);
                     }
                     new_left -= 1;
                     trailing = 0;
                     changed = true;
                     lines.push((b'+', line[1..].to_vec()));
+                    numbers.push(self.line);
                 }
                 b'\\' => {
                     if line.len() < 12 || !line.starts_with(b"\\ ") {
@@ -691,11 +701,18 @@ impl<'a> Reader<'a> {
             oldlines,
             newpos,
             newlines,
-            leading,
             trailing,
             lines,
-            line: header_line,
+            numbers,
         })
+    }
+
+    fn check_line(&mut self, patch: &FilePatch, body: &[u8]) {
+        let name = patch.new_name.as_deref().or(patch.old_name.as_deref());
+        let rule = (self.rules)(name.unwrap_or_default());
+        let at = (self.label, self.line);
+        let found = check_added(body, &rule, at, (self.limit, self.ws_errors));
+        self.ws_errors += usize::from(found);
     }
 }
 

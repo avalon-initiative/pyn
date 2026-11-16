@@ -21,6 +21,7 @@ mod diff_opts;
 mod diff_raw;
 mod diffstat;
 mod dirstat;
+mod ext_diff;
 mod freeze;
 mod git_home;
 mod git_log_options;

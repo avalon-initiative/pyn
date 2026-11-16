@@ -51,6 +51,7 @@ struct Options {
     icase: bool,
     word: bool,
     text: bool,
+    textconv: bool,
     skip_binary: bool,
     syntax: Option<Syntax>,
     line_numbers: Option<bool>,
@@ -101,13 +102,12 @@ fn raw_args() -> Vec<OsString> {
     args.collect()
 }
 
-const UNSUPPORTED_LONG: [&str; 24] = [
+const UNSUPPORTED_LONG: [&str; 23] = [
     "untracked",
     "no-index",
     "index",
     "exclude-standard",
     "recurse-submodules",
-    "textconv",
     "max-depth",
     "column",
     "null",
@@ -144,6 +144,8 @@ fn long_option(name: &str, opts: &mut Options, tokens: &mut Vec<Token>) {
         "fixed-strings" => opts.syntax = Some(Syntax::Fixed),
         "quiet" => flag(&mut opts.quiet),
         "text" => flag(&mut opts.text),
+        "textconv" => flag(&mut opts.textconv),
+        "no-textconv" => opts.textconv = false,
         "recursive" => {}
         "full-name" => opts.full_name = Some(true),
         "no-full-name" => opts.full_name = Some(false),
@@ -529,23 +531,33 @@ impl Searcher<'_> {
     }
 
     // The `diff` attribute decides binary, else a NUL in the first bytes; `-a` skips the lookup.
-    fn is_binary(&self, path: &[u8], data: &[u8]) -> Result<bool> {
-        if self.opts.text {
-            return Ok(false);
-        }
-        let path = String::from_utf8_lossy(path);
-        let driver = crate::diff_driver::DiffDriver::resolve(
-            &*self.attrs.attributes()?,
-            self.attrs.config(),
-            &path,
-        )?;
-        Ok(driver
-            .binary
-            .unwrap_or_else(|| data[..data.len().min(BINARY_SCAN)].contains(&0)))
+    fn is_binary(driver: &crate::diff_driver::DiffDriver, text: bool, data: &[u8]) -> bool {
+        !text
+            && driver
+                .binary
+                .unwrap_or_else(|| data[..data.len().min(BINARY_SCAN)].contains(&0))
     }
 
     fn file(&mut self, path: &[u8], name: &[u8], data: &[u8]) -> Result<()> {
-        let binary = self.is_binary(path, data)?;
+        let driver = if self.opts.text && !self.opts.textconv {
+            crate::diff_driver::DiffDriver::default()
+        } else {
+            crate::diff_driver::DiffDriver::resolve(
+                &*self.attrs.attributes()?,
+                self.attrs.config(),
+                &String::from_utf8_lossy(path),
+            )?
+        };
+        let converted;
+        let data = match driver.textconv.as_deref().filter(|_| self.opts.textconv) {
+            Some(command) => {
+                let dir = self.attrs.git().work_tree();
+                converted = crate::diff_driver::textconv(command, data, dir)?;
+                &converted[..]
+            }
+            None => data,
+        };
+        let binary = Self::is_binary(&driver, self.opts.text, data);
         if binary && self.opts.skip_binary {
             return Ok(());
         }

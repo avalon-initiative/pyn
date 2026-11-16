@@ -97,7 +97,8 @@ pub(super) struct Board<'a> {
     by_commit: HashMap<ObjectId, Vec<usize>>,
     queue: BinaryHeap<Queued>,
     seq: u64,
-    blobs: HashMap<ObjectId, Rc<Vec<u8>>>,
+    blobs: HashMap<(ObjectId, Vec<u8>), Rc<Vec<u8>>>,
+    textconv: bool,
     commits: HashMap<ObjectId, Rc<Commit>>,
     /// Per line of the final file, the origin and its line number that the line is blamed on.
     pub lines: Vec<Option<(usize, usize)>>,
@@ -154,6 +155,7 @@ impl<'a> Board<'a> {
             queue: BinaryHeap::new(),
             seq: 0,
             blobs: HashMap::new(),
+            textconv: false,
             commits: HashMap::new(),
             lines: vec![None; line_count],
             ignored: vec![false; line_count],
@@ -168,6 +170,10 @@ impl<'a> Board<'a> {
             final_off: Vec::new(),
             stats: Stats::default(),
         }
+    }
+
+    pub fn with_textconv(&mut self, on: bool) {
+        self.textconv = on;
     }
 
     pub fn with_final_text(&mut self, text: Rc<Vec<u8>>) {
@@ -291,11 +297,21 @@ impl<'a> Board<'a> {
         {
             return Ok(fake.content.clone());
         }
-        if let Some(d) = self.blobs.get(&blob) {
+        let key = (blob, self.origins[o].path.clone());
+        if let Some(d) = self.blobs.get(&key) {
             return Ok(d.clone());
         }
-        let d = Rc::new(self.git.repo.blob(&blob)?);
-        self.blobs.insert(blob, d.clone());
+        let mut data = self.git.repo.blob(&blob)?;
+        if self.textconv
+            && matches!(
+                self.origins[o].mode,
+                FileMode::Regular | FileMode::Executable
+            )
+        {
+            data = self.git.converted(&key.1, data)?;
+        }
+        let d = Rc::new(data);
+        self.blobs.insert(key, d.clone());
         Ok(d)
     }
 
