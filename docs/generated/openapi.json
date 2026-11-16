@@ -9151,6 +9151,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "forbidden for a token that is not full-scope, service_credential_not_allowed for a service credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
