@@ -98,7 +98,7 @@ the same window and `--now` (`immediately`) purges at once. An administrator can
 
 An account that owns repositories, or is the only owner of an organization, cannot be deleted (`409 account_owns_resources`). The error
 body carries `blockers: {repositories: ["owner/name"], organizations: ["org"]}` next to the message. The account list at
-`GET /v1/admin/users` gives each disabled account's `purge_at`, and `GET /v1/admin/settings` the window and retention in days.
+`GET /v1/admin/users` gives each disabled account's `purge_at`, and `GET /v1/admin/settings` the window and retention in days, plus how many administrators are active.
 
 **Automatic deletion.** An account disabled for `PYN_DISABLED_ACCOUNT_RETENTION_DAYS` days (default 90, `0` turns it off) is purged
 by the server. A background task runs at start and then hourly; it keeps no state of its own (schedules and disable times are in the
@@ -308,7 +308,7 @@ recorded with who and whom in the audit log. A disabled account cannot sign in, 
 and SSH keys stop working (403 `account_disabled`) until it is enabled; its email address stays reserved until the account is [deleted](#deleting-an-account), which happens on its own after
 `PYN_DISABLED_ACCOUNT_RETENTION_DAYS` (default 90). Administrators
 cannot disable themselves. Approvals, disables and enables are recorded with the actor and reason in a server-wide audit
-log, read at `GET /v1/admin/audit`. The server warns once at start when only one active administrator exists. If none is
+log, read at `GET /v1/admin/audit`. The server warns once at start when only one active administrator exists, `GET /v1/admin/settings` reports it, and `pyn setup` and the installer suggest adding a second one. Recovery codes are deliberately not offered (decision #968: host control is the only recovery path). If none is
 reachable, `pyn-server recover-admin <username>` run on the host creates or repairs one; it needs host control and has no
 API route ([recovery](../deployment.md#lost-administrator)).
 
@@ -334,7 +334,7 @@ is off, or on but nothing is delivered.
 | `POST /v1/login`, `POST /v1/session` | `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password |
 | `GET /v1/me` | `{id, user, admin}` |
 | `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{id, user, email, email_verified, status, disabled_at, disabled_reason, purge_at, admin, created_at}`; `purge_at` is the scheduled deletion time, as in `GET /v1/account/deletion`, or null |
-| `GET /v1/admin/settings` | `{account_deletion: {window_days, disabled_retention_days}}`: the effective deletion window and disabled-account retention, read-only (set by the environment variables below) |
+| `GET /v1/admin/settings` | `{account_deletion: {window_days, disabled_retention_days}, administrators: {active, single}}`: the effective deletion window and disabled-account retention, read-only (set by the environment variables below), and the count of active administrators; `single` is true when exactly one exists, so a client can warn |
 | `POST /v1/admin/users/{user}/approve` | `{}`; the updated account |
 | `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account. `409 last_server_admin` if the account is the only active administrator |
 | `POST /v1/admin/users/{user}/enable` | the updated account; also cancels a scheduled deletion |

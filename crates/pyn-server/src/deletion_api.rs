@@ -134,7 +134,12 @@ pub(crate) async fn admin_settings(
 ) -> ApiResult<Json<api::AdminSettings>> {
     let who = identify_admin(&s, &headers).await?;
     let (window, retention) = s.access.account_deletion_settings(&who).await?;
+    let active = s.access.active_admin_count(&who).await?;
     Ok(Json(api::AdminSettings {
+        administrators: api::AdministratorSummary {
+            active: u32::try_from(active).unwrap_or(u32::MAX),
+            single: active == 1,
+        },
         account_deletion: api::AccountDeletionSettings {
             window_days: u32::try_from(window).unwrap_or(0),
             disabled_retention_days: u32::try_from(retention).unwrap_or(0),

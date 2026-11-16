@@ -338,6 +338,8 @@ async fn administrators_read_the_deletion_settings_and_purge_times() {
         (defaults.window_days, defaults.disabled_retention_days),
         (30, 90)
     );
+    let admins = settings.json::<api::AdminSettings>().administrators;
+    assert_eq!((admins.active, admins.single), (0, false));
 
     for (path, body) in [
         ("/v1/admin/users/alice/disable", serde_json::json!({})),
@@ -456,4 +458,42 @@ async fn an_administrator_deletes_a_disabled_account_with_a_reason() {
         "{actions:?}"
     );
     assert!(actions.contains(&"account_deletion_scheduled".to_string()));
+}
+
+#[tokio::test]
+async fn settings_report_when_a_second_administrator_exists() {
+    let s = server();
+    sign_up(&s.app, "alice").await;
+    sign_up(&s.app, "bob").await;
+    let grant = |user: &'static str| {
+        let app = s.app.clone();
+        async move {
+            let r = call(
+                &app,
+                "PUT",
+                &format!("/v1/admin/users/{user}/admin"),
+                Some(("dev", "root")),
+                None,
+            )
+            .await;
+            assert_eq!(r.status, StatusCode::OK);
+        }
+    };
+    let read = || async {
+        let a = call(
+            &s.app,
+            "GET",
+            "/v1/admin/settings",
+            Some(("dev", "root")),
+            None,
+        )
+        .await
+        .json::<api::AdminSettings>()
+        .administrators;
+        (a.active, a.single)
+    };
+    grant("alice").await;
+    assert_eq!(read().await, (1, true));
+    grant("bob").await;
+    assert_eq!(read().await, (2, false));
 }

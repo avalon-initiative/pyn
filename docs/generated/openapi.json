@@ -9859,11 +9859,35 @@
         "type": "object",
         "description": "Server settings an administrator can read.",
         "required": [
-          "account_deletion"
+          "account_deletion",
+          "administrators"
         ],
         "properties": {
           "account_deletion": {
             "$ref": "#/components/schemas/AccountDeletionSettings"
+          },
+          "administrators": {
+            "$ref": "#/components/schemas/AdministratorSummary"
+          }
+        }
+      },
+      "AdministratorSummary": {
+        "type": "object",
+        "description": "How many active server administrators exist.",
+        "required": [
+          "active",
+          "single"
+        ],
+        "properties": {
+          "active": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Active accounts holding the administrator flag.",
+            "minimum": 0
+          },
+          "single": {
+            "type": "boolean",
+            "description": "True when exactly one does: one lost credential from needing host recovery."
           }
         }
       },

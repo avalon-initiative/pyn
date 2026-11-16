@@ -833,6 +833,7 @@ docker_flow() {
   elif [ "$first_run" -eq 1 ]; then
     say "one-time setup token (finish setup in the browser, or run: pyn setup <username>):"
     compose_in logs server 2>&1 | token_block
+    say "after setup, add a second administrator (pyn admin grant <user>) so one lost account does not need host recovery"
   fi
 }
 
@@ -963,6 +964,7 @@ native_flow() {
     say "one-time setup token (finish setup with: pyn setup <username>, or in the browser if a web app is attached):"
     journalctl -u pyn --no-pager -o cat 2>&1 | token_block
     say "setup from the pyn command: PYN_SETUP_TOKEN=<token> pyn --server $public_url setup <username> --public-url $public_url"
+    say "after setup, add a second administrator (pyn admin grant <user>) so one lost account does not need host recovery"
   fi
 }
 

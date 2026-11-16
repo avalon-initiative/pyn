@@ -398,6 +398,7 @@ struct RepoAddress {
         api::DeletionBlockers,
         api::AccountDeletionSettings,
         api::AdminSettings,
+        api::AdministratorSummary,
         api::AccountDeletionScheduledData,
         api::AccountDeletionRestoredData,
         api::AccountDeletedData,
