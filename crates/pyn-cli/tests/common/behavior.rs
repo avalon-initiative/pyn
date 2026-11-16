@@ -69,6 +69,23 @@ fn plumbing(dir: &Path, args: &[&str]) -> Vec<String> {
     lines
 }
 
+/// Drops the label after a conflict marker (`<<<<<<< HEAD`, `||||||| constructed ...`): git words it differently by release.
+pub fn mask_conflict_labels(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| {
+            let run = line.chars().take_while(|c| "<|>".contains(*c)).count();
+            let head: Vec<char> = line.chars().take(run).collect();
+            let uniform = head.iter().all(|c| Some(c) == head.first());
+            if run >= 7 && uniform && line[run..].starts_with(' ') {
+                let eol = if line.ends_with('\n') { "\n" } else { "" };
+                format!("{}{eol}", &line[..run])
+            } else {
+                line.to_string()
+            }
+        })
+        .collect()
+}
+
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
@@ -88,7 +105,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
             } else {
                 "file"
             };
-            let text = String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned();
+            let text = mask_conflict_labels(&String::from_utf8_lossy(&fs::read(&path).unwrap()));
             out.push(format!("{rel} {exec} {text:?}"));
         }
     }

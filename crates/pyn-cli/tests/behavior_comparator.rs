@@ -102,6 +102,34 @@ fn differing_content_fails() {
 }
 
 #[test]
+fn conflict_marker_labels_do_not_matter_but_the_hunks_do() {
+    let conflict = |ancestor: &str, mine: &str| {
+        format!(
+            "a\n<<<<<<< HEAD\n{mine}\n||||||| {ancestor}\nbase\n=======\ntheirs\n>>>>>>> subject\nz\n"
+        )
+    };
+    let (_a, a) = repo();
+    let (_b, b) = repo();
+    fs::write(
+        a.join("a.txt"),
+        conflict("constructed fake ancestor", "mine"),
+    )
+    .unwrap();
+    fs::write(b.join("a.txt"), conflict("constructed merge base", "mine")).unwrap();
+    assert_same_state("labels", &a, &b);
+    fs::write(b.join("a.txt"), conflict("constructed merge base", "other")).unwrap();
+    let msg = panic_text(|| assert_same_state("hunks", &a, &b));
+    assert!(
+        msg.contains("[work tree]") && msg.contains("other"),
+        "{msg}"
+    );
+    assert_eq!(
+        behavior::mask_conflict_labels("<<<<<<<<< ours\nx <<<<<<< not a marker\n=======\n"),
+        "<<<<<<<<<\nx <<<<<<< not a marker\n=======\n"
+    );
+}
+
+#[test]
 fn an_operation_in_progress_is_compared() {
     let (_a, a) = repo();
     let (_b, b) = repo();
