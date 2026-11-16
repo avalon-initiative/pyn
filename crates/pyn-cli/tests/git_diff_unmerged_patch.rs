@@ -123,6 +123,22 @@ fn outcome(program: &mut Command) -> (String, Option<i32>) {
     )
 }
 
+/// Masks the new id of single-parent raw rows: whether git prints the blob id or zeros for a work tree file differs by release.
+fn mask_new_ids(out: &str) -> String {
+    out.split_inclusive('\n')
+        .map(|line| match line.strip_prefix(':') {
+            Some(row) if !row.starts_with(':') => {
+                let mut f: Vec<&str> = row.splitn(5, ' ').collect();
+                if f.len() == 5 {
+                    f[3] = "<id>";
+                }
+                format!(":{}", f.join(" "))
+            }
+            _ => line.to_string(),
+        })
+        .collect()
+}
+
 /// Output and exit status of git and pyn must agree, with the combined patch among them.
 fn same_result(p: &Pair, args: &[&str]) {
     let mut oracle = git(&p.oracle);
@@ -135,7 +151,11 @@ fn same_result(p: &Pair, args: &[&str]) {
         .env("HOME", p.ours.join(".git"))
         .env("GIT_CONFIG_NOSYSTEM", "1");
     let got = outcome(&mut ours);
-    assert_eq!(got, want, "{args:?}");
+    assert_eq!(
+        (mask_new_ids(&got.0), got.1),
+        (mask_new_ids(&want.0), want.1),
+        "{args:?}"
+    );
 }
 
 fn resolve_g(p: &Pair) {
@@ -168,6 +188,14 @@ const COMBINED_FORMS: &[&[&str]] = &[
     &["diff", "--summary"],
     &["diff", "--check"],
     &["diff", "--quiet", "--check"],
+    &["diff", "--check", "--exit-code"],
+    &["diff", "--raw", "-p"],
+    &["diff", "--patch-with-raw"],
+    &["diff", "--raw", "-p", "-z"],
+    &["diff", "--raw", "-p", "--abbrev=12"],
+    &["diff", "--raw", "-p", "--exit-code"],
+    &["diff", "--raw", "-p", "--", "f"],
+    &["diff", "--raw"],
 ];
 
 #[test]

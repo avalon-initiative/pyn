@@ -208,10 +208,8 @@ fn check_matches_git() {
 fn incompatible_formats_are_usage_errors() {
     let f = Fixture::new("sha1");
     for args in [
-        &["diff", "--check", "--stat"][..],
-        &["diff", "--check", "--name-only"],
-        &["diff", "--shortstat", "--name-status"],
-        &["diff", "--shortstat", "--stat"],
+        &["diff", "--check", "--name-only"][..],
+        &["diff", "--check", "--name-status"],
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_pyn"))
             .current_dir(&f.repo)
@@ -227,9 +225,9 @@ fn incompatible_formats_are_usage_errors() {
 }
 
 #[test]
-fn numstat_combinations_are_usage_errors() {
+fn numstat_combinations_match_git() {
     let f = Fixture::new("sha1");
-    for command in [&["diff"][..], &["show"], &["stash", "show"]] {
+    for command in [&["diff", "HEAD~2", "HEAD"][..], &["show"]] {
         for other in [
             "--stat",
             "--shortstat",
@@ -237,17 +235,9 @@ fn numstat_combinations_are_usage_errors() {
             "--name-status",
             "--check",
         ] {
-            let out = Command::new(env!("CARGO_BIN_EXE_pyn"))
-                .current_dir(&f.repo)
-                .args(command)
-                .args(["--numstat", other])
-                .env_clear()
-                .env("PATH", path_env())
-                .env("HOME", f.repo.parent().unwrap())
-                .output()
-                .unwrap();
-            assert_eq!(out.status.code(), Some(129), "{command:?} {other}");
-            assert!(out.stdout.is_empty(), "{command:?} {other}");
+            let mut args = command.to_vec();
+            args.splice(1..1, ["--numstat", other]);
+            f.same(&args);
         }
     }
 }

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use pyn_object::FileMode;
@@ -119,6 +120,8 @@ pub struct Format {
     pub summary: bool,
     /// The patch after the output of a statistics or raw kind, as `-p --stat` prints.
     pub with_patch: bool,
+    /// Further statistics printed with `kind` when several of `--stat`, `--numstat` and `--shortstat` are given.
+    pub also: Vec<Kind>,
     /// Only the pairs whose new path is listed, applied after rename detection (the pickaxe's choice).
     pub kept: Vec<String>,
     /// Unmerged paths, listed with status `U`.
@@ -148,6 +151,7 @@ impl Format {
             kind: Kind::Nothing,
             summary: false,
             with_patch: false,
+            also: Vec::new(),
             ..self
         }
     }
@@ -888,6 +892,24 @@ pub fn exit_if_check_failed(format: &Format, out: &str) {
     }
 }
 
+static CHECK_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Records that `--check` printed problems, for `exit_for_diff` to turn into the exit status.
+pub fn note_check_failed(format: &Format, out: &str) {
+    if format.kind == Kind::Check && !out.is_empty() {
+        CHECK_FAILED.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Exits with git's `diff` status: 1 for a difference under `--exit-code`, ORed with 2 for `--check` problems.
+pub fn exit_for_diff(differs: bool) {
+    let code = i32::from(differs) | (i32::from(CHECK_FAILED.load(Ordering::Relaxed)) << 1);
+    if code != 0 {
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        std::process::exit(code);
+    }
+}
+
 fn selected(path: &str, only: &[String]) -> bool {
     only.is_empty()
         || only.iter().any(|p| {
@@ -932,6 +954,10 @@ pub(crate) fn lists_unmerged(format: &Format) -> bool {
                 | Kind::ShortStat
                 | Kind::Patch
         )
+}
+
+fn shows(format: &Format, kind: Kind) -> bool {
+    format.kind == kind || format.also.contains(&kind)
 }
 
 /// Appends the difference between `old` and `new` (limited to `only` when given) to `out`; true if any file differs.
@@ -997,11 +1023,12 @@ pub(crate) fn emit(
         ..format.clone()
     };
     // git prints a combined patch ahead of the other output and leaves its path out of it.
-    let lead: String = if format.with_patch || format.kind == Kind::Patch {
-        list.iter().filter_map(|p| p.combined.as_deref()).collect()
-    } else {
-        String::new()
-    };
+    let lead: String =
+        if (format.with_patch || format.kind == Kind::Patch) && format.kind != Kind::Raw {
+            list.iter().filter_map(|p| p.combined.as_deref()).collect()
+        } else {
+            String::new()
+        };
     let rest: Vec<Pair>;
     let list = if lead.is_empty() {
         list
@@ -1045,6 +1072,17 @@ pub(crate) fn emit(
             ..format.clone()
         };
         let mut patch = String::new();
+        let shown: Vec<Pair>;
+        let list = if format.kind == Kind::Raw {
+            shown = list
+                .iter()
+                .filter(|p| p.combined.is_none())
+                .cloned()
+                .collect();
+            &shown
+        } else {
+            list
+        };
         render(backend, list, &patch_format, &abbreviations, &mut patch)?;
         // The blank line before the patch is left out after a dirstat by changes or files.
         let by_line = format
@@ -1055,7 +1093,7 @@ pub(crate) fn emit(
             || !summary.is_empty()
             || (by_line && !lead.is_empty());
         if before && !patch.is_empty() {
-            out.push('\n');
+            out.push(if format.opts.nul { '\0' } else { '\n' });
         }
         out.push_str(&patch);
     }
@@ -1232,8 +1270,11 @@ fn render(
                 out.push_str(&format!("{}{names}{end}", status_of(p)));
             }
             Kind::Raw => {
-                differs = true;
-                out.push_str(&diff_raw::record(p, &format.opts, &quote));
+                differs |= p.combined.is_none();
+                match &p.combined {
+                    Some(text) => out.push_str(text),
+                    None => out.push_str(&diff_raw::record(p, &format.opts, &quote)),
+                }
             }
             Kind::Dirstat if p.unmerged => {}
             Kind::Dirstat => {
@@ -1353,7 +1394,7 @@ fn render(
         let spec = format.opts.dirstat.unwrap_or_default();
         out.push_str(&dirstat::render(dirstat_rows, spec));
     }
-    if format.kind == Kind::NumStat {
+    if shows(format, Kind::NumStat) {
         for ((path, counts), from) in stat_rows.iter().zip(&moved_from) {
             let (x, y) = match counts {
                 Counts::Lines(a, d) => (a.to_string(), d.to_string()),
@@ -1373,13 +1414,10 @@ fn render(
             }
         }
     }
-    if format.kind == Kind::ShortStat && !stat_rows.is_empty() {
-        let (added, deleted) = totals(&stat_rows);
-        out.push_str(&diffstat::summary(counted(&stat_rows), added, deleted));
-    }
-    if format.kind == Kind::Stat {
+    if shows(format, Kind::Stat) {
         let rows: Vec<diffstat::Row> = stat_rows
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|(name, counts)| diffstat::Row { name, counts })
             .collect();
         let spec = &format.opts.stat;
@@ -1398,6 +1436,10 @@ fn render(
             colors: style.map(|s| (s.palette.new.clone(), s.palette.old.clone())),
         };
         out.push_str(&diffstat::render_with(&rows, &layout));
+    }
+    if shows(format, Kind::ShortStat) && !stat_rows.is_empty() {
+        let (added, deleted) = totals(&stat_rows);
+        out.push_str(&diffstat::summary(counted(&stat_rows), added, deleted));
     }
     Ok(differs)
 }
@@ -1459,6 +1501,7 @@ pub fn sections(
             renames: parts.renames,
             summary: false,
             with_patch: false,
+            also: Vec::new(),
             kept: kept.to_vec(),
             unmerged: Vec::new(),
         };

@@ -447,7 +447,7 @@ pub fn run(
     let differs = diff::emit(backend, &list, format, &mut out)?;
     if !quiet {
         print!("{out}");
-        diff::exit_if_check_failed(format, &out);
+        diff::note_check_failed(format, &out);
     }
     Ok(differs)
 }

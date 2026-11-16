@@ -66,9 +66,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             let format = format.format().silenced(no_patch);
             let differs = diff(git, cwd, &args, &paths, &format, quiet, cached)?;
-            if differs && (exit_code || quiet) {
-                std::process::exit(1);
-            }
+            diff::exit_for_diff(differs && (exit_code || quiet));
             Ok(())
         }
         Command::Show {
@@ -1042,9 +1040,7 @@ fn diff(
                         },
                     };
                     let combined = at(2).zip(at(3)).filter(|_| {
-                        !quiet
-                            && (format.kind == diff::Kind::Patch
-                                || (format.with_patch && format.kind != diff::Kind::Raw))
+                        !quiet && (format.kind == diff::Kind::Patch || format.with_patch)
                     });
                     if let Some((ours, theirs)) = combined {
                         let side = |e: &pyn_git::IndexEntry| {
@@ -1067,12 +1063,17 @@ fn diff(
                             result,
                             parents: vec![(side(ours), 'M'), (side(theirs), 'M')],
                         };
-                        let text = combined_diff::patch(
-                            git,
-                            &element,
-                            (true, format.context),
-                            (format.opts.full_index, true),
-                        )?;
+                        let text = if format.kind == diff::Kind::Raw {
+                            let opts = format.opts.with_config(&|k| git.diff_setting(k));
+                            Some(combined_diff::raw(git, &element, &opts))
+                        } else {
+                            combined_diff::patch(
+                                git,
+                                &element,
+                                (true, format.context),
+                                (format.opts.full_index, true),
+                            )?
+                        };
                         format.unmerged.push(diff::Unmerged {
                             path,
                             old: None,
@@ -1171,7 +1172,7 @@ fn diff(
     let differs = diff::compare(git, &old, &new, &[], &format, &mut out)?;
     if !quiet {
         emit(&out);
-        diff::exit_if_check_failed(&format, &out);
+        diff::note_check_failed(&format, &out);
     }
     Ok(differs)
 }
