@@ -2197,25 +2197,22 @@ impl AccessService {
         Ok(record)
     }
 
-    /// Adds an account with an initial password. Only a server admin may do so unless registration is open
-    /// without approval or email verification; otherwise it is rate limited like sign-up.
+    /// Adds an account with an initial password. Needs a full-scope credential; only a server admin may do so
+    /// unless registration is open without approval or email verification, and then it is rate limited like sign-up.
     pub async fn add_user(
         &self,
-        actor: &Principal,
+        who: &Identity,
         repo: &RepoId,
         username: &str,
         password: &str,
         role: Role,
     ) -> Result<UserId> {
+        who.require_full_scope()?;
+        let actor = &self.principal_in(repo, who).await?;
         actor.require(Permission::ManageUsers)?;
         self.ensure_repo_writable(repo).await?;
         self.require_can_grant(actor, repo, role).await?;
-        let by_admin = self
-            .store
-            .account(&actor.user)
-            .await?
-            .is_some_and(|a| a.is_admin);
-        if !by_admin {
+        if !self.is_server_admin(who).await? {
             let open = self.registration_mode() == RegistrationMode::Open
                 && !self.config.require_approval
                 && !self.config.require_email_verification;

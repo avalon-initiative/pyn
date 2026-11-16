@@ -257,7 +257,11 @@ The person running the server chooses how people join with `PYN_REGISTRATION`:
 Someone with `manage_users` in a repository can add people to it by hand with `POST /v1/repos/{owner}/{name}/users`, but
 that creates an account, so it follows the registration policy: on a `closed` or `invite` server, or an `open` one that
 requires approval or email verification, only a server administrator may (everyone else gets `403 forbidden`). On a plain
-`open` server it is allowed and rate limited like sign-up. Adding an existing person to a repository is not account
+`open` server it is allowed and rate limited like sign-up. Creating an account is server-wide, not an action on the
+repository, so the route needs a [full-scope credential](#full-scope-credentials) as well as `manage_users`: a token limited
+to repositories or to fewer permissions is refused with `403 forbidden`, even one that holds `manage_users` there and even
+one of an administrator, and a service credential with `403 service_credential_not_allowed`. The administrator path
+likewise needs a full-scope credential of an administrator. Adding an existing person to a repository is not account
 creation and needs only `manage_users`. An invitation is a one-time code
 (`pyn invite create --role writer`) for one repository that carries the role the new person will get there and an expiry of 1 to 8760 hours; it
 is shown once, can be revoked only in the repository it belongs to, and cannot grant a role above the level of the person
@@ -393,7 +397,7 @@ the server log with the method and path of the request. Every other error keeps 
 
 Account management is limited to a full-scope credential: a web session, or a token that names no repository and holds every
 permission (the sign-in tokens from `pyn login`). It covers SSH keys (add, list, remove), tokens (create, list, revoke), the
-password, and linking or unlinking an external identity. A narrower token (read-only, limited to repositories, or with fewer
+password, linking or unlinking an external identity, and creating an account with `POST /v1/repos/{owner}/{name}/users`. A narrower token (read-only, limited to repositories, or with fewer
 permissions) is refused with `403 forbidden`; it keeps working for its own scope. A token credential cannot create a token that
 outlives it: the new token's expiry is capped at its own, and it never holds more permissions or repositories than the creator.
 A web session may create any token its owner could.

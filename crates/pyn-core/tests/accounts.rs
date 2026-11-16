@@ -69,9 +69,9 @@ async fn a_closed_server_refuses_registration_but_administrators_can_add_people(
         .unwrap_err();
     assert!(matches!(err, PynError::RegistrationClosed), "{err}");
 
-    let root = admin(&w).await;
+    admin(&w).await;
     w.svc
-        .add_user(&root, &w.repo, "alice", PASSWORD, Role::Writer)
+        .add_user(&identity("root"), &w.repo, "alice", PASSWORD, Role::Writer)
         .await
         .unwrap();
     let (_, token) = w.svc.login("alice", PASSWORD, None).await.unwrap();
@@ -199,7 +199,7 @@ async fn only_administrators_manage_invitations_and_nobody_invites_above_their_o
     let w = world(RegistrationMode::InviteOnly);
     let root = admin(&w).await;
     w.svc
-        .add_user(&root, &w.repo, "wendy", PASSWORD, Role::Writer)
+        .add_user(&identity("root"), &w.repo, "wendy", PASSWORD, Role::Writer)
         .await
         .unwrap();
     let wendy = w
@@ -218,7 +218,7 @@ async fn only_administrators_manage_invitations_and_nobody_invites_above_their_o
     );
     let err = w
         .svc
-        .add_user(&wendy, &w.repo, "x1", PASSWORD, Role::Reader)
+        .add_user(&identity("wendy"), &w.repo, "x1", PASSWORD, Role::Reader)
         .await
         .unwrap_err();
     assert!(
@@ -449,7 +449,7 @@ async fn a_session_follows_the_current_role_and_ends_on_sign_out_or_expiry() {
     let w = world(RegistrationMode::Closed);
     let root = admin(&w).await;
     w.svc
-        .add_user(&root, &w.repo, "alice", PASSWORD, Role::Writer)
+        .add_user(&identity("root"), &w.repo, "alice", PASSWORD, Role::Writer)
         .await
         .unwrap();
 
@@ -602,9 +602,9 @@ async fn a_first_password_is_set_only_from_a_web_session() {
 }
 
 async fn repo_admin_not_server_admin(w: &World) -> Principal {
-    let root = admin(w).await;
+    admin(w).await;
     w.svc
-        .add_user(&root, &w.repo, "wendy", PASSWORD, Role::Admin)
+        .add_user(&identity("root"), &w.repo, "wendy", PASSWORD, Role::Admin)
         .await
         .unwrap();
     w.svc
@@ -617,25 +617,25 @@ async fn repo_admin_not_server_admin(w: &World) -> Principal {
 async fn adding_accounts_follows_the_registration_policy() {
     for mode in [RegistrationMode::Closed, RegistrationMode::InviteOnly] {
         let w = world(mode);
-        let wendy = repo_admin_not_server_admin(&w).await;
+        repo_admin_not_server_admin(&w).await;
         let err = w
             .svc
-            .add_user(&wendy, &w.repo, "x1", PASSWORD, Role::Reader)
+            .add_user(&identity("wendy"), &w.repo, "x1", PASSWORD, Role::Reader)
             .await
             .unwrap_err();
         assert!(matches!(err, PynError::Forbidden(_)), "{mode:?}: {err}");
     }
 
     let w = world(RegistrationMode::Open);
-    let wendy = repo_admin_not_server_admin(&w).await;
+    repo_admin_not_server_admin(&w).await;
     w.svc
-        .add_user(&wendy, &w.repo, "x1", PASSWORD, Role::Reader)
+        .add_user(&identity("wendy"), &w.repo, "x1", PASSWORD, Role::Reader)
         .await
         .unwrap();
 
     for (approval, verification) in [(true, false), (false, true)] {
         let mut w = world(RegistrationMode::Open);
-        let wendy = repo_admin_not_server_admin(&w).await;
+        repo_admin_not_server_admin(&w).await;
         w.svc = AccessService::new(
             w.store.clone(),
             w.clock.clone(),
@@ -649,32 +649,217 @@ async fn adding_accounts_follows_the_registration_policy() {
         });
         let err = w
             .svc
-            .add_user(&wendy, &w.repo, "x2", PASSWORD, Role::Reader)
+            .add_user(&identity("wendy"), &w.repo, "x2", PASSWORD, Role::Reader)
             .await
             .unwrap_err();
         assert!(matches!(err, PynError::Forbidden(_)), "{err}");
-        let root = w
-            .svc
-            .principal(&w.repo, &UserId::new("root"))
-            .await
-            .unwrap();
         w.svc
-            .add_user(&root, &w.repo, "x3", PASSWORD, Role::Reader)
+            .add_user(&identity("root"), &w.repo, "x3", PASSWORD, Role::Reader)
             .await
             .unwrap();
     }
 }
 
+fn token_identity(
+    w: &World,
+    user: &str,
+    permissions: &[Permission],
+    repos: Vec<RepoId>,
+) -> Identity {
+    Identity {
+        user: UserId::new(user),
+        credential: Credential::Token(pyn_core::TokenRecord {
+            id: pyn_core::TokenId("tk".into()),
+            user: UserId::new(user),
+            name: "t".into(),
+            secret_hash: String::new(),
+            permissions: permissions.iter().copied().collect(),
+            repos,
+            created_at: w.clock.now(),
+            expires_at: None,
+            revoked_at: None,
+            last_used_at: None,
+            sign_in: false,
+        }),
+    }
+}
+
+fn with_config(w: &mut World, mode: RegistrationMode, approval: bool) {
+    w.svc = AccessService::new(
+        w.store.clone(),
+        w.clock.clone(),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(AccessConfig {
+        registration: mode,
+        require_approval: approval,
+        require_email_verification: false,
+        ..AccessConfig::default()
+    });
+}
+
+#[tokio::test]
+async fn adding_an_account_needs_a_full_scope_credential_in_every_server_config() {
+    for (mode, approval) in [
+        (RegistrationMode::Open, false),
+        (RegistrationMode::Closed, false),
+        (RegistrationMode::Open, true),
+    ] {
+        let mut w = world(mode);
+        repo_admin_not_server_admin(&w).await;
+        with_config(&mut w, mode, approval);
+        let plain_open = mode == RegistrationMode::Open && !approval;
+        let repo = vec![w.repo.clone()];
+        let manage = [Permission::ManageUsers];
+        let all = Permission::ALL;
+
+        let refused = [
+            (
+                "scoped token of a normal user",
+                "wendy",
+                &all[..],
+                repo.clone(),
+            ),
+            (
+                "scoped token of an administrator",
+                "root",
+                &all[..],
+                repo.clone(),
+            ),
+            (
+                "manage_users-only token of an administrator",
+                "root",
+                &manage[..],
+                Vec::new(),
+            ),
+            (
+                "manage_users-only token of a normal user",
+                "wendy",
+                &manage[..],
+                Vec::new(),
+            ),
+        ];
+        for (n, (what, user, perms, repos)) in refused.into_iter().enumerate() {
+            let who = token_identity(&w, user, perms, repos);
+            let err = w
+                .svc
+                .add_user(&who, &w.repo, &format!("r{n}"), PASSWORD, Role::Reader)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, PynError::Forbidden(_)),
+                "{mode:?} {what}: {err}"
+            );
+            assert!(
+                w.store
+                    .account(&UserId::new(format!("r{n}")))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        let (_, secret) = w
+            .svc
+            .create_service_credential(
+                &identity("root"),
+                "svc",
+                [pyn_core::ServiceScope::ManageAccounts].into(),
+            )
+            .await
+            .unwrap();
+        let service = w.svc.identify(&secret).await.unwrap();
+        let err = w
+            .svc
+            .add_user(&service, &w.repo, "s1", PASSWORD, Role::Reader)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PynError::ServiceCredentialNotAllowed),
+            "{err}"
+        );
+
+        let normal = [
+            ("session", identity("wendy")),
+            (
+                "full-scope token",
+                token_identity(&w, "wendy", &all, Vec::new()),
+            ),
+        ];
+        for (what, who) in normal {
+            let r = w
+                .svc
+                .add_user(
+                    &who,
+                    &w.repo,
+                    &format!("n-{}", what.len()),
+                    PASSWORD,
+                    Role::Reader,
+                )
+                .await;
+            if plain_open {
+                r.unwrap();
+            } else {
+                let err = r.unwrap_err();
+                assert!(
+                    matches!(err, PynError::Forbidden(_)),
+                    "{mode:?} {what}: {err}"
+                );
+            }
+        }
+
+        let admins = [
+            ("admin session", identity("root")),
+            (
+                "admin full-scope token",
+                token_identity(&w, "root", &all, Vec::new()),
+            ),
+            (
+                "dev identity",
+                Identity {
+                    user: UserId::new("dev"),
+                    credential: Credential::Unrestricted,
+                },
+            ),
+        ];
+        for (n, (what, who)) in admins.into_iter().enumerate() {
+            w.svc
+                .add_user(&who, &w.repo, &format!("a{n}"), PASSWORD, Role::Reader)
+                .await
+                .unwrap_or_else(|e| panic!("{mode:?} {what}: {e}"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_full_scope_administrator_can_add_a_user_when_registration_is_closed() {
+    let w = world(RegistrationMode::Closed);
+    admin(&w).await;
+    let id = w
+        .svc
+        .add_user(&identity("root"), &w.repo, "carol", PASSWORD, Role::Writer)
+        .await
+        .unwrap();
+    assert_eq!(id, UserId::new("carol"));
+    assert!(w.svc.login("carol", PASSWORD, None).await.is_ok());
+}
+
 #[tokio::test]
 async fn adding_accounts_as_a_non_admin_is_rate_limited() {
     let w = world(RegistrationMode::Open);
-    let wendy = repo_admin_not_server_admin(&w).await;
+    repo_admin_not_server_admin(&w).await;
     let max = AccessConfig::default().limits.register_per_client;
     let mut refused = false;
     for i in 0..=max {
         let r = w
             .svc
-            .add_user(&wendy, &w.repo, &format!("u{i}"), PASSWORD, Role::Reader)
+            .add_user(
+                &identity("wendy"),
+                &w.repo,
+                &format!("u{i}"),
+                PASSWORD,
+                Role::Reader,
+            )
             .await;
         if matches!(r, Err(PynError::TooManyAttempts { .. })) {
             refused = true;

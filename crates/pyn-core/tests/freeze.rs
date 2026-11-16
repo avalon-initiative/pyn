@@ -196,13 +196,7 @@ async fn admin_writes(w: &World, who: &str, repo: &RepoRecord) {
     );
     frozen(
         w.access
-            .add_user(
-                &principal,
-                &repo.id,
-                "erin",
-                "correct horse battery",
-                Role::Reader,
-            )
+            .add_user(&id, &repo.id, "erin", "correct horse battery", Role::Reader)
             .await,
         owner,
     );
