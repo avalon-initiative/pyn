@@ -40,6 +40,8 @@ pub(super) enum Conflicting {
 pub(super) enum Worktree {
     /// What is in the work tree stays.
     Keep,
+    /// The path is not in the work tree (a file there is removed).
+    Absent,
     Write {
         mode: FileMode,
         bytes: Vec<u8>,
@@ -280,10 +282,42 @@ pub(super) fn merge_trees(
 /// As `merge_trees`; with `move_files` a file meeting a folder is moved aside as `ort` does instead of refused.
 pub(super) fn merge_trees_with(
     git: &GitHome,
-    [base, ours, theirs]: [Option<&ObjectId>; 3],
+    trees: [Option<&ObjectId>; 3],
     labels: &Labels,
     settings: &Settings,
     move_files: bool,
+) -> Result<Merge> {
+    let clash = if move_files {
+        Clash::MoveAside
+    } else {
+        Clash::Refuse
+    };
+    merge_core(git, trees, labels, settings, clash)
+}
+
+/// One step of an octopus merge: a file meeting a folder is left as git's merge-one-file leaves it.
+pub(super) fn merge_trees_octopus(
+    git: &GitHome,
+    trees: [Option<&ObjectId>; 3],
+    labels: &Labels,
+    settings: &Settings,
+) -> Result<Merge> {
+    merge_core(git, trees, labels, settings, Clash::Octopus)
+}
+
+#[derive(Clone, Copy)]
+enum Clash {
+    Refuse,
+    MoveAside,
+    Octopus,
+}
+
+fn merge_core(
+    git: &GitHome,
+    [base, ours, theirs]: [Option<&ObjectId>; 3],
+    labels: &Labels,
+    settings: &Settings,
+    clash: Clash,
 ) -> Result<Merge> {
     let spec = Pathspec::default();
     let (b, o, t) = (
@@ -375,10 +409,10 @@ pub(super) fn merge_trees_with(
         };
         out.paths.insert(path.clone(), resolved);
     }
-    if move_files {
-        move_files_aside(git, &mut out, [&b, &o, &t], labels)?;
-    } else {
-        refuse_file_folder_clashes(&out)?;
+    match clash {
+        Clash::MoveAside => move_files_aside(git, &mut out, [&b, &o, &t], labels)?,
+        Clash::Refuse => refuse_file_folder_clashes(&out)?,
+        Clash::Octopus => leave_clashes(&mut out, [&b, &o, &t])?,
     }
     Ok(out)
 }
@@ -395,6 +429,7 @@ pub(super) fn result_tree(git: &GitHome, merge: &Merge) -> Result<ObjectId> {
                     id: git.repo.objects().write(Kind::Blob, bytes)?,
                 }),
                 Worktree::Keep => c.ours.or(c.theirs),
+                Worktree::Absent => None,
             },
         };
         if let Some(e) = entry {
@@ -439,6 +474,55 @@ fn refuse_file_folder_clashes(merge: &Merge) -> Result<()> {
 }
 
 pub(super) type Leaves = BTreeMap<Vec<u8>, Entry>;
+
+fn below(path: &[u8], folder: &[u8]) -> bool {
+    path.len() > folder.len() && path.starts_with(folder) && path[folder.len()] == b'/'
+}
+
+/// A file that one side added where the other added a folder: the file stays, the folder's paths are left unmerged
+/// (stage 3 when theirs has the folder, stage 2 when ours has it) and out of the work tree.
+fn leave_clashes(out: &mut Merge, [b, o, t]: [&Leaves; 3]) -> Result<()> {
+    let live: Vec<Vec<u8>> = out
+        .paths
+        .iter()
+        .filter(|(_, r)| kept(r))
+        .map(|(p, _)| p.clone())
+        .collect();
+    let files: BTreeSet<&Vec<u8>> = live
+        .iter()
+        .filter(|f| live.iter().any(|p| below(p, f)))
+        .collect();
+    for file in files {
+        let has_folder = |m: &Leaves| m.keys().any(|k| below(k, file));
+        let ours_file = o.contains_key(file) && !t.contains_key(file) && has_folder(t);
+        let theirs_file = t.contains_key(file) && !o.contains_key(file) && has_folder(o);
+        let fresh = !b.contains_key(file) && !has_folder(b);
+        if !fresh || !(ours_file ^ theirs_file) || has_folder(if ours_file { o } else { t }) {
+            bail!(
+                "'{}' is a file on one side and a folder on the other; pyn cannot merge that yet, and nothing was changed",
+                String::from_utf8_lossy(file)
+            );
+        }
+        let (folder_side, ours_has) = if ours_file { (t, false) } else { (o, true) };
+        for path in live.iter().filter(|p| below(p, file)) {
+            let entry = folder_side.get(path).copied();
+            out.paths.insert(
+                path.clone(),
+                Resolved::Conflict(Conflict {
+                    base: None,
+                    ours: entry.filter(|_| ours_has),
+                    theirs: entry.filter(|_| !ours_has),
+                    worktree: Worktree::Absent,
+                    kind: Conflicting::FileDirectory,
+                    moved_from: None,
+                    notes: Vec::new(),
+                }),
+            );
+        }
+        out.trivial = false;
+    }
+    Ok(())
+}
 
 /// Moves each file that a folder shares its path with to `<path>~<side>` (`_<n>` while taken), as `ort` does.
 fn move_files_aside(

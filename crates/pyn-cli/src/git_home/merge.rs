@@ -615,6 +615,8 @@ struct Merging<'a> {
     bases: &'a [ObjectId],
     /// Git tries the in-index merge only when no strategy is a tree merge.
     trivial_allowed: bool,
+    /// The in-index attempt is reported once, however many strategies are tried.
+    reported: std::cell::Cell<bool>,
 }
 
 fn true_merge(
@@ -657,6 +659,7 @@ fn true_merge(
         opened,
         bases: &bases,
         trivial_allowed: strategies.iter().all(|s| s.kind.tries_trivial()),
+        reported: std::cell::Cell::new(false),
     };
     if let [only] = strategies {
         return match merging.attempt(only, Run::Apply)? {
@@ -819,7 +822,7 @@ impl Merging<'_> {
                 );
                 return Ok(Tried::Failed);
             }
-            let talk = run != Run::Silent;
+            let talk = run != Run::Silent && !self.reported.replace(true);
             if talk {
                 println!("Trying really trivial in-index merge...");
             }
@@ -1292,14 +1295,24 @@ pub(super) fn apply_merge_as(
     let removed: std::collections::HashSet<&[u8]> = merged
         .paths
         .iter()
-        .filter(|(p, r)| matches!(r, Resolved::Take(None)) && head_leaves.contains_key(*p))
+        .filter(|(p, r)| {
+            let gone = match r {
+                Resolved::Take(e) => e.is_none(),
+                Resolved::Conflict(c) => matches!(c.worktree, Worktree::Absent),
+            };
+            gone && head_leaves.contains_key(*p)
+        })
         .map(|(p, _)| p.as_slice())
         .collect();
     for (path, resolved) in &merged.paths {
         let here = head_leaves.get(path);
         let touches_tree = match resolved {
             Resolved::Take(e) => e.as_ref() != here,
-            Resolved::Conflict(c) => !matches!(c.worktree, Worktree::Keep),
+            Resolved::Conflict(c) => match c.worktree {
+                Worktree::Keep => false,
+                Worktree::Absent => here.is_some(),
+                Worktree::Write { .. } => true,
+            },
         };
         if !touches_tree {
             continue;
@@ -1341,6 +1354,16 @@ pub(super) fn apply_merge_as(
         write_orig_head(git, orig)?;
     }
     let mut entries: Entries = entries_of(&opened.index);
+    if write {
+        for (path, resolved) in &merged.paths {
+            if let Resolved::Conflict(c) = resolved
+                && matches!(c.worktree, Worktree::Absent)
+                && !cone.out(path)
+            {
+                remove_entry_file(git, path)?;
+            }
+        }
+    }
     let mut conflicted: Vec<Vec<u8>> = Vec::new();
     let mut unmerged = 0;
     let notes = !landing.quiet_when_clean
@@ -1408,6 +1431,7 @@ pub(super) fn apply_merge_as(
                     if let Worktree::Write { mode, bytes } = &c.worktree {
                         write_bytes(git, path, *mode, bytes)?;
                     } else if cone.out(path)
+                        && !matches!(c.worktree, Worktree::Absent)
                         && let Some(ours) = &c.ours
                     {
                         write_entry(git, path, ours)?;

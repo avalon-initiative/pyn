@@ -1400,6 +1400,40 @@ fn pull_octopus_names_the_strategy_of_a_pull_of_several_refs() {
 }
 
 #[test]
+fn the_divergent_branches_hint_is_the_same_for_one_ref_and_for_several() {
+    let hint = |refs: &[&str]| {
+        let t = several_refs("sha1", Via::Ssh);
+        t.each(&["config", "--unset", "pull.rebase"]);
+        let mut args = vec!["origin"];
+        args.extend(refs);
+        let (g, p) = t.both(&args);
+        assert_eq!((g.code, p.code), (128, 128), "{refs:?}");
+        assert!(g.stderr.contains("divergent branches"), "{}", g.stderr);
+        let tail: Vec<&str> = p
+            .stderr
+            .lines()
+            .skip_while(|l| !l.starts_with("hint:"))
+            .collect();
+        tail.join("\n")
+    };
+    let one = hint(&["feature"]);
+    assert!(!one.is_empty());
+    assert_eq!(hint(&["feature", "extra"]), one);
+    merge_works_after_the_refusal();
+}
+
+fn merge_works_after_the_refusal() {
+    let t = several_refs("sha1", Via::Ssh);
+    t.each(&["config", "--unset", "pull.rebase"]);
+    let (g, p) = t.both(&["origin", "feature", "extra"]);
+    assert_eq!((g.code, p.code), (128, 128));
+    both_alike(
+        &t,
+        &["--no-rebase", "--no-edit", "origin", "feature", "extra"],
+    );
+}
+
+#[test]
 fn several_refs_cannot_rebase_fast_forward_or_start_a_branch() {
     for flags in [
         &["--rebase"][..],

@@ -1826,7 +1826,7 @@ unmerged entries wins (a tie goes to the one tried later) and, unless it was the
 pyn rehearses each try in memory against the untouched work tree and index, so nothing needs rewinding, and writes only the
 chosen one. The count adds the stages of every conflicted path to the number of conflicted paths, as git's `diff-files` plus
 unmerged-entry count does; only its order matters. `-X` goes to every tree strategy, and git's in-index merge is tried only when
-no strategy is a tree merge.
+no strategy is a tree merge, and then reported once (`Trying really trivial in-index merge...`), not for each try.
 
 | Strategy | What pyn does |
 | --- | --- |
@@ -1874,9 +1874,15 @@ must equal `HEAD` first, as for `resolve`. A head with more than one merge base 
 `--ff-only` is `Not possible to fast-forward, aborting.` (`128`). `ours` takes several heads (one parent each); `ort`,
 `recursive`, `resolve` and `subtree` refuse them with `Not handling anything other than two heads merge.` (`2`). An unborn
 branch cannot take several heads (`Can merge only exactly one commit into empty head`, `128`). The merge title is `Merge
-branches 'a' and 'b'` (`Merge branches 'a', 'b' and 'c'`), grouping kinds as a pull's title does. Difference: the conflict
-markers of the last head carry `HEAD` and the head's name, where git's script labels them with temporary file names.
-A rebase that recreates an octopus merge (`--rebase-merges`) is still not built.
+branches 'a' and 'b'` (`Merge branches 'a', 'b' and 'c'`), grouping kinds as a pull's title does; two names of one commit leave one head, titled with the first name, as git does. The divergent-branches refusal of a pull of several refs (no `pull.rebase`, `pull.ff` or flag) is the one of a single ref. Difference: the conflict
+markers of the last head are labelled with names like git's temporary files (`.merge_file_` and six characters), which pyn
+derives from object ids where git's are random. Two heads that add one path differently leave stages 2 and 3 (no base) and the
+side already merged in the work tree with no markers. A file one side added where the other added a folder stays, and the
+folder's paths are left unmerged (stage 3 when the last head has the folder, stage 2 when the result so far has it) and out of
+the work tree; an earlier head with such a clash ends the merge like any other conflict. Other file and folder clashes still end
+with `pyn cannot merge that yet`. `git commit` and `pyn commit` leave a parent out when another parent contains it (a merge
+that began as a fast-forward to the first head), unless `MERGE_MODE` says `no-ff`. A rebase recreates an octopus merge
+(`--rebase-merges`, or a `merge` line of several labels), see [Rebase](#rebase).
 #### Renames in a merge
 
 `merge` (with `ort`, `recursive` and `subtree`) finds the files each side moved since the merge base with the same detection
@@ -2209,9 +2215,7 @@ point is not the new base is not fast-forwarded. In `no-rebase-cousins` mode the
 the branch, as git does.
 
 Differences from git: `--signoff`, `--keep-base`, `--reapply-cherry-picks`, `--apply` and `--empty` other than `drop`
-are usage errors (`129`); `-s` and `-X` are described in [Strategies in a replay](#strategies-in-a-replay). A `merge` of several labels (an octopus merge) stops with `octopus merges are not built` and
-leaves the command first in the sheet; git continues it (`git rebase --continue`) and a merge whose branches have more than one
-merge base is merged into a virtual base as `merge` does. pyn writes `AUTO_MERGE` only for a merge that stopped on conflicts; git writes it for every pick. A workspace's own
+are usage errors (`129`); `-s` and `-X` are described in [Strategies in a replay](#strategies-in-a-replay). A `merge` line of several labels (an octopus merge) is merged as `merge` does (git runs `git merge -s octopus --no-ff`): labels already contained in `HEAD` or in another label are left out, `ORIG_HEAD` is set to `HEAD`, a conflict in the last label stops the rebase with the merge in progress (`MERGE_HEAD` naming every label), and a failure in an earlier one is `Could not merge <line>` with the command done (`1`). Differences: a merge reduced to one label is merged by the ordinary strategy; the `HEAD` reflog says `rebase (merge)` where git's merge writes `merge <id> <id>`; a merge whose branches have more than one merge base is merged into a virtual base as `merge` does. pyn writes `AUTO_MERGE` only for a merge that stopped on conflicts; git writes it for every pick. A workspace's own
 rebase refuses `fixup -C`/`-c` and `--rebase-merges`, `--root`, `--fork-point` and `--update-refs` (and the sheet commands `label`,
 `reset`, `merge` and `update-ref`), and leaves `amend!` commits where they are. There is no `post-rewrite` hook. `-m`, `-v`, `-n`, `--keep-empty` and the `--no-` forms of the refused flags are accepted and ignored. Commits whose timestamps tie are ordered by the walk of the graph, as git's, not by
 date. After an interactive rebase git leaves `REBASE_HEAD` behind in some cases; pyn removes it. Covered against the real git

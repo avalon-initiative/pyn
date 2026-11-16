@@ -121,9 +121,22 @@ fn files_under(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
             files_under(root, &path, out);
         } else {
             let exec = meta.permissions().mode() & 0o111 != 0;
-            out.insert(rel, format!("{exec} {:?}", fs::read(&path).unwrap()));
+            let text = String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned();
+            out.insert(rel, format!("{exec} {:?}", mask_temp_labels(&text)));
         }
     }
+}
+
+/// An octopus merge labels conflict markers with temporary file names (`.merge_file_` and six random characters).
+fn mask_temp_labels(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(".merge_file_") {
+        let end = at + ".merge_file_".len();
+        out.push_str(&rest[..end]);
+        rest = rest[end..].get(6..).unwrap_or("");
+    }
+    out + rest
 }
 
 fn read(dir: &Path, name: &str) -> String {
@@ -1879,6 +1892,12 @@ fn note_rewriting_follows_its_settings() {
 /// (`x1`, the merge of `ytopic` resolved by hand after a conflict in `f`, `x2`) and `two` (`o1`, a merge of `ta`, then
 /// a merge of `tb`).
 fn merge_history(format: &str) -> Pair {
+    merge_history_with(format, false)
+}
+
+/// [`merge_history`]; with `octopus` also `oct` (from `base`: `oc`, then the octopus merge of `ta` and `tb`) and `xa`,
+/// `xb`, `xc` (from `base`: `f` line 2 as `A`, `f` line 2 as `B`, a new file), whose merge conflicts in `f`.
+fn merge_history_with(format: &str, octopus: bool) -> Pair {
     let (tmp, env, git) = Pair::root();
     init(&env, &git, format);
     write(&git, "f", FILE);
@@ -1952,6 +1971,28 @@ fn merge_history(format: &str) -> Pair {
     write(&git, "o2", "o2\n");
     commit_all(&env, &git, "o2");
     merge("tb", "Merge branch 'tb' into two");
+    if octopus {
+        env.ok(&git, &["checkout", "-q", "-b", "oct", "base"]);
+        write(&git, "oc", "oc\n");
+        commit_at(&env, &git, "oc", 1_600_100_000);
+        env.ok(
+            &git,
+            &["merge", "-q", "--no-ff", "-m", "Octopus", "ta", "tb"],
+        );
+        for (name, tick) in [
+            ("xa", 1_600_100_010),
+            ("xb", 1_600_100_020),
+            ("xc", 1_600_100_030),
+        ] {
+            env.ok(&git, &["checkout", "-q", "-b", name, "base"]);
+            match name {
+                "xa" => write(&git, "f", &with_line(2, "A")),
+                "xb" => write(&git, "f", &with_line(2, "B")),
+                _ => write(&git, "xc", "xc\n"),
+            }
+            commit_at(&env, &git, name, tick);
+        }
+    }
     env.ok(&git, &["checkout", "-q", "main"]);
     Pair::copied(tmp, env, git)
 }
@@ -2579,30 +2620,103 @@ fn a_bad_mode_is_fatal_and_the_octopus_is_refused() {
         };
         assert_eq!(out.status.code(), Some(128), "{dir:?}");
     }
-    // git recreates an octopus merge; pyn stops on it and leaves the sheet for git to continue.
-    let p = merge_history("sha1");
-    p.both(|env, d| {
-        env.ok(d, &["checkout", "-q", "-b", "oct", "base"]);
-        write(d, "oc", "oc\n");
-        commit_at(env, d, "oc", 1_600_100_000);
-        env.ok(d, &["merge", "-q", "--no-ff", "-m", "Octopus", "ta", "tb"]);
+}
+
+const OCTOPUS_SHEET: &str = "label onto
+reset onto
+pick $(git rev-parse xa)
+label la
+reset onto
+pick $(git rev-parse xb)
+label lb
+reset onto
+pick $(git rev-parse xc)
+label lc
+reset onto
+";
+
+#[test]
+fn an_octopus_merge_is_recreated_like_git() {
+    both_formats(|f| {
+        for args in [
+            &["-r", "main"][..],
+            &["-r", "--no-ff", "main"],
+            &["--rebase-merges=rebase-cousins", "main"],
+            &["-r", "-q", "main"],
+        ] {
+            let p = merge_history_with(f, true);
+            p.on("oct");
+            let label = format!("{f} {args:?}");
+            assert_eq!(p.same(args, &label), 0, "{label}");
+        }
+        let p = merge_history_with(f, true);
+        p.on("oct");
+        assert_eq!(
+            p.same_env(&["-i", "-r", "main"], &format!("{f} -i"), &[]),
+            0
+        );
     });
-    let out = p.env.pyn(&p.pyn, &["rebase", "-r", "main"]);
-    assert_eq!(out.status.code(), Some(1));
-    let text = String::from_utf8_lossy(&out.stderr);
-    assert!(text.contains("octopus"), "{text}");
-    assert!(p.pyn.join(".git/rebase-merge").exists());
-    let done = read(&p.pyn, "rebase-merge/git-rebase-todo");
-    assert!(
-        done.lines().next().unwrap().starts_with("merge -C"),
-        "{done}"
-    );
-    let out = p.env.git(&p.pyn, &["rebase", "--continue"]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+}
+
+#[test]
+fn a_hand_written_octopus_line_runs_like_git() {
+    both_formats(|f| {
+        let cases: [(&str, &str, i32); 5] = [
+            ("clean", "merge lc la # Merge two\n", 0),
+            (
+                "heads already in HEAD",
+                "pick $(git rev-parse xc)\nmerge lc la # Merge two\n",
+                0,
+            ),
+            (
+                "message of an old merge",
+                "merge -C $(git rev-parse oct) la lc\n",
+                0,
+            ),
+            (
+                "conflict in the last head",
+                "merge lc la lb # Merge three\n",
+                1,
+            ),
+            (
+                "conflict in an earlier head",
+                "merge la lb lc # Merge three\n",
+                1,
+            ),
+        ];
+        for (name, line, status) in cases {
+            let p = merge_history_with(f, true);
+            p.on("oct");
+            let label = format!("{f} {name}");
+            let text = format!("{OCTOPUS_SHEET}{line}");
+            assert_eq!(
+                run_text(&p, &text, &["main"], &label, &[]),
+                status,
+                "{label}"
+            );
+            if status == 1 {
+                assert_eq!(
+                    p.same(&["--abort"], &format!("{label} abort")),
+                    0,
+                    "{label}"
+                );
+            }
+        }
+        let p = merge_history_with(f, true);
+        p.on("oct");
+        let text = format!("{OCTOPUS_SHEET}merge lc la lb # Merge three\n");
+        assert_eq!(run_text(&p, &text, &["main"], "stop", &[]), 1);
+        p.resolve("f", &with_line(2, "R"));
+        assert_eq!(p.same(&["--continue"], &format!("{f} continue")), 0);
+        let p = merge_history_with(f, true);
+        p.on("oct");
+        let text = format!("{OCTOPUS_SHEET}merge la lb lc # Merge three\n");
+        assert_eq!(run_text(&p, &text, &["main"], "failed", &[]), 1);
+        assert_eq!(
+            p.same(&["--continue"], &format!("{f} continue after failure")),
+            0
+        );
+    });
 }
 
 #[test]
