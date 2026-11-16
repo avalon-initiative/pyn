@@ -87,12 +87,37 @@ profile as a stranger sees it, so a field its owner hid is null.
 | --- | --- |
 | `identity` | repository members, organization members, and lock owners (`GET .../locks`, the summary's `locks`, the lock on file and tree entries) |
 | `author_public` | revisions, stranded versions and commits (every response that carries `author_current`) |
-| `actor_public` | activity and audit entries |
+| `actor_public` | activity and audit entries, the organization's included |
+| `owner_identity` | repositories owned by an organization (see [Organization profiles](#organization-profiles)) |
 
 For history the identity is that of the account's current name when it was renamed, else the name as written. The field is
 absent when no active account holds the name (deleted, disabled, not yet approved, or an organization). It is additive:
 `author`, `actor` and `owner` are unchanged. The lock responses of checkout and force-unlock and the caller's own
 `GET /v1/me/locks` carry none.
+
+## Organization profiles
+
+An organization carries a description and an avatar. Both are optional and public to the same readers as the organization
+itself; there is no per-field privacy for them. The description is at most 256 characters, trimmed, may span lines, and
+has no other control characters; a blank value clears it. The avatar follows [Avatars](#avatars) below (png, jpeg or webp,
+at most 1 MiB, judged from the bytes) and shares their storage.
+
+| Route | What it does |
+| --- | --- |
+| `GET /v1/orgs/{org}/profile` | `{name, description, avatar_url}`. Any signed-in account, like `GET /v1/orgs/{org}`. |
+| `PUT /v1/orgs/{org}/profile` | Replaces the description. |
+| `PUT /v1/orgs/{org}/avatar` | Sets the avatar from the request body (the raw image bytes). |
+| `DELETE /v1/orgs/{org}/avatar` | Removes the avatar. |
+| `GET /v1/orgs/{org}/avatar` | The image, readable signed out so it can sit in an `<img>`; `404 avatar_not_found` when none. |
+
+Editing is for organization owners with a full-scope credential (`403 not_org_owner` for anyone else), and is refused while
+the organization is [frozen](limits.md#freezing-an-owner). An organization may change its avatar 30 times an hour. The
+`avatar_url` has the form `/v1/orgs/{org}/avatar?v=<hash start>`, cached like a user's. Deleting an organization deletes its
+profile. The edits are not written to the organization's audit log.
+
+Every repository response (`RepoInfo`) carries `owner_identity` when an organization owns the repository: a `PublicIdentity`
+whose `user` is the organization's name, `display_name` is null (organizations have none) and `avatar_url` is its avatar.
+It is absent for a repository a user owns, whose profile is on `GET /v1/users/{user}`.
 
 ## Avatars
 

@@ -9,11 +9,11 @@ use pyn_core::{
     CreationScope, CreationSubject, DeletionSchedule, EmailAdd, EmailRemove, EventDraft,
     ExternalCreate, ExternalIdentity, IdentityUnlink, InvitationAccept, InvitationCreate, InviteId,
     InviteRecord, Limits, LimitsChange, LimitsEvent, MemberCreation, NameReservation, NewAccount,
-    NewExternalAccount, OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgRole,
-    Permission, PrimaryChange, Profile, ProfileFields, ProfileVisibility, PynError, RateLimitStore,
-    RateState, RegistrationMode, RenameOutcome, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
-    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
-    SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord, UserId,
+    NewExternalAccount, OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgProfile,
+    OrgRole, Permission, PrimaryChange, Profile, ProfileFields, ProfileVisibility, PynError,
+    RateLimitStore, RateState, RegistrationMode, RenameOutcome, RepoId, RepoPolicy, Result, Role,
+    RoleDefinitions, ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord,
+    SignupStage, SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord, UserId,
     VerificationRecord,
 };
 use sqlx::Row;
@@ -736,6 +736,28 @@ impl AccessStore for PgMetadataStore {
         now: DateTime<Utc>,
     ) -> Result<()> {
         self.put_visibility(user, visibility, now).await
+    }
+
+    async fn org_profile(&self, org: &UserId) -> Result<OrgProfile> {
+        self.org_profile_row(org).await
+    }
+
+    async fn set_org_description(
+        &self,
+        org: &UserId,
+        description: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.put_org_description(org, description, now).await
+    }
+
+    async fn set_org_avatar(
+        &self,
+        org: &UserId,
+        avatar: Option<&Avatar>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.put_org_avatar(org, avatar, now).await
     }
 
     async fn set_avatar(

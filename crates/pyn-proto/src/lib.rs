@@ -783,6 +783,22 @@ pub struct OrgInfo {
     pub role: Option<String>,
 }
 
+/// What an organization shows about itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OrgProfile {
+    pub name: String,
+    /// At most 256 characters; null when unset.
+    pub description: Option<String>,
+    /// `/v1/orgs/{org}/avatar?v=` and the start of the image's hash; null when there is no avatar.
+    pub avatar_url: Option<String>,
+}
+
+/// The new organization description; blank or left out clears it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UpdateOrgProfileRequest {
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateOrgRequest {
     /// Shares the namespace with user names: 2 to 39 lowercase letters, digits, `-` or `_`, not reserved.
@@ -971,6 +987,9 @@ pub struct RepoInfo {
     /// The id of `owner`, a user or an organization.
     pub owner_id: String,
     pub owner: String,
+    /// The owning organization's public identity (its avatar); absent when a user owns the repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_identity: Option<PublicIdentity>,
     pub name: String,
     pub visibility: Visibility,
     /// How long a lock lasts before it expires unless renewed.

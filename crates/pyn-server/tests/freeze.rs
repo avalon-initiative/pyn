@@ -382,6 +382,19 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
                 format!("{repo}/teams/art"),
                 None,
             ),
+            case(
+                "update_org_profile",
+                "PUT",
+                format!("{base}/profile"),
+                Some(json!({"description": "x"})),
+            ),
+            case("put_org_avatar", "PUT", format!("{base}/avatar"), None),
+            case(
+                "delete_org_avatar",
+                "DELETE",
+                format!("{base}/avatar"),
+                None,
+            ),
             case("delete_org", "DELETE", base, None),
         ]);
     }

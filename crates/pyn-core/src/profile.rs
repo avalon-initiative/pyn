@@ -11,6 +11,7 @@ pub const MAX_LOCATION_CHARS: usize = 64;
 pub const MAX_COMPANY_CHARS: usize = 64;
 pub const MAX_LINKS: usize = 5;
 pub const MAX_LINK_BYTES: usize = 200;
+pub const MAX_ORG_DESCRIPTION_CHARS: usize = 256;
 /// The largest avatar upload.
 pub const MAX_AVATAR_BYTES: u64 = 1 << 20;
 
@@ -125,6 +126,18 @@ impl Profile {
             visibility: v,
         }
     }
+}
+
+/// What an organization shows about itself: a description and an avatar. Nothing in it is hidden from viewers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OrgProfile {
+    pub description: Option<String>,
+    pub avatar: Option<Avatar>,
+}
+
+/// Trims an organization description; blank becomes `None`. Newlines are allowed, other control characters are not.
+pub fn validate_org_description(description: Option<String>) -> Result<Option<String>> {
+    text("description", description, MAX_ORG_DESCRIPTION_CHARS, true)
 }
 
 /// Checks avatar bytes (size, then magic numbers) and returns their format.
@@ -324,6 +337,17 @@ mod tests {
         })
         .unwrap();
         assert_eq!(p.links, ["https://a.example"]);
+    }
+
+    #[test]
+    fn an_org_description_is_trimmed_bounded_and_may_span_lines() {
+        let d = |s: &str| validate_org_description(Some(s.into()));
+        assert_eq!(d("  two\nlines ").unwrap().as_deref(), Some("two\nlines"));
+        assert_eq!(d("   ").unwrap(), None);
+        assert!(d(&"d".repeat(256)).is_ok());
+        assert!(d(&"d".repeat(257)).is_err());
+        assert!(d("a\u{1b}b").is_err());
+        assert_eq!(validate_org_description(None).unwrap(), None);
     }
 
     fn png() -> Vec<u8> {

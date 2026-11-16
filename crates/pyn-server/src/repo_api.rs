@@ -39,10 +39,20 @@ pub(crate) async fn repo_info(
     limit: LockLimit,
 ) -> ApiResult<api::RepoInfo> {
     let owner_id = s.access.account_id(&r.owner).await?.to_string();
+    let owner_identity =
+        s.access
+            .org_profile_if_org(&r.owner)
+            .await?
+            .map(|p| api::PublicIdentity {
+                user: r.owner.to_string(),
+                display_name: None,
+                avatar_url: crate::profile_api::org_avatar_url(&r.owner, p.avatar.as_ref()),
+            });
     Ok(api::RepoInfo {
         id: r.id.to_string(),
         owner_id,
         owner: r.owner.to_string(),
+        owner_identity,
         name: r.name,
         visibility: visibility_dto(r.visibility),
         lease_hours: r.settings.lease_hours,

@@ -2,10 +2,11 @@
 
 use chrono::{DateTime, Utc};
 use pyn_core::{
-    Avatar, ImageKind, ObjectId, Profile, ProfileFields, ProfileVisibility, PynError, Result,
-    UserId,
+    Avatar, ImageKind, ObjectId, OrgProfile, Profile, ProfileFields, ProfileVisibility, PynError,
+    Result, UserId,
 };
 use sqlx::Row;
+use sqlx::postgres::PgRow;
 
 use crate::{PgMetadataStore, db};
 
@@ -23,24 +24,7 @@ impl PgMetadataStore {
         let Some(row) = row else {
             return Ok(Profile::default());
         };
-        let corrupt = |what: &str| PynError::Storage(format!("stored avatar has a bad {what}"));
-        let avatar = match row.get::<Option<String>, _>("avatar_content") {
-            None => None,
-            Some(content) => {
-                let kind: Option<String> = row.get("avatar_type");
-                let size: Option<i64> = row.get("avatar_size");
-                Some(Avatar {
-                    content: ObjectId::parse(&content).map_err(|_| corrupt("hash"))?,
-                    kind: kind
-                        .as_deref()
-                        .and_then(ImageKind::from_media_type)
-                        .ok_or_else(|| corrupt("type"))?,
-                    size: size
-                        .and_then(|s| u64::try_from(s).ok())
-                        .ok_or_else(|| corrupt("size"))?,
-                })
-            }
-        };
+        let avatar = avatar_of(&row)?;
         Ok(Profile {
             fields: ProfileFields {
                 display_name: row.get("display_name"),
@@ -126,6 +110,86 @@ impl PgMetadataStore {
                  avatar_size = $4, updated_at = $5",
         )
         .bind(user.as_str())
+        .bind(avatar.map(|a| a.content.to_hex()))
+        .bind(avatar.map(|a| a.kind.media_type()))
+        .bind(avatar.map(|a| a.size as i64))
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+}
+
+fn avatar_of(row: &PgRow) -> Result<Option<Avatar>> {
+    let corrupt = |what: &str| PynError::Storage(format!("stored avatar has a bad {what}"));
+    let Some(content) = row.get::<Option<String>, _>("avatar_content") else {
+        return Ok(None);
+    };
+    let kind: Option<String> = row.get("avatar_type");
+    let size: Option<i64> = row.get("avatar_size");
+    Ok(Some(Avatar {
+        content: ObjectId::parse(&content).map_err(|_| corrupt("hash"))?,
+        kind: kind
+            .as_deref()
+            .and_then(ImageKind::from_media_type)
+            .ok_or_else(|| corrupt("type"))?,
+        size: size
+            .and_then(|s| u64::try_from(s).ok())
+            .ok_or_else(|| corrupt("size"))?,
+    }))
+}
+
+impl PgMetadataStore {
+    pub(crate) async fn org_profile_row(&self, org: &UserId) -> Result<OrgProfile> {
+        let row = sqlx::query(
+            "SELECT description, avatar_content, avatar_type, avatar_size FROM org_profiles WHERE org_id = $1",
+        )
+        .bind(org.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        let Some(row) = row else {
+            return Ok(OrgProfile::default());
+        };
+        Ok(OrgProfile {
+            description: row.get("description"),
+            avatar: avatar_of(&row)?,
+        })
+    }
+
+    pub(crate) async fn put_org_description(
+        &self,
+        org: &UserId,
+        description: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO org_profiles (org_id, description, updated_at) VALUES ($1, $2, $3)
+             ON CONFLICT (org_id) DO UPDATE SET description = $2, updated_at = $3",
+        )
+        .bind(org.as_str())
+        .bind(description)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    pub(crate) async fn put_org_avatar(
+        &self,
+        org: &UserId,
+        avatar: Option<&Avatar>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO org_profiles (org_id, avatar_content, avatar_type, avatar_size, updated_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (org_id) DO UPDATE SET avatar_content = $2, avatar_type = $3,
+                 avatar_size = $4, updated_at = $5",
+        )
+        .bind(org.as_str())
         .bind(avatar.map(|a| a.content.to_hex()))
         .bind(avatar.map(|a| a.kind.media_type()))
         .bind(avatar.map(|a| a.size as i64))

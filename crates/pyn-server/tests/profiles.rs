@@ -654,3 +654,248 @@ async fn hidden_fields_are_absent_for_others_and_in_lists_but_the_owner_sees_the
         "kept when omitted"
     );
 }
+
+async fn put_org_avatar(app: &Router, who: &str, bytes: Vec<u8>) -> Reply {
+    send(
+        app,
+        who,
+        "PUT",
+        "/v1/orgs/acme/avatar",
+        "image/png",
+        bytes,
+        &[],
+    )
+    .await
+}
+
+async fn put_org_profile(app: &Router, who: &str, body: serde_json::Value) -> Reply {
+    call(app, who, "PUT", "/v1/orgs/acme/profile", Some(body)).await
+}
+
+async fn org_with_owner_and_member(app: &Router) -> (String, String, String) {
+    let (alice, bob, carol) = (
+        token_for(app, "alice").await,
+        token_for(app, "bob").await,
+        token_for(app, "carol").await,
+    );
+    let r = call(
+        app,
+        &alice,
+        "POST",
+        "/v1/orgs",
+        Some(json!({"name": "acme"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    let invite = json!({"user": "bob", "role": "member"});
+    call(app, &alice, "POST", "/v1/orgs/acme/members", Some(invite)).await;
+    call(app, &bob, "POST", "/v1/me/invitations/acme/accept", None).await;
+    (alice, bob, carol)
+}
+
+#[tokio::test]
+async fn an_organization_profile_is_edited_by_owners_and_read_by_signed_in_accounts() {
+    let app = server().await;
+    let (alice, bob, carol) = org_with_owner_and_member(&app).await;
+    let uri = "/v1/orgs/acme/profile";
+
+    let r = call(&app, &carol, "GET", uri, None).await;
+    let p = r.json::<api::OrgProfile>();
+    assert_eq!(
+        (p.name.as_str(), p.description, p.avatar_url),
+        ("acme", None, None)
+    );
+    assert_eq!(
+        call(&app, "", "GET", uri, None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let r = put_org_profile(
+        &app,
+        &alice,
+        json!({"description": "  We make tools\nand more "}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let p = call(&app, &carol, "GET", uri, None)
+        .await
+        .json::<api::OrgProfile>();
+    assert_eq!(p.description.as_deref(), Some("We make tools\nand more"));
+
+    for who in [&bob, &carol] {
+        let r = put_org_profile(&app, who, json!({"description": "x"})).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::FORBIDDEN, "not_org_owner")
+        );
+    }
+    let r = put_org_profile(&app, &alice, json!({"description": "d".repeat(257)})).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_request")
+    );
+    let p = call(&app, &carol, "GET", uri, None)
+        .await
+        .json::<api::OrgProfile>();
+    assert_eq!(
+        p.description.as_deref(),
+        Some("We make tools\nand more"),
+        "refused edits change nothing"
+    );
+
+    let r = put_org_profile(&app, &alice, json!({"description": " "})).await;
+    assert_eq!(r.json::<api::OrgProfile>().description, None);
+    for name in ["nobody", "alice"] {
+        let r = call(
+            &app,
+            &carol,
+            "GET",
+            &format!("/v1/orgs/{name}/profile"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::NOT_FOUND, "org_not_found")
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_organization_avatar_is_uploaded_served_and_removed_by_owners_only() {
+    let app = server().await;
+    let (alice, bob, _) = org_with_owner_and_member(&app).await;
+
+    let r = call(&app, "", "GET", "/v1/orgs/acme/avatar", None).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::NOT_FOUND, "avatar_not_found")
+    );
+    let r = put_org_avatar(&app, &bob, png()).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::FORBIDDEN, "not_org_owner")
+    );
+
+    let r = put_org_avatar(&app, &alice, png()).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let url = r.json::<api::OrgProfile>().avatar_url.expect("avatar url");
+    assert!(url.starts_with("/v1/orgs/acme/avatar?v="), "{url}");
+    let r = call(&app, "", "GET", &url, None).await;
+    assert_eq!(r.status, StatusCode::OK, "signed out");
+    assert_eq!(r.body, png());
+    assert_eq!(r.header("content-type"), "image/png");
+    assert!(r.header("cache-control").contains("immutable"));
+    let etag = r.header("etag").to_string();
+    let r = send(
+        &app,
+        "",
+        "GET",
+        &url,
+        "",
+        vec![],
+        &[("if-none-match", &etag)],
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_MODIFIED);
+
+    for (bytes, status, code) in [
+        (
+            b"GIF89a....".to_vec(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_image",
+        ),
+        (vec![], StatusCode::BAD_REQUEST, "invalid_request"),
+        (
+            vec![0; (1 << 20) + 1],
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "object_too_large",
+        ),
+    ] {
+        let r = put_org_avatar(&app, &alice, bytes).await;
+        assert_eq!((r.status, r.code().as_str()), (status, code));
+    }
+    let r = put_org_avatar(&app, &alice, jpeg()).await;
+    assert_ne!(r.json::<api::OrgProfile>().avatar_url, Some(url));
+
+    let r = call(&app, &bob, "DELETE", "/v1/orgs/acme/avatar", None).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let r = call(&app, &alice, "DELETE", "/v1/orgs/acme/avatar", None).await;
+    assert_eq!(r.json::<api::OrgProfile>().avatar_url, None);
+    let r = call(&app, "", "GET", "/v1/orgs/acme/avatar", None).await;
+    assert_eq!(r.code(), "avatar_not_found");
+    let r = call(&app, "", "GET", "/v1/orgs/nobody/avatar", None).await;
+    assert_eq!(r.code(), "org_not_found");
+}
+
+#[tokio::test]
+async fn org_owned_repositories_carry_the_organizations_identity() {
+    let app = server().await;
+    let (alice, _, _) = org_with_owner_and_member(&app).await;
+    let body = json!({"owner": "acme", "name": "tools"});
+    let r = call(&app, &alice, "POST", "/v1/repos", Some(body)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    assert_eq!(
+        r.json::<api::RepoInfo>().owner_identity.unwrap().avatar_url,
+        None
+    );
+    let own = json!({"name": "mine"});
+    let r = call(&app, &alice, "POST", "/v1/repos", Some(own)).await;
+    assert_eq!(
+        r.json::<api::RepoInfo>().owner_identity,
+        None,
+        "a user owner has none"
+    );
+
+    send(
+        &app,
+        &alice,
+        "PUT",
+        "/v1/orgs/acme/avatar",
+        "image/png",
+        png(),
+        &[],
+    )
+    .await;
+    let r = call(&app, &alice, "GET", "/v1/repos/acme/tools", None).await;
+    let id = r
+        .json::<api::RepoInfo>()
+        .owner_identity
+        .expect("org identity");
+    assert_eq!(id.user, "acme");
+    assert_eq!(id.display_name, None);
+    assert!(
+        id.avatar_url
+            .unwrap()
+            .starts_with("/v1/orgs/acme/avatar?v=")
+    );
+
+    let r = call(&app, &alice, "GET", "/v1/repos", None).await;
+    let repos = r.json::<Vec<api::RepoInfo>>();
+    let acme: Vec<_> = repos.iter().filter(|r| r.owner == "acme").collect();
+    assert!(acme.iter().all(|r| r.owner_identity.is_some()));
+    assert!(
+        repos
+            .iter()
+            .filter(|r| r.owner == "alice")
+            .all(|r| r.owner_identity.is_none())
+    );
+}
+
+#[tokio::test]
+async fn org_audit_entries_and_members_carry_public_identities() {
+    let app = server().await;
+    let (alice, _, _) = org_with_owner_and_member(&app).await;
+    let put = json!({"display_name": "Alice A", "links": []});
+    call(&app, &alice, "PUT", "/v1/me/profile", Some(put)).await;
+    let r = call(&app, &alice, "GET", "/v1/orgs/acme/audit", None).await;
+    let page = r.json::<api::AuditPage>();
+    assert!(!page.entries.is_empty());
+    for e in page.entries.iter().filter(|e| e.actor == "alice") {
+        let who = e.actor_public.clone().expect("annotated");
+        assert_eq!(who.display_name.as_deref(), Some("Alice A"));
+    }
+    let r = call(&app, &alice, "GET", "/v1/orgs/acme/members", None).await;
+    let members = r.json::<Vec<api::OrgMember>>();
+    assert!(members.iter().all(|m| m.identity.is_some()));
+}

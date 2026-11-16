@@ -7,7 +7,7 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_N
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use pyn_core::profiles::Profiles;
-use pyn_core::{Profile, ProfileFields, ProfileVisibility, PynError, UserId};
+use pyn_core::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility, PynError, UserId};
 use pyn_proto as api;
 use serde::Deserialize;
 
@@ -185,11 +185,19 @@ pub(crate) async fn get_avatar(
 ) -> ApiResult<Response> {
     let who = identify_optional(&s, &headers).await?;
     let (avatar, bytes) = profiles(&s).avatar(&user, who.as_ref()).await?;
+    Ok(avatar_response(&headers, q.v.as_deref(), &avatar, bytes))
+}
+
+/// The avatar image with its type, `ETag` and cache headers; a matching `If-None-Match` gets a `304`.
+fn avatar_response(
+    headers: &HeaderMap,
+    version: Option<&str>,
+    avatar: &Avatar,
+    bytes: Vec<u8>,
+) -> Response {
     let hash = avatar.content.to_hex();
     let etag = format!("\"{hash}\"");
-    let current =
-        q.v.as_deref()
-            .is_some_and(|v| v.len() >= 8 && hash.starts_with(v));
+    let current = version.is_some_and(|v| v.len() >= 8 && hash.starts_with(v));
     let cache = if current {
         "public, max-age=31536000, immutable"
     } else {
@@ -220,5 +228,109 @@ pub(crate) async fn get_avatar(
         "content-security-policy",
         HeaderValue::from_static("default-src 'none'; sandbox"),
     );
-    Ok(res)
+    res
+}
+
+fn org_profile_dto(org: &UserId, p: OrgProfile) -> api::OrgProfile {
+    api::OrgProfile {
+        name: org.to_string(),
+        description: p.description,
+        avatar_url: org_avatar_url(org, p.avatar.as_ref()),
+    }
+}
+
+/// The avatar address of an organization, carrying the start of the image's hash.
+pub(crate) fn org_avatar_url(org: &UserId, avatar: Option<&Avatar>) -> Option<String> {
+    avatar.map(|a| format!("/v1/orgs/{org}/avatar?v={}", &a.content.to_hex()[..16]))
+}
+
+#[utoipa::path(get, path = "/v1/orgs/{org}/profile",
+    params(("org" = String, Path, description = "the organization's name")),
+    responses((status = 200, body = api::OrgProfile, description = "any signed-in account can read it, as it can look the organization up"),
+              (status = 404, body = api::ErrorBody, description = "org_not_found (also for a user name)")))]
+pub(crate) async fn get_org_profile(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult<Json<api::OrgProfile>> {
+    identify(&s, &headers).await?;
+    let found = profiles(&s).org_profile(&org).await?;
+    Ok(Json(org_profile_dto(&UserId::new(org), found)))
+}
+
+#[utoipa::path(put, path = "/v1/orgs/{org}/profile", request_body = api::UpdateOrgProfileRequest,
+    params(("org" = String, Path, description = "the organization's name")),
+    responses((status = 200, body = api::OrgProfile, description = "the stored profile"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request: the description is too long or has control characters"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
+              (status = 404, body = api::ErrorBody, description = "org_not_found"),
+              (status = 409, body = api::ErrorBody, description = "owner_frozen")))]
+pub(crate) async fn update_org_profile(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(req): Json<api::UpdateOrgProfileRequest>,
+) -> ApiResult<Json<api::OrgProfile>> {
+    let who = identify(&s, &headers).await?;
+    let org = UserId::new(org);
+    let saved = s
+        .access
+        .update_org_description(&who, &org, req.description)
+        .await?;
+    Ok(Json(org_profile_dto(&org, saved)))
+}
+
+#[utoipa::path(put, path = "/v1/orgs/{org}/avatar",
+    params(("org" = String, Path, description = "the organization's name")),
+    request_body(content = inline(FileContent), content_type = "image/png", description = "the image bytes (png, jpeg or webp, at most 1 MiB); the type is judged from the bytes, not the `Content-Type` header"),
+    responses((status = 200, body = api::OrgProfile, description = "the profile with the new `avatar_url`"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request: an empty body"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
+              (status = 404, body = api::ErrorBody, description = "org_not_found"),
+              (status = 409, body = api::ErrorBody, description = "owner_frozen"),
+              (status = 413, body = api::ErrorBody, description = "object_too_large: over 1 MiB"),
+              (status = 415, body = api::ErrorBody, description = "unsupported_image: not a png, jpeg or webp"),
+              (status = 429, body = api::ErrorBody, description = "too_many_attempts: too many avatar changes in an hour")))]
+pub(crate) async fn put_org_avatar(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    body: Body,
+) -> ApiResult<Json<api::OrgProfile>> {
+    let who = identify(&s, &headers).await?;
+    let bytes = avatar_bytes(&headers, body).await?;
+    let saved = profiles(&s).set_org_avatar(&who, &org, bytes).await?;
+    Ok(Json(org_profile_dto(&UserId::new(org), saved)))
+}
+
+#[utoipa::path(delete, path = "/v1/orgs/{org}/avatar",
+    params(("org" = String, Path, description = "the organization's name")),
+    responses((status = 200, body = api::OrgProfile, description = "the profile without an avatar; removing none is not an error"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
+              (status = 404, body = api::ErrorBody, description = "org_not_found"),
+              (status = 409, body = api::ErrorBody, description = "owner_frozen")))]
+pub(crate) async fn delete_org_avatar(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult<Json<api::OrgProfile>> {
+    let who = identify(&s, &headers).await?;
+    let saved = profiles(&s).remove_org_avatar(&who, &org).await?;
+    Ok(Json(org_profile_dto(&UserId::new(org), saved)))
+}
+
+#[utoipa::path(get, path = "/v1/orgs/{org}/avatar",
+    params(("org" = String, Path, description = "the organization's name"),
+           ("v" = Option<String>, Query, description = "the version from `avatar_url`; when it is the current one the image is cached for a year")),
+    responses((status = 200, content_type = "image/png", body = inline(FileContent), description = "the image, as `image/png`, `image/jpeg` or `image/webp` according to its bytes; readable signed out, with an `ETag` and `Cache-Control`"),
+              (status = 304, description = "`If-None-Match` matches the current image"),
+              (status = 404, body = api::ErrorBody, description = "org_not_found, or avatar_not_found when it has none")))]
+pub(crate) async fn get_org_avatar(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Query(q): Query<AvatarQuery>,
+) -> ApiResult<Response> {
+    let (avatar, bytes) = profiles(&s).org_avatar(&org).await?;
+    Ok(avatar_response(&headers, q.v.as_deref(), &avatar, bytes))
 }

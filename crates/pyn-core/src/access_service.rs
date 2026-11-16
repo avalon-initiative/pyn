@@ -28,7 +28,7 @@ use crate::oidc::{
     ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider,
 };
 use crate::passwords::{InlinePasswords, PasswordWorker};
-use crate::profile::{Avatar, Profile, ProfileFields, ProfileVisibility};
+use crate::profile::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility};
 use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
@@ -382,6 +382,25 @@ pub trait AccessStore: Send + Sync {
     async fn set_avatar(
         &self,
         user: &UserId,
+        avatar: Option<&Avatar>,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+
+    /// The organization's profile; empty when none was saved.
+    async fn org_profile(&self, org: &UserId) -> Result<OrgProfile>;
+
+    /// Sets or clears the organization's description, keeping the avatar. The organization must exist.
+    async fn set_org_description(
+        &self,
+        org: &UserId,
+        description: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+
+    /// Sets or clears the organization's avatar, keeping the description. The organization must exist.
+    async fn set_org_avatar(
+        &self,
+        org: &UserId,
         avatar: Option<&Avatar>,
         now: DateTime<Utc>,
     ) -> Result<()>;

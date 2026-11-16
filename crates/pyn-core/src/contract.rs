@@ -8287,6 +8287,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profiles_store_text_fields_and_an_avatar_apart);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profiles_belong_to_one_account_each);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profile_visibility_defaults_public_and_is_stored_apart);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_description_and_an_avatar_apart);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_are_apart_from_user_profiles_and_go_with_the_org);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]
