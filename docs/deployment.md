@@ -131,6 +131,50 @@ pyn.example.com {
 (`docker compose ps`); point an uptime monitor at the public URL. Watch free space on the `pyn-objects` and `pyn-db`
 volumes: content is only added, and [limits](concepts/limits.md) are off by default on a self-hosted server.
 
+### Shipping logs
+
+The server writes logs to standard output and does not know where they go. For a collector, set `PYN_LOG_FORMAT=json`
+(one object per line; the fields are in [log fields](configuration.md#log-fields)), and optionally `PYN_AUDIT_LOG=true`
+to put audit events in the same stream. The access line has the request id, route template, status, latency and the
+signed-in account, so "who did what, and which request" is one search. Set `RUST_LOG=info` or finer: the `access` and
+`audit` lines are `info`.
+
+With Compose, a collector reads the container's output through Docker's logging driver or the file under
+`/var/lib/docker/containers`. A [Fluent Bit](https://fluentbit.io/) configuration that sends it to a Splunk HTTP Event
+Collector (the token is the collector's, set in `SPLUNK_HEC_TOKEN`):
+
+```
+[INPUT]
+    Name         tail
+    Path         /var/lib/docker/containers/*/*-json.log
+    Parser       docker
+    Tag          pyn
+
+[FILTER]
+    Name         parser
+    Match        pyn
+    Key_Name     log
+    Parser       json
+    Reserve_Data On
+
+[OUTPUT]
+    Name         splunk
+    Match        pyn
+    Host         splunk.example.com
+    Port         8088
+    TLS          On
+    Splunk_Token ${SPLUNK_HEC_TOKEN}
+    Event_Index  pyn
+    Event_Sourcetype _json
+```
+
+`docker` and `json` are Fluent Bit's stock parsers; add a `Path` or container-name filter when other containers share
+the host. [Vector](https://vector.dev/) reads the same output with a `docker_logs` source, a `remap` step that parses
+the `message` as JSON, and a `splunk_hec_logs` sink.
+
+Datadog, Loki, CloudWatch and an OpenTelemetry Collector take the same shape: read the container's standard output,
+parse each line as JSON, and forward it with the destination's output.
+
 ## Native install (systemd)
 
 `scripts/install.sh --method native --shape server` (see [Getting started](getting-started.md#the-installer-script)) runs

@@ -11,6 +11,10 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_INSTANCES` | How many server copies share the database, default 1; above 1 the server refuses to start without `PYN_DATABASE_URL` and `PYN_DATA_DIR` (a shared volume), and every copy needs the same `PYN_SETUP_TOKEN` until set up |
 | `PYN_CONFIG` | Initial policy of every repository created while it is set (stored with the repository), and the fallback of older repositories that have no `.pyn/pyn.toml`; unset means new repositories start shared and older ones are all-exclusive (`make dev` uses `scripts/demo.pyn.toml`) |
 | `RUST_LOG` | Log filter in `tracing` syntax (`debug`, `pyn_server=debug,info`); default `info`. An unparsable value falls back to the default |
+| `PYN_LOG_FORMAT` | `text` (default) or `json`: json writes one object per line on standard output with the fields in [log fields](#log-fields); any other value stops the server. The host-admin commands (`create-admin` and the like) keep writing logs to standard error whatever the format |
+| `PYN_ACCESS_LOG` | On unless `false`: one `info` line per request with target `access`; any other value stops the server. `RUST_LOG` must let the `access` target through (`info` does) |
+| `PYN_ACCESS_LOG_CLIENT` | `true` adds the client address (`X-Forwarded-For` when `PYN_TRUST_FORWARDED_FOR` is on) and the user agent to the access line; default `false`; any other value stops the server |
+| `PYN_AUDIT_LOG` | `true` also writes each audit event as a log line with target `audit`, so a log collector gets one stream; default `false`; any other value stops the server |
 | `PYN_ADDR` | Listen address, default `127.0.0.1:7878` |
 | `PYN_DEV_AUTH` | `true` accepts the `X-Pyn-User` header with every permission; for server tests only, not used by `make dev` |
 | `PYN_DEV_CLOCK_SPEED` | Development only: a number of at least 1 that makes the server's clock run that many times faster than real time, so a lease expires in seconds (`3600` turns the one-hour minimum lease into one second). Refused unless `PYN_DEV_AUTH=true`; unset means the real clock. Sessions and rate-limit windows run on the same clock, so they also expire faster, and a Postgres store takes its time from the server instead of the database, so do not share that database with other copies of the server |
@@ -61,3 +65,38 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 `make e2e` runs the end-to-end suites (`crates/pyn-cli/tests/e2e.rs` and `e2e_second.rs`): it spawns the real `pyn-server` (in-memory store) and drives the real `pyn` binary through init, clone, locks, policy changes, add and commit, a plain git repository, branches and merge, `verify`, policy preview and `local_store` commits pushed and pulled between clones, on temporary folders. It is part of `make test` too, and needs `git` on the path only as an oracle.
 
 > **Not for production.** Never run with `PYN_DEV_AUTH=true` on a network you do not control.
+
+## Log fields
+
+With `PYN_LOG_FORMAT=json` every line is one flat JSON object. The names below are a stable contract; fields are only
+added, and an absent value leaves the field out rather than writing `null`.
+
+Every line: `timestamp` (RFC 3339), `level`, `target`, `message`, and, for a line written while a request is handled,
+`span.request_id` (the request id; see below).
+
+The access line (`target` `access`, `message` `request`):
+
+| Field | Meaning |
+| --- | --- |
+| `request_id` | The request id, also returned in the `X-Request-Id` response header |
+| `method` | HTTP method |
+| `route` | The matched route template, such as `/v1/repos/{owner}/{name}/audit`; `unmatched` when no route matched. Never the raw path |
+| `status` | HTTP status code |
+| `latency_ms` | Milliseconds until the response headers were ready; a streamed body is not included |
+| `response_bytes` | Response body size, present when known up front |
+| `account` | The signed-in account, present when the request authenticated |
+| `repo` | `owner/name`, present when the route names a repository |
+| `client_ip`, `user_agent` | Only with `PYN_ACCESS_LOG_CLIENT=true` |
+
+The audit line (`target` `audit`, `message` `audit`, only with `PYN_AUDIT_LOG=true`): `scope` (`owner/name`,
+`@org:<name>` or the server), `actor`, `action` and `path` when the event has one. The event's free-text detail is not
+written; read it through the audit API.
+
+Never logged: credentials (tokens, cookies, passwords), query strings, request or response bodies, email addresses and
+avatar content.
+
+### Request ids
+
+A caller may send `X-Request-Id`: 1 to 128 visible ASCII characters (no spaces or control characters). The server uses
+it as is; anything else is replaced by a generated 32 character hex id. The id is returned in the response header and
+carried by every log line of the request, so a proxy's id can be followed through the server.
