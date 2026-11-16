@@ -98,13 +98,14 @@ pub(crate) struct PeopleQuery {
            ("limit" = Option<usize>, Query, description = "page size, default 30, max 100")),
     responses((status = 200, body = api::PeoplePage, description = "active user accounts by name; never an email address, a hidden field, or an account that is disabled, not yet approved, scheduled for deletion or an organization"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: a search over 64 characters"),
-              (status = 401, body = api::ErrorBody, description = "sign-in required")))]
+              (status = 401, body = api::ErrorBody, description = "sign-in required"),
+              (status = 403, body = api::ErrorBody, description = "forbidden for a token that is not full-scope, service_credential_not_allowed for a service credential")))]
 pub(crate) async fn list_people(
     State(s): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<PeopleQuery>,
 ) -> ApiResult<Json<api::PeoplePage>> {
-    identify(&s, &headers).await?;
+    identify(&s, &headers).await?.require_full_scope()?;
     let limit = q.limit.unwrap_or(30).clamp(1, 100);
     let after = q.after.map(UserId::new);
     let (found, next_after) = s

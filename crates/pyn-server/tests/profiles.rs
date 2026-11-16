@@ -1138,3 +1138,84 @@ async fn a_private_repository_is_in_no_list_search_or_count_and_its_error_matche
         }
     }
 }
+
+#[tokio::test]
+async fn the_people_directory_needs_a_full_scope_credential() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    repo(&app, &alice, "game", "private").await;
+    let make = |body: serde_json::Value| {
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            let r = call(&app, &alice, "POST", "/v1/tokens", Some(body)).await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+            r.json::<api::CreatedToken>().token
+        }
+    };
+    let scoped =
+        make(json!({"name": "ci", "permissions": ["read"], "repos": ["alice/game"]})).await;
+    let every_permission = make(json!({"name": "all", "repos": ["alice/game"], "permissions": ["read", "lock", "checkin", "restore", "force_unlock", "edit_policy", "manage_users", "manage_roles", "view_audit"]})).await;
+    let r = call(
+        &app,
+        "root",
+        "POST",
+        "/v1/admin/service-credentials",
+        Some(json!({"name": "svc", "scopes": ["manage_accounts"]})),
+    )
+    .await;
+    let svc = r.json::<api::CreatedServiceCredential>().secret;
+    let body = json!({"username": "alice", "password": PASSWORD});
+    let r = call(&app, "", "POST", "/v1/session", Some(body)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let set = r.header("set-cookie").to_string();
+    let cookie = set.split(';').next().unwrap().to_string();
+
+    let session = send(
+        &app,
+        "",
+        "GET",
+        "/v1/users",
+        "application/json",
+        vec![],
+        &[("cookie", &cookie)],
+    )
+    .await;
+    for (kind, r) in [
+        ("user session", session),
+        ("full-scope token", people(&app, &alice, "").await),
+        ("dev token", people(&app, "alice", "").await),
+    ] {
+        assert_eq!(r.status, StatusCode::OK, "{kind}: {}", r.text());
+        assert!(people_names(&r).contains(&"alice".to_string()), "{kind}");
+    }
+
+    for (kind, who, code) in [
+        ("repository-scoped token", &scoped, "forbidden"),
+        (
+            "every permission on one repository",
+            &every_permission,
+            "forbidden",
+        ),
+    ] {
+        let r = people(&app, who, "").await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{kind}: {}", r.text());
+        assert_eq!(r.code(), code, "{kind}");
+    }
+    let bearer = format!("Bearer {svc}");
+    let r = send(
+        &app,
+        "",
+        "GET",
+        "/v1/users",
+        "application/json",
+        vec![],
+        &[("authorization", &bearer)],
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text());
+    assert_eq!(r.code(), "service_credential_not_allowed");
+    for (kind, who) in [("signed out", ""), ("invalid token", "pyn_bogus")] {
+        let r = people(&app, who, "").await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{kind}");
+    }
+}

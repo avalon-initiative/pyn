@@ -399,7 +399,7 @@ outlives it: the new token's expiry is capped at its own, and it never holds mor
 A web session may create any token its owner could.
 
 The organization-wide reads need the same credential, because they expose data beyond one repository: the organization list
-(`GET /v1/orgs`, `GET /v1/me/orgs`), members, audit log, teams and the repository-creation policy. A narrower token or a service
+(`GET /v1/orgs`, `GET /v1/me/orgs`), members, audit log, teams and the repository-creation policy, and the people directory (`GET /v1/users`). A narrower token or a service
 credential is refused (`403`). A team's `repos` hold only repositories the caller could open (public ones, or any in which they hold a
 role), so a member never learns the name of a private repository they cannot see.
 
