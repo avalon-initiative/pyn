@@ -101,7 +101,7 @@ async fn an_open_server_lets_anyone_register_but_the_account_has_no_repository_a
 #[tokio::test]
 async fn an_invite_only_server_needs_a_valid_one_time_invitation() {
     let w = world(RegistrationMode::InviteOnly);
-    let root = admin(&w).await;
+    admin(&w).await;
     let err = w
         .svc
         .register(Registration::new("alice", PASSWORD))
@@ -114,7 +114,7 @@ async fn an_invite_only_server_needs_a_valid_one_time_invitation() {
 
     let (record, code) = w
         .svc
-        .create_invite(&root, &w.repo, Role::Writer, Duration::days(2))
+        .create_invite(&identity("root"), &w.repo, Role::Writer, Duration::days(2))
         .await
         .unwrap();
     assert_ne!(record.secret_hash, code, "the code itself is never stored");
@@ -165,12 +165,12 @@ async fn invitations_expire_and_can_be_revoked() {
     let root = admin(&w).await;
     let (_, expiring) = w
         .svc
-        .create_invite(&root, &w.repo, Role::Reader, Duration::hours(1))
+        .create_invite(&identity("root"), &w.repo, Role::Reader, Duration::hours(1))
         .await
         .unwrap();
     let (revoked, revoked_code) = w
         .svc
-        .create_invite(&root, &w.repo, Role::Reader, Duration::days(1))
+        .create_invite(&identity("root"), &w.repo, Role::Reader, Duration::days(1))
         .await
         .unwrap();
     w.svc
@@ -197,19 +197,14 @@ async fn invitations_expire_and_can_be_revoked() {
 #[tokio::test]
 async fn only_administrators_manage_invitations_and_nobody_invites_above_their_own_level() {
     let w = world(RegistrationMode::InviteOnly);
-    let root = admin(&w).await;
+    admin(&w).await;
     w.svc
         .add_user(&identity("root"), &w.repo, "wendy", PASSWORD, Role::Writer)
         .await
         .unwrap();
-    let wendy = w
-        .svc
-        .principal(&w.repo, &UserId::new("wendy"))
-        .await
-        .unwrap();
     let err = w
         .svc
-        .create_invite(&wendy, &w.repo, Role::Reader, Duration::days(1))
+        .create_invite(&identity("wendy"), &w.repo, Role::Reader, Duration::days(1))
         .await
         .unwrap_err();
     assert!(
@@ -228,7 +223,7 @@ async fn only_administrators_manage_invitations_and_nobody_invites_above_their_o
 
     let err = w
         .svc
-        .create_invite(&root, &w.repo, Role::Reader, Duration::zero())
+        .create_invite(&identity("root"), &w.repo, Role::Reader, Duration::zero())
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");

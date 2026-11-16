@@ -2304,13 +2304,16 @@ impl AccessService {
     }
 
     /// Creates a one-time invitation for `role`. The code is returned once and not stored.
+    /// An invitation creates accounts server-wide, so it needs a full-scope credential.
     pub async fn create_invite(
         &self,
-        actor: &Principal,
+        who: &Identity,
         repo: &RepoId,
         role: Role,
         valid_for: Duration,
     ) -> Result<(InviteRecord, String)> {
+        who.require_full_scope()?;
+        let actor = &self.principal_in(repo, who).await?;
         actor.require(Permission::ManageUsers)?;
         self.ensure_repo_writable(repo).await?;
         self.require_can_grant(actor, repo, role).await?;
