@@ -54,7 +54,7 @@ lifetime.
 | `DELETE /v1/me/avatar` | Removes your avatar. |
 | `GET /v1/me` | Your account, with `has_password` and your `profile`. A credential that is not full-scope gets only the account `id` and `user` and the public view of the profile. |
 
-Editing needs a full-scope credential (a session, or a token with every permission and no repository restriction).
+Editing needs a full-scope credential (a session, or a sign-in token from `pyn login`; a fine-grained token never is, whatever it holds).
 
 `GET /v1/me` through a credential that is not full-scope (a repository-scoped or read-only token) answers "who am I" and nothing
 more: the account name and id, `admin` false, and the profile as a stranger sees it (hidden fields absent, no `visibility`
