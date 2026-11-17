@@ -57,6 +57,9 @@ pub enum Reach {
     /// Signed out or signed in, able to see the named repository; the operation decides the permission.
     /// A private server answers a signed-out caller as it does for a private repository.
     PublicRepoVisible,
+    /// `public_repo_read` for the Git LFS download routes: the handler grants a signed-out caller only a download, and a
+    /// refusal is in the LFS error format (`401` on a private server, which the clients answer by asking for credentials).
+    PublicLfsRead,
 }
 
 impl Reach {
@@ -64,7 +67,11 @@ impl Reach {
     fn closed_when_private(self) -> bool {
         matches!(
             self,
-            Self::Public | Self::OptionalSignIn | Self::PublicRepoRead | Self::PublicRepoVisible
+            Self::Public
+                | Self::OptionalSignIn
+                | Self::PublicRepoRead
+                | Self::PublicRepoVisible
+                | Self::PublicLfsRead
         )
     }
 
@@ -86,6 +93,7 @@ impl Reach {
             Self::RepoVisible => "repo_visible".into(),
             Self::PublicRepoRead => "public_repo_read".into(),
             Self::PublicRepoVisible => "public_repo_visible".into(),
+            Self::PublicLfsRead => "public_lfs_read".into(),
         }
     }
 }
@@ -665,7 +673,7 @@ fn table() -> Vec<Entry> {
         ),
         post(
             "/v1/repos/{owner}/{name}/info/lfs/objects/batch",
-            Reach::RepoVisible,
+            Reach::PublicLfsRead,
             lfs_api::batch,
         ),
         post(
@@ -675,7 +683,7 @@ fn table() -> Vec<Entry> {
         ),
         get(
             "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}",
-            Reach::RepoScoped(Permission::Read),
+            Reach::PublicLfsRead,
             lfs_api::download,
         ),
         put(
@@ -886,6 +894,9 @@ async fn enforce_access_mode(
         .map(|((_, owner), (_, name))| format!("{owner}/{name}"));
     match caller::admit(&state, request.headers(), reach, repo).await {
         Ok(()) => next.run(request).await,
+        Err(e) if reach == Reach::PublicLfsRead => {
+            crate::lfs_api::LfsError::from(e).into_response()
+        }
         Err(e) => e.into_response(),
     }
 }

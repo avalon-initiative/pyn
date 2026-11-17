@@ -261,7 +261,7 @@ not access: a new account has no role anywhere (there is no default role setting
 tokens, password), create repositories in its own namespace and read public repositories, and nothing else.
 
 - **Public** grants the `read` permission to everyone, including requests with no credentials (on a `public` [server](access.md#server-access-mode); a `private` server needs a sign-in first): the tree, files, file
-  content at any revision, history, summary, locks and repository info. A role keeps the permissions it already has.
+  content at any revision, history, summary, locks and repository info, and the [Git LFS](lfs.md#authentication) objects of the repository (download only: LFS uploads and LFS lock routes still need a credential). A role keeps the permissions it already has.
   Everything else needs a role: lock, checkin, restore, upload, force-unlock, audit, members, roles and invitations
   answer `403` to a signed-in person without the permission and `401` to an anonymous request.
 - **Private** answers `404 repo_not_found` to anyone without a role, which is also what a repository that does not exist

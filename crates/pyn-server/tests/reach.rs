@@ -202,10 +202,14 @@ fn expected(mode: AccessMode, reach: Reach, kind: Kind) -> Expect {
                 Kind::Session | Kind::Full | Kind::Admin | Kind::ScopedAll
             )),
         },
-        Reach::PublicRepoRead | Reach::PublicRepoVisible if mode == AccessMode::Private => {
+        Reach::PublicRepoRead | Reach::PublicRepoVisible | Reach::PublicLfsRead
+            if mode == AccessMode::Private =>
+        {
             hit(user)
         }
-        Reach::PublicRepoRead | Reach::PublicRepoVisible => hit(!kind.service()),
+        Reach::PublicRepoRead | Reach::PublicRepoVisible | Reach::PublicLfsRead => {
+            hit(!kind.service())
+        }
     }
 }
 
@@ -558,7 +562,10 @@ async fn matrix(mode: AccessMode) {
     let mut failures = Vec::new();
     let mut calls = 0;
     for d in declarations() {
-        let public_repo = matches!(d.reach, Reach::PublicRepoRead | Reach::PublicRepoVisible);
+        let public_repo = matches!(
+            d.reach,
+            Reach::PublicRepoRead | Reach::PublicRepoVisible | Reach::PublicLfsRead
+        );
         let mut uri = fill(d.path, if public_repo { "open" } else { "game" });
         if d.path.ends_with("/verify") && d.method == Method::GET {
             uri.push_str("?path=a");
@@ -594,6 +601,7 @@ async fn matrix(mode: AccessMode) {
                     | Reach::RepoVisible
                     | Reach::PublicRepoRead
                     | Reach::PublicRepoVisible
+                    | Reach::PublicLfsRead
             );
             if kind == Kind::OtherRepo
                 && repo_route
@@ -681,6 +689,7 @@ fn the_table_uses_every_reach_kind() {
         "repo_visible",
         "public_repo_read",
         "public_repo_visible",
+        "public_lfs_read",
     ] {
         assert!(used.contains(kind), "no route declares {kind}");
     }
