@@ -414,7 +414,7 @@ fn table() -> Vec<Entry> {
             Reach::FullScope,
             profile_api::delete_avatar,
         ),
-        get("/v1/users", Reach::FullScope, profile_api::list_people),
+        get("/v1/users", Reach::OptionalSignIn, profile_api::list_people),
         get(
             "/v1/users/{user}",
             Reach::OptionalSignIn,

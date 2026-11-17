@@ -46,7 +46,7 @@ lifetime.
 
 | Route | What it does |
 | --- | --- |
-| `GET /v1/users` | The people directory: browse and search accounts. Needs a full-scope credential. |
+| `GET /v1/users` | The people directory: browse and search accounts. Signed out on a `public` server, rate limited. |
 | `GET /v1/users/{user}` | The public profile. Works signed out on a `public` server. |
 | `GET /v1/users/{user}/avatar` | The avatar image. Works signed out on a `public` server. |
 | `PUT /v1/me/profile` | Replaces your display name, bio, location, company and links. A field left out is cleared. |
@@ -84,9 +84,14 @@ owner stays visible: freezing refuses writes, not reads.
 
 ## People directory
 
-`GET /v1/users` lists accounts for a caller with a [full-scope credential](access.md#full-scope-credentials) (a session or a
-full-scope token). A repository-scoped or otherwise narrower token is `403 forbidden` and a service credential
-`403 service_credential_not_allowed`: a scoped credential cannot browse every account. Signed out or an invalid credential is `401`. Query: `q` (optional
+`GET /v1/users` lists accounts, searchable, the way GitHub's people search is. It is readable signed out on a `public`
+[server](access.md#server-access-mode); a `private` one needs a sign-in (`401 unauthenticated`). Every valid credential
+(a session, a full-scope token, a repository-scoped or otherwise narrower token, the development identity) gets exactly
+the entries a signed-out caller gets, because an entry holds only public data. A service credential is still
+`403 service_credential_not_allowed`, and a credential that is sent must be valid (else `401`). Signed-out requests are
+rate limited per client address (60 per minute, `PYN_RATE_PEOPLE_CLIENT`; see
+[rate limits](access.md#protecting-open-registration)): past it `429 too_many_attempts` with `Retry-After`. Signed-in callers
+are not limited. Query: `q` (optional
 search), `after` (an account name; the page starts strictly after it) and `limit` (default 30, at most 100). The response is
 `{ "people": [...], "next_after": "name" | null }`, ordered by account name (byte order, so capitals sort first); pass
 `next_after` back as `after` for the next page. Each entry is `identity` (`PublicIdentity`) plus `bio`, `location`, `company`

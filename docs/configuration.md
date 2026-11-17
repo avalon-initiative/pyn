@@ -47,7 +47,7 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_ALLOWED_ORIGINS` | Comma-separated origins (`scheme://host[:port]`, no path) besides `PYN_PUBLIC_URL`'s that may sign in and send cookie-authenticated writes, such as the Vite dev server (`make dev` allows `http://localhost:5173` and `http://127.0.0.1:5173`); default none; an invalid entry stops the server at start. See [access](concepts/access.md#web-sessions) |
 | `PYN_EMAIL` | How email is sent; only `log` (notes that a message was queued, without its body) exists |
 | `PYN_EMAIL_LOG_BODIES` | `true` also logs each message body, links included; for local development only, the server warns at startup |
-| `PYN_RATE_SIGN_IN_ACCOUNT`, `PYN_RATE_SIGN_IN_CLIENT`, `PYN_RATE_REGISTER_CLIENT`, `PYN_RATE_MAIL_PER_EMAIL` | Rate limits, defaults 5, 30, 10 and 3 (the first also limits wrong current passwords when changing a password); see [access](concepts/access.md#protecting-open-registration) |
+| `PYN_RATE_SIGN_IN_ACCOUNT`, `PYN_RATE_SIGN_IN_CLIENT`, `PYN_RATE_REGISTER_CLIENT`, `PYN_RATE_MAIL_PER_EMAIL`, `PYN_RATE_PEOPLE_CLIENT` | Rate limits, defaults 5, 30, 10, 3 and 60 (the last is signed-out people directory requests per client address per minute; the first also limits wrong current passwords when changing a password); see [access](concepts/access.md#protecting-open-registration) |
 | `PYN_TRUST_FORWARDED_FOR` | `true` takes the client address from the last `X-Forwarded-For` entry; only behind a proxy that sets it; also trusts `X-Forwarded-Host` and `X-Forwarded-Proto` for the [LFS](concepts/lfs.md) URLs |
 | `PYN_PASSWORD_HASHES` | Most password hashes at once, default the number of CPUs |
 | `PYN_SESSION_DAYS` | How long a `pyn login` lasts, default 30 |
