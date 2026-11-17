@@ -70,7 +70,7 @@ pub(crate) async fn my_orgs(
 
 #[utoipa::path(get, path = "/v1/orgs/{org}",
     params(("org" = String, Path, description = "the organization's name")),
-    responses((status = 200, body = api::OrgInfo, description = "any signed-in account can look an organization up"),
+    responses((status = 200, body = api::OrgInfo, description = "any signed-in account can look an organization up; role is the caller's and is absent for a token that is not full-scope"),
               (status = 404, body = api::ErrorBody, description = "org_not_found (also for a user name)")))]
 pub(crate) async fn get_org(
     State(s): State<AppState>,
@@ -80,7 +80,7 @@ pub(crate) async fn get_org(
     let who = identify(&s, &headers).await?;
     let name = UserId::new(name);
     let org = s.access.org(&name).await?;
-    let role = s.access.org_role(&name, &who.user).await?;
+    let role = s.access.org_role_for(&who, &name).await?;
     Ok(Json(org_info(org, role)))
 }
 

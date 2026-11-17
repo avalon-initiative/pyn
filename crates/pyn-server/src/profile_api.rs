@@ -293,7 +293,7 @@ pub(crate) fn org_avatar_url(org: &UserId, avatar: Option<&Avatar>) -> Option<St
 
 #[utoipa::path(get, path = "/v1/orgs/{org}/profile",
     params(("org" = String, Path, description = "the organization's name")),
-    responses((status = 200, body = api::OrgProfile, description = "any signed-in account can read it, as it can look the organization up"),
+    responses((status = 200, body = api::OrgProfile, description = "any signed-in account can read it, as it can look the organization up; it holds nothing specific to the caller"),
               (status = 404, body = api::ErrorBody, description = "org_not_found (also for a user name)")))]
 pub(crate) async fn get_org_profile(
     State(s): State<AppState>,

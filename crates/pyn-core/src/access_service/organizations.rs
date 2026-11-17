@@ -21,6 +21,14 @@ impl AccessService {
             .ok_or_else(|| PynError::OrgNotFound(name.to_string()))
     }
 
+    /// The caller's role in the organization, withheld from a credential that is not full-scope.
+    pub async fn org_role_for(&self, who: &Identity, org: &UserId) -> Result<Option<OrgRole>> {
+        if !who.is_full_scope() {
+            return Ok(None);
+        }
+        self.org_role(org, &who.user).await
+    }
+
     pub async fn org_role(&self, org: &UserId, user: &UserId) -> Result<Option<OrgRole>> {
         self.store.org_role(org, user).await
     }
