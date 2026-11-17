@@ -220,7 +220,7 @@ follows the server) and `max_locks_set_by_policy` (true when `.pyn/pyn.toml` set
 
 ## Who can do what
 
-- **See a repository.** Anyone, signed in or not, if it is public; otherwise only people who have a role in it. A private
+- **See a repository.** Anyone, signed in or not, if it is public (on a `private` [server](access.md#server-access-mode) signed out means no one: a signed-out request gets `404 repo_not_found`, as for a private repository); otherwise only people who have a role in it. A private
   repository does not reveal that it exists to anyone else: every route answers `404 repo_not_found` for an outsider (or
   an anonymous request) and for a repository that is not there; the two answers are identical apart from the address, and take the same lookups. A caller who can see the repository but lacks a permission still gets `403 forbidden`.
 - **Create.** Any signed-in account, in its own namespace, or a member of an organization its
@@ -260,7 +260,7 @@ A repository is `private` (members only) or `public` (anyone may read it), as on
 not access: a new account has no role anywhere (there is no default role setting), so it can use its own settings (keys,
 tokens, password), create repositories in its own namespace and read public repositories, and nothing else.
 
-- **Public** grants the `read` permission to everyone, including requests with no credentials: the tree, files, file
+- **Public** grants the `read` permission to everyone, including requests with no credentials (on a `public` [server](access.md#server-access-mode); a `private` server needs a sign-in first): the tree, files, file
   content at any revision, history, summary, locks and repository info. A role keeps the permissions it already has.
   Everything else needs a role: lock, checkin, restore, upload, force-unlock, audit, members, roles and invitations
   answer `403` to a signed-in person without the permission and `401` to an anonymous request.

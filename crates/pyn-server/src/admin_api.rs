@@ -6,8 +6,8 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use pyn_core::{
-    AccountDeletion, AccountRecord, AccountStatus, AuditQuery, OrgRole, ServiceCredentialRecord,
-    ServiceScope, UserId,
+    AccessMode, AccountDeletion, AccountRecord, AccountStatus, AuditQuery, OrgRole,
+    ServiceCredentialRecord, ServiceScope, UserId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -122,6 +122,25 @@ pub(crate) async fn enable(
 ) -> ApiResult<Json<api::AccountInfo>> {
     let account = s.access.enable_account(&who, &UserId::new(user)).await?;
     Ok(Json(info(account)))
+}
+
+#[utoipa::path(put, path = "/v1/admin/access", request_body = api::ServerAccess, responses(
+    (status = 200, body = api::ServerAccess, description = "the mode now in force; it applies to the next request, and setting the current mode changes nothing"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request: not private or public"),
+    (status = 403, body = api::ErrorBody, description = "server_admin_required: also for any service credential"),
+))]
+pub(crate) async fn set_access_mode(
+    State(s): State<AppState>,
+    AdminCaller(who): AdminCaller,
+    Json(req): Json<api::ServerAccess>,
+) -> ApiResult<Json<api::ServerAccess>> {
+    let mode = s
+        .access
+        .set_access_mode(&who, AccessMode::from_str(&req.access_mode)?)
+        .await?;
+    Ok(Json(api::ServerAccess {
+        access_mode: mode.as_str().to_string(),
+    }))
 }
 
 #[utoipa::path(put, path = "/v1/admin/users/{user}/admin",

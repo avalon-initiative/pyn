@@ -39,6 +39,7 @@ async fn server() -> Router {
         )
         .with_config(AccessConfig {
             registration: RegistrationMode::Open,
+            access_mode: pyn_core::AccessMode::Public,
             require_email_verification: false,
             ..AccessConfig::default()
         })

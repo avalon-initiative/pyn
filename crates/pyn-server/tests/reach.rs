@@ -16,8 +16,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AuthProvider, Credential, Identity, Permission, RegistrationMode,
-    Repositories, Rules, ServiceScope, SystemClock, UserId, Visibility,
+    AccessConfig, AccessMode, AccessService, AuthProvider, Credential, Identity, Permission,
+    RegistrationMode, Repositories, Rules, ServiceScope, SystemClock, UserId, Visibility,
 };
 use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
@@ -161,7 +161,7 @@ enum Expect {
 }
 
 /// What a credential kind meets on a route of the given reach. `ServiceOther` holds one scope, never the declared one (the server refuses a credential with none).
-fn expected(reach: Reach, kind: Kind) -> Expect {
+fn expected(mode: AccessMode, reach: Reach, kind: Kind) -> Expect {
     use Expect::{Any, Reached, Refused};
     let user = matches!(
         kind,
@@ -174,7 +174,10 @@ fn expected(reach: Reach, kind: Kind) -> Expect {
     );
     let hit = |yes: bool| if yes { Reached } else { Refused };
     match reach {
-        Reach::Public => Any,
+        Reach::Open => Any,
+        Reach::Public if mode == AccessMode::Public => Any,
+        Reach::Public => hit(user),
+        Reach::OptionalSignIn if mode == AccessMode::Private => hit(user),
         Reach::OptionalSignIn => hit(user || kind == Kind::SignedOut),
         Reach::Session => hit(kind == Kind::Session),
         Reach::AnyCredential => hit(user),
@@ -199,6 +202,9 @@ fn expected(reach: Reach, kind: Kind) -> Expect {
                 Kind::Session | Kind::Full | Kind::Admin | Kind::ScopedAll
             )),
         },
+        Reach::PublicRepoRead | Reach::PublicRepoVisible if mode == AccessMode::Private => {
+            hit(user)
+        }
         Reach::PublicRepoRead | Reach::PublicRepoVisible => hit(!kind.service()),
     }
 }
@@ -282,7 +288,7 @@ impl pyn_core::PasswordWorker for QuickPasswords {
     }
 }
 
-fn state() -> AppState {
+fn state(mode: AccessMode) -> AppState {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
@@ -295,6 +301,7 @@ fn state() -> AppState {
         )
         .with_config(AccessConfig {
             registration: RegistrationMode::Open,
+            access_mode: mode,
             require_email_verification: false,
             ..AccessConfig::default()
         })
@@ -323,7 +330,11 @@ fn state() -> AppState {
 /// A server with alice (repositories game, open and other; the organization acme), the administrator root, and the
 /// credential of `kind`.
 async fn world(kind: Kind, reach: Reach) -> (Router, Cred) {
-    let st = state();
+    world_in(AccessMode::Private, kind, reach).await
+}
+
+async fn world_in(mode: AccessMode, kind: Kind, reach: Reach) -> (Router, Cred) {
+    let st = state(mode);
     let access = st.access.clone();
     let root = UserId::new("root");
     access.admin_for_tests(&root).await.unwrap();
@@ -535,7 +546,16 @@ fn headers_for(path: &str) -> Vec<(&'static str, &'static str)> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn each_credential_kind_meets_the_routes_it_should() {
+async fn each_credential_kind_meets_the_routes_it_should_on_a_private_server() {
+    matrix(AccessMode::Private).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_credential_kind_meets_the_routes_it_should_on_a_public_server() {
+    matrix(AccessMode::Public).await;
+}
+
+async fn matrix(mode: AccessMode) {
     let mut failures = Vec::new();
     let mut calls = 0;
     for d in declarations() {
@@ -545,7 +565,7 @@ async fn each_credential_kind_meets_the_routes_it_should() {
             uri.push_str("?path=a");
         }
         for kind in Kind::ALL {
-            let (app, cred) = world(kind, d.reach).await;
+            let (app, cred) = world_in(mode, kind, d.reach).await;
             let reply = send(
                 &app,
                 &cred,
@@ -588,7 +608,34 @@ async fn each_credential_kind_meets_the_routes_it_should() {
                     String::from_utf8_lossy(&reply.body)
                 ));
             }
-            match expected(d.reach, kind) {
+            let expect = expected(mode, d.reach, kind);
+            if mode == AccessMode::Private && kind == Kind::SignedOut && expect == Expect::Refused {
+                let answer = if public_repo {
+                    ("repo_not_found", StatusCode::NOT_FOUND)
+                } else {
+                    ("unauthenticated", StatusCode::UNAUTHORIZED)
+                };
+                let closed = matches!(
+                    d.reach,
+                    Reach::Public
+                        | Reach::OptionalSignIn
+                        | Reach::PublicRepoRead
+                        | Reach::PublicRepoVisible
+                );
+                if closed
+                    && d.method != Method::HEAD
+                    && (reply.code().as_deref(), reply.status) != (Some(answer.0), answer.1)
+                {
+                    failures.push(format!(
+                        "{label}: a signed-out caller must get {} {}, got {} {}",
+                        answer.1,
+                        answer.0,
+                        reply.status,
+                        String::from_utf8_lossy(&reply.body)
+                    ));
+                }
+            }
+            match expect {
                 Expect::Reached if refused => failures.push(format!(
                     "{label}: expected to reach the route, got {} {}",
                     reply.status,
@@ -620,6 +667,7 @@ fn the_table_uses_every_reach_kind() {
         .map(|d| d.reach.label().split(':').next().unwrap().to_string())
         .collect();
     for kind in [
+        "open",
         "public",
         "optional_sign_in",
         "session",

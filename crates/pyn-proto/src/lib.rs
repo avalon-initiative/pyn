@@ -862,6 +862,14 @@ pub enum RegistrationMode {
     Closed,
 }
 
+/// Whether a signed-out caller can read anything: `private` shows nothing, `public` shows public things.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AccessMode {
+    Private,
+    Public,
+}
+
 /// A person's standing in an organization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -1370,6 +1378,16 @@ pub struct SetupStatus {
     /// What setup recorded, or the configured default before setup.
     #[schema(value_type = RegistrationMode)]
     pub registration: String,
+    /// What setup recorded or an administrator set later; before setup, the configured default.
+    #[schema(value_type = AccessMode)]
+    pub access_mode: String,
+}
+
+/// The server's access mode, as read and as changed by an administrator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ServerAccess {
+    #[schema(value_type = AccessMode)]
+    pub access_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1385,6 +1403,10 @@ pub struct SetupRequest {
     pub public_url: Option<String>,
     #[schema(value_type = RegistrationMode)]
     pub registration: String,
+    /// Omit it to take the server's configured default (`PYN_ACCESS`, else `private`).
+    #[serde(default)]
+    #[schema(value_type = Option<AccessMode>)]
+    pub access_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

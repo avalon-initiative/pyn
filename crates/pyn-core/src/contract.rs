@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use chrono::{Duration, TimeZone, Utc};
 
 use crate::access::{
-    AccountKind, AccountStatus, InvitationAccept, InvitationCreate, InviteId, InviteRecord,
-    NewAccount, OrgInvitation, OrgRole, Permission, Principal, RegistrationMode, Role,
-    RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,
+    AccessMode, AccountKind, AccountStatus, InvitationAccept, InvitationCreate, InviteId,
+    InviteRecord, NewAccount, OrgInvitation, OrgRole, Permission, Principal, RegistrationMode,
+    Role, RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,
     SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
 use crate::clock::Clock;
@@ -5994,6 +5994,7 @@ pub async fn setup_stores_the_administrators_id(store: Access) {
         server_name: None,
         public_url: None,
         registration: None,
+        access_mode: AccessMode::Private,
     };
     assert!(store.complete_setup(admin, settings).await.unwrap());
     assert_eq!(store.account(&user("root")).await.unwrap().unwrap().id, id);
@@ -6006,6 +6007,7 @@ pub async fn setup_runs_once_and_creates_the_administrator_with_its_settings(sto
         server_name: Some("Studio".into()),
         public_url: Some("https://pyn.example".into()),
         registration: Some(RegistrationMode::Closed),
+        access_mode: AccessMode::Public,
     };
     let mut admin = new_account("root", "root@example.org", 0);
     admin.signup = SignupStage::Complete;
@@ -6029,6 +6031,7 @@ pub async fn setup_runs_once_and_creates_the_administrator_with_its_settings(sto
         server_name: None,
         public_url: None,
         registration: None,
+        access_mode: AccessMode::Private,
     };
     let mut second = new_account("second", "second@example.org", 1);
     second.signup = SignupStage::Complete;
@@ -6046,6 +6049,29 @@ pub async fn setup_runs_once_and_creates_the_administrator_with_its_settings(sto
     );
 }
 
+pub async fn the_access_mode_is_stored_with_setup_and_changes_after_it(store: Access) {
+    assert!(!store.set_access_mode(AccessMode::Public).await.unwrap());
+    let settings = ServerSettings {
+        initialised_at: at(0),
+        server_name: None,
+        public_url: None,
+        registration: None,
+        access_mode: AccessMode::Private,
+    };
+    assert!(
+        store
+            .complete_setup(new_account("root", "root@example.org", 0), settings)
+            .await
+            .unwrap()
+    );
+    let mode = || async { store.server_settings().await.unwrap().unwrap().access_mode };
+    assert_eq!(mode().await, AccessMode::Private);
+    assert!(store.set_access_mode(AccessMode::Public).await.unwrap());
+    assert_eq!(mode().await, AccessMode::Public);
+    assert!(store.set_access_mode(AccessMode::Private).await.unwrap());
+    assert_eq!(mode().await, AccessMode::Private);
+}
+
 pub async fn a_setup_that_fails_leaves_the_server_uninitialised(store: Access) {
     store.ensure_user(&user("root"), at(0)).await.unwrap();
     let settings = ServerSettings {
@@ -6053,6 +6079,7 @@ pub async fn a_setup_that_fails_leaves_the_server_uninitialised(store: Access) {
         server_name: None,
         public_url: None,
         registration: None,
+        access_mode: AccessMode::Private,
     };
     let err = store
         .complete_setup(new_account("root", "root@example.org", 1), settings)
@@ -8250,6 +8277,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; an_organization_recreated_under_a_deleted_name_gets_a_new_id);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; setup_stores_the_administrators_id);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_setup_that_fails_leaves_the_server_uninitialised);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_access_mode_is_stored_with_setup_and_changes_after_it);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_verified_address_belongs_to_one_account);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_can_be_approved_disabled_enabled_and_listed);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_admin_always_leaves_another_active_administrator);

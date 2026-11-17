@@ -4,7 +4,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use pyn_core::{
-    AccessStore, AccountDeletion, AccountDisable, AccountEmail, AccountId, AccountKind,
+    AccessMode, AccessStore, AccountDeletion, AccountDisable, AccountEmail, AccountId, AccountKind,
     AccountPurge, AccountRecord, AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule,
     CreationScope, CreationSubject, DeletionSchedule, EmailAdd, EmailRemove, EventDraft,
     ExternalCreate, ExternalIdentity, IdentityUnlink, InvitationAccept, InvitationCreate, InviteId,
@@ -2432,7 +2432,7 @@ impl AccessStore for PgMetadataStore {
 
     async fn server_settings(&self) -> Result<Option<ServerSettings>> {
         let row = sqlx::query(
-            "SELECT initialised_at, server_name, public_url, registration FROM server_settings",
+            "SELECT initialised_at, server_name, public_url, registration, access_mode FROM server_settings",
         )
         .fetch_optional(&self.pool)
         .await
@@ -2446,6 +2446,7 @@ impl AccessStore for PgMetadataStore {
                     .get::<Option<String>, _>("registration")
                     .map(|m| RegistrationMode::from_str(&m))
                     .transpose()?,
+                access_mode: AccessMode::from_str(&row.get::<String, _>("access_mode"))?,
             })
         })
         .transpose()
@@ -2459,13 +2460,14 @@ impl AccessStore for PgMetadataStore {
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let claimed = sqlx::query(
-            "INSERT INTO server_settings (initialised_at, server_name, public_url, registration)
-             VALUES ($1, $2, $3, $4) ON CONFLICT (singleton) DO NOTHING",
+            "INSERT INTO server_settings (initialised_at, server_name, public_url, registration, access_mode)
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (singleton) DO NOTHING",
         )
         .bind(settings.initialised_at)
         .bind(settings.server_name)
         .bind(settings.public_url)
         .bind(settings.registration.map(RegistrationMode::as_str))
+        .bind(settings.access_mode.as_str())
         .execute(&mut *tx)
         .await
         .map_err(db)?;
@@ -2491,6 +2493,15 @@ impl AccessStore for PgMetadataStore {
         self.queue_events(&mut tx, events).await?;
         tx.commit().await.map_err(db)?;
         Ok(true)
+    }
+
+    async fn set_access_mode(&self, mode: AccessMode) -> Result<bool> {
+        let done = sqlx::query("UPDATE server_settings SET access_mode = $1")
+            .bind(mode.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected() > 0)
     }
 }
 

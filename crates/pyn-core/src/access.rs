@@ -479,6 +479,37 @@ impl FromStr for RegistrationMode {
     }
 }
 
+/// Whether a signed-out caller can read anything: nothing on a `private` server, public things on a `public` one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessMode {
+    #[default]
+    Private,
+    Public,
+}
+
+impl AccessMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Private => "private",
+            Self::Public => "public",
+        }
+    }
+}
+
+impl FromStr for AccessMode {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "private" => Ok(Self::Private),
+            "public" => Ok(Self::Public),
+            other => Err(PynError::InvalidRequest(format!(
+                "unknown access mode {other:?}; use private or public"
+            ))),
+        }
+    }
+}
+
 /// Who may create an organization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1063,6 +1094,7 @@ pub struct ServerSettings {
     pub public_url: Option<String>,
     /// Overrides the configured registration mode.
     pub registration: Option<RegistrationMode>,
+    pub access_mode: AccessMode,
 }
 
 /// A pending email check. Only a hash of its token is kept.

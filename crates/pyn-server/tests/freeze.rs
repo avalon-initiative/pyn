@@ -418,6 +418,7 @@ const EXEMPT: &[(&str, &str)] = &[
     ("create_service_credential", "an operator action"),
     ("revoke_service_credential", "an operator action"),
     ("grant_admin", "an operator action"),
+    ("set_access_mode", "an operator action"),
     ("revoke_admin", "an operator action"),
     ("approve", "an operator action"),
     ("disable", "an operator action"),

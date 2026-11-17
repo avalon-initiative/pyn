@@ -4,8 +4,11 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 
+use axum::extract::{RawPathParams, Request, State};
 use axum::handler::Handler;
 use axum::http::Method;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodFilter, MethodRouter};
 use axum::{Extension, Json, Router};
 use pyn_core::{Permission, ServiceScope};
@@ -13,17 +16,20 @@ use utoipa::OpenApi;
 use utoipa::openapi::extensions::Extensions;
 
 use crate::{
-    AppState, access_api, admin_api, branch_api, deletion_api, freeze_api, lfs_api, limits_api,
-    merge_api, oidc_api, org_api, profile_api, push_api, repo_api, repo_policy_api,
+    AppState, access_api, admin_api, branch_api, caller, deletion_api, freeze_api, lfs_api,
+    limits_api, merge_api, oidc_api, org_api, profile_api, push_api, repo_api, repo_policy_api,
     self_service_api, session_api, setup_api, team_api, webhook_api,
 };
 
 /// Which credentials a route accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reach {
-    /// No credential is read.
+    /// Served in both access modes, signed out or not: no credential is read.
+    Open,
+    /// No credential is read; a private server refuses a signed-out caller.
     Public,
-    /// Signed out or any user credential; a credential that is sent must be valid.
+    /// Signed out or any user credential, a credential that is sent must be valid; a private server refuses a
+    /// signed-out caller.
     OptionalSignIn,
     /// A web session cookie only (also while the account is scheduled for deletion).
     Session,
@@ -45,16 +51,27 @@ pub enum Reach {
     RepoScoped(Permission),
     /// A signed-in credential that can see the named repository; the operation decides the permission.
     RepoVisible,
-    /// Signed out or signed in, holding `read` in the named repository (a public one needs no credential).
+    /// Signed out or signed in, holding `read` in the named repository (a public one needs no credential). A private
+    /// server answers a signed-out caller as it does for a private repository.
     PublicRepoRead,
     /// Signed out or signed in, able to see the named repository; the operation decides the permission.
+    /// A private server answers a signed-out caller as it does for a private repository.
     PublicRepoVisible,
 }
 
 impl Reach {
+    /// Whether a private server refuses a signed-out caller here.
+    fn closed_when_private(self) -> bool {
+        matches!(
+            self,
+            Self::Public | Self::OptionalSignIn | Self::PublicRepoRead | Self::PublicRepoVisible
+        )
+    }
+
     /// The stable name published as `x-pyn-reach`.
     pub fn label(&self) -> String {
         match self {
+            Self::Open => "open".into(),
             Self::Public => "public".into(),
             Self::OptionalSignIn => "optional_sign_in".into(),
             Self::Session => "session".into(),
@@ -123,21 +140,17 @@ verbs!(get => GET, post => POST, put => PUT, patch => PATCH, delete => DELETE, h
 
 fn table() -> Vec<Entry> {
     vec![
-        get("/healthz", Reach::Public, crate::health),
-        get("/v1/capabilities", Reach::Public, crate::capabilities),
-        get("/openapi.json", Reach::Public, || async { Json(openapi()) }),
-        get("/v1/setup", Reach::Public, setup_api::setup_status),
-        post("/v1/setup", Reach::Public, setup_api::complete_setup),
-        get("/v1/registration", Reach::Public, access_api::registration),
-        post("/v1/register", Reach::Public, access_api::register),
-        post(
-            "/v1/register/verify",
-            Reach::Public,
-            access_api::verify_email,
-        ),
+        get("/healthz", Reach::Open, crate::health),
+        get("/v1/capabilities", Reach::Open, crate::capabilities),
+        get("/openapi.json", Reach::Open, || async { Json(openapi()) }),
+        get("/v1/setup", Reach::Open, setup_api::setup_status),
+        post("/v1/setup", Reach::Open, setup_api::complete_setup),
+        get("/v1/registration", Reach::Open, access_api::registration),
+        post("/v1/register", Reach::Open, access_api::register),
+        post("/v1/register/verify", Reach::Open, access_api::verify_email),
         post(
             "/v1/register/resend",
-            Reach::Public,
+            Reach::Open,
             access_api::resend_verification,
         ),
         get(
@@ -196,6 +209,11 @@ fn table() -> Vec<Entry> {
             admin_api::revoke_admin,
         ),
         get("/v1/admin/audit", Reach::AdminOnly, admin_api::audit),
+        put(
+            "/v1/admin/access",
+            Reach::AdminOnly,
+            admin_api::set_access_mode,
+        ),
         post(
             "/v1/admin/orgs",
             Reach::Service(ServiceScope::ManageOrganizations),
@@ -316,18 +334,18 @@ fn table() -> Vec<Entry> {
             Reach::FullScopeOrService(ServiceScope::ManageLimits),
             limits_api::set_repo_storage_cap,
         ),
-        post("/v1/login", Reach::Public, access_api::login),
+        post("/v1/login", Reach::Open, access_api::login),
         get("/v1/session", Reach::Session, session_api::current),
-        post("/v1/session", Reach::Public, session_api::sign_in),
-        delete("/v1/session", Reach::Public, session_api::sign_out),
+        post("/v1/session", Reach::Open, session_api::sign_in),
+        delete("/v1/session", Reach::Open, session_api::sign_out),
         get(
             "/v1/sign-in-options",
-            Reach::Public,
+            Reach::Open,
             oidc_api::sign_in_options,
         ),
-        get("/v1/oidc/authorize", Reach::Public, oidc_api::authorize),
+        get("/v1/oidc/authorize", Reach::Open, oidc_api::authorize),
         post("/v1/oidc/link", Reach::FullScope, oidc_api::link),
-        get("/v1/oidc/callback", Reach::Public, oidc_api::callback),
+        get("/v1/oidc/callback", Reach::Open, oidc_api::callback),
         get(
             "/v1/me/identities",
             Reach::FullScope,
@@ -687,7 +705,7 @@ fn table() -> Vec<Entry> {
         ),
         options(
             "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
-            Reach::Public,
+            Reach::Open,
             lfs_api::tus::options,
         ),
         get(
@@ -853,16 +871,44 @@ pub fn declarations() -> Vec<Declaration> {
     table().into_iter().map(|e| e.declaration).collect()
 }
 
-pub(crate) fn routes() -> Router<AppState> {
+/// Applies the server's access mode to a route declared `reach`: the one place a private server shuts the signed-out
+/// routes.
+async fn enforce_access_mode(
+    State((state, reach)): State<(AppState, Reach)>,
+    params: RawPathParams,
+    request: Request,
+    next: Next,
+) -> Response {
+    let repo = params
+        .iter()
+        .find(|(k, _)| *k == "owner")
+        .zip(params.iter().find(|(k, _)| *k == "name"))
+        .map(|((_, owner), (_, name))| format!("{owner}/{name}"));
+    match caller::admit(&state, request.headers(), reach, repo).await {
+        Ok(()) => next.run(request).await,
+        Err(e) => e.into_response(),
+    }
+}
+
+pub(crate) fn routes(state: &AppState) -> Router<AppState> {
     let mut paths: Vec<&'static str> = Vec::new();
     let mut merged: HashMap<&'static str, MethodRouter<AppState, Infallible>> = HashMap::new();
     for entry in table() {
         let path = entry.declaration.path;
+        let reach = entry.declaration.reach;
+        let route = if reach.closed_when_private() {
+            entry.route.layer(middleware::from_fn_with_state(
+                (state.clone(), reach),
+                enforce_access_mode,
+            ))
+        } else {
+            entry.route
+        };
         match merged.remove(path) {
-            Some(existing) => merged.insert(path, existing.merge(entry.route)),
+            Some(existing) => merged.insert(path, existing.merge(route)),
             None => {
                 paths.push(path);
-                merged.insert(path, entry.route)
+                merged.insert(path, route)
             }
         };
     }

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::access::{
-    AccountKind, AccountRecord, AccountStatus, Credential, Identity, InvitationAccept,
+    AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, Identity, InvitationAccept,
     InvitationCreate, InviteId, InviteRecord, NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation,
     OrgInvitation, OrgMemberAdd, OrgRole, Permission, Principal, RegistrationMode, Role,
     RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,
@@ -778,6 +778,9 @@ pub trait AccessStore: Send + Sync {
         settings: ServerSettings,
         events: &[EventDraft],
     ) -> Result<bool>;
+
+    /// Stores the access mode. False while the server is uninitialised (no settings row).
+    async fn set_access_mode(&self, mode: AccessMode) -> Result<bool>;
 }
 
 /// How many events one key may cause in a window before further ones are refused.
@@ -825,6 +828,8 @@ const MAIL_WINDOW: Duration = Duration::hours(1);
 #[derive(Debug, Clone)]
 pub struct AccessConfig {
     pub registration: RegistrationMode,
+    /// The access mode until setup stores one (`PYN_ACCESS`).
+    pub access_mode: AccessMode,
     pub session_days: i64,
     /// Open registration only: an account stays inactive until its email address is confirmed.
     pub require_email_verification: bool,
@@ -880,6 +885,7 @@ impl Default for AccessConfig {
     fn default() -> Self {
         Self {
             registration: RegistrationMode::InviteOnly,
+            access_mode: AccessMode::Private,
             session_days: 30,
             require_email_verification: true,
             require_approval: false,

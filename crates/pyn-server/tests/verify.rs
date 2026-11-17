@@ -46,7 +46,10 @@ async fn world() -> World {
             clock.clone(),
             Arc::new(pyn_core::MemoryLimitEvents::new()),
         )
-        .with_config(AccessConfig::default())
+        .with_config(AccessConfig {
+            access_mode: pyn_core::AccessMode::Public,
+            ..AccessConfig::default()
+        })
         .with_registry(meta.clone())
         .with_audit(audit.clone()),
     );

@@ -5,9 +5,9 @@ use std::sync::Arc;
 use chrono::{TimeZone, Utc};
 use pyn_core::memory::{MemoryAccessStore, MemoryAuditStore};
 use pyn_core::{
-    AccessConfig, AccessService, AccessStore, AuditAction, AuditQuery, AuditScope, AuditStore,
-    Credential, Identity, ManualClock, PynError, Registration, RegistrationMode, SetupRequest,
-    UserId,
+    AccessConfig, AccessMode, AccessService, AccessStore, AuditAction, AuditQuery, AuditScope,
+    AuditStore, Credential, Identity, ManualClock, PynError, Registration, RegistrationMode,
+    SetupRequest, UserId,
 };
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
@@ -49,6 +49,7 @@ fn request<'a>(token: &'a str, username: &'a str) -> SetupRequest<'a> {
         server_name: None,
         public_url: None,
         registration: RegistrationMode::Open,
+        access_mode: None,
         client: Some("10.0.0.1"),
     }
 }
@@ -345,4 +346,85 @@ async fn a_locked_out_client_does_not_spend_the_server_budget() {
     let mut real = request(TOKEN, "root");
     real.client = Some("192.0.2.7");
     w.svc.complete_setup(real).await.unwrap();
+}
+
+fn admin(user: &UserId) -> Identity {
+    Identity {
+        user: user.clone(),
+        credential: Credential::Session,
+    }
+}
+
+#[tokio::test]
+async fn setup_stores_the_access_mode_and_the_stored_value_wins_over_the_configured_one() {
+    let w = world();
+    assert_eq!(w.svc.access_mode(), AccessMode::Private);
+    let mut req = request(TOKEN, "root");
+    req.access_mode = Some(AccessMode::Public);
+    w.svc.complete_setup(req).await.unwrap();
+    assert_eq!(w.svc.access_mode(), AccessMode::Public);
+    assert_eq!(
+        w.svc.setup_status().await.unwrap().access_mode,
+        AccessMode::Public
+    );
+}
+
+#[tokio::test]
+async fn setup_without_a_mode_takes_the_configured_default() {
+    let store = Arc::new(MemoryAccessStore::new());
+    let svc = AccessService::new(
+        store,
+        Arc::new(ManualClock::new(Utc::now())),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(AccessConfig {
+        access_mode: AccessMode::Public,
+        ..AccessConfig::default()
+    })
+    .with_setup_token(TOKEN)
+    .unwrap();
+    svc.complete_setup(request(TOKEN, "root")).await.unwrap();
+    assert_eq!(svc.access_mode(), AccessMode::Public);
+}
+
+#[tokio::test]
+async fn an_administrator_changes_the_mode_at_once_and_it_is_audited() {
+    let w = world();
+    let root = w.svc.complete_setup(request(TOKEN, "root")).await.unwrap();
+    assert_eq!(w.svc.access_mode(), AccessMode::Private);
+    w.svc
+        .set_access_mode(&admin(&root), AccessMode::Public)
+        .await
+        .unwrap();
+    assert_eq!(w.svc.access_mode(), AccessMode::Public);
+    let events = w
+        .audit
+        .list(
+            &AuditScope::Server,
+            &AuditQuery {
+                limit: 10,
+                ..AuditQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(events.iter().any(|e| {
+        e.action == AuditAction::ServerAccessModeChanged
+            && e.actor == root
+            && e.detail == "access mode changed from private to public"
+    }));
+}
+
+#[tokio::test]
+async fn only_an_administrator_changes_the_mode() {
+    let w = world();
+    w.svc.complete_setup(request(TOKEN, "root")).await.unwrap();
+    let nobody = admin(&UserId::new("nobody"));
+    let err = w
+        .svc
+        .set_access_mode(&nobody, AccessMode::Public)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::ServerAdminRequired));
+    assert_eq!(w.svc.access_mode(), AccessMode::Private);
 }

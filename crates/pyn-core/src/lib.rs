@@ -42,7 +42,7 @@ pub mod webhook_secret;
 pub mod webhook_url;
 
 pub use access::{
-    AccountKind, AccountRecord, AccountStatus, Credential, Identity, InvitationAccept,
+    AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, Identity, InvitationAccept,
     InvitationCreate, InviteId, InviteRecord, NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation,
     OrgInvitation, OrgMemberAdd, OrgRole, Permission, Principal, RegistrationMode, Role,
     RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,

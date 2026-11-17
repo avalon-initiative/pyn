@@ -22,11 +22,19 @@ pub(super) struct SetupState {
     token_hash: Mutex<Option<String>>,
     settings: Mutex<Option<ServerSettings>>,
     read_at: Mutex<Option<DateTime<Utc>>>,
+    /// Set by an administrator on a server that never ran setup (nothing to store it in).
+    unstored_access: Mutex<Option<AccessMode>>,
 }
 
 impl SetupState {
     pub(super) fn settings(&self) -> Option<ServerSettings> {
         self.settings.lock().unwrap().clone()
+    }
+
+    fn set_access(&self, mode: AccessMode) {
+        if let Some(settings) = self.settings.lock().unwrap().as_mut() {
+            settings.access_mode = mode;
+        }
     }
 
     fn finish(&self, settings: ServerSettings, now: DateTime<Utc>) {
@@ -50,6 +58,7 @@ pub struct SetupStatus {
     /// What setup recorded, or the configured default while the server is uninitialised.
     pub public_url: String,
     pub registration: RegistrationMode,
+    pub access_mode: AccessMode,
 }
 
 /// The first administrator and the server's essentials, with the token that authorises them.
@@ -62,6 +71,8 @@ pub struct SetupRequest<'a> {
     pub server_name: Option<&'a str>,
     pub public_url: Option<&'a str>,
     pub registration: RegistrationMode,
+    /// `None` takes the configured default.
+    pub access_mode: Option<AccessMode>,
     /// The caller's network address, for rate limits.
     pub client: Option<&'a str>,
 }
@@ -154,6 +165,7 @@ impl AccessService {
             server_name: settings.and_then(|s| s.server_name),
             public_url: self.public_url(),
             registration: self.registration_mode(),
+            access_mode: self.access_mode(),
         })
     }
 
@@ -192,6 +204,7 @@ impl AccessService {
             server_name: clean_server_name(request.server_name)?,
             public_url: clean_public_url(request.public_url)?,
             registration: Some(request.registration),
+            access_mode: request.access_mode.unwrap_or(self.config.access_mode),
         };
         let password_hash = self.passwords.hash(request.password).await?;
         let admin = NewAccount {
@@ -214,13 +227,58 @@ impl AccessService {
         {
             return Err(PynError::AlreadyInitialised);
         }
+        let access = settings.access_mode;
         self.setup.finish(settings, self.clock.now());
         let detail = format!(
-            "server set up; {user} is the first administrator; registration {}",
-            request.registration.as_str()
+            "server set up; {user} is the first administrator; registration {}; access {}",
+            request.registration.as_str(),
+            access.as_str()
         );
         self.record_server(&user, AuditAction::ServerSetupCompleted, detail)
             .await?;
         Ok(user)
+    }
+}
+
+impl AccessService {
+    /// The stored mode, else the configured default; it follows a write at once and a change made through another
+    /// server copy within the settings TTL.
+    pub fn access_mode(&self) -> AccessMode {
+        if let Some(settings) = self.setup.settings() {
+            return settings.access_mode;
+        }
+        (*self.setup.unstored_access.lock().unwrap()).unwrap_or(self.config.access_mode)
+    }
+
+    /// Changes the access mode, recording it in the server audit and log. Server administrators only; setting
+    /// the current mode changes nothing.
+    pub async fn set_access_mode(&self, actor: &Identity, mode: AccessMode) -> Result<AccessMode> {
+        self.require_server_admin(actor).await?;
+        let previous = self.access_mode();
+        if previous == mode {
+            return Ok(mode);
+        }
+        if self.store.set_access_mode(mode).await? {
+            self.setup.set_access(mode);
+        } else {
+            *self.setup.unstored_access.lock().unwrap() = Some(mode);
+        }
+        tracing::info!(
+            actor = %actor.user,
+            from = previous.as_str(),
+            to = mode.as_str(),
+            "server access mode changed"
+        );
+        self.record_server(
+            &actor.user,
+            AuditAction::ServerAccessModeChanged,
+            format!(
+                "access mode changed from {} to {}",
+                previous.as_str(),
+                mode.as_str()
+            ),
+        )
+        .await?;
+        Ok(mode)
     }
 }

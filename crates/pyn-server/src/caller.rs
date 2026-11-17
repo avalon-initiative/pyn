@@ -7,7 +7,7 @@ use axum::extract::{FromRequestParts, Path};
 use axum::http::HeaderMap;
 use axum::http::request::Parts;
 use pyn_core::repositories::OpenRepo;
-use pyn_core::{Credential, Identity, Permission, Principal, PynError, SessionRecord};
+use pyn_core::{AccessMode, Credential, Identity, Permission, Principal, PynError, SessionRecord};
 use pyn_proto as api;
 
 use crate::routes::{Declared, Reach};
@@ -65,11 +65,42 @@ async fn identify_admin(state: &AppState, headers: &HeaderMap) -> ApiResult<Iden
 
 /// Like `identify`, but a request with no credential at all is anonymous; a bad one still fails.
 async fn identify_optional(state: &AppState, headers: &HeaderMap) -> ApiResult<Option<Identity>> {
-    let dev = state.dev_auth.is_some() && headers.contains_key(api::DEV_USER_HEADER);
-    if bearer_token(headers).is_none() && !dev && session_api::session_cookie(headers).is_none() {
+    if !sends_credential(state, headers) {
         return Ok(None);
     }
     identify(state, headers).await.map(Some)
+}
+
+fn sends_credential(state: &AppState, headers: &HeaderMap) -> bool {
+    let dev = state.dev_auth.is_some() && headers.contains_key(api::DEV_USER_HEADER);
+    bearer_token(headers).is_some() || dev || session_api::session_cookie(headers).is_some()
+}
+
+/// Applies the access mode to a route declared `reach`. On a private server a signed-out caller is refused: a
+/// repository route answers as for a private repository, any other with `unauthenticated`. A credential that is sent
+/// is validated by the route's own extractor, except on `Public` routes, which read none.
+pub(crate) async fn admit(
+    state: &AppState,
+    headers: &HeaderMap,
+    reach: Reach,
+    repo: Option<String>,
+) -> ApiResult<()> {
+    if state.access.access_mode() == AccessMode::Public {
+        return Ok(());
+    }
+    let signed_in = match reach {
+        Reach::Public => identify_optional(state, headers).await?.is_some(),
+        _ => sends_credential(state, headers),
+    };
+    if signed_in {
+        return Ok(());
+    }
+    match (reach, repo) {
+        (Reach::PublicRepoRead | Reach::PublicRepoVisible, Some(repo)) => {
+            Err(PynError::RepoNotFound(repo).into())
+        }
+        _ => Err(PynError::Unauthenticated("sign in to use this server".into()).into()),
+    }
 }
 
 /// Like `identify`, but an account its owner scheduled for deletion is accepted: its restore routes need it.
@@ -95,7 +126,7 @@ fn declared(parts: &Parts) -> Reach {
     parts
         .extensions
         .get::<Declared>()
-        .map_or(Reach::Public, |d| d.0)
+        .map_or(Reach::Open, |d| d.0)
 }
 
 /// A handler took an extractor its route's declared reach does not allow: a bug, never a client error.

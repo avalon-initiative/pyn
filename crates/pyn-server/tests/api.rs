@@ -69,6 +69,7 @@ async fn state_full(
         )
         .with_config(AccessConfig {
             registration: mode,
+            access_mode: pyn_core::AccessMode::Public,
             require_email_verification: false,
             public_url: public_url.map_or_else(|| AccessConfig::default().public_url, Into::into),
             allowed_origins,
