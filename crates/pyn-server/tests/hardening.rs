@@ -1,5 +1,8 @@
 //! Authorization and validation limits at the HTTP boundary.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -96,11 +99,7 @@ async fn send(
         .method(method)
         .uri(uri)
         .header("content-type", "application/json");
-    let builder = if who.starts_with("pyn_") || who.starts_with("pyns_") {
-        builder.header("authorization", format!("Bearer {who}"))
-    } else {
-        builder.header(api::DEV_USER_HEADER, who)
-    };
+    let builder = builder.cred(&Cred::who(who));
     let req = builder
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap();
@@ -458,7 +457,7 @@ async fn new_writes_refuse_reserved_and_oversized_paths_and_text() {
         let req = Request::builder()
             .method("PUT")
             .uri("/v1/repos/alice/game/objects")
-            .header("authorization", format!("Bearer {alice}"))
+            .cred(&Cred::bearer(&alice))
             .body(Body::from("hello"))
             .unwrap();
         let r = app.clone().oneshot(req).await.unwrap();

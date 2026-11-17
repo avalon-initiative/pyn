@@ -1,5 +1,8 @@
 //! The HTTP contract of account self-service (#982): the caller's addresses, username change and moved addresses.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -99,7 +102,7 @@ fn call(user: &str, method: &str, uri: &str, body: Option<serde_json::Value>) ->
         .method(method)
         .uri(uri)
         .header("content-type", "application/json")
-        .header(api::DEV_USER_HEADER, user)
+        .cred(&Cred::dev(user))
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap()
 }
@@ -485,7 +488,7 @@ async fn history_shows_the_current_name_while_the_written_one_stays_for_verifica
     let put = Request::builder()
         .method("PUT")
         .uri("/v1/repos/alice/game/objects")
-        .header(api::DEV_USER_HEADER, "alice")
+        .cred(&Cred::dev("alice"))
         .body(Body::from("hello"))
         .unwrap();
     let content = send(&s.app, put)
@@ -556,7 +559,7 @@ async fn every_history_surface_shows_the_current_name_and_the_rename_reaches_the
     let put = Request::builder()
         .method("PUT")
         .uri("/v1/repos/alice/game/objects")
-        .header(api::DEV_USER_HEADER, "alice")
+        .cred(&Cred::dev("alice"))
         .body(Body::from("hello"))
         .unwrap();
     let content = send(&s.app, put)

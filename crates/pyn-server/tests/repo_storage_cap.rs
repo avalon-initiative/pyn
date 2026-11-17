@@ -1,5 +1,8 @@
 //! The HTTP contract of a repository's own storage cap and usage breakdown: routes, error code, access and downgrade.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -89,11 +92,7 @@ async fn send(
         .method(method)
         .uri(uri)
         .header("content-type", "application/json");
-    let builder = if who.starts_with("pyn_") || who.starts_with("pyns_") {
-        builder.header("authorization", format!("Bearer {who}"))
-    } else {
-        builder.header(api::DEV_USER_HEADER, who)
-    };
+    let builder = builder.cred(&Cred::who(who));
     let req = builder
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap();
@@ -108,7 +107,7 @@ async fn put_object(app: &Router, who: &str, repo: &str, bytes: &str) -> String 
     let req = Request::builder()
         .method("PUT")
         .uri(format!("/v1/repos/{repo}/objects"))
-        .header("authorization", format!("Bearer {who}"))
+        .cred(&Cred::bearer(who))
         .body(Body::from(bytes.to_string()))
         .unwrap();
     let r = app.clone().oneshot(req).await.unwrap();

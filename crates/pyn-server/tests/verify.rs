@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
+#[path = "common/cred.rs"]
+mod cred;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use cred::{Cred, WithCred};
 use http_body_util::BodyExt;
 use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
@@ -82,7 +85,7 @@ async fn get(app: &axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
         .clone()
         .oneshot(
             Request::get(uri)
-                .header(api::DEV_USER_HEADER, "alice")
+                .cred(&Cred::dev("alice"))
                 .body(Body::empty())
                 .unwrap(),
         )

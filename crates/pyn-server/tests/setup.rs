@@ -1,5 +1,8 @@
 //! The HTTP contract of first-run setup: what a fresh server serves, the token and the one-time administrator.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -175,7 +178,7 @@ async fn the_setup_audit_entry_is_visible_to_the_administrator() {
         .unwrap()
         .to_string();
     let req = Request::get("/v1/admin/audit")
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(&token))
         .body(Body::empty())
         .unwrap();
     let (status, body) = send(&app, req).await;

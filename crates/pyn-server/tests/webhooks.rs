@@ -1,5 +1,8 @@
 //! The HTTP contract of webhook subscription administration: access, secrets shown once, validation, audit.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -83,13 +86,7 @@ async fn send(app: &Router, who: &str, method: &str, uri: &str, body: Option<Val
         .method(method)
         .uri(uri)
         .header("content-type", "application/json");
-    let builder = if who.is_empty() {
-        builder
-    } else if who.starts_with("pyn_") || who.starts_with("pyns_") {
-        builder.header("authorization", format!("Bearer {who}"))
-    } else {
-        builder.header(api::DEV_USER_HEADER, who)
-    };
+    let builder = builder.cred(&Cred::who(who));
     let req = builder
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap();

@@ -1,6 +1,9 @@
 //! `GET /v1/me` and `GET /v1/account/deletion` per credential kind: a credential that is not full-scope never reads
 //! the owner's hidden profile fields, visibility settings or `has_password`, nor the deletion status.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -61,15 +64,6 @@ async fn server() -> Router {
     })
 }
 
-/// How a request proves who it is, the way each real client sends it.
-#[derive(Clone)]
-enum Cred {
-    None,
-    Bearer(String),
-    Cookie(String),
-    Dev(&'static str),
-}
-
 struct Reply {
     status: StatusCode,
     set_cookie: Option<String>,
@@ -101,14 +95,8 @@ async fn call(
     let mut b = Request::builder()
         .method(method)
         .uri(uri)
-        .header("content-type", "application/json")
-        .header("origin", "http://localhost:5173");
-    match cred {
-        Cred::None => {}
-        Cred::Bearer(t) => b = b.header("authorization", format!("Bearer {t}")),
-        Cred::Cookie(c) => b = b.header("cookie", format!("{}={c}", api::SESSION_COOKIE)),
-        Cred::Dev(u) => b = b.header(api::DEV_USER_HEADER, *u),
-    }
+        .header("content-type", "application/json");
+    b = b.cred(cred);
     let body = body.map(|b| b.to_string()).unwrap_or_default();
     let r = app
         .clone()
@@ -143,7 +131,7 @@ async fn token(app: &Router, who: &Cred, perms: &[&str]) -> Cred {
         "{}",
         String::from_utf8_lossy(&r.body)
     );
-    Cred::Bearer(r.json::<api::CreatedToken>().token)
+    Cred::token(&r.json::<api::CreatedToken>().token)
 }
 
 /// alice has a hidden bio and a repository; each credential kind of hers (and a service credential) is minted.
@@ -152,20 +140,27 @@ async fn world() -> World {
     let body = json!({"username": "alice", "password": PASSWORD});
     let r = call(
         &app,
-        &Cred::None,
+        &Cred::SignedOut,
         "POST",
         "/v1/register",
         Some(body.clone()),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);
-    let r = call(&app, &Cred::None, "POST", "/v1/login", Some(body.clone())).await;
-    let full = Cred::Bearer(r.json::<api::CreatedToken>().token);
-    let r = call(&app, &Cred::None, "POST", "/v1/session", Some(body)).await;
+    let r = call(
+        &app,
+        &Cred::SignedOut,
+        "POST",
+        "/v1/login",
+        Some(body.clone()),
+    )
+    .await;
+    let full = Cred::token(&r.json::<api::CreatedToken>().token);
+    let r = call(&app, &Cred::SignedOut, "POST", "/v1/session", Some(body)).await;
     assert_eq!(r.status, StatusCode::OK);
     let cookie = r.set_cookie.clone().unwrap();
     let cookie = cookie.split(';').next().unwrap();
-    let session = Cred::Cookie(cookie.strip_prefix("pyn_session=").unwrap().to_string());
+    let session = Cred::session_read(cookie.strip_prefix("pyn_session=").unwrap());
 
     let r = call(
         &app,
@@ -199,7 +194,7 @@ async fn world() -> World {
     let read_only = token(&app, &full, &["read"]).await;
     let r = call(
         &app,
-        &Cred::Dev("root"),
+        &Cred::dev("root"),
         "POST",
         "/v1/admin/service-credentials",
         Some(json!({"name": "billing", "scopes": ["manage_accounts"]})),
@@ -211,7 +206,7 @@ async fn world() -> World {
         "{}",
         String::from_utf8_lossy(&r.body)
     );
-    let service = Cred::Bearer(r.json::<api::CreatedServiceCredential>().secret);
+    let service = Cred::service(&r.json::<api::CreatedServiceCredential>().secret);
     World {
         app,
         session,
@@ -267,7 +262,7 @@ async fn me_gives_a_full_scope_credential_the_full_own_view() {
     for (label, cred) in [("session", &w.session), ("full token", &w.full)] {
         assert_full_view(&call(&w.app, cred, "GET", "/v1/me", None).await, label);
     }
-    let dev = call(&w.app, &Cred::Dev("root"), "GET", "/v1/me", None).await;
+    let dev = call(&w.app, &Cred::dev("root"), "GET", "/v1/me", None).await;
     let me: api::Account = dev.json();
     assert_eq!((me.user.as_str(), me.admin), ("root", true));
     assert_eq!(me.has_password, Some(false));
@@ -285,7 +280,7 @@ async fn me_gives_a_narrower_token_only_the_public_view() {
 #[tokio::test]
 async fn me_refuses_signed_out_and_service_credentials() {
     let w = world().await;
-    let r = call(&w.app, &Cred::None, "GET", "/v1/me", None).await;
+    let r = call(&w.app, &Cred::SignedOut, "GET", "/v1/me", None).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     let r = call(&w.app, &w.service, "GET", "/v1/me", None).await;
     assert_eq!(
@@ -308,7 +303,7 @@ async fn deletion_status_needs_a_full_scope_credential() {
     }
     let r = call(
         &w.app,
-        &Cred::Dev("alice"),
+        &Cred::dev("alice"),
         "GET",
         "/v1/account/deletion",
         None,
@@ -317,7 +312,14 @@ async fn deletion_status_needs_a_full_scope_credential() {
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json::<api::AccountDeletionStatus>().user, "alice");
 
-    let r = call(&w.app, &Cred::None, "GET", "/v1/account/deletion", None).await;
+    let r = call(
+        &w.app,
+        &Cred::SignedOut,
+        "GET",
+        "/v1/account/deletion",
+        None,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     let r = call(&w.app, &w.service, "GET", "/v1/account/deletion", None).await;
     assert_eq!(r.code(), "service_credential_not_allowed");
@@ -336,18 +338,25 @@ async fn a_pending_accounts_own_session_still_reads_the_status() {
     let body = json!({"username": "carol", "password": PASSWORD});
     call(
         &w.app,
-        &Cred::None,
+        &Cred::SignedOut,
         "POST",
         "/v1/register",
         Some(body.clone()),
     )
     .await;
-    let r = call(&w.app, &Cred::None, "POST", "/v1/login", Some(body.clone())).await;
-    let token = Cred::Bearer(r.json::<api::CreatedToken>().token);
-    let r = call(&w.app, &Cred::None, "POST", "/v1/session", Some(body)).await;
+    let r = call(
+        &w.app,
+        &Cred::SignedOut,
+        "POST",
+        "/v1/login",
+        Some(body.clone()),
+    )
+    .await;
+    let token = Cred::token(&r.json::<api::CreatedToken>().token);
+    let r = call(&w.app, &Cred::SignedOut, "POST", "/v1/session", Some(body)).await;
     let set = r.set_cookie.unwrap();
     let cookie = set.split(';').next().unwrap().strip_prefix("pyn_session=");
-    let session = Cred::Cookie(cookie.unwrap().to_string());
+    let session = Cred::session_read(cookie.unwrap());
 
     let schedule = json!({"password": PASSWORD});
     let r = call(

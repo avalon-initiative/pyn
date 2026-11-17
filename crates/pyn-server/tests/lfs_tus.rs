@@ -1,5 +1,8 @@
 //! The tus transfer adapter of the Git LFS Batch API (docs/concepts/lfs.md).
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -75,13 +78,13 @@ async fn json_call(
     app: &Router,
     method: &str,
     uri: &str,
-    auth: (&str, &str),
+    auth: &Cred,
     body: Option<Value>,
 ) -> Reply {
     let req = Request::builder()
         .method(method)
         .uri(uri)
-        .header(auth.0, auth.1)
+        .cred(auth)
         .header("content-type", "application/json")
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap();
@@ -90,7 +93,7 @@ async fn json_call(
 
 async fn token_for(app: &Router, name: &str) -> String {
     let body = json!({"username": name, "password": PASSWORD});
-    let dev = (api::DEV_USER_HEADER, "root");
+    let dev = &Cred::dev("root");
     let r = json_call(app, "POST", "/v1/register", dev, Some(body.clone())).await;
     assert_eq!(r.status, StatusCode::CREATED);
     let r = json_call(app, "POST", "/v1/login", dev, Some(body)).await;
@@ -140,12 +143,11 @@ async fn world() -> World {
     let alice = token_for(&app, "alice").await;
     let bob = token_for(&app, "bob").await;
     let carol = token_for(&app, "carol").await;
-    let bearer = |t: &str| ("authorization", format!("Bearer {t}"));
     let created = json_call(
         &app,
         "POST",
         "/v1/repos",
-        (bearer(&alice).0, &bearer(&alice).1),
+        &Cred::bearer(&alice),
         Some(json!({"name": "game", "visibility": "private"})),
     )
     .await;
@@ -155,7 +157,7 @@ async fn world() -> World {
             &app,
             "PUT",
             &format!("/v1/repos/alice/game/members/{user}"),
-            (bearer(&alice).0, &bearer(&alice).1),
+            &Cred::bearer(&alice),
             Some(json!({"role": role})),
         )
         .await;
@@ -190,7 +192,7 @@ async fn tus_body(
     let mut b = Request::builder()
         .method(method)
         .uri(url)
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(token))
         .header("host", "pyn.example")
         .header("tus-resumable", "1.0.0");
     for (k, v) in h {
@@ -220,7 +222,7 @@ async fn patch(w: &World, token: &str, url: &str, offset: u64, bytes: &[u8]) -> 
 async fn download(w: &World, token: &str, bytes: &[u8]) -> Reply {
     let req = Request::builder()
         .uri(format!("{BASE}/objects/{}", oid(bytes)))
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(token))
         .body(Body::empty())
         .unwrap();
     send(&w.app, req).await
@@ -232,7 +234,7 @@ async fn batch(w: &World, token: &str, body: Value) -> Reply {
         .uri(format!("{BASE}/objects/batch"))
         .header("content-type", LFS)
         .header("host", "pyn.example")
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(token))
         .body(Body::from(body.to_string()))
         .unwrap();
     send(&w.app, req).await
@@ -376,7 +378,7 @@ async fn protocol_preconditions_are_enforced() {
     let req = Request::builder()
         .method("POST")
         .uri(&url)
-        .header("authorization", format!("Bearer {}", w.bob))
+        .cred(&Cred::bearer(&w.bob))
         .header("upload-length", "500")
         .body(Body::empty())
         .unwrap();

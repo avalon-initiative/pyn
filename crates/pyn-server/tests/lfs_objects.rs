@@ -1,5 +1,8 @@
 //! The Git LFS Batch API with the basic transfer adapter (docs/concepts/lfs.md).
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -45,7 +48,7 @@ async fn dev(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (Sta
         .method(method)
         .uri(uri)
         .header("content-type", "application/json")
-        .header(api::DEV_USER_HEADER, "root")
+        .cred(&Cred::dev("root"))
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap();
     let r = app.clone().oneshot(req).await.unwrap();
@@ -149,7 +152,7 @@ async fn call(
     let req = Request::builder()
         .method(method)
         .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(token))
         .header("content-type", "application/json")
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap();
@@ -183,24 +186,31 @@ async fn send(app: &Router, req: Request<Body>) -> Reply {
     }
 }
 
-fn bearer(token: &str) -> String {
-    format!("Bearer {token}")
-}
-
-async fn batch_at(w: &World, base: &str, auth: Option<String>, body: Value) -> Reply {
+async fn batch_at(w: &World, base: &str, auth: Option<Cred>, body: Value) -> Reply {
     let mut b = Request::builder()
         .method("POST")
         .uri(format!("{base}/objects/batch"))
         .header("content-type", LFS)
         .header("host", "pyn.example");
     if let Some(a) = auth {
-        b = b.header("authorization", a);
+        b = b.cred(&a);
     }
     send(&w.app, b.body(Body::from(body.to_string())).unwrap()).await
 }
 
+/// HTTP Basic, which stock git-lfs sends with the token as the password.
+async fn batch_basic(w: &World, authorization: String, body: Value) -> Reply {
+    let b = Request::builder()
+        .method("POST")
+        .uri(format!("{BASE}/objects/batch"))
+        .header("content-type", LFS)
+        .header("host", "pyn.example")
+        .header("authorization", authorization);
+    send(&w.app, b.body(Body::from(body.to_string())).unwrap()).await
+}
+
 async fn batch(w: &World, token: &str, body: Value) -> Reply {
-    batch_at(w, BASE, Some(bearer(token)), body).await
+    batch_at(w, BASE, Some(Cred::bearer(token)), body).await
 }
 
 async fn put_at(
@@ -216,7 +226,7 @@ async fn put_at(
         Request::builder()
             .method("PUT")
             .uri(format!("{base}/objects/{oid}"))
-            .header("authorization", bearer(token))
+            .cred(&Cred::bearer(token))
             .header("content-type", "application/octet-stream")
             .header("content-length", declared.to_string())
             .body(Body::from(bytes))
@@ -233,7 +243,7 @@ async fn get_with(w: &World, token: &str, oid: &str, range: Option<&str>) -> Rep
     let mut b = Request::builder()
         .method("GET")
         .uri(format!("{BASE}/objects/{oid}"))
-        .header("authorization", bearer(token));
+        .cred(&Cred::bearer(token));
     if let Some(r) = range {
         b = b.header("range", r);
     }
@@ -285,7 +295,7 @@ async fn the_forwarded_headers_shape_the_urls_only_when_trusted() {
             .method("POST")
             .uri(format!("{BASE}/objects/batch"))
             .header("content-type", LFS)
-            .header("authorization", bearer(&w.bob))
+            .cred(&Cred::bearer(&w.bob))
             .header("host", "internal:7878")
             .header("x-forwarded-host", "git.example.com")
             .header("x-forwarded-proto", "https")
@@ -405,7 +415,7 @@ async fn the_batch_request_itself_is_validated() {
         Request::builder()
             .method("POST")
             .uri(format!("{BASE}/objects/batch"))
-            .header("authorization", bearer(&w.bob))
+            .cred(&Cred::bearer(&w.bob))
             .header("content-type", "text/plain")
             .body(Body::from("{}"))
             .unwrap(),
@@ -455,7 +465,7 @@ async fn an_upload_of_another_length_than_declared_is_refused() {
         Request::builder()
             .method("PUT")
             .uri(format!("{BASE}/objects/{}", oid(bytes)))
-            .header("authorization", bearer(&w.bob))
+            .cred(&Cred::bearer(&w.bob))
             .body(Body::from_stream(futures_util::stream::iter([Ok::<
                 _,
                 std::io::Error,
@@ -568,7 +578,7 @@ async fn verify_confirms_what_was_stored() {
                 Request::builder()
                     .method("POST")
                     .uri(format!("{BASE}/objects/verify"))
-                    .header("authorization", bearer(&token))
+                    .cred(&Cred::bearer(&token))
                     .header("content-type", LFS)
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -647,7 +657,13 @@ async fn credentials_are_required_even_for_a_public_repository() {
     )
     .await;
     assert_eq!(anon_get.status, StatusCode::UNAUTHORIZED);
-    let bad = batch_at(&w, BASE, Some(bearer("pyn_nope")), download_batch(vec![])).await;
+    let bad = batch_at(
+        &w,
+        BASE,
+        Some(Cred::bearer("pyn_nope")),
+        download_batch(vec![]),
+    )
+    .await;
     assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
 }
 
@@ -661,10 +677,9 @@ async fn basic_authentication_carries_the_token_as_the_password() {
         )
     };
     let bytes = b"basic auth";
-    let r = batch_at(
+    let r = batch_basic(
         &w,
-        BASE,
-        Some(basic("anything", &w.bob)),
+        basic("anything", &w.bob),
         upload_batch(vec![spec(bytes)]),
     )
     .await;
@@ -694,13 +709,7 @@ async fn basic_authentication_carries_the_token_as_the_password() {
         (r.status, r.body.as_slice()),
         (StatusCode::OK, bytes.as_slice())
     );
-    let r = batch_at(
-        &w,
-        BASE,
-        Some(basic("bob", "wrong")),
-        download_batch(vec![]),
-    )
-    .await;
+    let r = batch_basic(&w, basic("bob", "wrong"), download_batch(vec![])).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
 }
 
@@ -722,7 +731,7 @@ async fn the_git_suffix_addresses_the_same_repository() {
     let r = batch_at(
         &w,
         suffixed,
-        Some(bearer(&w.bob)),
+        Some(Cred::bearer(&w.bob)),
         download_batch(vec![spec(bytes)]),
     )
     .await;
@@ -768,7 +777,7 @@ async fn lfs_objects_are_not_visible_to_other_repositories() {
                 "/v1/repos/alice/other/info/lfs/objects/{}",
                 oid(bytes)
             ))
-            .header("authorization", bearer(&w.alice))
+            .cred(&Cred::bearer(&w.alice))
             .body(Body::empty())
             .unwrap(),
     )
@@ -785,7 +794,7 @@ async fn natively_stored_files_are_not_served_through_lfs() {
         Request::builder()
             .method("PUT")
             .uri("/v1/repos/alice/game/objects")
-            .header("authorization", bearer(&w.alice))
+            .cred(&Cred::bearer(&w.alice))
             .body(Body::from(bytes.to_vec()))
             .unwrap(),
     )

@@ -1,5 +1,8 @@
 //! The Git LFS Locks API over pyn locks (docs/concepts/lfs.md).
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -142,7 +145,7 @@ fn req(method: &str, uri: &str, token: &str, body: Option<Value>) -> Request<Bod
     let b = Request::builder()
         .method(method)
         .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(token))
         .header("accept", LFS);
     match body {
         Some(v) => b
@@ -223,7 +226,7 @@ async fn a_pyn_checkout_is_visible_to_lfs_and_the_reverse() {
         .clone()
         .oneshot(
             Request::post("/v1/repos/owner/game/checkout")
-                .header("authorization", format!("Bearer {}", w.wendy))
+                .cred(&Cred::bearer(&w.wendy))
                 .header("content-type", "application/json")
                 .body(Body::from(checkout.to_string()))
                 .unwrap(),
@@ -523,14 +526,14 @@ async fn permissions_malformed_bodies_and_the_git_suffix() {
     assert_eq!(status, StatusCode::OK, "a reader can list");
 
     let bad = Request::post(format!("{BASE}/locks"))
-        .header("authorization", format!("Bearer {}", w.wendy))
+        .cred(&Cred::bearer(&w.wendy))
         .header("content-type", LFS)
         .body(Body::from("{not json"))
         .unwrap();
     assert_eq!(call(&w, bad).await.0, StatusCode::UNPROCESSABLE_ENTITY);
     for kind in ["text/plain", "application/x-www-form-urlencoded"] {
         let forged = Request::post(format!("{BASE}/locks"))
-            .header("authorization", format!("Bearer {}", w.wendy))
+            .cred(&Cred::bearer(&w.wendy))
             .header("content-type", kind)
             .body(Body::from(r#"{"path": "Content/forged"}"#))
             .unwrap();

@@ -1,6 +1,9 @@
 //! The HTTP contract of account deletion: self-service with a recovery window, the restricted pending state, and
 //! administrator deletion.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -100,8 +103,8 @@ async fn call(
         .uri(uri)
         .header("content-type", "application/json");
     match auth {
-        Some(("bearer", token)) => req = req.header("authorization", format!("Bearer {token}")),
-        Some((_, user)) => req = req.header(api::DEV_USER_HEADER, user),
+        Some(("bearer", token)) => req = req.cred(&Cred::bearer(token)),
+        Some((_, user)) => req = req.cred(&Cred::dev(user)),
         None => {}
     }
     let body = body.map(|b| b.to_string()).unwrap_or_default();

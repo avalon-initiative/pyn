@@ -1,5 +1,8 @@
 //! Upload admission, quota reservation and cleanup through the HTTP API.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,7 +91,7 @@ async fn json_call(
         .method(method)
         .uri(uri)
         .header("content-type", "application/json")
-        .header(api::DEV_USER_HEADER, who)
+        .cred(&Cred::dev(who))
         .body(Body::from(body.to_string()))
         .unwrap();
     let r = app.clone().oneshot(req).await.unwrap();
@@ -111,7 +114,7 @@ async fn user_with_repo(app: &Router, name: &str) -> String {
         .method("POST")
         .uri("/v1/repos")
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(&token))
         .body(Body::from(json!({"name": "game"}).to_string()))
         .unwrap();
     assert_eq!(
@@ -125,7 +128,7 @@ fn put(token: &str, repo: &str, body: Body, len: usize) -> Request<Body> {
     Request::builder()
         .method("PUT")
         .uri(format!("/v1/repos/{repo}/objects"))
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(token))
         .header("content-length", len.to_string())
         .body(body)
         .unwrap()

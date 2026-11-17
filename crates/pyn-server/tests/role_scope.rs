@@ -1,6 +1,9 @@
 //! The role and the locks `GET /v1/repos/{owner}/{name}`, `/v1/explore/repos`, `/v1/users/{user}` and `/v1/me/locks`
 //! show a repository-scoped credential: only what its grant covers, never the owner's standing elsewhere.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -61,15 +64,6 @@ async fn server() -> Router {
     })
 }
 
-/// How a request proves who it is, the way each real client sends it.
-#[derive(Clone)]
-enum Cred {
-    None,
-    Bearer(String),
-    Cookie(String),
-    Dev(&'static str),
-}
-
 struct Reply {
     status: StatusCode,
     set_cookie: Option<String>,
@@ -97,14 +91,8 @@ async fn call(
     let mut b = Request::builder()
         .method(method)
         .uri(uri)
-        .header("content-type", "application/json")
-        .header("origin", "http://localhost:5173");
-    match cred {
-        Cred::None => {}
-        Cred::Bearer(t) => b = b.header("authorization", format!("Bearer {t}")),
-        Cred::Cookie(c) => b = b.header("cookie", format!("{}={c}", api::SESSION_COOKIE)),
-        Cred::Dev(u) => b = b.header(api::DEV_USER_HEADER, *u),
-    }
+        .header("content-type", "application/json");
+    b = b.cred(cred);
     let body = body.map(|b| b.to_string()).unwrap_or_default();
     let r = app
         .clone()
@@ -139,7 +127,7 @@ async fn token(app: &Router, who: &Cred, perms: &[&str]) -> Cred {
         "{}",
         String::from_utf8_lossy(&r.body)
     );
-    Cred::Bearer(r.json::<api::CreatedToken>().token)
+    Cred::token(&r.json::<api::CreatedToken>().token)
 }
 
 /// alice has a hidden bio and a repository; each credential kind of hers (and a service credential) is minted.
@@ -148,19 +136,26 @@ async fn world() -> World {
     let body = json!({"username": "alice", "password": PASSWORD});
     let r = call(
         &app,
-        &Cred::None,
+        &Cred::SignedOut,
         "POST",
         "/v1/register",
         Some(body.clone()),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);
-    let r = call(&app, &Cred::None, "POST", "/v1/login", Some(body.clone())).await;
-    let full = Cred::Bearer(r.json::<api::CreatedToken>().token);
-    let r = call(&app, &Cred::None, "POST", "/v1/session", Some(body)).await;
+    let r = call(
+        &app,
+        &Cred::SignedOut,
+        "POST",
+        "/v1/login",
+        Some(body.clone()),
+    )
+    .await;
+    let full = Cred::token(&r.json::<api::CreatedToken>().token);
+    let r = call(&app, &Cred::SignedOut, "POST", "/v1/session", Some(body)).await;
     let cookie = r.set_cookie.clone().unwrap();
     let cookie = cookie.split(';').next().unwrap();
-    let session = Cred::Cookie(cookie.strip_prefix("pyn_session=").unwrap().to_string());
+    let session = Cred::session_read(cookie.strip_prefix("pyn_session=").unwrap());
 
     for name in ["game", "lobby"] {
         let body = json!({"owner": "alice", "name": name, "visibility": "public"});
@@ -201,14 +196,14 @@ async fn world() -> World {
     let read_only = token(&app, &full, &["read"]).await;
     let r = call(
         &app,
-        &Cred::Dev("root"),
+        &Cred::dev("root"),
         "POST",
         "/v1/admin/service-credentials",
         Some(json!({"name": "billing", "scopes": ["manage_accounts"]})),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);
-    let service = Cred::Bearer(r.json::<api::CreatedServiceCredential>().secret);
+    let service = Cred::service(&r.json::<api::CreatedServiceCredential>().secret);
     World {
         app,
         session,
@@ -289,7 +284,7 @@ async fn full_scope_credentials_keep_their_roles_and_locks() {
     for (label, cred) in [
         ("session", &w.session),
         ("full token", &w.full),
-        ("dev", &Cred::Dev("alice")),
+        ("dev", &Cred::dev("alice")),
     ] {
         if label != "dev" {
             assert_is_alice(&w, cred, label).await;
@@ -333,10 +328,10 @@ async fn a_scoped_token_still_reads_a_public_repository_outside_its_grant() {
 #[tokio::test]
 async fn signed_out_callers_have_no_role_and_service_credentials_are_refused() {
     let w = world().await;
-    for (game, lobby) in roles(&w, &Cred::None, "signed out").await {
+    for (game, lobby) in roles(&w, &Cred::SignedOut, "signed out").await {
         assert_eq!((game, lobby), (None, None));
     }
-    let r = call(&w.app, &Cred::None, "GET", "/v1/me/locks", None).await;
+    let r = call(&w.app, &Cred::SignedOut, "GET", "/v1/me/locks", None).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     for uri in [
         "/v1/repos/alice/lobby",
@@ -359,7 +354,7 @@ async fn token_for(app: &Router, who: &Cred, perms: &[&str], repo: &str) -> Cred
         "{}",
         String::from_utf8_lossy(&r.body)
     );
-    Cred::Bearer(r.json::<api::CreatedToken>().token)
+    Cred::token(&r.json::<api::CreatedToken>().token)
 }
 
 #[tokio::test]
