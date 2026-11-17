@@ -41,6 +41,21 @@ impl AccessService {
         Ok(out)
     }
 
+    /// Counts a signed-out directory request against the client address. No address, no limit, as for sign-up.
+    pub async fn limit_signed_out_people(&self, client: Option<&str>) -> Result<()> {
+        match client {
+            Some(c) => {
+                self.count_limited(
+                    &format!("people:client:{}", bounded_key(c)),
+                    self.config.limits.people_per_client,
+                    PEOPLE_WINDOW,
+                )
+                .await
+            }
+            None => Ok(()),
+        }
+    }
+
     /// One page of the people directory: active accounts by name with their public profile, and the cursor for the
     /// next page. `query` matches account names and visible display names, case-insensitively.
     pub async fn people(

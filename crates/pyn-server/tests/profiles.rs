@@ -11,8 +11,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AuthProvider, RegistrationMode, Repositories, Rules, SystemClock,
-    UserId,
+    AccessConfig, AccessMode, AccessService, AuthProvider, RateLimits, RegistrationMode,
+    Repositories, Rules, SystemClock, UserId,
 };
 use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
@@ -24,6 +24,10 @@ const PASSWORD: &str = "correct horse battery";
 const EMAIL: &str = "secret.person@mail.test";
 
 async fn server() -> Router {
+    build(AccessMode::Public, RateLimits::default(), false).await
+}
+
+async fn build(mode: AccessMode, limits: RateLimits, trust_forwarded: bool) -> Router {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
@@ -36,8 +40,9 @@ async fn server() -> Router {
         )
         .with_config(AccessConfig {
             registration: RegistrationMode::Open,
-            access_mode: pyn_core::AccessMode::Public,
+            access_mode: mode,
             require_email_verification: false,
+            limits,
             ..AccessConfig::default()
         })
         .with_registry(meta.clone())
@@ -58,7 +63,7 @@ async fn server() -> Router {
         access: access.clone(),
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
-        trust_forwarded: false,
+        trust_forwarded,
     })
 }
 
@@ -913,7 +918,7 @@ fn people_names(r: &Reply) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn the_people_directory_needs_a_sign_in_and_lists_active_accounts_by_name() {
+async fn the_people_directory_lists_active_accounts_by_name_and_refuses_a_bad_credential() {
     let app = server().await;
     let alice = token_for(&app, "alice").await;
     token_for(&app, "bob").await;
@@ -935,8 +940,6 @@ async fn the_people_directory_needs_a_sign_in_and_lists_active_accounts_by_name(
     )
     .await;
 
-    let r = people(&app, "", "").await;
-    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     let r = people(&app, "pyn_bogus", "").await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
 
@@ -1139,51 +1142,166 @@ async fn a_private_repository_is_in_no_list_search_or_count_and_its_error_matche
     }
 }
 
-#[tokio::test]
-async fn the_people_directory_needs_a_full_scope_credential() {
-    let app = server().await;
-    let alice = token_for(&app, "alice").await;
-    repo(&app, &alice, "game", "private").await;
-    let make = |body: serde_json::Value| {
-        let (app, alice) = (app.clone(), alice.clone());
-        async move {
-            let r = call(&app, &alice, "POST", "/v1/tokens", Some(body)).await;
-            assert_eq!(r.status, StatusCode::OK, "{}", r.text());
-            r.json::<api::CreatedToken>().token
-        }
-    };
-    let scoped = make(cred::token_body("ci", ["alice/game"], ["read"])).await;
-    let every_permission = make(cred::token_body(
-        "all",
-        ["alice/game"],
-        [
-            "read",
-            "lock",
-            "checkin",
-            "restore",
-            "force_unlock",
-            "edit_policy",
-            "manage_users",
-            "manage_roles",
-            "view_audit",
-        ],
-    ))
-    .await;
-    let r = call(
-        &app,
-        "root",
-        "POST",
-        "/v1/admin/service-credentials",
-        Some(json!({"name": "svc", "scopes": ["manage_accounts"]})),
+async fn people_from(app: &Router, ip: &str) -> Reply {
+    send(
+        app,
+        "",
+        "GET",
+        "/v1/users",
+        "application/json",
+        vec![],
+        &[("x-forwarded-for", ip)],
+    )
+    .await
+}
+
+async fn session_cookie(app: &Router, name: &str) -> String {
+    let body = json!({"username": name, "password": PASSWORD});
+    let r = call(app, "", "POST", "/v1/session", Some(body)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    r.header("set-cookie")
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+async fn set_profile(app: &Router, who: &str, body: serde_json::Value) {
+    let r = call(app, who, "PUT", "/v1/me/profile", Some(body)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+}
+
+/// A visible and a hidden profile, a private repository, an organization and a disabled account.
+async fn directory_fixture(app: &Router) -> String {
+    let alice = token_for(app, "alice").await;
+    let bob = token_for(app, "bob").await;
+    token_for(app, "carol").await;
+    token_for(app, "dora").await;
+    set_profile(
+        app,
+        &alice,
+        json!({"display_name": "Ada Lovelace", "bio": "Quartz fan", "links": [],
+               "visibility": {"display_name": true, "bio": true, "avatar": true}}),
     )
     .await;
-    let svc = r.json::<api::CreatedServiceCredential>().secret;
-    let body = json!({"username": "alice", "password": PASSWORD});
-    let r = call(&app, "", "POST", "/v1/session", Some(body)).await;
-    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
-    let set = r.header("set-cookie").to_string();
-    let cookie = set.split(';').next().unwrap().to_string();
+    set_profile(
+        app,
+        &bob,
+        json!({"display_name": "Hidden Hopper", "bio": "Secret bio", "links": [],
+               "visibility": {"display_name": false, "bio": false, "avatar": false}}),
+    )
+    .await;
+    for who in [&alice, &bob] {
+        let r = put_avatar(app, who, "image/png", png()).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    }
+    repo(app, &alice, "game", "private").await;
+    call(
+        app,
+        &alice,
+        "POST",
+        "/v1/orgs",
+        Some(json!({"name": "acme"})),
+    )
+    .await;
+    let r = call(
+        app,
+        "root",
+        "POST",
+        "/v1/admin/users/carol/disable",
+        Some(json!({})),
+    )
+    .await;
+    assert!(r.status.is_success(), "{}", r.text());
+    alice
+}
 
+#[tokio::test]
+async fn signed_out_the_directory_lists_exactly_the_public_entries() {
+    let app = server().await;
+    let alice = directory_fixture(&app).await;
+    let dora = call(
+        &app,
+        "",
+        "POST",
+        "/v1/login",
+        Some(json!({"username": "dora", "password": PASSWORD})),
+    )
+    .await
+    .json::<api::CreatedToken>()
+    .token;
+    let r = call(
+        &app,
+        &dora,
+        "POST",
+        "/v1/account/deletion",
+        Some(json!({"password": PASSWORD})),
+    )
+    .await;
+    assert!(r.status.is_success(), "{} {}", r.status, r.text());
+
+    let out = people(&app, "", "").await;
+    assert_eq!(out.status, StatusCode::OK, "{}", out.text());
+    let page = out.json::<api::PeoplePage>();
+    let names: Vec<&str> = page
+        .people
+        .iter()
+        .map(|p| p.identity.user.as_str())
+        .collect();
+    assert_eq!(names, ["alice", "bob", "root"], "no carol, dora or acme");
+    let (a, b) = (&page.people[0], &page.people[1]);
+    assert_eq!(a.identity.display_name.as_deref(), Some("Ada Lovelace"));
+    assert!(a.identity.avatar_url.is_some());
+    assert_eq!(a.bio.as_deref(), Some("Quartz fan"));
+    assert_eq!(
+        (&b.identity.display_name, &b.identity.avatar_url, &b.bio),
+        (&None, &None, &None)
+    );
+    let text = out.text();
+    for secret in [
+        "mail.test",
+        "email",
+        "Hopper",
+        "Secret bio",
+        "game",
+        "acme",
+        "visibility",
+        "role",
+    ] {
+        assert!(!text.contains(secret), "{secret} leaked: {text}");
+    }
+    assert_eq!(out.body, people(&app, &alice, "").await.body);
+
+    for q in ["?q=hopper", "?q=hidden%20hopper", "?q=secret"] {
+        let r = people(&app, "", q).await;
+        assert_eq!(r.status, StatusCode::OK, "{q}");
+        assert!(people_names(&r).is_empty(), "{q}: {}", r.text());
+    }
+    assert_eq!(
+        people_names(&people(&app, "", "?q=lovelace").await),
+        ["alice"]
+    );
+    assert_eq!(people_names(&people(&app, "", "?q=BOB").await), ["bob"]);
+}
+
+#[tokio::test]
+async fn every_valid_credential_gets_the_signed_out_entries() {
+    let app = server().await;
+    let alice = directory_fixture(&app).await;
+    let signed_out = people(&app, "", "").await;
+    assert_eq!(signed_out.status, StatusCode::OK, "{}", signed_out.text());
+
+    let made = call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/tokens",
+        Some(cred::token_body("ci", ["alice/game"], ["read"])),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.text());
+    let scoped = made.json::<api::CreatedToken>().token;
+    let cookie = session_cookie(&app, "alice").await;
     let session = send(
         &app,
         "",
@@ -1197,38 +1315,96 @@ async fn the_people_directory_needs_a_full_scope_credential() {
     for (kind, r) in [
         ("user session", session),
         ("full-scope token", people(&app, &alice, "").await),
+        ("repository-scoped token", people(&app, &scoped, "").await),
         ("dev token", people(&app, "alice", "").await),
     ] {
         assert_eq!(r.status, StatusCode::OK, "{kind}: {}", r.text());
-        assert!(people_names(&r).contains(&"alice".to_string()), "{kind}");
+        assert_eq!(r.body, signed_out.body, "{kind} sees other entries");
+        let q = people(&app, "alice", "?q=hopper").await;
+        assert!(people_names(&q).is_empty(), "{kind}");
     }
 
-    for (kind, who, code) in [
-        ("repository-scoped token", &scoped, "forbidden"),
-        (
-            "every permission on one repository",
-            &every_permission,
-            "forbidden",
-        ),
-    ] {
-        let r = people(&app, who, "").await;
-        assert_eq!(r.status, StatusCode::FORBIDDEN, "{kind}: {}", r.text());
-        assert_eq!(r.code(), code, "{kind}");
-    }
-    let r = send(
+    let svc = call(
         &app,
-        &svc,
+        "root",
+        "POST",
+        "/v1/admin/service-credentials",
+        Some(json!({"name": "svc", "scopes": ["manage_accounts"]})),
+    )
+    .await
+    .json::<api::CreatedServiceCredential>()
+    .secret;
+    let r = people(&app, &svc, "").await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text());
+    assert_eq!(r.code(), "service_credential_not_allowed");
+    let r = people(&app, "pyn_bogus", "").await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_private_server_needs_a_sign_in_for_the_directory() {
+    let app = build(AccessMode::Private, RateLimits::default(), false).await;
+    let alice = token_for(&app, "alice").await;
+    let r = people(&app, "", "").await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(r.code(), "unauthenticated");
+    assert_eq!(
+        people(&app, "pyn_bogus", "").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let r = people(&app, &alice, "").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    assert_eq!(people_names(&r), ["alice", "root"]);
+}
+
+#[tokio::test]
+async fn signed_out_directory_requests_are_rate_limited_per_client_and_signed_in_ones_are_not() {
+    let limits = RateLimits {
+        people_per_client: 3,
+        ..RateLimits::default()
+    };
+    let app = build(AccessMode::Public, limits, true).await;
+    let alice = token_for(&app, "alice").await;
+    for _ in 0..3 {
+        let r = people_from(&app, "203.0.113.9").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    }
+    let r = people_from(&app, "203.0.113.9").await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(r.code(), "too_many_attempts");
+    let wait: i64 = r
+        .header("retry-after")
+        .parse()
+        .expect("Retry-After seconds");
+    assert!((1..=60).contains(&wait), "{wait}");
+
+    assert_eq!(
+        people_from(&app, "203.0.113.10").await.status,
+        StatusCode::OK,
+        "another client address has its own count"
+    );
+    for _ in 0..10 {
+        let r = send(
+            &app,
+            &alice,
+            "GET",
+            "/v1/users",
+            "application/json",
+            vec![],
+            &[("x-forwarded-for", "203.0.113.9")],
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "signed in is never limited");
+    }
+    let bad = send(
+        &app,
+        "pyn_bogus",
         "GET",
         "/v1/users",
         "application/json",
         vec![],
-        &[],
+        &[("x-forwarded-for", "203.0.113.11")],
     )
     .await;
-    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text());
-    assert_eq!(r.code(), "service_credential_not_allowed");
-    for (kind, who) in [("signed out", ""), ("invalid token", "pyn_bogus")] {
-        let r = people(&app, who, "").await;
-        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{kind}");
-    }
+    assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
 }

@@ -261,16 +261,16 @@ existed before the setting did.
 | Mode | What a signed-out caller can read |
 | --- | --- |
 | `private` (default) | nothing, except what a visitor needs to sign in or sign up (listed below) |
-| `public` | what a signed-out caller reads on any server: public repositories (tree, files, history, fetch, Git LFS object download), public profiles and avatars, organization avatars and the repository explore list |
+| `public` | what a signed-out caller reads on any server: public repositories (tree, files, history, fetch, Git LFS object download), public profiles and avatars, the people directory (rate limited, see [protecting open registration](#protecting-open-registration)), organization avatars and the repository explore list |
 
 On a `private` server every route declared `public`, `optional_sign_in`, `public_repo_read`, `public_repo_visible` or `public_lfs_read`
 (see [route reach](#route-reach)) refuses a request that carries no credential: `401 unauthenticated`, except on a
 repository route, which answers `404 repo_not_found` exactly as it does for a private repository, so it neither
 confirms nor denies that a repository exists (a `public_lfs_read` route answers `401` in the LFS error format with `WWW-Authenticate`, so git-lfs asks for credentials). That covers anonymous clone and fetch of a public repository, profiles,
-avatars, the explore list and organization avatars. A request that carries a credential is judged as on a `public` server: a signed-in account sees what it
+avatars, the people directory, the explore list and organization avatars. A request that carries a credential is judged as on a `public` server: a signed-in account sees what it
 sees there (a public repository stays readable by any signed-in account), a bad credential is still `401`, and a
 service credential is still refused where it was. Stored data and repository visibility flags are never touched by the mode, and
-existing tokens keep working. LFS uploads, verify, locks and tus, and the people and organization lookups, need a credential on both modes; LFS download is the one LFS operation a `public` server gives a signed-out caller, from a public repository.
+existing tokens keep working. LFS uploads, verify, locks and tus, and the organization lookups, need a credential on both modes; LFS download is the one LFS operation a `public` server gives a signed-out caller, from a public repository.
 
 These stay open in both modes, because a signed-out visitor needs them to reach a server at all: `GET /healthz`,
 `GET /openapi.json`, `GET /v1/capabilities`, `GET`/`POST /v1/setup`, `GET /v1/registration`,
@@ -346,6 +346,7 @@ is off) the account waits as `pending_approval` until a server administrator app
 | wrong current passwords in `PUT /v1/me/password`, per account | 5 per 15 minutes | `PYN_RATE_SIGN_IN_ACCOUNT` |
 | sign-up and resend attempts per client address | 10 per hour | `PYN_RATE_REGISTER_CLIENT` |
 | verification emails per recipient address | 3 per hour | `PYN_RATE_MAIL_PER_EMAIL` |
+| signed-out people directory requests (`GET /v1/users`) per client address | 60 per minute | `PYN_RATE_PEOPLE_CLIENT` |
 
 A refused request is 429 `too_many_attempts` with a `Retry-After` header in seconds. The per-recipient limit never
 changes the response: past it a sign-up still answers as usual and simply sends nothing. The client address is the
@@ -527,7 +528,7 @@ token does not name (as for a stranger), the `role` on `GET /v1/orgs/{org}` is a
 succeeds), and `GET /v1/me/locks` lists only locks in the token's repositories.
 
 The organization-wide reads need the same credential, because they expose data beyond one repository: the organization list
-(`GET /v1/orgs`, `GET /v1/me/orgs`), members, audit log, teams and the repository-creation policy, and the people directory (`GET /v1/users`). A narrower token or a service
+(`GET /v1/orgs`, `GET /v1/me/orgs`), members, audit log, teams and the repository-creation policy. A narrower token or a service
 credential is refused (`403`). A team's `repos` hold only repositories the caller could open (public ones, or any in which they hold a
 role), so a member never learns the name of a private repository they cannot see.
 
@@ -596,7 +597,7 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `public_repo_visible` | like `public_repo_read`, but the operation decides the permission |
 | `public_lfs_read` | the Git LFS download routes (`POST .../info/lfs/objects/batch`, `GET .../info/lfs/objects/{oid}`): like `public_repo_read`, answered in the LFS error format, and a signed-out batch is accepted only for `operation: "download"` (an upload batch signed out is `401`); a private server answers a signed-out caller `401` |
 
-A repository-scoped token reaches only `open`, `public`, `optional_sign_in`, `any_credential` and the repository kinds; a service
+A repository-scoped token reaches only `open`, `public`, `optional_sign_in` (the people directory among them), `any_credential` and the repository kinds; a service
 credential reaches only `open`, `public` (on a `public` server), the `service` kinds and `full_scope_or_service`. `crates/pyn-server/tests/reach.rs` checks that the table and the
 document agree and calls every route with each credential kind, so a new route with no declaration, or one that a credential
 reaches against its declaration, fails the build.

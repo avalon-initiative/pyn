@@ -795,6 +795,8 @@ pub struct RateLimits {
     pub register_per_client: u32,
     /// Verification emails per recipient address in an hour.
     pub mail_per_email: u32,
+    /// People-directory requests per client address in a minute, signed-out callers only.
+    pub people_per_client: u32,
 }
 
 impl Default for RateLimits {
@@ -804,6 +806,7 @@ impl Default for RateLimits {
             sign_in_per_client: 30,
             register_per_client: 10,
             mail_per_email: 3,
+            people_per_client: 60,
         }
     }
 }
@@ -824,6 +827,7 @@ pub const MAX_INVITE_HOURS: i64 = 8760;
 const SIGN_IN_WINDOW: Duration = Duration::minutes(15);
 const REGISTER_WINDOW: Duration = Duration::hours(1);
 const MAIL_WINDOW: Duration = Duration::hours(1);
+const PEOPLE_WINDOW: Duration = Duration::minutes(1);
 
 /// Server settings that shape who can join and how long a sign-in lasts.
 #[derive(Debug, Clone)]

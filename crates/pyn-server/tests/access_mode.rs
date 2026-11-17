@@ -168,6 +168,7 @@ async fn a_private_server_refuses_what_a_signed_out_visitor_could_read() {
     let w = world(AccessMode::Private).await;
     assert_eq!(mode_of(&w).await, "private");
     for uri in [
+        "/v1/users",
         "/v1/users/alice",
         "/v1/users/alice/avatar",
         "/v1/orgs/acme/avatar",
@@ -188,6 +189,7 @@ async fn a_private_server_refuses_what_a_signed_out_visitor_could_read() {
     }
     let alice = Cred::token(&w.alice_token);
     for uri in [
+        "/v1/users",
         "/v1/users/alice",
         "/v1/repos/alice/open/tree",
         "/v1/explore/repos",
