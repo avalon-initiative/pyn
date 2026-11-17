@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
+#[path = "common/cred.rs"]
+mod cred;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use cred::{Cred, WithCred};
 use http_body_util::BodyExt;
 use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
@@ -107,7 +110,7 @@ async fn app() -> axum::Router {
 fn json_post(uri: &str, user: &str, body: serde_json::Value) -> Request<Body> {
     Request::post(uri)
         .header("content-type", "application/json")
-        .header(api::DEV_USER_HEADER, user)
+        .cred(&Cred::dev(user))
         .body(Body::from(body.to_string()))
         .unwrap()
 }
@@ -183,7 +186,7 @@ async fn files_listing_shows_mode_and_lock() {
     let r = app
         .oneshot(
             Request::get("/v1/repos/owner/game/files")
-                .header(api::DEV_USER_HEADER, "alice")
+                .cred(&Cred::dev("alice"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -207,7 +210,7 @@ async fn get_as(app: &axum::Router, uri: &str, user: &str) -> (StatusCode, Vec<u
         .clone()
         .oneshot(
             Request::get(uri)
-                .header(api::DEV_USER_HEADER, user)
+                .cred(&Cred::dev(user))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -253,7 +256,7 @@ async fn history_without_a_path_is_repository_wide_and_validates_its_parameters(
 
 async fn put_text(app: &axum::Router, text: &str) -> String {
     let put = Request::put("/v1/repos/owner/game/objects")
-        .header(api::DEV_USER_HEADER, "bob")
+        .cred(&Cred::dev("bob"))
         .body(Body::from(text.to_string()))
         .unwrap();
     let r = app.clone().oneshot(put).await.unwrap();
@@ -315,7 +318,7 @@ async fn tree_and_summary_describe_the_landing_page() {
         .await
         .unwrap();
     let put = Request::put("/v1/repos/owner/game/objects")
-        .header(api::DEV_USER_HEADER, "bob")
+        .cred(&Cred::dev("bob"))
         .body(Body::from("x"))
         .unwrap();
     let r = app.clone().oneshot(put).await.unwrap();
@@ -407,7 +410,7 @@ async fn any_revision_can_be_fetched() {
     let mut base = serde_json::Value::Null;
     for text in ["v1", "v2"] {
         let put = Request::put("/v1/repos/owner/game/objects")
-            .header(api::DEV_USER_HEADER, "bob")
+            .cred(&Cred::dev("bob"))
             .body(Body::from(text))
             .unwrap();
         let r = app.clone().oneshot(put).await.unwrap();
@@ -428,7 +431,7 @@ async fn any_revision_can_be_fetched() {
         async move {
             app.oneshot(
                 Request::get(format!("/v1/repos/owner/game/content?{query}"))
-                    .header(api::DEV_USER_HEADER, "alice")
+                    .cred(&Cred::dev("alice"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -470,7 +473,7 @@ fn with_token(
     let builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header("authorization", format!("Bearer {token}"));
+        .cred(&Cred::bearer(token));
     match body {
         Some(b) => builder
             .header("content-type", "application/json")
@@ -499,7 +502,7 @@ async fn admin_token(state: &AppState) -> String {
 async fn the_dev_header_is_ignored_unless_dev_auth_is_on() {
     let app = router(state(false).await);
     let req = Request::get("/v1/repos/owner/game/files")
-        .header(api::DEV_USER_HEADER, "alice")
+        .cred(&Cred::dev("alice"))
         .body(Body::empty())
         .unwrap();
     assert_eq!(status(&app, req).await, StatusCode::NOT_FOUND);
@@ -836,7 +839,7 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
         let put = Request::put("/v1/repos/owner/game/objects")
-            .header("authorization", format!("Bearer {admin}"))
+            .cred(&Cred::bearer(&admin))
             .body(Body::from(text))
             .unwrap();
         let obj: api::PutObjectResponse = body_json(app.clone().oneshot(put).await.unwrap()).await;
@@ -1550,14 +1553,11 @@ fn with_cookie(
     csrf: Option<&str>,
     body: Option<serde_json::Value>,
 ) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("cookie", format!("{}={cookie}", api::SESSION_COOKIE))
-        .header("origin", "http://localhost:5173");
-    if let Some(csrf) = csrf {
-        builder = builder.header(api::CSRF_HEADER, csrf);
-    }
+    let session = Cred::Session {
+        cookie: cookie.into(),
+        csrf: csrf.map(Into::into),
+    };
+    let builder = Request::builder().method(method).uri(uri).cred(&session);
     match body {
         Some(b) => builder
             .header("content-type", "application/json")
@@ -2329,7 +2329,7 @@ async fn the_owner_renames_reconfigures_and_deletes_a_repository() {
     let alice = register_and_sign_in(&app, "alice").await;
     create_repo(&app, &alice, "game").await;
     let put = Request::put("/v1/repos/alice/game/objects")
-        .header("authorization", format!("Bearer {alice}"))
+        .cred(&Cred::bearer(&alice))
         .body(Body::from("data"))
         .unwrap();
     assert_eq!(status(&app, put).await, StatusCode::OK);
@@ -2402,7 +2402,7 @@ async fn the_single_repository_routes_are_gone() {
             .clone()
             .oneshot(
                 Request::get(uri)
-                    .header(api::DEV_USER_HEADER, "alice")
+                    .cred(&Cred::dev("alice"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2457,7 +2457,7 @@ async fn put_blob(app: &axum::Router, repo: &str, token: &str, text: &str) -> St
     let req = Request::builder()
         .method("PUT")
         .uri(format!("/v1/repos/alice/{repo}/objects"))
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(token))
         .body(Body::from(text.to_string()))
         .unwrap();
     let r = app.clone().oneshot(req).await.unwrap();
@@ -2846,7 +2846,7 @@ async fn reading_a_public_repository_does_not_extend_to_writes_or_management() {
     .await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     let put = Request::put(format!("{base}/objects"))
-        .header("authorization", format!("Bearer {}", v.bob))
+        .cred(&Cred::bearer(&v.bob))
         .body(Body::from("x"))
         .unwrap();
     assert_eq!(status(&v.app, put).await, StatusCode::FORBIDDEN);
@@ -3134,7 +3134,7 @@ async fn large_uploads_stream_and_content_serves_byte_ranges() {
     let app = app().await;
     let data: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
     let put = Request::put("/v1/repos/owner/game/objects")
-        .header(api::DEV_USER_HEADER, "bob")
+        .cred(&Cred::dev("bob"))
         .body(Body::from(data.clone()))
         .unwrap();
     let r = app.clone().oneshot(put).await.unwrap();
@@ -3153,7 +3153,7 @@ async fn large_uploads_stream_and_content_serves_byte_ranges() {
         let app = app.clone();
         async move {
             let mut req = Request::get("/v1/repos/owner/game/content?path=Source/big.bin")
-                .header(api::DEV_USER_HEADER, "alice");
+                .cred(&Cred::dev("alice"));
             if let Some(range) = range {
                 req = req.header("range", range);
             }
@@ -3208,7 +3208,7 @@ async fn chunks_are_checked_for_and_assembled_into_one_object() {
     let app = app().await;
     let part = |bytes: Vec<u8>| {
         Request::put("/v1/repos/owner/game/objects/chunk")
-            .header(api::DEV_USER_HEADER, "bob")
+            .cred(&Cred::dev("bob"))
             .body(Body::from(bytes))
             .unwrap()
     };
@@ -3663,7 +3663,7 @@ async fn an_object_is_keyed_by_its_blob_id_and_must_match_its_declared_length() 
     let app = app().await;
     let put = |declared: &str| {
         Request::put("/v1/repos/owner/game/objects")
-            .header(api::DEV_USER_HEADER, "bob")
+            .cred(&Cred::dev("bob"))
             .header("content-length", declared)
             .body(Body::from("hello"))
             .unwrap()
@@ -4939,7 +4939,7 @@ fn the_setup_hint_points_at_the_public_url_and_the_cli() {
 
 async fn put_chunk_in(app: &axum::Router, repo: &str, token: &str, bytes: &[u8]) -> String {
     let req = Request::put(format!("/v1/repos/alice/{repo}/objects/chunk"))
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(token))
         .body(Body::from(bytes.to_vec()))
         .unwrap();
     let r = app.clone().oneshot(req).await.unwrap();

@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
+#[path = "common/cred.rs"]
+mod cred;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use cred::{Cred, WithCred};
 use http_body_util::BodyExt;
 use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
@@ -100,10 +103,7 @@ async fn call(
         .method(method)
         .uri(uri)
         .header("content-type", "application/json");
-    let builder = match user.strip_prefix("pyn_") {
-        Some(_) => builder.header("authorization", format!("Bearer {user}")),
-        None => builder.header(api::DEV_USER_HEADER, user),
-    };
+    let builder = builder.cred(&Cred::who(user));
     let req = builder
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap();

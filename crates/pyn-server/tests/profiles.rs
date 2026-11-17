@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
+#[path = "common/cred.rs"]
+mod cred;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
+use cred::{Cred, WithCred};
 use http_body_util::BodyExt;
 use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
@@ -97,11 +100,7 @@ async fn send(
         .method(method)
         .uri(uri)
         .header("content-type", content_type);
-    if who.starts_with("pyn_") {
-        b = b.header("authorization", format!("Bearer {who}"));
-    } else if !who.is_empty() {
-        b = b.header(api::DEV_USER_HEADER, who);
-    }
+    b = b.cred(&Cred::who(who));
     for (k, v) in extra {
         b = b.header(*k, *v);
     }
@@ -1201,15 +1200,14 @@ async fn the_people_directory_needs_a_full_scope_credential() {
         assert_eq!(r.status, StatusCode::FORBIDDEN, "{kind}: {}", r.text());
         assert_eq!(r.code(), code, "{kind}");
     }
-    let bearer = format!("Bearer {svc}");
     let r = send(
         &app,
-        "",
+        &svc,
         "GET",
         "/v1/users",
         "application/json",
         vec![],
-        &[("authorization", &bearer)],
+        &[],
     )
     .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text());

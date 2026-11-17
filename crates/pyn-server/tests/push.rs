@@ -1,4 +1,7 @@
 use std::collections::BTreeMap;
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -94,7 +97,7 @@ async fn send(
     let mut b = Request::builder()
         .method(method)
         .uri(uri)
-        .header("authorization", format!("Bearer {token}"));
+        .cred(&Cred::bearer(token));
     if let Some((k, v)) = extra {
         b = b.header(k, v);
     }
@@ -177,7 +180,7 @@ async fn world() -> World {
 
 async fn upload(w: &World, text: &str) -> ObjectId {
     let req = Request::put("/v1/repos/alice/game/objects")
-        .header("authorization", format!("Bearer {}", w.bob))
+        .cred(&Cred::bearer(&w.bob))
         .body(Body::from(text.to_string()))
         .unwrap();
     let r = w.app.clone().oneshot(req).await.unwrap();
@@ -916,7 +919,7 @@ async fn a_push_body_is_not_read_before_the_caller_is_authorized() {
     for (token, repo, want) in cases {
         let polled = Arc::new(AtomicBool::new(false));
         let req = Request::post(format!("/v1/repos/{repo}/push"))
-            .header("authorization", format!("Bearer {token}"))
+            .cred(&Cred::bearer(token))
             .header("content-type", "application/json")
             .body(watched_body(polled.clone()))
             .unwrap();
@@ -931,7 +934,7 @@ async fn an_authorized_push_over_the_body_limit_is_refused_and_a_malformed_one_i
     let w = world().await;
     let polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let req = Request::post("/v1/repos/alice/game/push")
-        .header("authorization", format!("Bearer {}", w.bob))
+        .cred(&Cred::bearer(&w.bob))
         .body(watched_body(polled))
         .unwrap();
     let r = w.app.clone().oneshot(req).await.unwrap();

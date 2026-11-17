@@ -1,5 +1,8 @@
 //! Creating an invitation is server-wide account creation, so it needs a full-scope credential.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -73,15 +76,6 @@ async fn server(mode: RegistrationMode, require_approval: bool) -> Router {
     })
 }
 
-/// A credential presented the way a real client does.
-#[derive(Clone)]
-enum Cred {
-    SignedOut,
-    Dev(&'static str),
-    Bearer(String),
-    Session { cookie: String, csrf: String },
-}
-
 struct Reply {
     status: StatusCode,
     body: Vec<u8>,
@@ -103,15 +97,7 @@ async fn send(app: &Router, who: &Cred, method: &str, uri: &str, body: Option<Va
         .method(method)
         .uri(uri)
         .header("content-type", "application/json");
-    b = match who {
-        Cred::SignedOut => b,
-        Cred::Dev(user) => b.header(api::DEV_USER_HEADER, *user),
-        Cred::Bearer(t) => b.header("authorization", format!("Bearer {t}")),
-        Cred::Session { cookie, csrf } => b
-            .header("cookie", format!("{}={cookie}", api::SESSION_COOKIE))
-            .header("origin", ORIGIN)
-            .header(api::CSRF_HEADER, csrf),
-    };
+    b = b.cred(who);
     let req = b
         .body(Body::from(body.map(|v| v.to_string()).unwrap_or_default()))
         .unwrap();
@@ -124,9 +110,9 @@ async fn send(app: &Router, who: &Cred, method: &str, uri: &str, body: Option<Va
 
 async fn bearer(app: &Router, name: &str) -> Cred {
     let body = json!({"username": name, "password": PASSWORD});
-    let r = send(app, &Cred::Dev("root"), "POST", "/v1/login", Some(body)).await;
+    let r = send(app, &Cred::dev("root"), "POST", "/v1/login", Some(body)).await;
     assert_eq!(r.status, StatusCode::OK);
-    Cred::Bearer(r.json::<api::CreatedToken>().token)
+    Cred::token(&r.json::<api::CreatedToken>().token)
 }
 
 async fn session(app: &Router, name: &str) -> Cred {
@@ -150,17 +136,14 @@ async fn session(app: &Router, name: &str) -> Cred {
         .unwrap();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let info: api::SessionInfo = serde_json::from_slice(&bytes).unwrap();
-    Cred::Session {
-        cookie,
-        csrf: info.csrf_token,
-    }
+    Cred::session(&cookie, &info.csrf_token)
 }
 
 async fn scoped(app: &Router, owner: &Cred, permissions: &[&str]) -> Cred {
     let body = json!({"name": "s", "permissions": permissions, "repos": ["root/seed"]});
     let r = send(app, owner, "POST", "/v1/tokens", Some(body)).await;
     assert_eq!(r.status, StatusCode::OK);
-    Cred::Bearer(r.json::<api::CreatedToken>().token)
+    Cred::token(&r.json::<api::CreatedToken>().token)
 }
 
 async fn who_am_i(app: &Router, who: &Cred) -> String {
@@ -177,7 +160,7 @@ async fn who_am_i(app: &Router, who: &Cred) -> String {
 async fn invites(app: &Router) -> usize {
     let r = send(
         app,
-        &Cred::Dev("root"),
+        &Cred::dev("root"),
         "GET",
         "/v1/repos/root/seed/invites",
         None,
@@ -202,7 +185,7 @@ struct Creds {
 }
 
 async fn setup(app: &Router) -> Creds {
-    let root = Cred::Dev("root");
+    let root = Cred::dev("root");
     let r = send(
         app,
         &root,
@@ -235,7 +218,7 @@ async fn setup(app: &Router) -> Creds {
         boss_scoped: scoped(app, &boss, &ALL).await,
         full_token: wendy,
         boss_token: boss,
-        service: Cred::Bearer(minted.json::<api::CreatedServiceCredential>().secret),
+        service: Cred::service(&minted.json::<api::CreatedServiceCredential>().secret),
     }
 }
 
@@ -289,7 +272,7 @@ async fn creating_an_invitation_needs_a_full_scope_credential() {
             ("session with manage_users", &c.session),
             ("full-scope token", &c.full_token),
             ("administrator full-scope token", &c.boss_token),
-            ("dev token", &Cred::Dev("root")),
+            ("dev token", &Cred::dev("root")),
         ] {
             let r = invite(&app, who).await;
             assert_eq!(r.status, StatusCode::OK, "{label} {what}");

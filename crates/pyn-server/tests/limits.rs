@@ -1,5 +1,8 @@
 //! The HTTP contract of per-owner limits and usage: opt-in, distinct error codes, admin and service access.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -96,11 +99,7 @@ async fn send(
         .method(method)
         .uri(uri)
         .header("content-type", "application/json");
-    let builder = if who.starts_with("pyn_") || who.starts_with("pyns_") {
-        builder.header("authorization", format!("Bearer {who}"))
-    } else {
-        builder.header(api::DEV_USER_HEADER, who)
-    };
+    let builder = builder.cred(&Cred::who(who));
     let req = builder
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap();
@@ -115,7 +114,7 @@ async fn put_object(app: &Router, who: &str, repo: &str, bytes: &str) -> String 
     let req = Request::builder()
         .method("PUT")
         .uri(format!("/v1/repos/{repo}/objects"))
-        .header("authorization", format!("Bearer {who}"))
+        .cred(&Cred::bearer(who))
         .body(Body::from(bytes.to_string()))
         .unwrap();
     let r = app.clone().oneshot(req).await.unwrap();
@@ -391,7 +390,7 @@ async fn a_configured_unreferenced_upload_cap_refuses_uploads_past_it() {
     let req = Request::builder()
         .method("PUT")
         .uri("/v1/repos/alice/game/objects")
-        .header("authorization", format!("Bearer {alice}"))
+        .cred(&Cred::bearer(&alice))
         .body(Body::from("67890"))
         .unwrap();
     let r = app.clone().oneshot(req).await.unwrap();

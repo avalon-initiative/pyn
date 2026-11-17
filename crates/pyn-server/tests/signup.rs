@@ -1,5 +1,8 @@
 //! The HTTP contract of open-registration protection: verification, approval, rate limits, account administration.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -116,7 +119,7 @@ fn as_user(user: &str, method: &str, uri: &str, body: Option<serde_json::Value>)
         .method(method)
         .uri(uri)
         .header("content-type", "application/json")
-        .header(api::DEV_USER_HEADER, user)
+        .cred(&Cred::dev(user))
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap()
 }
@@ -538,7 +541,7 @@ async fn disabling_an_account_ends_its_access_and_enabling_restores_it() {
     let token = r.json::<api::CreatedToken>().token;
     let bearer = |t: &str| {
         Request::get("/v1/me")
-            .header("authorization", format!("Bearer {t}"))
+            .cred(&Cred::bearer(t))
             .body(Body::empty())
             .unwrap()
     };
@@ -652,7 +655,7 @@ async fn an_ordinary_account_cannot_reach_the_admin_routes() {
             Request::builder()
                 .method(method)
                 .uri(uri)
-                .header("authorization", format!("Bearer {token}"))
+                .cred(&Cred::bearer(&token))
                 .header("content-type", "application/json")
                 .body(Body::empty())
                 .unwrap(),
@@ -683,7 +686,7 @@ fn with_bearer(method: &str, uri: &str, token: &str) -> Request<Body> {
     Request::builder()
         .method(method)
         .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
+        .cred(&Cred::bearer(token))
         .body(Body::empty())
         .unwrap()
 }

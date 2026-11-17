@@ -1,6 +1,9 @@
 //! The HTTP contract of the owner freeze (decision #429): administrators and `manage_freeze` credentials set it,
 //! members read it, and every write route under a frozen user or organization answers `owner_frozen`.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -90,11 +93,7 @@ async fn send(app: &Router, who: &str, method: &str, uri: &str, body: Option<Val
         .method(method)
         .uri(uri)
         .header("content-type", "application/json");
-    let builder = if who.starts_with("pyn_") || who.starts_with("pyns_") {
-        builder.header("authorization", format!("Bearer {who}"))
-    } else {
-        builder.header(api::DEV_USER_HEADER, who)
-    };
+    let builder = builder.cred(&Cred::who(who));
     let req = builder
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap();
@@ -107,11 +106,7 @@ async fn send(app: &Router, who: &str, method: &str, uri: &str, body: Option<Val
 
 async fn put(app: &Router, who: &str, uri: &str, bytes: &str) -> Reply {
     let builder = Request::builder().method("PUT").uri(uri);
-    let builder = if who.starts_with("pyn_") {
-        builder.header("authorization", format!("Bearer {who}"))
-    } else {
-        builder.header(api::DEV_USER_HEADER, who)
-    };
+    let builder = builder.cred(&Cred::who(who));
     let r = app
         .clone()
         .oneshot(builder.body(Body::from(bytes.to_string())).unwrap())

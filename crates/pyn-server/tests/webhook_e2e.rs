@@ -1,6 +1,9 @@
 //! Webhooks end to end: the admin API, the outbox, the delivery worker and a local receiver that follows the receiver guide.
 //! Time is a manual clock; nothing sleeps.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -230,7 +233,7 @@ impl World {
             .method(method)
             .uri(uri)
             .header("content-type", "application/json")
-            .header(api::DEV_USER_HEADER, "root")
+            .cred(&Cred::dev("root"))
             .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
             .unwrap();
         let r = self.app.clone().oneshot(req).await.unwrap();

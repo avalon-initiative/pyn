@@ -1,6 +1,9 @@
 //! Credential reach: every route declares what it accepts in `routes.rs`, the OpenAPI document mirrors it, and each
 //! credential kind meets exactly the routes it should.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -235,14 +238,6 @@ impl Reply {
     }
 }
 
-#[derive(Clone)]
-enum Cred {
-    None,
-    Bearer(String),
-    Session { cookie: String, csrf: String },
-    Dev(&'static str),
-}
-
 async fn send(
     app: &Router,
     cred: &Cred,
@@ -251,20 +246,8 @@ async fn send(
     body: Option<String>,
     extra: &[(&str, &str)],
 ) -> Reply {
-    let mut b = Request::builder()
-        .method(method.clone())
-        .uri(uri)
-        .header("origin", "http://localhost:5173");
-    match cred {
-        Cred::None => {}
-        Cred::Bearer(t) => b = b.header("authorization", format!("Bearer {t}")),
-        Cred::Session { cookie, csrf } => {
-            b = b
-                .header("cookie", format!("{}={cookie}", api::SESSION_COOKIE))
-                .header(api::CSRF_HEADER, csrf.as_str());
-        }
-        Cred::Dev(user) => b = b.header(api::DEV_USER_HEADER, *user),
-    }
+    let mut b = Request::builder().method(method.clone()).uri(uri);
+    b = b.cred(cred);
     let mut has_type = false;
     for (k, v) in extra {
         has_type |= k.eq_ignore_ascii_case("content-type");
@@ -355,7 +338,7 @@ async fn world(kind: Kind, reach: Reach) -> (Router, Cred) {
     if signs_in {
         let r = send(
             &app,
-            &Cred::None,
+            &Cred::SignedOut,
             &Method::POST,
             "/v1/register",
             Some(password_body.clone()),
@@ -381,20 +364,20 @@ async fn world(kind: Kind, reach: Reach) -> (Router, Cred) {
     }
     access.create_org(&as_alice, "acme").await.unwrap();
     let cred = match kind {
-        Kind::SignedOut => Cred::None,
-        Kind::Admin => Cred::Dev("root"),
+        Kind::SignedOut => Cred::SignedOut,
+        Kind::Admin => Cred::dev("root"),
         Kind::Full => {
             let r = send(
                 &app,
-                &Cred::None,
+                &Cred::SignedOut,
                 &Method::POST,
                 "/v1/login",
                 Some(password_body),
                 &[],
             )
             .await;
-            Cred::Bearer(
-                serde_json::from_slice::<api::CreatedToken>(&r.body)
+            Cred::token(
+                &serde_json::from_slice::<api::CreatedToken>(&r.body)
                     .unwrap()
                     .token,
             )
@@ -416,7 +399,7 @@ async fn world(kind: Kind, reach: Reach) -> (Router, Cred) {
                 )
                 .await
                 .unwrap();
-            Cred::Bearer(token)
+            Cred::token(&token)
         }
         Kind::ServiceOther | Kind::ServiceAll => {
             let declared = match reach {
@@ -434,7 +417,7 @@ async fn world(kind: Kind, reach: Reach) -> (Router, Cred) {
             };
             let r = send(
                 &app,
-                &Cred::Dev("root"),
+                &Cred::dev("root"),
                 &Method::POST,
                 "/v1/admin/service-credentials",
                 Some(json!({"name": "svc", "scopes": scopes}).to_string()),
@@ -447,8 +430,8 @@ async fn world(kind: Kind, reach: Reach) -> (Router, Cred) {
                 "{:?}",
                 String::from_utf8_lossy(&r.body)
             );
-            Cred::Bearer(
-                serde_json::from_slice::<api::CreatedServiceCredential>(&r.body)
+            Cred::service(
+                &serde_json::from_slice::<api::CreatedServiceCredential>(&r.body)
                     .unwrap()
                     .secret,
             )
@@ -475,10 +458,7 @@ async fn raw_session(app: &Router, body: String) -> Cred {
         .to_string();
     let bytes = r.into_body().collect().await.unwrap().to_bytes();
     let info: api::SessionInfo = serde_json::from_slice(&bytes).unwrap();
-    Cred::Session {
-        cookie,
-        csrf: info.csrf_token,
-    }
+    Cred::session(&cookie, &info.csrf_token)
 }
 
 fn fill(path: &str, repo: &str) -> String {

@@ -1,5 +1,8 @@
 //! The HTTP contract of service credentials: scopes, revocation, audit, and what they cannot reach.
 
+#[path = "common/cred.rs"]
+mod cred;
+use cred::{Cred, WithCred};
 use std::sync::Arc;
 
 use axum::Router;
@@ -76,7 +79,7 @@ impl Reply {
 
 async fn call(
     app: &Router,
-    auth: (&str, &str),
+    auth: &Cred,
     method: &str,
     uri: &str,
     body: Option<serde_json::Value>,
@@ -85,7 +88,7 @@ async fn call(
         .method(method)
         .uri(uri)
         .header("content-type", "application/json")
-        .header(auth.0, auth.1)
+        .cred(auth)
         .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
         .unwrap();
     let r = app.clone().oneshot(req).await.unwrap();
@@ -95,12 +98,14 @@ async fn call(
     }
 }
 
-const ROOT: (&str, &str) = (api::DEV_USER_HEADER, "root");
+fn root() -> Cred {
+    Cred::dev("root")
+}
 
 async fn mint(app: &Router, name: &str, scopes: &[&str]) -> String {
     let r = call(
         app,
-        ROOT,
+        &root(),
         "POST",
         "/v1/admin/service-credentials",
         Some(json!({"name": name, "scopes": scopes})),
@@ -115,14 +120,14 @@ async fn mint(app: &Router, name: &str, scopes: &[&str]) -> String {
     r.json::<api::CreatedServiceCredential>().secret
 }
 
-fn bearer(secret: &str) -> (&'static str, String) {
-    ("authorization", format!("Bearer {secret}"))
+fn bearer(secret: &str) -> Cred {
+    Cred::service(secret)
 }
 
 async fn sign_up(app: &Router, name: &str) {
     let r = call(
         app,
-        ("x-none", "1"),
+        &Cred::SignedOut,
         "POST",
         "/v1/register",
         Some(json!({"username": name, "password": "correct horse battery"})),
@@ -141,7 +146,7 @@ async fn the_secret_is_shown_once_and_the_listing_has_no_secret() {
     let app = app();
     let r = call(
         &app,
-        ROOT,
+        &root(),
         "POST",
         "/v1/admin/service-credentials",
         Some(json!({"name": "provisioner", "scopes": ["manage_accounts"]})),
@@ -154,17 +159,17 @@ async fn the_secret_is_shown_once_and_the_listing_has_no_secret() {
     assert_eq!(created.info.scopes, ["manage_accounts"]);
     assert_eq!(created.info.created_by, "root");
 
-    let list = call(&app, ROOT, "GET", "/v1/admin/service-credentials", None).await;
+    let list = call(&app, &root(), "GET", "/v1/admin/service-credentials", None).await;
     assert_eq!(list.status, StatusCode::OK);
     assert!(!String::from_utf8_lossy(&list.body).contains(&created.secret));
     let infos = list.json::<Vec<api::ServiceCredentialInfo>>();
     assert_eq!(infos.len(), 1);
     assert_eq!(infos[0].last_used_at, None);
 
-    let (h, v) = bearer(&created.secret);
-    let r = call(&app, (h, &v), "GET", "/v1/admin/users", None).await;
+    let svc = bearer(&created.secret);
+    let r = call(&app, &svc, "GET", "/v1/admin/users", None).await;
     assert_eq!(r.status, StatusCode::OK);
-    let list = call(&app, ROOT, "GET", "/v1/admin/service-credentials", None).await;
+    let list = call(&app, &root(), "GET", "/v1/admin/service-credentials", None).await;
     assert!(
         list.json::<Vec<api::ServiceCredentialInfo>>()[0]
             .last_used_at
@@ -182,7 +187,7 @@ async fn creation_rejects_bad_input_and_duplicates() {
     ] {
         let r = call(
             &app,
-            ROOT,
+            &root(),
             "POST",
             "/v1/admin/service-credentials",
             Some(body),
@@ -193,7 +198,7 @@ async fn creation_rejects_bad_input_and_duplicates() {
     mint(&app, "dup", &["manage_accounts"]).await;
     let r = call(
         &app,
-        ROOT,
+        &root(),
         "POST",
         "/v1/admin/service-credentials",
         Some(json!({"name": "dup", "scopes": ["manage_accounts"]})),
@@ -208,9 +213,8 @@ async fn scopes_gate_each_admin_route() {
     sign_up(&app, "alice").await;
     let accounts = mint(&app, "accounts", &["manage_accounts"]).await;
     let orgs = mint(&app, "orgs", &["manage_organizations"]).await;
-    let (ah, av) = bearer(&accounts);
-    let (oh, ov) = bearer(&orgs);
-    let (a, o) = ((ah, av.as_str()), (oh, ov.as_str()));
+    let a = &bearer(&accounts);
+    let o = &bearer(&orgs);
 
     let r = call(&app, a, "GET", "/v1/admin/users", None).await;
     assert_eq!(r.status, StatusCode::OK);
@@ -268,8 +272,8 @@ async fn scopes_gate_each_admin_route() {
 async fn a_credential_cannot_manage_credentials_or_read_the_server_log() {
     let app = app();
     let secret = mint(&app, "all", &["manage_accounts", "manage_organizations"]).await;
-    let (h, v) = bearer(&secret);
-    let c = (h, v.as_str());
+    let svc = bearer(&secret);
+    let c = &svc;
     let r = call(
         &app,
         c,
@@ -298,8 +302,8 @@ async fn a_credential_cannot_manage_credentials_or_read_the_server_log() {
 async fn a_credential_is_refused_outside_the_admin_routes() {
     let app = app();
     let secret = mint(&app, "all", &["manage_accounts", "manage_organizations"]).await;
-    let (h, v) = bearer(&secret);
-    let c = (h, v.as_str());
+    let svc = bearer(&secret);
+    let c = &svc;
     for (m, u, body) in [
         ("GET", "/v1/me", None),
         ("GET", "/v1/orgs", None),
@@ -327,7 +331,7 @@ async fn a_credential_cannot_sign_in() {
     for name in ["provisioner", "@service:provisioner"] {
         let body = json!({"username": name, "password": "correct horse battery"});
         for uri in ["/v1/login", "/v1/session"] {
-            let r = call(&app, ("x-none", "1"), "POST", uri, Some(body.clone())).await;
+            let r = call(&app, &Cred::SignedOut, "POST", uri, Some(body.clone())).await;
             assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{name} {uri}");
         }
     }
@@ -337,15 +341,15 @@ async fn a_credential_cannot_sign_in() {
 async fn revoking_stops_the_credential_at_once_and_keeps_it_listed() {
     let app = app();
     let secret = mint(&app, "provisioner", &["manage_accounts"]).await;
-    let (h, v) = bearer(&secret);
-    let c = (h, v.as_str());
+    let svc = bearer(&secret);
+    let c = &svc;
     assert_eq!(
         call(&app, c, "GET", "/v1/admin/users", None).await.status,
         StatusCode::OK
     );
     let r = call(
         &app,
-        ROOT,
+        &root(),
         "DELETE",
         "/v1/admin/service-credentials/provisioner",
         None,
@@ -356,14 +360,14 @@ async fn revoking_stops_the_credential_at_once_and_keeps_it_listed() {
     assert!(r.is(StatusCode::UNAUTHORIZED, "unauthenticated"));
     let r = call(
         &app,
-        ROOT,
+        &root(),
         "DELETE",
         "/v1/admin/service-credentials/nobody",
         None,
     )
     .await;
     assert!(r.is(StatusCode::NOT_FOUND, "service_credential_not_found"));
-    let list = call(&app, ROOT, "GET", "/v1/admin/service-credentials", None).await;
+    let list = call(&app, &root(), "GET", "/v1/admin/service-credentials", None).await;
     assert!(
         list.json::<Vec<api::ServiceCredentialInfo>>()[0]
             .revoked_at
@@ -381,8 +385,8 @@ async fn the_server_log_names_the_credential_as_actor() {
         &["manage_accounts", "manage_organizations"],
     )
     .await;
-    let (h, v) = bearer(&secret);
-    let c = (h, v.as_str());
+    let svc = bearer(&secret);
+    let c = &svc;
     call(
         &app,
         c,
@@ -401,7 +405,7 @@ async fn the_server_log_names_the_credential_as_actor() {
     )
     .await;
 
-    let page = call(&app, ROOT, "GET", "/v1/admin/audit", None)
+    let page = call(&app, &root(), "GET", "/v1/admin/audit", None)
         .await
         .json::<api::AuditPage>();
     let seen: Vec<_> = page
