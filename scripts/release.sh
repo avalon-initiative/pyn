@@ -101,12 +101,13 @@ release() {
   if confirm "Push the branch and open the pull request?"; then
     git push -u origin "$branch"
     gh pr create --base main --head "$branch" --title "$subject" \
-      --body "Releases $tag. The tag is created on the merged commit with \`make release-publish\`, which starts the release pipeline."
+      --body "Releases $tag. The tag is created on the merged commit with \`make release-publish\`, which starts the release pipeline."$'\n\n## TLDR\n'
   else
     echo "release: to continue later:"
     echo "  git push -u origin $branch"
     echo "  gh pr create --base main --head $branch --title '$subject'"
   fi
+  echo "release: fill in the ## TLDR section of the pull request description before merging; it opens the release notes"
   trap - ERR
 }
 

@@ -2,7 +2,7 @@
 
 Run a pyn server from a release, set it up in the browser and connect the `pyn` command to it. The quickest way is the
 installer script, which asks what you want, checks the host and does the rest. The numbered steps further down are what
-it does, so you can also follow them by hand. Provisional: written against the first pre-releases (`v0.1.x-alpha`).
+it does, so you can also follow them by hand. Provisional: written against the first releases (`v0.1.x-alpha`).
 
 ## The installer script
 
@@ -27,10 +27,8 @@ It asks:
    release `pyn-server` binary as a hardened systemd service with PostgreSQL, see
    [native install](deployment.md#native-install-systemd)). The web app is Docker-only for now, because its nginx proxy
    configuration ships in the image.
-3. **Which release**: the latest stable release, the latest pre-release (the newest release of all), or a specific
-   version you type: a full tag such as `v0.1.2-alpha`, or a bare `0.1.2`, which maps to the matching release tag. The
-   default is the latest stable release; while every release is still a pre-release the menu says so and defaults to the
-   pre-release. The entry is checked against the published releases, and the resolved tag is shown before anything starts.
+3. **Which release**: the latest release (the default), or a specific
+   version you type: a full tag such as `v0.1.2-alpha`, or a bare `0.1.2`, which maps to the matching release tag. The entry is checked against the published releases, and the resolved tag is shown before anything starts.
 4. **Where it lives**: for Docker, the folder holding the Compose file and `.env` (default: the folder you ran the script
    from; if that is `/`, your home folder or a source checkout it warns and uses a `pyn` subfolder instead); for native,
    the env file (default `/etc/pyn/pyn.env`, or a `.env` in the current folder that already holds `PYN_DATABASE_URL` or
@@ -60,8 +58,7 @@ sudo bash install.sh --yes --shape server --method docker --version 0.1.2 --publ
 | --- | --- |
 | `--shape full\|server\|web\|cli` | What to install (`full`) |
 | `--method docker\|native` | How to run it (`docker`; `cli` is always a binary) |
-| `--channel stable\|pre` | Latest stable release, or the newest release of all (stable, or pre while none exists) |
-| `--version TAG` | A full tag or bare version (wins over `--channel`) |
+| `--version TAG` | A full tag or bare version (the latest release) |
 | `--dir DIR` | Where the Docker files live (the current folder; `./pyn` inside `/`, home or a checkout) |
 | `--env-file PATH` | An existing env file to reuse: copied to `DIR/.env` (Docker; an existing `.env` is backed up), or referenced by the unit's `EnvironmentFile` (native) |
 | `--reuse use\|refresh\|fresh` | What to do with an existing install (`refresh`) |

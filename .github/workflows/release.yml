@@ -30,7 +30,6 @@ jobs:
       pull-requests: read
     outputs:
       version: ${{ steps.tag.outputs.version }}
-      prerelease: ${{ steps.tag.outputs.prerelease }}
       gated: ${{ steps.tree.outputs.gated }}
     steps:
       - name: Checkout
@@ -278,7 +277,11 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      pull-requests: read
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -291,9 +294,8 @@ jobs:
 
       - name: Create GitHub Release
         run: |
-          pre=()
-          if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes "${pre[@]}"
+          scripts/release-body.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/body.md"
+          latest=$(scripts/release-latest.sh "$GITHUB_REF_NAME")
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/body.md" "$latest"
         env:
-          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

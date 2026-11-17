@@ -4,7 +4,7 @@
 set -euo pipefail
 
 repo=avalon-initiative/pyn
-shape="" method="" version_in="" dir="" public_url="" api_url="" database_url="" channel="" env_file="" reuse=""
+shape="" method="" version_in="" dir="" public_url="" api_url="" database_url="" env_file="" reuse=""
 os_kind="" os_id="" arch="" native_env="" start_dir="" dir_default="" dir_warn=""
 yes=0 no_install=0 interactive=0 tmp=""
 root=${PYN_INSTALL_ROOT:-}
@@ -19,9 +19,7 @@ Every answer has a flag; with --yes (or no terminal) a missing answer takes its 
 
   --shape full|server|web|cli   full: server and web app (default); server; web: web app only; cli: the pyn command only
   --method docker|native        docker (default); native runs the release pyn-server binary under systemd (server and cli only)
-  --channel stable|pre          stable: the latest non-pre-release; pre: the newest release of all, pre-releases included
-                                (default: stable, or pre while no stable release exists)
-  --version TAG                 a full tag such as v0.1.2-alpha, or a bare version such as 0.1.2 (wins over --channel)
+  --version TAG                 a full tag such as v0.1.2-alpha, or a bare version such as 0.1.2 (default: the latest release)
   --dir DIR                     (paths may start with ~ or be relative to the current folder) where the Docker files live (default: the current folder; a subfolder pyn when that is / , your
                                 home or a source checkout)
   --env-file PATH               an existing env file to reuse: copied to DIR/.env for Docker, used in place as the service's
@@ -129,7 +127,6 @@ while [ $# -gt 0 ]; do
   case $1 in
     --shape) shape=${2:?--shape needs a value}; shift 2 ;;
     --method) method=${2:?--method needs a value}; shift 2 ;;
-    --channel) channel=${2:?--channel needs a value}; shift 2 ;;
     --env-file) env_file=${2:?--env-file needs a value}; shift 2 ;;
     --reuse) reuse=${2:?--reuse needs a value}; shift 2 ;;
     --version) version_in=${2:?--version needs a value}; shift 2 ;;
@@ -578,7 +575,7 @@ api_tags() { # api_tags COUNT: tag names, newest first
   grep -o '"tag_name": *"[^"]*"' "$tmp/api.json" | sed 's/.*"\([^"]*\)"$/\1/'
 }
 
-latest_stable() { # the newest non-pre-release tag; empty when none exists
+latest_release() { # the tag GitHub marks as Latest; empty when there is no release
   local code
   code=$(api_get releases/latest)
   [ "$code" != 200 ] || grep -o '"tag_name": *"[^"]*"' "$tmp/api.json" | head -n1 | sed 's/.*"\([^"]*\)"$/\1/'
@@ -598,36 +595,16 @@ match_tag() { # match_tag INPUT: a full tag, or a bare version mapped to its rel
 }
 
 resolve_version() {
-  local stable newest default=pre choice stable_text
+  local latest choice=""
   step "Resolving the release"
   if [ -n "$version_in" ]; then
-    [ -z "$channel" ] || say "--version given; --channel is ignored"
     tag=$(match_tag "$version_in")
   else
-    stable=$(latest_stable)
-    newest=$(api_tags 1 | head -n1)
-    [ -n "$newest" ] || die "GitHub lists no releases for $repo"
-    [ -z "$stable" ] || default=stable
-    case $channel in
-      stable) [ -n "$stable" ] || die "no stable release exists yet (every release so far is a pre-release); use --channel pre" ;;
-      pre) default=pre ;;
-    esac
-    choice=$channel
-    if [ -z "$choice" ] && [ "$interactive" -eq 1 ]; then
-      stable_text="Latest stable release (none yet: every release so far is a pre-release)"
-      [ -z "$stable" ] || stable_text="Latest stable release ($stable)"
-      while :; do
-        choice=""
-        menu choice "Which release?" "$default" --channel "stable|$stable_text" \
-          "pre|Latest pre-release, the newest release of all ($newest)" "tag|A specific tag or version"
-        [ "$choice" != stable ] || [ -n "$stable" ] || { echo "There is no stable release yet; pick 2 or 3."; continue; }
-        break
-      done
-    fi
-    [ -n "$choice" ] || { choice=$default; [ -n "$stable" ] || say "no stable release exists yet (every release so far is a pre-release); using the latest pre-release"; }
+    latest=$(latest_release)
+    [ -n "$latest" ] || die "GitHub lists no releases for $repo"
+    menu choice "Which release?" latest --version "latest|Latest release ($latest)" "tag|A specific tag or version"
     case $choice in
-      stable) tag=$stable ;;
-      pre) tag=$newest ;;
+      latest) tag=$latest ;;
       tag)
         ask version_in "Tag (v0.1.2-alpha) or version (0.1.2)" "" --version
         tag=$(match_tag "$version_in")
@@ -1024,7 +1001,6 @@ main() {
   [ -z "$dir" ] || dir=$(normalize_path "$dir" "--dir")
   [ -z "$env_file" ] || env_file=$(normalize_path "$env_file" "--env-file")
   detect_os
-  case $channel in "" | stable | pre) ;; *) die "--channel must be stable or pre" ;; esac
   case $reuse in "" | use | refresh | fresh) ;; *) die "--reuse must be use, refresh or fresh" ;; esac
   detect_existing
 

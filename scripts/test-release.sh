@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests release.sh, release-all.sh, ci-green-for-tree.sh and verify-release-version.sh in a throwaway repository with a bare origin and a stub gh. No network.
+# Tests release.sh, release-all.sh, release-body.sh, release-latest.sh, ci-green-for-tree.sh and verify-release-version.sh in a throwaway repository with a bare origin and a stub gh. No network.
 set -euo pipefail
 unset YES VER TITLE SKIP_CHECKS FORCE_CHECKS GATE_FAILS GH_AUTH_EXIT GH_API_FAIL GH_REPO GITHUB_REPOSITORY PYN_WEB_DIR PYN_COMMON_UI_DIR
 
@@ -16,23 +16,18 @@ expect() { # expect <name> <condition-command...>
   if "$@" >/dev/null 2>&1; then pass "$name"; else fail "$name"; fi
 }
 
-# verify-release-version.sh: tag shape, version match and the prerelease classification.
+# verify-release-version.sh: tag shape and version match.
 v="$work/verify"
 mkdir -p "$v/scripts"
 cp "$src/scripts/verify-release-version.sh" "$v/scripts/"
 printf '[workspace.package]\nversion = "1.2.3"\n' > "$v/Cargo.toml"
 verify() { GITHUB_OUTPUT="$work/out" "$v/scripts/verify-release-version.sh" "$1" >/dev/null 2>&1; }
-prerelease_of() { : > "$work/out"; verify "$1" && sed -n 's/^prerelease=//p' "$work/out"; }
 for t in v1.2.3 v1.2.3-first-stable v1.2.3-Big.Title_2 v1.2.3-rc.1; do expect "verify accepts $t" verify "$t"; done
 for t in v1.2.4 1.2.3 v1.2 v1.2.3- "v1.2.3-bad title" v1.2.3+x; do expect "verify rejects $t" bash -c '! "$0" "$1" >/dev/null 2>&1' "$v/scripts/verify-release-version.sh" "$t"; done
-for t in v1.2.3 v1.2.3-first-stable v1.2.3-alphabet v1.2.3-prefix v1.2.3-rcs v1.2.3-bet v1.2.3-the-rc; do
-  expect "$t is not a prerelease" test "$(prerelease_of "$t")" = false
-done
-for t in v1.2.3-alpha v1.2.3-beta.2 v1.2.3-rc1 v1.2.3-RC.1 v1.2.3-Pre-release v1.2.3-pre1 v1.2.3-alpha-first; do
-  expect "$t is a prerelease" test "$(prerelease_of "$t")" = true
-done
 : > "$work/out"; verify v1.2.3-title
 expect "verify writes the plain version" grep -qx 'version=1.2.3' "$work/out"
+expect "verify writes no prerelease" bash -c '! grep -q prerelease "$0"' "$work/out"
+for t in v1.2.3-alpha v1.2.3-rc.1; do : > "$work/out"; verify "$t"; expect "$t is only a title" test "$(cat "$work/out")" = version=1.2.3; done
 
 # Stub gh: `auth status` follows GH_AUTH_EXIT; `api` answers from the JSON files in $GH_FIX through the real --jq filter
 # (and fails on a missing file or GH_API_FAIL); everything else is logged to $GH_LOG.
@@ -45,6 +40,8 @@ if [ "$1" = api ]; then
   [ -z "${GH_API_FAIL:-}" ] || exit 1
   case $ep in
     */pulls) f=$GH_FIX/pulls.json ;;
+    */releases/generate-notes) f=$GH_FIX/notes.json ;;
+    */releases) f=$GH_FIX/releases.json ;;
     */git/commits/*) f=$GH_FIX/commit-${ep##*/}.json ;;
     */actions/runs*) f=$GH_FIX/runs.json ;;
     *) exit 1 ;;
@@ -113,7 +110,7 @@ git -C "$r" reset -q --hard origin/main
 
 expect_refused "a failing gate changes nothing" "checks failed" release GATE_FAILS=1 VER=0.1.0 TITLE= YES=1
 expect "a failing gate leaves main untouched" unchanged
-expect "SKIP_CHECKS skips the gate" bash -c 'cd "$0" && PATH="$0/bin:$PATH" GATE_FAILS=1 SKIP_CHECKS=1 VER=0.1.0 TITLE="First stable!" YES=1 scripts/release.sh </dev/null >/dev/null 2>&1' "$r"
+expect "SKIP_CHECKS skips the gate" bash -c 'cd "$0" && PATH="$0/bin:$PATH" GATE_FAILS=1 SKIP_CHECKS=1 VER=0.1.0 TITLE="First stable!" YES=1 scripts/release.sh </dev/null >"$1" 2>&1' "$r" "$work/out"
 
 # The branch from the SKIP_CHECKS run: a title is slugged, every version file is bumped, the PR is opened.
 tag=v0.1.0-First-stable
@@ -129,6 +126,8 @@ expect "release pushes the branch" git -C "$r" ls-remote --exit-code --heads ori
 expect "release pushes no tag" test -z "$(git -C "$r" ls-remote --tags origin)"
 expect "release does not move origin main" test "$(git -C "$r" rev-parse origin/main)" = "$(git -C "$r" rev-parse main)"
 expect "release opens the pull request" grep -q -- "pr create --base main --head release-v0.1.0 --title \[RELEASE\] - $tag" "$GH_LOG"
+expect "release opens the pull request with an empty TLDR section" grep -qx '## TLDR' "$GH_LOG"
+expect "release reminds about the TLDR" grep -q "fill in the ## TLDR" "$work/out"
 expect "release leaves no tag" test -z "$(git -C "$r" tag)"
 expect "release stays on its branch" test "$(git -C "$r" rev-parse --abbrev-ref HEAD)" = release-v0.1.0
 
@@ -265,6 +264,51 @@ git -C "$w" commit -qam bump
 expect_refused "release-all refuses differing versions" "versions differ" all VER=0.2.0 YES=1
 expect "release-all refusals change nothing" unchanged
 expect "release-all refusals open no pull request" test ! -s "$GH_LOG"
+
+# release-latest.sh: --latest only for the highest X.Y.Z among the release tags; the title slug is ignored.
+latest_for() { PATH="$work/ghbin:$PATH" GITHUB_REPOSITORY=o/r "$src/scripts/release-latest.sh" "$1"; }
+mkdir -p "$work/ghbin" "$GH_FIX"; cp "$work/gh-stub" "$work/ghbin/gh"; chmod +x "$work/ghbin/gh"
+printf '["v0.1.3-alpha","v0.1.2-alpha","v0.1.10","v0.0.9-beta","v0.1.9-first"]\n' | jq 'map({tag_name: .})' > "$GH_FIX/releases.json"
+expect "a higher version is Latest" test "$(latest_for v0.2.0)" = --latest
+expect "version order is numeric, not textual" test "$(latest_for v0.1.11-x)" = --latest
+expect "the highest existing version stays Latest" test "$(latest_for v0.1.10)" = --latest
+expect "a backport is not Latest" test "$(latest_for v0.1.4)" = --latest=false
+expect "a lower patch with a title is not Latest" test "$(latest_for v0.0.10-alpha)" = --latest=false
+printf '[]\n' > "$GH_FIX/releases.json"
+expect "the first release is Latest" test "$(latest_for v0.1.0-alpha)" = --latest
+expect "latest refuses a bad tag" bash -c '! PATH="$0/ghbin:$PATH" GITHUB_REPOSITORY=o/r "$1/scripts/release-latest.sh" nope >/dev/null 2>&1' "$work" "$src"
+expect "latest fails on an API error" bash -c '! PATH="$0/ghbin:$PATH" GH_API_FAIL=1 GITHUB_REPOSITORY=o/r "$1/scripts/release-latest.sh" v1.0.0 >/dev/null 2>&1' "$work" "$src"
+
+# release-body.sh: the pull request's TLDR, then the generated notes; the notes alone without a TLDR.
+body_for() { PATH="$work/ghbin:$PATH" GITHUB_REPOSITORY=o/r GITHUB_SHA=abc "$src/scripts/release-body.sh" v1.0.0; }
+pr() { jq -n --arg b "$1" '[{number: 7, body: $b}]' > "$GH_FIX/pulls.json"; }
+notes() { jq -n --arg b "$1" '{name: "v1.0.0", body: $b}' > "$GH_FIX/notes.json"; }
+gen=$'## What\'s Changed\n* A fix by @x in #7\n\n**Full Changelog**: https://example.invalid/compare/a...b'
+notes "$gen"
+pr $'Releases v1.0.0.\n\n## TLDR\n\nFirst line.\n\n- two\n\n## Other\nignored\n'
+expect "body is the TLDR, a blank line, then the notes" test "$(body_for)" = $'First line.\n\n- two\n\n'"$gen"
+expect "body has one What's changed heading" test "$(body_for | grep -ci "^## what's changed")" = 1
+pr $'## TLDR\r\nCRLF text\r\n'
+expect "TLDR at the end of the description, CRLF" test "$(body_for | head -n 1)" = "CRLF text"
+pr $'Releases v1.0.0.\n\n## TLDR\n'
+expect "an empty TLDR gives the notes alone" test "$(body_for)" = "$gen"
+pr $'Releases v1.0.0.\n\n## TLDR\n\n  \n## Other\ntext'
+expect "a blank TLDR gives the notes alone" test "$(body_for)" = "$gen"
+pr $'Releases v1.0.0.'
+expect "no TLDR section gives the notes alone" test "$(body_for)" = "$gen"
+pr $'text mentioning ## TLDR inline\n'
+expect "an inline mention is not a TLDR" test "$(body_for)" = "$gen"
+printf '[]\n' > "$GH_FIX/pulls.json"
+expect "no pull request gives the notes alone" test "$(body_for)" = "$gen"
+printf '[{"number":7,"body":null}]\n' > "$GH_FIX/pulls.json"
+expect "a null description gives the notes alone" test "$(body_for)" = "$gen"
+rm "$GH_FIX/pulls.json"
+expect "a failed pull request lookup gives the notes alone" test "$(body_for)" = "$gen"
+notes $'* A fix in #7'
+pr $'## TLDR\nShort.'
+expect "notes without their own heading get one" test "$(body_for)" = $'Short.\n\n## What\'s changed\n\n* A fix in #7'
+rm "$GH_FIX/notes.json"
+expect "body fails when the notes cannot be generated" bash -c '! PATH="$0/ghbin:$PATH" GITHUB_REPOSITORY=o/r GITHUB_SHA=abc "$1/scripts/release-body.sh" v1.0.0 >/dev/null 2>&1' "$work" "$src"
 
 if [ "$fails" -ne 0 ]; then echo "$fails release test(s) failed" >&2; exit 1; fi
 echo "release tests passed"
