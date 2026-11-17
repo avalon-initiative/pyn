@@ -350,3 +350,59 @@ async fn signed_out_callers_have_no_role_and_service_credentials_are_refused() {
         assert_eq!(r.code(), "service_credential_not_allowed", "{uri}");
     }
 }
+
+async fn token_for(app: &Router, who: &Cred, perms: &[&str], repo: &str) -> Cred {
+    let body = json!({"name": "ci", "permissions": perms, "repos": [repo]});
+    let r = call(app, who, "POST", "/v1/tokens", Some(body)).await;
+    assert!(
+        r.status.is_success(),
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    Cred::Bearer(r.json::<api::CreatedToken>().token)
+}
+
+#[tokio::test]
+async fn a_repo_scoped_token_renames_and_deletes_only_with_manage_roles() {
+    let w = world().await;
+    let rename = Some(json!({"name": "engine"}));
+    let admin = token_for(&w.app, &w.full, &["read", "manage_roles"], "alice/game").await;
+
+    for (method, body) in [("PATCH", rename.clone()), ("DELETE", None)] {
+        let r = call(&w.app, &w.scoped, method, "/v1/repos/alice/game", body).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "no manage_roles: {method}");
+    }
+    let r = call(&w.app, &w.full, "GET", "/v1/repos/alice/game", None).await;
+    assert_eq!(r.status, StatusCode::OK, "still there after the refusals");
+
+    let r = call(&w.app, &admin, "PATCH", "/v1/repos/alice/game", rename).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let r = call(&w.app, &w.full, "GET", "/v1/repos/alice/engine", None).await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let admin = token_for(&w.app, &w.full, &["read", "manage_roles"], "alice/lobby").await;
+    let r = call(&w.app, &admin, "DELETE", "/v1/repos/alice/lobby", None).await;
+    assert!(
+        r.status.is_success(),
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let r = call(&w.app, &w.full, "GET", "/v1/repos/alice/lobby", None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_repo_scoped_token_never_creates_a_repository() {
+    let w = world().await;
+    let admin = token_for(&w.app, &w.full, &["read", "manage_roles"], "alice/game").await;
+    for (label, cred) in [("manage_roles", &admin), ("plain", &w.scoped)] {
+        let body = json!({"owner": "alice", "name": "fresh", "visibility": "private"});
+        let r = call(&w.app, cred, "POST", "/v1/repos", Some(body)).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{label}");
+    }
+}

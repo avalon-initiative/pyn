@@ -394,8 +394,8 @@ it names), an optional expiry, and the repositories it is valid for (`--repos ow
 tokens from `pyn login` are valid everywhere). It is shown once when created; only a hash is stored. A token
 authenticates with the intersection of its permissions and its owner's current role in the repository the request is
 for, so demoting a user narrows their tokens, and a revoked token stops working at once. A token used on a repository it
-was not made for is told the repository does not exist. A token limited to specific repositories cannot create, rename or
-delete repositories. Tokens are meant for automation and CI; SSH keys and [OpenID Connect](external-sign-in.md) are for signing
+was not made for is told the repository does not exist. A token limited to a repository can rename or delete that repository when it holds the
+administrator-class permission `manage_roles`, and can never create repositories; a token without that permission cannot. Tokens are meant for automation and CI; SSH keys and [OpenID Connect](external-sign-in.md) are for signing
 people in, and resolve to the same users and permissions.
 
 ```bash
