@@ -566,9 +566,15 @@ pub(crate) async fn batch(
     } else {
         Permission::Read
     };
-    let (repo, principal, _) = caller
-        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
-        .await?;
+    let bearer = with_bearer(&headers);
+    let (repo, principal) = if upload {
+        let (repo, principal, _) = caller.authorize(&bearer, &owner, repo_name(&name)).await?;
+        (repo, principal)
+    } else {
+        caller
+            .authorize_reader(&bearer, &owner, repo_name(&name))
+            .await?
+    };
     principal.require(need)?;
     if upload {
         repo.service.ensure_writable().await?;
@@ -683,8 +689,8 @@ pub(crate) async fn download(
     headers: HeaderMap,
     Path((owner, name, oid)): Path<(String, String, String)>,
 ) -> LfsResult {
-    let (repo, _, _) = caller
-        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+    let (repo, _) = caller
+        .authorize_reader(&with_bearer(&headers), &owner, repo_name(&name))
         .await?;
     check_oid(&oid)?;
     let object = repo

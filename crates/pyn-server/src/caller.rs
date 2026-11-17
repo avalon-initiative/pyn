@@ -76,6 +76,15 @@ fn sends_credential(state: &AppState, headers: &HeaderMap) -> bool {
     bearer_token(headers).is_some() || dev || session_api::session_cookie(headers).is_some()
 }
 
+/// git-lfs sends its token as the Basic password.
+fn sends_basic(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split_once(' '))
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("basic"))
+}
+
 /// Applies the access mode to a route declared `reach`. On a private server a signed-out caller is refused: a
 /// repository route answers as for a private repository, any other with `unauthenticated`. A credential that is sent
 /// is validated by the route's own extractor, except on `Public` routes, which read none.
@@ -90,6 +99,7 @@ pub(crate) async fn admit(
     }
     let signed_in = match reach {
         Reach::Public => identify_optional(state, headers).await?.is_some(),
+        Reach::PublicLfsRead => sends_credential(state, headers) || sends_basic(headers),
         _ => sends_credential(state, headers),
     };
     if signed_in {
@@ -343,6 +353,7 @@ impl FromRequestParts<AppState> for RepoReader {
 pub(crate) struct LfsCaller {
     state: AppState,
     need: Option<Permission>,
+    anonymous_read: bool,
 }
 
 impl FromRequestParts<AppState> for LfsCaller {
@@ -352,11 +363,13 @@ impl FromRequestParts<AppState> for LfsCaller {
         let need = match declared(parts) {
             Reach::RepoScoped(permission) => Some(permission),
             Reach::RepoVisible => None,
+            Reach::PublicLfsRead => Some(Permission::Read),
             other => return Err(mismatch("LfsCaller", other)),
         };
         Ok(Self {
             state: s.clone(),
             need,
+            anonymous_read: matches!(declared(parts), Reach::PublicLfsRead),
         })
     }
 }
@@ -375,5 +388,24 @@ impl LfsCaller {
             principal.require(permission)?;
         }
         Ok((repo, principal, identity))
+    }
+
+    /// Like `authorize`, but a request with no credential opens a public repository as an anonymous reader. Only a route
+    /// declared `public_lfs_read` may call it.
+    pub(crate) async fn authorize_reader(
+        &self,
+        headers: &HeaderMap,
+        owner: &str,
+        name: &str,
+    ) -> ApiResult<(OpenRepo, Principal)> {
+        if !self.anonymous_read {
+            return Err(ApiError(PynError::Storage(
+                "authorize_reader on a route not declared public_lfs_read".into(),
+            )));
+        }
+        let identity = identify_optional(&self.state, headers).await?;
+        let (repo, principal) = open_visible(&self.state, identity.as_ref(), owner, name).await?;
+        principal.require(Permission::Read)?;
+        Ok((repo, principal))
     }
 }

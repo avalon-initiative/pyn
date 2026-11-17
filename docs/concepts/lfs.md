@@ -36,8 +36,11 @@ the password (what git-lfs sends; the user name is ignored). A request with none
 releasing a lock needs the `lock` permission, listing and `verify` need `read`. Transferring large files needs `read` to download and
 `checkin`, the permission that lets a pyn client upload content, to upload.
 
-These routes require authentication even for a public repository, where pyn's other read routes do not. A private repository the
-caller has no part in is `404`.
+Only downloading is open to a signed-out caller, and only from a public repository on a `public` [server](access.md#server-access-mode): `POST .../objects/batch`
+with `"operation": "download"` and `GET .../objects/{oid}` then need no credential, as on GitHub, and the batch hands back plain download
+links that need none either. Uploads (an `upload` batch, `PUT` of an object, `verify`, tus) and every lock route need a credential, even
+for a public repository, and a signed-out request for them is `401` as above. On a `private` server every LFS route needs a sign-in. A
+credential that is sent must be valid, and a private repository the caller has no part in is `404`, signed out or not.
 
 ## Locks: mapping to pyn locks
 

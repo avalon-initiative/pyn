@@ -296,9 +296,9 @@ async fn anonymous_clone_and_lfs_download_of_a_public_repository_follow_the_mode
     set_mode(&w, &Cred::dev("root"), "public").await;
     let (status, _) = fetch(&w).await;
     assert_eq!(status, StatusCode::OK);
-    // LFS routes need a credential in both modes.
+    // A public repository's LFS download no longer needs a credential here; the object is just not stored.
     let (status, _) = call(&w.app, &Cred::SignedOut, Method::GET, lfs, None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, body) = call(
         &w.app,
         &Cred::SignedOut,
