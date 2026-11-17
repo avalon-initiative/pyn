@@ -265,8 +265,8 @@ tokens, password), create repositories in its own namespace and read public repo
   Everything else needs a role: lock, checkin, restore, upload, force-unlock, audit, members, roles and invitations
   answer `403` to a signed-in person without the permission and `401` to an anonymous request.
 - **Private** answers `404 repo_not_found` to anyone without a role, which is also what a repository that does not exist
-  answers. A request that presents a credential that is wrong or expired is `401` either way.
-- A token limited to other repositories, or a role without `read`, still reads a public repository (`read` only).
+  answers; a token limited to other repositories gets the same `404`, with the same body. A request that presents a credential that is wrong or expired is `401` either way.
+- A token limited to other repositories, or a role without `read`, still reads a public repository (`read` only); its writes there, rename and delete included, answer `403`, never `401`.
 - `GET /v1/repos` and `GET /v1/me/locks` list only repositories where the caller has a role (or, for locks, can read);
   public repositories are reached by address or found through `GET /v1/explore/repos`.
 - **Discovery.** `GET /v1/explore/repos` lists public repositories, with or without credentials (a wrong or expired

@@ -1293,6 +1293,18 @@ impl AccessService {
         }
     }
 
+    /// Like `principal_in`, but a token that does not cover `repo` holds nothing there instead of failing.
+    pub async fn principal_or_none(&self, repo: &RepoId, who: &Identity) -> Result<Principal> {
+        if who.covers_repo(repo) {
+            return self.principal_in(repo, who).await;
+        }
+        Ok(Principal {
+            user: who.user.clone(),
+            permissions: BTreeSet::new(),
+            email: None,
+        })
+    }
+
     /// Resolves a bearer token to a principal limited to what both the token and the user's role allow in `repo`.
     pub async fn authenticate(&self, repo: &RepoId, raw: &str) -> Result<Principal> {
         let who = self.identify(raw).await?;

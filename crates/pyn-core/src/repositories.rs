@@ -330,7 +330,7 @@ impl Repositories {
         actor: &Identity,
         record: &RepoRecord,
     ) -> Result<RepoBreakdown> {
-        let held = self.access.principal_in(&record.id, actor).await?;
+        let held = self.access.principal_or_none(&record.id, actor).await?;
         held.require(Permission::ManageRoles)?;
         self.meta.repo_breakdown(&record.id).await
     }
@@ -637,7 +637,7 @@ impl Repositories {
                 .require_org_owner(&record.owner, &actor.user)
                 .await?;
         }
-        let held = self.access.principal_in(&record.id, actor).await?;
+        let held = self.access.principal_or_none(&record.id, actor).await?;
         held.require(Permission::ManageRoles)
     }
 
