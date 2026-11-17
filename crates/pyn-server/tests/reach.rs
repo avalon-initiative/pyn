@@ -569,6 +569,25 @@ async fn each_credential_kind_meets_the_routes_it_should() {
                 continue;
             }
             let refused = reply.refused(is_lfs(d.path));
+            let repo_route = matches!(
+                d.reach,
+                Reach::RepoScoped(_)
+                    | Reach::RepoVisible
+                    | Reach::PublicRepoRead
+                    | Reach::PublicRepoVisible
+            );
+            if kind == Kind::OtherRepo
+                && repo_route
+                && !public_repo
+                && d.method != Method::HEAD
+                && reply.status != StatusCode::NOT_FOUND
+            {
+                failures.push(format!(
+                    "{label}: a token for another repository must get 404, got {} {}",
+                    reply.status,
+                    String::from_utf8_lossy(&reply.body)
+                ));
+            }
             match expected(d.reach, kind) {
                 Expect::Reached if refused => failures.push(format!(
                     "{label}: expected to reach the route, got {} {}",
@@ -618,4 +637,45 @@ fn the_table_uses_every_reach_kind() {
     ] {
         assert!(used.contains(kind), "no route declares {kind}");
     }
+}
+
+/// A token made for another repository gets the answer a missing repository gets, and a public one only read.
+#[tokio::test]
+async fn a_token_for_another_repository_is_told_it_does_not_exist() {
+    let (app, cred) = world(Kind::OtherRepo, Reach::RepoVisible).await;
+    for method in [Method::GET, Method::PATCH, Method::DELETE] {
+        let body = (method == Method::PATCH).then(|| "{}".to_string());
+        let uncovered = send(
+            &app,
+            &cred,
+            &method,
+            "/v1/repos/alice/game",
+            body.clone(),
+            &[],
+        )
+        .await;
+        let missing = send(&app, &cred, &method, "/v1/repos/alice/ghost", body, &[]).await;
+        assert_eq!(uncovered.status, StatusCode::NOT_FOUND, "{method}");
+        assert_eq!(uncovered.status, missing.status, "{method}");
+        assert_eq!(
+            String::from_utf8_lossy(&uncovered.body).replace("game", "ghost"),
+            String::from_utf8_lossy(&missing.body),
+            "{method}"
+        );
+        assert_eq!(uncovered.code().as_deref(), Some("repo_not_found"));
+    }
+    for method in [Method::PATCH, Method::DELETE] {
+        let r = send(
+            &app,
+            &cred,
+            &method,
+            "/v1/repos/alice/open",
+            Some("{}".into()),
+            &[],
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{method}");
+    }
+    let r = send(&app, &cred, &Method::GET, "/v1/repos/alice/open", None, &[]).await;
+    assert_eq!(r.status, StatusCode::OK);
 }
