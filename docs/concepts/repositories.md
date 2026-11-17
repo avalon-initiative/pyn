@@ -54,7 +54,7 @@ people act on its behalf, and a request that names an organization as the signed
 
 - **Create.** Any signed-in account may create an organization (`POST /v1/orgs`) and becomes its first **owner**. The person
   running the server can restrict this to server administrators with `PYN_ORG_CREATION=admins` (default `anyone`); anyone
-  else then gets `403 server_admin_required`. A token needs `manage_roles` and no repository limit, as for creating a
+  else then gets `403 server_admin_required`. A token needs `administration` write on all of its account's repositories (a `pyn login` token also qualifies), as for creating a
   repository. A name already taken by a user or an organization is `409 user_exists`.
 - **Repositories.** An owner always creates repositories in the organization (`POST /v1/repos` with `owner` set to it), public
   or private; other members only as the [creation policy](#repository-creation-policy) allows, and become the repository's
@@ -78,7 +78,7 @@ people act on its behalf, and a request that names an organization as the signed
   [invitation](#invitations) they accept or decline. Any member can list the members
   (`GET /v1/orgs/{org}/members`); owners change a role (`PATCH /v1/orgs/{org}/members/{user}`) or remove a member
   (`DELETE /v1/orgs/{org}/members/{user}`), and any member can remove themselves (leave). Changing members needs, for a
-  token, `manage_roles` and no repository limit. The member role does not by itself give access to any repository: access
+  token, `administration` write on all of its account's repositories. The member role does not by itself give access to any repository: access
   comes from a direct grant or a [team](#teams). An organization **always keeps an owner**: demoting or removing the last one
   is `409 last_org_owner`.
 - **Direct grants.** A direct role on an organization's repository goes only to a member of the organization, whether it is
@@ -115,7 +115,7 @@ Errors: `404 user_not_found`, `400 invalid_request` for an organization name or 
 `409 already_invited`, `404 org_invitation_not_found` (accept, decline or cancel with nothing pending, also after
 expiry). The member limit is checked when the invitation is accepted (`409 member_limit_reached`, the invitation
 stays), and a frozen organization refuses to accept or cancel. Accepting or declining needs, for a token,
-`manage_roles` and no repository limit; listing needs a full-scope credential.
+`administration` write on all of its account's repositories; listing needs a full-scope credential.
 
 The operator can allow **direct add**. When the operator sets `PYN_ORG_MEMBER_ADD=direct`, a server administrator who owns the organization is
 added without an invitation: the same request answers `201` with the member `{user, role}` and a pending invitation
@@ -151,7 +151,7 @@ SUBJECT`; `pyn org policy set <org> --members none|private|both`; `pyn org polic
 <subject>`. When the policy refuses `pyn repo create <org>/<name>`, the CLI says which visibility the organization does not let
 you create, or that you are not a member.
 
-Changing the policy needs, for a token, `manage_roles` and no repository limit. A bad effect, kind, subject or scope is
+Changing the policy needs, for a token, `administration` write on all of its account's repositories. A bad effect, kind, subject or scope is
 `400 invalid_request`. Changes are recorded in the organization log as `repo_creation_policy_changed` (the base
 setting), `repo_creation_rule_set` and `repo_creation_rule_removed`. Rules for a team go when the team is deleted, and
 rules for a person when they leave or are removed; the `team_deleted` and `org_member_removed` entries say which.
@@ -187,7 +187,7 @@ created, name, team), `pyn team show <org>/<team>` (details, members and the rep
 `pyn team access [<owner>/<repo>]` (the teams that hold a role in a repository, defaulting to the current one).
 
 Reading teams needs a [full-scope credential](access.md#full-scope-credentials), and a team's `repos` list only repositories the caller could open.
-Managing teams and their members needs, for a token, `manage_roles` and no repository limit, as for organization members.
+Managing teams and their members needs, for a token, `administration` write on all of its account's repositories, as for organization members.
 Granting a team a role follows the rule for people: the actor needs `manage_users` and every permission the role grants
 (`403 forbidden` otherwise), and removing a grant needs the permissions of the role being removed. The team events are
 `team_created`, `team_updated`, `team_deleted`, `team_member_added`, `team_member_removed` (organization log) and
