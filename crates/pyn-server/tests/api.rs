@@ -571,6 +571,10 @@ async fn a_token_cannot_ask_for_more_than_its_owner_holds() {
     let st = state(false).await;
     let admin = admin_token(&st).await;
     st.access
+        .account_for_tests(&UserId::new("wendy"))
+        .await
+        .unwrap();
+    st.access
         .set_user_role(
             &st.access
                 .principal(&RepoId::new(REPO_ID), &UserId::new("root"))
@@ -684,9 +688,26 @@ async fn a_revoked_token_stops_working_and_whoami_reports_the_caller() {
 async fn admins_manage_members_and_roles_and_others_cannot() {
     let st = state(false).await;
     let admin = admin_token(&st).await;
+    st.access
+        .account_for_tests(&UserId::new("wendy"))
+        .await
+        .unwrap();
     let app = router(st);
 
     let add = serde_json::json!({"role": "writer"});
+    assert_eq!(
+        status_and_code(
+            &app,
+            with_token(
+                "PUT",
+                "/v1/repos/owner/game/members/ghost",
+                &admin,
+                Some(add.clone())
+            )
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "user_not_found".to_string())
+    );
     assert_eq!(
         status(
             &app,
@@ -769,6 +790,10 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
     let root = st
         .access
         .principal(&RepoId::new(REPO_ID), &UserId::new("root"))
+        .await
+        .unwrap();
+    st.access
+        .account_for_tests(&UserId::new("wendy"))
         .await
         .unwrap();
     st.access
@@ -907,6 +932,10 @@ async fn member_token(st: &AppState, name: &str, role: pyn_core::Role) -> String
     let root = st
         .access
         .principal(&RepoId::new(REPO_ID), &UserId::new("root"))
+        .await
+        .unwrap();
+    st.access
+        .account_for_tests(&UserId::new(name))
         .await
         .unwrap();
     st.access
@@ -2055,6 +2084,7 @@ async fn repositories_keep_files_locks_roles_and_audit_apart() {
     };
     assert_eq!((audit("one").await, audit("two").await), (1, 1));
 
+    register_and_sign_in(&app, "carol").await;
     send(
         &app,
         "PUT",

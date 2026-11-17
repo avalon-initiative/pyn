@@ -153,7 +153,7 @@ fn user_add_without_a_repository_asks_for_one_on_a_git_home() {
 
 #[test]
 fn repository_commands_take_an_explicit_repository_on_a_git_home() {
-    let env = common::start();
+    let env = common::start_with_repo_and_accounts(&["bob"]);
     let repo = Repo::new("sha1");
     let before = snapshot(&repo.main);
     let cwd = &repo.main;

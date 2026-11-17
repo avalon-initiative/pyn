@@ -48,6 +48,10 @@ async fn member(st: &AppState, name: &str, role: Role) -> String {
         .await
         .unwrap();
     st.access
+        .account_for_tests(&UserId::new(name))
+        .await
+        .unwrap();
+    st.access
         .set_user_role(&root, &RepoId::new(REPO_ID), &UserId::new(name), role)
         .await
         .unwrap();

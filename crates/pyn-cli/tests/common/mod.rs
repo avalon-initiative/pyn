@@ -48,6 +48,11 @@ pub fn start_with_accounts(names: &[&str]) -> Env {
     build(false, names, None)
 }
 
+/// A server with `alice/game` registered and these accounts already registered.
+pub fn start_with_repo_and_accounts(names: &[&str]) -> Env {
+    build(true, names, None)
+}
+
 /// A server that has not been set up and expects this setup token.
 pub fn start_uninitialised(token: &str) -> Env {
     build(false, &[], Some(token))

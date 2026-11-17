@@ -339,6 +339,7 @@ pub(crate) async fn list_members(
     params(RepoAddress, ("user" = String, Path, description = "the member's user name")), request_body = api::SetMemberRequest, responses(
     (status = 204),
     (status = 403, body = api::ErrorBody, description = "needs manage_users and every permission the role grants"),
+    (status = 404, body = api::ErrorBody, description = "user_not_found: the account must already exist, it is never created here"),
 ))]
 pub(crate) async fn set_member(
     State(s): State<AppState>,

@@ -7012,6 +7012,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "user_not_found: the account must already exist, it is never created here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }

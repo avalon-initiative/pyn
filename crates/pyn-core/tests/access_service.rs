@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use Permission::*;
 use chrono::{Duration, TimeZone, Utc};
-use pyn_core::memory::MemoryAccessStore;
+use pyn_core::memory::{MemoryAccessStore, MemoryAuditStore};
 use pyn_core::{
-    AccessService, Credential, Identity, ManualClock, Permission, Principal, PynError, RepoId,
-    Role, UserId,
+    AccessService, AccessStore, AuditQuery, AuditScope, AuditStore, Credential, Identity,
+    ManualClock, Permission, Principal, PynError, RepoId, Role, UserId,
 };
 
 struct World {
@@ -52,10 +52,17 @@ async fn admin(w: &World) -> Principal {
     w.svc.principal(&w.repo, &user("root")).await.unwrap()
 }
 
+async fn accounts(w: &World, names: &[&str]) {
+    for name in names {
+        w.svc.account_for_tests(&user(name)).await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn default_roles_grow_in_capability() {
     let w = world().await;
     let root = admin(&w).await;
+    accounts(&w, &["r", "w", "m"]).await;
     for (name, role) in [
         ("r", Role::Reader),
         ("w", Role::Writer),
@@ -85,6 +92,7 @@ async fn default_roles_grow_in_capability() {
 async fn a_token_authenticates_with_the_intersection_of_token_and_role() {
     let w = world().await;
     let root = admin(&w).await;
+    accounts(&w, &["wendy"]).await;
     w.svc
         .set_user_role(&root, &w.repo, &user("wendy"), Role::Writer)
         .await
@@ -127,6 +135,7 @@ async fn a_token_authenticates_with_the_intersection_of_token_and_role() {
 async fn a_token_cannot_hold_more_than_its_owner() {
     let w = world().await;
     let root = admin(&w).await;
+    accounts(&w, &["wendy"]).await;
     w.svc
         .set_user_role(&root, &w.repo, &user("wendy"), Role::Writer)
         .await
@@ -243,6 +252,7 @@ async fn bad_revoked_expired_and_out_of_scope_tokens_are_rejected() {
 async fn tokens_belong_to_their_owner_unless_an_admin_steps_in() {
     let w = world().await;
     let root = admin(&w).await;
+    accounts(&w, &["alice", "bob"]).await;
     for name in ["alice", "bob"] {
         w.svc
             .set_user_role(&root, &w.repo, &user(name), Role::Writer)
@@ -292,6 +302,7 @@ async fn tokens_belong_to_their_owner_unless_an_admin_steps_in() {
 async fn only_admins_manage_users_and_nobody_grants_more_than_they_hold() {
     let w = world().await;
     let root = admin(&w).await;
+    accounts(&w, &["maya", "new", "sly"]).await;
     w.svc
         .set_user_role(&root, &w.repo, &user("maya"), Role::Maintainer)
         .await
@@ -341,6 +352,7 @@ async fn only_admins_manage_users_and_nobody_grants_more_than_they_hold() {
 async fn the_owner_can_adjust_roles_but_admin_keeps_access_management() {
     let w = world().await;
     let root = admin(&w).await;
+    accounts(&w, &["wendy"]).await;
     w.svc
         .set_user_role(&root, &w.repo, &user("wendy"), Role::Writer)
         .await
@@ -375,6 +387,7 @@ async fn the_owner_can_adjust_roles_but_admin_keeps_access_management() {
 async fn role_definitions_need_a_role_in_the_repository() {
     let w = world().await;
     let root = admin(&w).await;
+    accounts(&w, &["r"]).await;
     w.svc
         .set_user_role(&root, &w.repo, &user("r"), Role::Reader)
         .await
@@ -396,4 +409,111 @@ async fn role_definitions_need_a_role_in_the_repository() {
         w.svc.role_definitions(&outsider, &w.repo, "a/game").await,
         Err(PynError::NotRepoMember(_))
     ));
+}
+
+struct Audited {
+    svc: AccessService,
+    store: Arc<MemoryAccessStore>,
+    audit: Arc<MemoryAuditStore>,
+    repo: RepoId,
+}
+
+async fn audited() -> Audited {
+    let clock = Arc::new(ManualClock::new(
+        Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
+    ));
+    let store = Arc::new(MemoryAccessStore::new());
+    let audit = Arc::new(MemoryAuditStore::new());
+    let svc = AccessService::new(
+        store.clone(),
+        clock,
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_audit(audit.clone());
+    Audited {
+        svc,
+        store,
+        audit,
+        repo: RepoId::new("game"),
+    }
+}
+
+async fn audit_len(a: &Audited) -> usize {
+    let query = AuditQuery {
+        limit: 100,
+        ..Default::default()
+    };
+    a.audit
+        .list(&AuditScope::Repo(a.repo.clone()), &query)
+        .await
+        .unwrap()
+        .len()
+}
+
+#[tokio::test]
+async fn a_role_never_creates_an_account() {
+    let a = audited().await;
+    a.svc.admin_for_tests(&user("root")).await.unwrap();
+    a.svc.add_creator(&a.repo, &user("root")).await.unwrap();
+    let root = a.svc.principal(&a.repo, &user("root")).await.unwrap();
+    let before = audit_len(&a).await;
+
+    let err = a
+        .svc
+        .set_user_role(&root, &a.repo, &user("ghost"), Role::Reader)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserNotFound(_)), "{err}");
+    assert_eq!(err.code(), "user_not_found");
+    assert!(!a.store.user_exists(&user("ghost")).await.unwrap());
+    assert_eq!(
+        a.store.role_of(&a.repo, &user("ghost")).await.unwrap(),
+        None
+    );
+    assert_eq!(audit_len(&a).await, before);
+
+    a.svc.account_for_tests(&user("bob")).await.unwrap();
+    a.svc
+        .set_user_role(&root, &a.repo, &user("bob"), Role::Writer)
+        .await
+        .unwrap();
+    assert_eq!(
+        a.store.role_of(&a.repo, &user("bob")).await.unwrap(),
+        Some(Role::Writer)
+    );
+    assert_eq!(audit_len(&a).await, before + 1);
+}
+
+#[tokio::test]
+async fn a_scoped_token_with_manage_users_adds_only_existing_accounts() {
+    let w = world().await;
+    let root = admin(&w).await;
+    accounts(&w, &["wendy", "bob"]).await;
+    w.svc
+        .set_user_role(&root, &w.repo, &user("wendy"), Role::Admin)
+        .await
+        .unwrap();
+    let (_, secret) = w
+        .svc
+        .create_token(
+            &session("wendy"),
+            "manage",
+            perms(&[Read, ManageUsers]),
+            vec![w.repo.clone()],
+            None,
+        )
+        .await
+        .unwrap();
+    let scoped = w.svc.authenticate(&w.repo, &secret).await.unwrap();
+
+    w.svc
+        .set_user_role(&scoped, &w.repo, &user("bob"), Role::Reader)
+        .await
+        .unwrap();
+    let err = w
+        .svc
+        .set_user_role(&scoped, &w.repo, &user("ghost"), Role::Reader)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserNotFound(_)), "{err}");
 }
