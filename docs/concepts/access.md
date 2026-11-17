@@ -465,6 +465,12 @@ repository, or create repositories and organizations, only when it is a token of
 `administration` write. Tokens are meant for automation and CI; SSH keys and [OpenID Connect](external-sign-in.md) are for
 signing people in, and resolve to the same users and permissions.
 
+A token for `all` repositories is also refused at creation (`403 forbidden`) when, for one of its grants, the creator holds none of the
+permissions the grant adds in any repository the owner has now: a token that could never do anything is an error, not a silent
+success. This is a convenience; the intersection at use time is what keeps a token within its creator. A member whose role is only
+in repository X therefore cannot select Y (a repository they cannot see is `404 repo_not_found`, as everywhere), and an `all` token
+of theirs acts only in X, only up to their role there, and answers any other repository as a missing one.
+
 A creator's own account is the usual owner, which means a collaborator's token cannot reach a repository somebody else owns; a
 collaborator works with a sign-in token or an organization-owned repository.
 

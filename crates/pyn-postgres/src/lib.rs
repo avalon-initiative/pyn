@@ -2894,7 +2894,7 @@ mod tests {
         for stmt in [
             "ALTER TABLE tokens ADD COLUMN permissions text[]",
             "ALTER TABLE tokens DROP COLUMN description, DROP COLUMN owner, DROP COLUMN repo_access, DROP COLUMN grants",
-            "DELETE FROM _sqlx_migrations WHERE version = 55",
+            "DELETE FROM _sqlx_migrations WHERE version = 56",
             "INSERT INTO users (id, created_at) VALUES ('alice', now())",
         ] {
             sqlx::query(stmt).execute(&store.pool).await.unwrap();

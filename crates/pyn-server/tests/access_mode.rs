@@ -407,10 +407,13 @@ async fn only_a_full_scope_administrator_changes_the_mode() {
     let (_, scoped) = access
         .create_token(
             &as_alice,
-            "narrow",
-            [Permission::Read].into(),
-            vec![repo],
-            None,
+            pyn_core::fixtures::new_token_for(
+                &as_alice,
+                "narrow",
+                [Permission::Read],
+                vec![repo],
+                None,
+            ),
         )
         .await
         .unwrap();

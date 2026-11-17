@@ -272,6 +272,20 @@ async fn invalid_requests_are_refused_with_existing_codes() {
     let r = create(&w.app, &w.alice, body("bob", "all", &[], WRITE)).await;
     assert!(r.is(StatusCode::FORBIDDEN, "not_org_member"));
     let r = create(&w.app, &w.bob, body("acme", "all", &[], WRITE)).await;
+    assert!(
+        r.is(StatusCode::FORBIDDEN, "forbidden"),
+        "a member with no role in any of the organization's repositories gets a useless token refused"
+    );
+    let r = send(
+        &w.app,
+        &w.alice,
+        "PUT",
+        "/v1/repos/acme/tools/members/bob",
+        Some(json!({"role": "writer"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = create(&w.app, &w.bob, body("acme", "all", &[], WRITE)).await;
     assert_eq!(
         r.status,
         StatusCode::OK,
@@ -449,4 +463,167 @@ async fn only_a_sign_in_token_is_full_scope_even_beside_a_token_with_every_grant
     assert_eq!(sign_in.owner, "alice");
     assert_eq!(sign_in.repository_access.mode, "all");
     assert_eq!(sign_in.permissions.len(), 7);
+}
+
+async fn member_of_one_repository() -> World {
+    let w = world().await;
+    repo(&w.app, &w.alice, "acme", "design", "private").await;
+    let r = send(
+        &w.app,
+        &w.alice,
+        "PUT",
+        "/v1/repos/acme/tools/members/bob",
+        Some(json!({"role": "writer"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    w
+}
+
+#[tokio::test]
+async fn an_organization_member_cannot_reach_a_repository_they_lack_through_a_token() {
+    let w = member_of_one_repository().await;
+    for repos in [&["acme/design"][..], &["acme/tools", "acme/design"][..]] {
+        let r = create(&w.app, &w.bob, body("acme", "selected", repos, WRITE)).await;
+        assert!(
+            r.is(StatusCode::NOT_FOUND, "repo_not_found"),
+            "a repository the creator cannot see does not exist for them: {repos:?}"
+        );
+    }
+    let r = create(
+        &w.app,
+        &w.bob,
+        body("acme", "selected", &["acme/tools"], WRITE),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let r = create(&w.app, &w.bob, body("acme", "all", &[], WRITE)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let token = r.json::<api::CreatedToken>().token;
+    assert_eq!(
+        status(&w.app, &token, "GET", "/v1/repos/acme/tools/files").await,
+        StatusCode::OK
+    );
+    let restore = json!({"path": "x", "revision": 1, "base_revision": 2, "confirm": "x@r2"});
+    let by_token = send(
+        &w.app,
+        &token,
+        "POST",
+        "/v1/repos/acme/tools/restore",
+        Some(restore.clone()),
+    )
+    .await;
+    assert!(
+        by_token.is(StatusCode::FORBIDDEN, "forbidden"),
+        "restore is beyond the writer role: {:?}",
+        by_token.status
+    );
+    let in_y = send(&w.app, &token, "GET", "/v1/repos/acme/design/files", None).await;
+    let missing = send(&w.app, &token, "GET", "/v1/repos/acme/nope/files", None).await;
+    assert!(missing.is(StatusCode::NOT_FOUND, "repo_not_found"));
+    assert_eq!(
+        (in_y.status, in_y.json::<api::ErrorBody>().code),
+        (missing.status, missing.json::<api::ErrorBody>().code)
+    );
+    let r = send(
+        &w.app,
+        &token,
+        "POST",
+        "/v1/repos/acme/design/restore",
+        Some(restore),
+    )
+    .await;
+    assert!(r.is(StatusCode::NOT_FOUND, "repo_not_found"));
+}
+
+#[tokio::test]
+async fn demoting_a_member_narrows_their_organization_token() {
+    let w = member_of_one_repository().await;
+    let r = create(&w.app, &w.bob, body("acme", "all", &[], WRITE)).await;
+    let token = r.json::<api::CreatedToken>().token;
+    let upload = || {
+        let (app, token) = (w.app.clone(), token.clone());
+        async move {
+            let req = Request::builder()
+                .method("PUT")
+                .uri("/v1/repos/acme/tools/objects")
+                .cred(&Cred::bearer(&token))
+                .body(Body::from("hello"))
+                .unwrap();
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
+    assert_eq!(upload().await, StatusCode::OK);
+    let r = send(
+        &w.app,
+        &w.alice,
+        "PUT",
+        "/v1/repos/acme/tools/members/bob",
+        Some(json!({"role": "reader"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(upload().await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        status(&w.app, &token, "GET", "/v1/repos/acme/tools/files").await,
+        StatusCode::OK,
+        "reading stays"
+    );
+}
+
+#[tokio::test]
+async fn a_grant_the_creator_does_not_hold_is_refused_and_a_collaborators_token_stays_at_home() {
+    let w = member_of_one_repository().await;
+    let r = send(
+        &w.app,
+        &w.alice,
+        "PUT",
+        "/v1/repos/acme/tools/members/bob",
+        Some(json!({"role": "reader"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    for grants in [
+        &[("contents", "read"), ("locks", "write")][..],
+        &[("contents", "read"), ("policy", "write")][..],
+    ] {
+        let r = create(
+            &w.app,
+            &w.bob,
+            body("acme", "selected", &["acme/tools"], grants),
+        )
+        .await;
+        assert!(r.is(StatusCode::FORBIDDEN, "forbidden"), "{grants:?}");
+    }
+
+    let r = send(
+        &w.app,
+        &w.alice,
+        "PUT",
+        "/v1/repos/alice/game/members/bob",
+        Some(json!({"role": "writer"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let files = "/v1/repos/alice/game/files";
+    assert_eq!(status(&w.app, &w.bob, "GET", files).await, StatusCode::OK);
+    let r = create(
+        &w.app,
+        &w.bob,
+        body("bob", "selected", &["alice/game"], WRITE),
+    )
+    .await;
+    assert!(r.is(StatusCode::BAD_REQUEST, "invalid_request"));
+    let r = create(
+        &w.app,
+        &w.bob,
+        body("bob", "selected", &["bob/open"], WRITE),
+    )
+    .await;
+    let token = r.json::<api::CreatedToken>().token;
+    assert_eq!(
+        status(&w.app, &token, "GET", files).await,
+        StatusCode::NOT_FOUND
+    );
 }

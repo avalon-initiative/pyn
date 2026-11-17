@@ -1400,6 +1400,10 @@ impl AccessService {
                 Self::require_grants_held(&held, &grants)?;
             }
         }
+        if req.repo_access == RepoAccess::All {
+            self.require_grants_held_somewhere(actor, &req.owner, &grants)
+                .await?;
+        }
         let (record, full) = self
             .issue_token(
                 &actor.user,
@@ -1447,6 +1451,32 @@ impl AccessService {
             let delta = grant_delta(*resource, *level);
             if let Some(first) = delta.first()
                 && !delta.iter().any(|p| held.has(*p))
+            {
+                return Err(PynError::Forbidden(*first));
+            }
+        }
+        Ok(())
+    }
+
+    /// For an `all` token, every grant must add something the creator holds in at least one repository the owner has
+    /// now; use-time intersection stays the guarantee.
+    async fn require_grants_held_somewhere(
+        &self,
+        actor: &Identity,
+        owner: &UserId,
+        grants: &BTreeMap<TokenResource, GrantLevel>,
+    ) -> Result<()> {
+        let Some(registry) = &self.registry else {
+            return Ok(());
+        };
+        let mut held = Vec::new();
+        for repo in registry.list_repos(Some(owner)).await? {
+            held.push(self.principal_in(&repo.id, actor).await?);
+        }
+        for (resource, level) in grants {
+            let delta = grant_delta(*resource, *level);
+            if let Some(first) = delta.first()
+                && !held.iter().any(|h| delta.iter().any(|p| h.has(*p)))
             {
                 return Err(PynError::Forbidden(*first));
             }

@@ -8446,9 +8446,15 @@ pub async fn a_token_owner_is_the_creator_or_an_organization_they_belong_to(stor
     let err = |r: crate::Result<(TokenRecord, String)>| r.unwrap_err();
     let bob = session("bob");
     let own = access
-        .create_token(&bob, request("bob", RepoAccess::All, &[]))
+        .create_token(&session("alice"), request("alice", RepoAccess::All, &[]))
         .await;
     assert!(own.is_ok(), "the creator's own account");
+    let tools = RepoId::new("acme/tools");
+    let owner = access.principal(&tools, &user("alice")).await.unwrap();
+    access
+        .set_user_role(&owner, &tools, &user("bob"), Role::Writer)
+        .await
+        .unwrap();
     let org = access
         .create_token(&bob, request("acme", RepoAccess::All, &[]))
         .await;
@@ -8627,6 +8633,205 @@ pub async fn only_a_sign_in_token_is_full_scope_and_reaches_every_owner(store: A
     );
 }
 
+/// acme owns `acme/tools` (X) and `acme/design` (Y); bob is a member of acme with a writer role in X only.
+async fn member_in_one_repository(store: &Access) -> (AccessService, Identity, RepoId, RepoId) {
+    let (access, meta) = token_world(store).await;
+    meta.create_repo(repo_record("acme/design", "acme", "design"))
+        .await
+        .unwrap();
+    let (x, y) = (RepoId::new("acme/tools"), RepoId::new("acme/design"));
+    let owner = access.principal(&x, &user("alice")).await.unwrap();
+    access
+        .set_user_role(&owner, &x, &user("bob"), Role::Writer)
+        .await
+        .unwrap();
+    (access, session("bob"), x, y)
+}
+
+pub async fn a_member_cannot_make_an_organization_token_reach_a_repository_they_lack(
+    store: Access,
+) {
+    let (access, bob, _, _) = member_in_one_repository(&store).await;
+    let selects_y = request("acme", RepoAccess::Selected, &["acme/design"]);
+    let err = access.create_token(&bob, selects_y).await.unwrap_err();
+    assert!(matches!(err, PynError::Forbidden(_)), "{err}");
+    let both = request("acme", RepoAccess::Selected, &["acme/tools", "acme/design"]);
+    let err = access.create_token(&bob, both).await.unwrap_err();
+    assert!(matches!(err, PynError::Forbidden(_)), "{err}");
+    let ok = request("acme", RepoAccess::Selected, &["acme/tools"]);
+    assert!(access.create_token(&bob, ok).await.is_ok());
+}
+
+pub async fn an_all_repositories_organization_token_acts_only_where_and_as_far_as_its_creator_does(
+    store: Access,
+) {
+    use crate::{GrantLevel::*, TokenResource::*};
+    let (access, bob, x, y) = member_in_one_repository(&store).await;
+    let req = NewToken {
+        grants: [(Contents, Write), (Locks, Write)].into(),
+        ..request("acme", RepoAccess::All, &[])
+    };
+    let token = mint(&access, "bob", req).await;
+    let held = access.principal_in(&x, &token).await.unwrap().permissions;
+    assert_eq!(
+        held,
+        [Permission::Read, Permission::Checkin, Permission::Lock].into(),
+        "restore is beyond the writer role"
+    );
+    let in_y = access.principal_or_none(&y, &token).await.unwrap();
+    assert!(in_y.permissions.is_empty(), "no role in Y, so nothing in Y");
+    assert_eq!(
+        access.principal_in(&y, &bob).await.unwrap().permissions,
+        in_y.permissions,
+        "the same as its creator"
+    );
+}
+
+pub async fn demoting_a_member_narrows_their_organization_token(store: Access) {
+    use crate::{GrantLevel::*, TokenResource::*};
+    let (access, _, x, _) = member_in_one_repository(&store).await;
+    let req = NewToken {
+        grants: [(Contents, Write), (Locks, Write)].into(),
+        ..request("acme", RepoAccess::All, &[])
+    };
+    let token = mint(&access, "bob", req).await;
+    let held = || async { access.principal_in(&x, &token).await.unwrap().permissions };
+    assert!(held().await.contains(&Permission::Checkin));
+    let owner = access.principal(&x, &user("alice")).await.unwrap();
+    access
+        .set_user_role(&owner, &x, &user("bob"), Role::Reader)
+        .await
+        .unwrap();
+    assert_eq!(held().await, [Permission::Read].into());
+}
+
+pub async fn a_grant_that_adds_nothing_the_creator_holds_is_refused(store: Access) {
+    use crate::{GrantLevel::*, TokenResource::*};
+    let (access, bob, _, _) = member_in_one_repository(&store).await;
+    let owner = access
+        .principal(&RepoId::new("acme/tools"), &user("alice"))
+        .await
+        .unwrap();
+    access
+        .set_user_role(
+            &owner,
+            &RepoId::new("acme/tools"),
+            &user("bob"),
+            Role::Reader,
+        )
+        .await
+        .unwrap();
+    for (grants, denied) in [
+        ([(Contents, Read), (Locks, Write)], Permission::Lock),
+        ([(Contents, Write), (Locks, Read)], Permission::Checkin),
+        ([(Contents, Read), (Audit, Read)], Permission::ViewAudit),
+    ] {
+        let req = NewToken {
+            grants: grants.into(),
+            ..request("acme", RepoAccess::Selected, &["acme/tools"])
+        };
+        let err = access.create_token(&bob, req).await.unwrap_err();
+        assert!(
+            matches!(&err, PynError::Forbidden(p) if *p == denied),
+            "{err}"
+        );
+    }
+    let req = NewToken {
+        grants: [(Contents, Write)].into(),
+        ..request("acme", RepoAccess::All, &[])
+    };
+    assert!(matches!(
+        access.create_token(&bob, req).await.unwrap_err(),
+        PynError::Forbidden(Permission::Checkin)
+    ));
+}
+
+pub async fn an_all_token_is_refused_when_its_creator_holds_nothing_it_grants_anywhere(
+    store: Access,
+) {
+    use crate::{GrantLevel::*, TokenResource::*};
+    let (access, bob, _, _) = member_in_one_repository(&store).await;
+    let mine = NewToken {
+        grants: [(Contents, Read)].into(),
+        ..request("bob", RepoAccess::All, &[])
+    };
+    assert!(
+        matches!(
+            access.create_token(&bob, mine).await.unwrap_err(),
+            PynError::Forbidden(Permission::Read)
+        ),
+        "bob owns no repository"
+    );
+    let force = NewToken {
+        grants: [(Locks, Admin)].into(),
+        ..request("acme", RepoAccess::All, &[])
+    };
+    assert!(matches!(
+        access.create_token(&bob, force).await.unwrap_err(),
+        PynError::Forbidden(Permission::ForceUnlock)
+    ));
+    let locks = NewToken {
+        grants: [(Locks, Write)].into(),
+        ..request("acme", RepoAccess::All, &[])
+    };
+    assert!(
+        access.create_token(&bob, locks).await.is_ok(),
+        "the writer holds lock somewhere in the organization"
+    );
+    let audit = NewToken {
+        grants: [(Audit, Read)].into(),
+        ..request("acme", RepoAccess::All, &[])
+    };
+    assert!(matches!(
+        access.create_token(&bob, audit).await.unwrap_err(),
+        PynError::Forbidden(Permission::ViewAudit)
+    ));
+    let alice = session("alice");
+    let ok = NewToken {
+        grants: [(Contents, Write)].into(),
+        ..request("alice", RepoAccess::All, &[])
+    };
+    assert!(access.create_token(&alice, ok).await.is_ok());
+}
+
+pub async fn a_collaborators_personal_token_cannot_reach_a_repository_owned_by_someone_else(
+    store: Access,
+) {
+    let (access, _) = token_world(&store).await;
+    let game = RepoId::new("alice/game");
+    let owner = access.principal(&game, &user("alice")).await.unwrap();
+    access
+        .set_user_role(&owner, &game, &user("bob"), Role::Writer)
+        .await
+        .unwrap();
+    let bob = session("bob");
+    assert!(
+        access
+            .principal_in(&game, &bob)
+            .await
+            .unwrap()
+            .has(Permission::Checkin)
+    );
+    let selects = request("bob", RepoAccess::Selected, &["alice/game"]);
+    let err = access.create_token(&bob, selects).await.unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let all = request("bob", RepoAccess::All, &[]);
+    assert!(
+        access.create_token(&bob, all).await.is_err(),
+        "nothing of bob's to reach"
+    );
+    let token = token_identity_of("bob", "bob", &[Permission::Read, Permission::Checkin]);
+    assert!(!access.covers(&game, &token).await.unwrap());
+    assert!(
+        access
+            .principal_or_none(&game, &token)
+            .await
+            .unwrap()
+            .permissions
+            .is_empty()
+    );
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
@@ -8638,6 +8843,12 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_token_acts_with_the_intersection_of_its_grants_and_the_creators_role);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; token_grants_are_validated_and_expiry_defaults_to_thirty_days);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; only_a_sign_in_token_is_full_scope_and_reaches_every_owner);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_member_cannot_make_an_organization_token_reach_a_repository_they_lack);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; an_all_repositories_organization_token_acts_only_where_and_as_far_as_its_creator_does);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; demoting_a_member_narrows_their_organization_token);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_grant_that_adds_nothing_the_creator_holds_is_refused);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; an_all_token_is_refused_when_its_creator_holds_nothing_it_grants_anywhere);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_collaborators_personal_token_cannot_reach_a_repository_owned_by_someone_else);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; added_addresses_are_unique_pending_until_verified_and_the_primary_must_be_verified);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_address_promotes_a_verified_one_and_can_keep_the_last);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_rename_moves_what_names_the_account_and_refuses_a_taken_name);
