@@ -2,11 +2,11 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
-use pyn_core::{AccountDeletion, Credential, Identity, PynError, UserId};
+use pyn_core::{AccountDeletion, UserId};
 use pyn_proto as api;
 
-use crate::{ApiResult, AppState, bearer_token, identify_admin, session_api};
+use crate::caller::{FullScopeCaller, ServiceCaller};
+use crate::{ApiResult, AppState};
 
 fn status(
     user: &UserId,
@@ -22,24 +22,6 @@ fn status(
     }
 }
 
-/// Like `identify`, but an account its owner scheduled for deletion is accepted: these routes are how it is restored.
-async fn identify_pending_ok(s: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
-    let who = match (bearer_token(headers), session_api::session_cookie(headers)) {
-        (Some(token), _) => s.access.identify_allowing_pending(token).await?,
-        (None, Some(cookie)) => {
-            s.access
-                .authenticate_session_allowing_pending(cookie)
-                .await?
-                .0
-        }
-        (None, None) => identify_admin(s, headers).await?,
-    };
-    if matches!(who.credential, Credential::Service(_)) {
-        return Err(PynError::ServiceCredentialNotAllowed.into());
-    }
-    Ok(who)
-}
-
 #[utoipa::path(get, path = "/v1/account/deletion", responses(
     (status = 200, body = api::AccountDeletionStatus, description = "works while the account is scheduled for deletion"),
     (status = 401, body = api::ErrorBody, description = "unauthenticated"),
@@ -47,9 +29,8 @@ async fn identify_pending_ok(s: &AppState, headers: &HeaderMap) -> ApiResult<Ide
 ))]
 pub(crate) async fn account_deletion_status(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
 ) -> ApiResult<Json<api::AccountDeletionStatus>> {
-    let who = identify_pending_ok(&s, &headers).await?;
     let deletion = s.access.deletion_status(&who).await?;
     Ok(Json(status(
         &who.user,
@@ -67,10 +48,9 @@ pub(crate) async fn account_deletion_status(
 ))]
 pub(crate) async fn schedule_account_deletion(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::DeleteOwnAccountRequest>,
 ) -> ApiResult<Json<api::AccountDeletionStatus>> {
-    let who = crate::identify(&s, &headers).await?;
     let deletion = s.access.schedule_own_deletion(&who, &req.password).await?;
     Ok(Json(status(
         &who.user,
@@ -86,9 +66,8 @@ pub(crate) async fn schedule_account_deletion(
 ))]
 pub(crate) async fn restore_account_deletion(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
 ) -> ApiResult<Json<api::AccountDeletionStatus>> {
-    let who = identify_pending_ok(&s, &headers).await?;
     s.access.restore_account(&who).await?;
     Ok(Json(status(
         &who.user,
@@ -108,11 +87,10 @@ pub(crate) async fn restore_account_deletion(
 ))]
 pub(crate) async fn admin_delete_account(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(user): Path<String>,
     Json(req): Json<api::AdminDeleteAccountRequest>,
 ) -> ApiResult<Json<api::AdminDeleteAccountResult>> {
-    let who = identify_admin(&s, &headers).await?;
     let user = UserId::new(user);
     let scheduled = s
         .access
@@ -131,9 +109,8 @@ pub(crate) async fn admin_delete_account(
 ))]
 pub(crate) async fn admin_settings(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
 ) -> ApiResult<Json<api::AdminSettings>> {
-    let who = identify_admin(&s, &headers).await?;
     let (window, retention) = s.access.account_deletion_settings(&who).await?;
     let active = s.access.active_admin_count(&who).await?;
     Ok(Json(api::AdminSettings {

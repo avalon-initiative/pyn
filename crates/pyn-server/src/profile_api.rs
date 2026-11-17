@@ -11,7 +11,8 @@ use pyn_core::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility, Py
 use pyn_proto as api;
 use serde::Deserialize;
 
-use crate::{ApiResult, AppState, FileContent, identify, identify_optional};
+use crate::caller::{AnyCaller, FullScopeCaller, OptionalCaller};
+use crate::{ApiResult, AppState, FileContent};
 
 const AVATAR_MAX: u64 = pyn_core::profile::MAX_AVATAR_BYTES;
 
@@ -59,10 +60,9 @@ pub(crate) fn profile_dto(user: &UserId, profile: Profile, own: bool) -> api::Pr
               (status = 404, body = api::ErrorBody, description = "user_not_found: no such user, or an organization, or an account that is disabled or not yet approved")))]
 pub(crate) async fn get_profile(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    OptionalCaller(who): OptionalCaller,
     Path(user): Path<String>,
 ) -> ApiResult<Json<api::PublicProfile>> {
-    let who = identify_optional(&s, &headers).await?;
     let found = profiles(&s).public(&user, who.as_ref()).await?;
     let mut repositories = Vec::with_capacity(found.repositories.len());
     for (record, role) in found.repositories {
@@ -102,10 +102,9 @@ pub(crate) struct PeopleQuery {
               (status = 403, body = api::ErrorBody, description = "forbidden for a token that is not full-scope, service_credential_not_allowed for a service credential")))]
 pub(crate) async fn list_people(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    _: FullScopeCaller,
     Query(q): Query<PeopleQuery>,
 ) -> ApiResult<Json<api::PeoplePage>> {
-    identify(&s, &headers).await?.require_full_scope()?;
     let limit = q.limit.unwrap_or(30).clamp(1, 100);
     let after = q.after.map(UserId::new);
     let (found, next_after) = s
@@ -139,10 +138,9 @@ pub(crate) async fn list_people(
               (status = 403, body = api::ErrorBody, description = "a token that is not full-scope")))]
 pub(crate) async fn update_profile(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::UpdateProfileRequest>,
 ) -> ApiResult<Json<api::Profile>> {
-    let who = identify(&s, &headers).await?;
     let fields = ProfileFields {
         display_name: req.display_name,
         bio: req.bio,
@@ -191,9 +189,9 @@ async fn avatar_bytes(headers: &HeaderMap, body: Body) -> Result<Vec<u8>, PynErr
 pub(crate) async fn put_avatar(
     State(s): State<AppState>,
     headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     body: Body,
 ) -> ApiResult<Json<api::Profile>> {
-    let who = identify(&s, &headers).await?;
     let bytes = avatar_bytes(&headers, body).await?;
     let saved = profiles(&s).set_avatar(&who, bytes).await?;
     Ok(Json(profile_dto(&who.user, saved, true)))
@@ -205,9 +203,8 @@ pub(crate) async fn put_avatar(
               (status = 403, body = api::ErrorBody, description = "a token that is not full-scope")))]
 pub(crate) async fn delete_avatar(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
 ) -> ApiResult<Json<api::Profile>> {
-    let who = identify(&s, &headers).await?;
     let saved = profiles(&s).remove_avatar(&who).await?;
     Ok(Json(profile_dto(&who.user, saved, true)))
 }
@@ -227,10 +224,10 @@ pub(crate) struct AvatarQuery {
 pub(crate) async fn get_avatar(
     State(s): State<AppState>,
     headers: HeaderMap,
+    OptionalCaller(who): OptionalCaller,
     Path(user): Path<String>,
     Query(q): Query<AvatarQuery>,
 ) -> ApiResult<Response> {
-    let who = identify_optional(&s, &headers).await?;
     let (avatar, bytes) = profiles(&s).avatar(&user, who.as_ref()).await?;
     Ok(avatar_response(&headers, q.v.as_deref(), &avatar, bytes))
 }
@@ -297,10 +294,9 @@ pub(crate) fn org_avatar_url(org: &UserId, avatar: Option<&Avatar>) -> Option<St
               (status = 404, body = api::ErrorBody, description = "org_not_found (also for a user name)")))]
 pub(crate) async fn get_org_profile(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    _: AnyCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<api::OrgProfile>> {
-    identify(&s, &headers).await?;
     let found = profiles(&s).org_profile(&org).await?;
     Ok(Json(org_profile_dto(&UserId::new(org), found)))
 }
@@ -314,11 +310,10 @@ pub(crate) async fn get_org_profile(
               (status = 409, body = api::ErrorBody, description = "owner_frozen")))]
 pub(crate) async fn update_org_profile(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(org): Path<String>,
     Json(req): Json<api::UpdateOrgProfileRequest>,
 ) -> ApiResult<Json<api::OrgProfile>> {
-    let who = identify(&s, &headers).await?;
     let org = UserId::new(org);
     let saved = s
         .access
@@ -341,10 +336,10 @@ pub(crate) async fn update_org_profile(
 pub(crate) async fn put_org_avatar(
     State(s): State<AppState>,
     headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(org): Path<String>,
     body: Body,
 ) -> ApiResult<Json<api::OrgProfile>> {
-    let who = identify(&s, &headers).await?;
     let bytes = avatar_bytes(&headers, body).await?;
     let saved = profiles(&s).set_org_avatar(&who, &org, bytes).await?;
     Ok(Json(org_profile_dto(&UserId::new(org), saved)))
@@ -358,10 +353,9 @@ pub(crate) async fn put_org_avatar(
               (status = 409, body = api::ErrorBody, description = "owner_frozen")))]
 pub(crate) async fn delete_org_avatar(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<api::OrgProfile>> {
-    let who = identify(&s, &headers).await?;
     let saved = profiles(&s).remove_org_avatar(&who, &org).await?;
     Ok(Json(org_profile_dto(&UserId::new(org), saved)))
 }

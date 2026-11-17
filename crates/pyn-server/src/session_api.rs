@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use pyn_core::{PynError, SessionRecord};
 use pyn_proto as api;
 
+use crate::caller::SessionCaller;
 use crate::client::Client;
 use crate::origin::{self, Source};
 use crate::{ApiResult, AppState};
@@ -88,7 +89,7 @@ pub(crate) async fn csrf_guard(State(s): State<AppState>, req: Request, next: Ne
     let headers = req.headers();
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     let sign_in = req.method() == Method::POST && req.uri().path() == "/v1/session";
-    if safe || crate::uses_non_cookie_credential(&s, headers) {
+    if safe || crate::caller::uses_non_cookie_credential(&s, headers) {
         return next.run(req).await;
     }
     let cookie = session_cookie(headers);
@@ -145,17 +146,8 @@ pub(crate) async fn sign_in(
     (status = 200, body = api::SessionInfo, description = "also answers while the account is scheduled for deletion, so it can be restored"),
     (status = 401, body = api::ErrorBody, description = "not signed in"),
 ))]
-pub(crate) async fn current(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-) -> ApiResult<Json<api::SessionInfo>> {
-    let cookie = session_cookie(&headers)
-        .ok_or_else(|| PynError::Unauthenticated("not signed in".into()))?;
-    let (_, record) = s
-        .access
-        .authenticate_session_allowing_pending(cookie)
-        .await?;
-    Ok(Json(info(&record)))
+pub(crate) async fn current(SessionCaller(record): SessionCaller) -> Json<api::SessionInfo> {
+    Json(info(&record))
 }
 
 #[utoipa::path(delete, path = "/v1/session", responses(

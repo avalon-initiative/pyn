@@ -2,13 +2,11 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use pyn_core::{AccountKind, LimitsChange, UserId};
 use pyn_proto as api;
 
-use crate::{
-    ApiResult, AppState, RepoAddress, authorize_read, identify, identify_admin, open_visible,
-};
+use crate::caller::{RepoCaller, RepoReader, ServiceCaller};
+use crate::{ApiResult, AppState, RepoAddress};
 
 fn limits_dto(l: pyn_core::Limits) -> api::Limits {
     api::Limits {
@@ -39,9 +37,8 @@ fn owner_limits_dto(l: pyn_core::OwnerLimits) -> api::OwnerLimits {
               (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_limits")))]
 pub(crate) async fn list_limits(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
 ) -> ApiResult<Json<api::LimitsListing>> {
-    let who = identify_admin(&s, &headers).await?;
     let owners = s.access.list_owner_limits(&who).await?;
     Ok(Json(api::LimitsListing {
         defaults: limits_dto(s.access.default_limits()),
@@ -62,10 +59,9 @@ pub(crate) async fn list_limits(
               (status = 404, body = api::ErrorBody, description = "user_not_found, for an administrator or a service credential only")))]
 pub(crate) async fn owner_limits(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(owner): Path<String>,
 ) -> ApiResult<Json<api::OwnerLimits>> {
-    let who = identify_admin(&s, &headers).await?;
     let limits = s.access.owner_limits(&who, &UserId::new(owner)).await?;
     Ok(Json(owner_limits_dto(limits)))
 }
@@ -80,11 +76,10 @@ pub(crate) async fn owner_limits(
 ))]
 pub(crate) async fn set_owner_limits(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(owner): Path<String>,
     Json(req): Json<api::SetLimitsRequest>,
 ) -> ApiResult<Json<api::OwnerLimits>> {
-    let who = identify_admin(&s, &headers).await?;
     let change = LimitsChange {
         repositories: req.repositories,
         members: req.members,
@@ -104,10 +99,9 @@ pub(crate) async fn set_owner_limits(
               (status = 404, body = api::ErrorBody, description = "user_not_found, for an administrator or a service credential only")))]
 pub(crate) async fn owner_usage(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(owner): Path<String>,
 ) -> ApiResult<Json<api::OwnerUsage>> {
-    let who = identify_admin(&s, &headers).await?;
     let report = s
         .repos
         .owner_report(&who, &UserId::new(owner.clone()))
@@ -146,10 +140,8 @@ fn repo_usage_dto(record: &pyn_core::RepoRecord, used: pyn_core::RepoUsage) -> a
     responses((status = 200, body = api::RepoUsage, description = "readable by anyone who can read the repository")))]
 pub(crate) async fn repo_usage(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader { repo: open, .. }: RepoReader,
 ) -> ApiResult<Json<api::RepoUsage>> {
-    let open = authorize_read(&s, &headers, &owner, &name).await?;
     let used = s.repos.repo_usage(&open.record).await?;
     Ok(Json(repo_usage_dto(&open.record, used)))
 }
@@ -160,11 +152,12 @@ pub(crate) async fn repo_usage(
               (status = 404, body = api::ErrorBody, description = "repo_not_found")))]
 pub(crate) async fn repo_usage_breakdown(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        identity: who,
+        repo: open,
+        ..
+    }: RepoCaller,
 ) -> ApiResult<Json<api::RepoUsageBreakdown>> {
-    let who = identify(&s, &headers).await?;
-    let (open, _) = open_visible(&s, Some(&who), &owner, &name).await?;
     let used = s.repos.repo_usage(&open.record).await?;
     let breakdown = s.repos.repo_breakdown(&who, &open.record).await?;
     Ok(Json(api::RepoUsageBreakdown {
@@ -203,11 +196,10 @@ pub(crate) async fn repo_usage_breakdown(
 ))]
 pub(crate) async fn set_repo_storage_cap(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path((owner, name)): Path<(String, String)>,
     Json(req): Json<api::SetRepoStorageCapRequest>,
 ) -> ApiResult<Json<api::RepoStorageCap>> {
-    let who = identify_admin(&s, &headers).await?;
     let record = s
         .repos
         .set_storage_cap(&who, &UserId::new(owner), &name, req.storage_bytes)

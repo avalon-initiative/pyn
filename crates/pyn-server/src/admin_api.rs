@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use pyn_core::{
     AccountDeletion, AccountRecord, AccountStatus, AuditQuery, OrgRole, ServiceCredentialRecord,
     ServiceScope, UserId,
@@ -12,7 +12,8 @@ use pyn_core::{
 use pyn_proto as api;
 use serde::Deserialize;
 
-use crate::{ApiResult, AppState, identify_admin};
+use crate::caller::{AdminCaller, ServiceCaller};
+use crate::{ApiResult, AppState};
 
 fn info(a: AccountRecord) -> api::AccountInfo {
     info_with(a, None)
@@ -46,10 +47,9 @@ pub(crate) struct AccountsQuery {
               (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_accounts")))]
 pub(crate) async fn list_accounts(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Query(q): Query<AccountsQuery>,
 ) -> ApiResult<Json<Vec<api::AccountInfo>>> {
-    let who = identify_admin(&s, &headers).await?;
     let status = q
         .status
         .as_deref()
@@ -78,10 +78,9 @@ pub(crate) async fn list_accounts(
 ))]
 pub(crate) async fn approve(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(user): Path<String>,
 ) -> ApiResult<Json<api::AccountInfo>> {
-    let who = identify_admin(&s, &headers).await?;
     let account = s.access.approve_account(&who, &UserId::new(user)).await?;
     Ok(Json(info(account)))
 }
@@ -97,11 +96,10 @@ pub(crate) async fn approve(
 ))]
 pub(crate) async fn disable(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(user): Path<String>,
     Json(req): Json<api::DisableAccountRequest>,
 ) -> ApiResult<Json<api::AccountInfo>> {
-    let who = identify_admin(&s, &headers).await?;
     let account = s
         .access
         .disable_account(&who, &UserId::new(user), req.reason.as_deref())
@@ -119,10 +117,9 @@ pub(crate) async fn disable(
 ))]
 pub(crate) async fn enable(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(user): Path<String>,
 ) -> ApiResult<Json<api::AccountInfo>> {
-    let who = identify_admin(&s, &headers).await?;
     let account = s.access.enable_account(&who, &UserId::new(user)).await?;
     Ok(Json(info(account)))
 }
@@ -137,10 +134,9 @@ pub(crate) async fn enable(
 ))]
 pub(crate) async fn grant_admin(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    AdminCaller(who): AdminCaller,
     Path(user): Path<String>,
 ) -> ApiResult<Json<api::AccountInfo>> {
-    let who = identify_admin(&s, &headers).await?;
     let account = s.access.grant_admin(&who, &UserId::new(user)).await?;
     Ok(Json(info(account)))
 }
@@ -155,10 +151,9 @@ pub(crate) async fn grant_admin(
 ))]
 pub(crate) async fn revoke_admin(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    AdminCaller(who): AdminCaller,
     Path(user): Path<String>,
 ) -> ApiResult<Json<api::AccountInfo>> {
-    let who = identify_admin(&s, &headers).await?;
     let account = s.access.revoke_admin(&who, &UserId::new(user)).await?;
     Ok(Json(info(account)))
 }
@@ -176,10 +171,9 @@ pub(crate) struct AuditParams {
               (status = 403, body = api::ErrorBody, description = "server_admin_required: service credentials cannot read the log")))]
 pub(crate) async fn audit(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    AdminCaller(who): AdminCaller,
     Query(q): Query<AuditParams>,
 ) -> ApiResult<Json<api::AuditPage>> {
-    let who = identify_admin(&s, &headers).await?;
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let query = AuditQuery {
         before: q.before,
@@ -211,10 +205,9 @@ pub(crate) async fn audit(
 ))]
 pub(crate) async fn create_org(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Json(req): Json<api::AdminCreateOrgRequest>,
 ) -> ApiResult<(StatusCode, Json<api::OrgInfo>)> {
-    let who = identify_admin(&s, &headers).await?;
     let org = s
         .access
         .admin_create_org(&who, &req.name, &UserId::new(req.owner))
@@ -238,10 +231,9 @@ pub(crate) async fn create_org(
               (status = 409, body = api::ErrorBody, description = "org_not_empty or org_deleting")))]
 pub(crate) async fn delete_org(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(name): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let who = identify_admin(&s, &headers).await?;
     s.access.admin_delete_org(&who, &UserId::new(name)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -265,10 +257,9 @@ fn credential_info(c: ServiceCredentialRecord) -> api::ServiceCredentialInfo {
 ))]
 pub(crate) async fn create_service_credential(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    AdminCaller(who): AdminCaller,
     Json(req): Json<api::CreateServiceCredentialRequest>,
 ) -> ApiResult<(StatusCode, Json<api::CreatedServiceCredential>)> {
-    let who = identify_admin(&s, &headers).await?;
     let scopes = req
         .scopes
         .iter()
@@ -292,9 +283,8 @@ pub(crate) async fn create_service_credential(
               (status = 403, body = api::ErrorBody, description = "server_admin_required")))]
 pub(crate) async fn list_service_credentials(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    AdminCaller(who): AdminCaller,
 ) -> ApiResult<Json<Vec<api::ServiceCredentialInfo>>> {
-    let who = identify_admin(&s, &headers).await?;
     let all = s.access.list_service_credentials(&who).await?;
     Ok(Json(all.into_iter().map(credential_info).collect()))
 }
@@ -306,10 +296,9 @@ pub(crate) async fn list_service_credentials(
               (status = 404, body = api::ErrorBody, description = "service_credential_not_found")))]
 pub(crate) async fn revoke_service_credential(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    AdminCaller(who): AdminCaller,
     Path(name): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let who = identify_admin(&s, &headers).await?;
     s.access.revoke_service_credential(&who, &name).await?;
     Ok(StatusCode::NO_CONTENT)
 }

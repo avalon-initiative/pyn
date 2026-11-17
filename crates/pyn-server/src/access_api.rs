@@ -12,8 +12,9 @@ use pyn_core::{
 use pyn_proto as api;
 use serde::Deserialize;
 
+use crate::caller::{AnyCaller, FullScopeCaller};
 use crate::client::Client;
-use crate::{ApiResult, AppState, identify, open_visible};
+use crate::{ApiResult, AppState, open_visible};
 
 pub(crate) fn names(permissions: &BTreeSet<Permission>) -> Vec<String> {
     permissions.iter().map(|p| p.as_str().to_string()).collect()
@@ -47,9 +48,8 @@ async fn token_info(s: &AppState, t: TokenRecord) -> ApiResult<api::TokenInfo> {
 ))]
 pub(crate) async fn me(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    AnyCaller(who): AnyCaller,
 ) -> ApiResult<Json<api::Account>> {
-    let who = identify(&s, &headers).await?;
     let full = who.is_full_scope();
     Ok(Json(api::Account {
         id: s.access.account_id(&who.user).await?.to_string(),
@@ -74,10 +74,9 @@ pub(crate) async fn me(
 ))]
 pub(crate) async fn create_token(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::CreateTokenRequest>,
 ) -> ApiResult<Json<api::CreatedToken>> {
-    let who = identify(&s, &headers).await?;
     let permissions = parse_permissions(&req.permissions)?;
     let mut repos: Vec<RepoId> = Vec::new();
     for address in &req.repos {
@@ -107,10 +106,9 @@ pub(crate) struct TokensQuery {
     responses((status = 200, body = Vec<api::TokenInfo>)))]
 pub(crate) async fn list_tokens(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Query(q): Query<TokensQuery>,
 ) -> ApiResult<Json<Vec<api::TokenInfo>>> {
-    let who = identify(&s, &headers).await?;
     let user = q.user.map_or_else(|| who.user.clone(), UserId::new);
     let mut infos = Vec::new();
     for t in s.access.list_tokens(&who, &user).await? {
@@ -127,10 +125,9 @@ pub(crate) async fn list_tokens(
 ))]
 pub(crate) async fn revoke_token(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access.revoke_token(&who, &TokenId(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -227,9 +224,9 @@ pub(crate) async fn login(
 pub(crate) async fn change_password(
     State(s): State<AppState>,
     headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::ChangePasswordRequest>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access
         .change_password(
             &who,
@@ -265,10 +262,9 @@ pub(crate) struct KeysQuery {
 ))]
 pub(crate) async fn add_key(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::AddKeyRequest>,
 ) -> ApiResult<Json<api::SshKeyInfo>> {
-    let who = identify(&s, &headers).await?;
     let key = s
         .access
         .add_ssh_key(&who, req.title.as_deref(), &req.key)
@@ -281,10 +277,9 @@ pub(crate) async fn add_key(
     responses((status = 200, body = Vec<api::SshKeyInfo>)))]
 pub(crate) async fn list_keys(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Query(q): Query<KeysQuery>,
 ) -> ApiResult<Json<Vec<api::SshKeyInfo>>> {
-    let who = identify(&s, &headers).await?;
     let user = q.user.map_or_else(|| who.user.clone(), UserId::new);
     let keys = s.access.list_ssh_keys(&who, &user).await?;
     Ok(Json(keys.into_iter().map(key_info).collect()))
@@ -296,11 +291,10 @@ pub(crate) async fn list_keys(
     responses((status = 204), (status = 404, body = api::ErrorBody, description = "key_not_found")))]
 pub(crate) async fn delete_key(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(id): Path<String>,
     Query(q): Query<KeysQuery>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     let user = q.user.map_or_else(|| who.user.clone(), UserId::new);
     s.access.delete_ssh_key(&who, &user, &id).await?;
     Ok(StatusCode::NO_CONTENT)

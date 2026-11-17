@@ -24,7 +24,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/account/deletion": {
@@ -64,7 +65,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope_pending"
       },
       "post": {
         "tags": [
@@ -132,7 +134,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/account/deletion/restore": {
@@ -172,7 +175,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope_pending"
       }
     },
     "/v1/admin/audit": {
@@ -224,7 +228,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "admin_only"
       }
     },
     "/v1/admin/limits": {
@@ -254,7 +259,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_limits"
       }
     },
     "/v1/admin/orgs": {
@@ -324,7 +330,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_organizations"
       }
     },
     "/v1/admin/orgs/{org}": {
@@ -378,7 +385,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_organizations"
       }
     },
     "/v1/admin/owners/{owner}/freeze": {
@@ -449,7 +457,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_freeze"
       },
       "delete": {
         "tags": [
@@ -498,7 +507,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_freeze"
       }
     },
     "/v1/admin/owners/{owner}/limits": {
@@ -569,7 +579,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_limits"
       }
     },
     "/v1/admin/service-credentials": {
@@ -602,7 +613,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "admin_only"
       },
       "post": {
         "tags": [
@@ -660,7 +672,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "admin_only"
       }
     },
     "/v1/admin/service-credentials/{name}": {
@@ -704,7 +717,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "admin_only"
       }
     },
     "/v1/admin/settings": {
@@ -734,7 +748,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_accounts"
       }
     },
     "/v1/admin/users": {
@@ -788,7 +803,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_accounts"
       }
     },
     "/v1/admin/users/{user}/admin": {
@@ -849,7 +865,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "admin_only"
       },
       "delete": {
         "tags": [
@@ -908,7 +925,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "admin_only"
       }
     },
     "/v1/admin/users/{user}/approve": {
@@ -968,7 +986,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_accounts"
       }
     },
     "/v1/admin/users/{user}/delete": {
@@ -1048,7 +1067,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_accounts"
       }
     },
     "/v1/admin/users/{user}/disable": {
@@ -1129,7 +1149,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_accounts"
       }
     },
     "/v1/admin/users/{user}/enable": {
@@ -1189,7 +1210,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_accounts"
       }
     },
     "/v1/admin/webhooks": {
@@ -1222,7 +1244,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_webhooks"
       },
       "post": {
         "tags": [
@@ -1270,7 +1293,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_webhooks"
       }
     },
     "/v1/admin/webhooks/{id}": {
@@ -1321,7 +1345,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_webhooks"
       },
       "delete": {
         "tags": [
@@ -1364,7 +1389,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_webhooks"
       },
       "patch": {
         "tags": [
@@ -1433,7 +1459,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_webhooks"
       }
     },
     "/v1/admin/webhooks/{id}/deliveries": {
@@ -1525,7 +1552,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_webhooks"
       }
     },
     "/v1/admin/webhooks/{id}/deliveries/{delivery_id}/redeliver": {
@@ -1586,7 +1614,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_webhooks"
       }
     },
     "/v1/admin/webhooks/{id}/secrets": {
@@ -1648,7 +1677,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_webhooks"
       }
     },
     "/v1/admin/webhooks/{id}/secrets/{secret_id}": {
@@ -1713,7 +1743,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "service:manage_webhooks"
       }
     },
     "/v1/capabilities": {
@@ -1730,7 +1761,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/explore/repos": {
@@ -1792,7 +1824,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "optional_sign_in"
       }
     },
     "/v1/keys": {
@@ -1825,7 +1858,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       },
       "post": {
         "tags": [
@@ -1872,7 +1906,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/keys/{id}": {
@@ -1913,7 +1948,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/login": {
@@ -1973,7 +2009,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/me": {
@@ -2002,7 +2039,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "any_credential"
       }
     },
     "/v1/me/avatar": {
@@ -2093,7 +2131,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       },
       "delete": {
         "tags": [
@@ -2130,7 +2169,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/emails": {
@@ -2153,7 +2193,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       },
       "post": {
         "tags": [
@@ -2211,7 +2252,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/emails/{address}": {
@@ -2253,7 +2295,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/emails/{address}/primary": {
@@ -2295,7 +2338,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/emails/{address}/resend": {
@@ -2337,7 +2381,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/identities": {
@@ -2369,7 +2414,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/identities/{id}": {
@@ -2411,7 +2457,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/invitations": {
@@ -2453,7 +2500,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/invitations/{org}/accept": {
@@ -2514,7 +2562,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/me/invitations/{org}/decline": {
@@ -2558,7 +2607,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/me/locks": {
@@ -2590,7 +2640,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "any_credential"
       }
     },
     "/v1/me/orgs": {
@@ -2632,7 +2683,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/password": {
@@ -2673,7 +2725,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/profile": {
@@ -2732,7 +2785,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/username": {
@@ -2812,7 +2866,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/oidc/authorize": {
@@ -2876,7 +2931,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/oidc/callback": {
@@ -2918,7 +2974,8 @@
           "302": {
             "description": "to the web app: the return_to path (or /) with the session cookie set, or /sign-in?error=<code> on failure"
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/oidc/link": {
@@ -2978,7 +3035,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/orgs": {
@@ -3020,7 +3078,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       },
       "post": {
         "tags": [
@@ -3078,7 +3137,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/orgs/{org}": {
@@ -3119,7 +3179,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "any_credential"
       },
       "delete": {
         "tags": [
@@ -3171,7 +3232,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/orgs/{org}/audit": {
@@ -3242,7 +3304,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/orgs/{org}/avatar": {
@@ -3296,7 +3359,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       },
       "put": {
         "tags": [
@@ -3407,7 +3471,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       },
       "delete": {
         "tags": [
@@ -3466,7 +3531,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/orgs/{org}/invitations": {
@@ -3520,7 +3586,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/orgs/{org}/invitations/{user}": {
@@ -3573,7 +3640,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/orgs/{org}/members": {
@@ -3627,7 +3695,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       },
       "post": {
         "tags": [
@@ -3716,7 +3785,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/orgs/{org}/members/{user}": {
@@ -3779,7 +3849,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       },
       "patch": {
         "tags": [
@@ -3866,7 +3937,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/orgs/{org}/profile": {
@@ -3907,7 +3979,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "any_credential"
       },
       "put": {
         "tags": [
@@ -3986,7 +4059,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/orgs/{org}/repo-policy": {
@@ -4036,7 +4110,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       },
       "put": {
         "tags": [
@@ -4105,7 +4180,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}": {
@@ -4211,7 +4287,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       },
       "delete": {
         "tags": [
@@ -4288,7 +4365,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/orgs/{org}/teams": {
@@ -4342,7 +4420,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       },
       "post": {
         "tags": [
@@ -4420,7 +4499,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/orgs/{org}/teams/{team}": {
@@ -4480,7 +4560,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       },
       "delete": {
         "tags": [
@@ -4531,7 +4612,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       },
       "patch": {
         "tags": [
@@ -4608,7 +4690,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/orgs/{org}/teams/{team}/members/{user}": {
@@ -4680,7 +4763,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       },
       "delete": {
         "tags": [
@@ -4740,7 +4824,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/owners/{owner}/freeze": {
@@ -4791,7 +4876,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope_or_service:manage_freeze"
       }
     },
     "/v1/owners/{owner}/limits": {
@@ -4842,7 +4928,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope_or_service:manage_limits"
       }
     },
     "/v1/owners/{owner}/usage": {
@@ -4893,7 +4980,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope_or_service:manage_limits"
       }
     },
     "/v1/register": {
@@ -4963,7 +5051,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/register/resend": {
@@ -4996,7 +5085,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/register/verify": {
@@ -5036,7 +5126,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/registration": {
@@ -5055,7 +5146,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/repos": {
@@ -5098,7 +5190,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "any_credential"
       },
       "post": {
         "tags": [
@@ -5156,7 +5249,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "namespace"
       }
     },
     "/v1/repos/{owner}/{name}": {
@@ -5206,7 +5300,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_visible"
       },
       "delete": {
         "tags": [
@@ -5257,7 +5352,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       },
       "patch": {
         "tags": [
@@ -5344,7 +5440,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/audit": {
@@ -5438,7 +5535,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:view_audit"
       }
     },
     "/v1/repos/{owner}/{name}/branches": {
@@ -5482,7 +5580,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       },
       "post": {
         "tags": [
@@ -5560,7 +5659,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       }
     },
     "/v1/repos/{owner}/{name}/branches/{branch}": {
@@ -5618,7 +5718,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       },
       "delete": {
         "tags": [
@@ -5706,7 +5807,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       },
       "patch": {
         "tags": [
@@ -5803,7 +5905,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       }
     },
     "/v1/repos/{owner}/{name}/changesets": {
@@ -5881,7 +5984,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       }
     },
     "/v1/repos/{owner}/{name}/checkin": {
@@ -5968,7 +6072,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       }
     },
     "/v1/repos/{owner}/{name}/checkout": {
@@ -6046,7 +6151,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:lock"
       }
     },
     "/v1/repos/{owner}/{name}/commits": {
@@ -6195,7 +6301,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/commits/{commit}": {
@@ -6262,7 +6369,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/content": {
@@ -6354,7 +6462,8 @@
           "416": {
             "description": "the range lies outside the content; `Content-Range: bytes */<length>`"
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/fetch": {
@@ -6424,7 +6533,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/files": {
@@ -6500,7 +6610,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/force-unlock": {
@@ -6568,7 +6679,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:force_unlock"
       }
     },
     "/v1/repos/{owner}/{name}/history": {
@@ -6672,7 +6784,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/invites": {
@@ -6714,7 +6827,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       },
       "post": {
         "tags": [
@@ -6771,7 +6885,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/invites/{id}": {
@@ -6820,7 +6935,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/locks": {
@@ -6861,7 +6977,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/me": {
@@ -6910,7 +7027,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/members": {
@@ -6953,7 +7071,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/members/{user}": {
@@ -7023,7 +7142,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/merge": {
@@ -7114,7 +7234,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       }
     },
     "/v1/repos/{owner}/{name}/merge/preview": {
@@ -7195,7 +7316,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:read"
       }
     },
     "/v1/repos/{owner}/{name}/objects": {
@@ -7279,7 +7401,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       }
     },
     "/v1/repos/{owner}/{name}/objects/assemble": {
@@ -7347,7 +7470,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       }
     },
     "/v1/repos/{owner}/{name}/objects/chunk": {
@@ -7431,7 +7555,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       }
     },
     "/v1/repos/{owner}/{name}/objects/missing": {
@@ -7489,7 +7614,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       }
     },
     "/v1/repos/{owner}/{name}/objects/{id}": {
@@ -7573,7 +7699,8 @@
           "416": {
             "description": "the range lies outside the content; `Content-Range: bytes */<length>`"
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/policy/preview": {
@@ -7640,7 +7767,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:edit_policy"
       }
     },
     "/v1/repos/{owner}/{name}/push": {
@@ -7750,7 +7878,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:checkin"
       }
     },
     "/v1/repos/{owner}/{name}/release": {
@@ -7800,7 +7929,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:lock"
       }
     },
     "/v1/repos/{owner}/{name}/restore": {
@@ -7877,7 +8007,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_scoped:restore"
       }
     },
     "/v1/repos/{owner}/{name}/roles": {
@@ -7939,7 +8070,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/roles/{role}": {
@@ -7999,7 +8131,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/snapshot": {
@@ -8094,7 +8227,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/storage-cap": {
@@ -8174,7 +8308,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope_or_service:manage_limits"
       }
     },
     "/v1/repos/{owner}/{name}/summary": {
@@ -8222,7 +8357,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/teams": {
@@ -8285,7 +8421,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/teams/{team}": {
@@ -8367,7 +8504,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       },
       "delete": {
         "tags": [
@@ -8437,7 +8575,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/tree": {
@@ -8513,7 +8652,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/usage": {
@@ -8553,7 +8693,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_read"
       }
     },
     "/v1/repos/{owner}/{name}/usage/breakdown": {
@@ -8613,7 +8754,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/users": {
@@ -8682,7 +8824,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "repo_visible"
       }
     },
     "/v1/repos/{owner}/{name}/verify": {
@@ -8777,7 +8920,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public_repo_visible"
       }
     },
     "/v1/session": {
@@ -8807,7 +8951,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "session"
       },
       "post": {
         "tags": [
@@ -8865,7 +9010,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       },
       "delete": {
         "tags": [
@@ -8886,7 +9032,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/setup": {
@@ -8905,7 +9052,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       },
       "post": {
         "tags": [
@@ -8972,7 +9120,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/sign-in-options": {
@@ -8991,7 +9140,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "public"
       }
     },
     "/v1/tokens": {
@@ -9024,7 +9174,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       },
       "post": {
         "tags": [
@@ -9071,7 +9222,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/tokens/{id}": {
@@ -9103,7 +9255,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/users": {
@@ -9183,7 +9336,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/users/{user}": {
@@ -9234,7 +9388,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "optional_sign_in"
       }
     },
     "/v1/users/{user}/avatar": {
@@ -9298,7 +9453,8 @@
               }
             }
           }
-        }
+        },
+        "x-pyn-reach": "optional_sign_in"
       }
     }
   },

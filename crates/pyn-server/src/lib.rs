@@ -6,7 +6,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::header::RETRY_AFTER;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use pyn_core::repositories::OpenRepo;
 use pyn_core::{
@@ -20,11 +19,14 @@ use utoipa::openapi::RefOr;
 use utoipa::openapi::schema::{KnownFormat, ObjectBuilder, Schema, SchemaFormat, Type};
 use utoipa::{IntoParams, OpenApi, PartialSchema, ToSchema};
 
+use crate::caller::{RepoCaller, RepoReader};
+
 mod access_api;
 pub mod account_deletion;
 mod admin_api;
 pub mod auth;
 mod branch_api;
+mod caller;
 mod client;
 mod deletion_api;
 pub mod email;
@@ -44,6 +46,7 @@ mod push_api;
 mod repo_api;
 mod repo_policy_api;
 pub mod request_limits;
+pub mod routes;
 mod self_service_api;
 mod session_api;
 mod setup_api;
@@ -51,6 +54,8 @@ mod team_api;
 pub mod tus_sweep;
 mod webhook_api;
 pub mod webhook_delivery;
+
+pub use routes::{Declaration, Reach, declarations, openapi};
 
 /// The largest object one upload may carry.
 pub(crate) const MAX_OBJECT_BYTES: u64 = 16 << 30;
@@ -449,351 +454,7 @@ pub fn router_with_log(
 }
 
 fn routes(state: AppState) -> Router {
-    Router::new()
-        .route("/healthz", get(health))
-        .route("/v1/capabilities", get(capabilities))
-        .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
-        .route(
-            "/v1/setup",
-            get(setup_api::setup_status).post(setup_api::complete_setup),
-        )
-        .route("/v1/registration", get(access_api::registration))
-        .route("/v1/register", post(access_api::register))
-        .route("/v1/register/verify", post(access_api::verify_email))
-        .route("/v1/register/resend", post(access_api::resend_verification))
-        .route("/v1/admin/users", get(admin_api::list_accounts))
-        .route("/v1/admin/users/{user}/approve", post(admin_api::approve))
-        .route("/v1/admin/users/{user}/disable", post(admin_api::disable))
-        .route("/v1/admin/users/{user}/enable", post(admin_api::enable))
-        .route(
-            "/v1/admin/users/{user}/delete",
-            post(deletion_api::admin_delete_account),
-        )
-        .route("/v1/admin/settings", get(deletion_api::admin_settings))
-        .route(
-            "/v1/account/deletion",
-            get(deletion_api::account_deletion_status)
-                .post(deletion_api::schedule_account_deletion),
-        )
-        .route(
-            "/v1/account/deletion/restore",
-            post(deletion_api::restore_account_deletion),
-        )
-        .route(
-            "/v1/admin/users/{user}/admin",
-            put(admin_api::grant_admin).delete(admin_api::revoke_admin),
-        )
-        .route("/v1/admin/audit", get(admin_api::audit))
-        .route("/v1/admin/orgs", post(admin_api::create_org))
-        .route("/v1/admin/orgs/{org}", delete(admin_api::delete_org))
-        .route(
-            "/v1/admin/service-credentials",
-            get(admin_api::list_service_credentials).post(admin_api::create_service_credential),
-        )
-        .route(
-            "/v1/admin/service-credentials/{name}",
-            delete(admin_api::revoke_service_credential),
-        )
-        .route("/v1/admin/limits", get(limits_api::list_limits))
-        .route(
-            "/v1/admin/owners/{owner}/limits",
-            patch(limits_api::set_owner_limits),
-        )
-        .route(
-            "/v1/admin/webhooks",
-            get(webhook_api::list_webhooks).post(webhook_api::create_webhook),
-        )
-        .route(
-            "/v1/admin/webhooks/{id}",
-            get(webhook_api::get_webhook)
-                .patch(webhook_api::update_webhook)
-                .delete(webhook_api::delete_webhook),
-        )
-        .route(
-            "/v1/admin/webhooks/{id}/secrets",
-            post(webhook_api::rotate_webhook_secret),
-        )
-        .route(
-            "/v1/admin/webhooks/{id}/secrets/{secret_id}",
-            delete(webhook_api::retire_webhook_secret),
-        )
-        .route(
-            "/v1/admin/webhooks/{id}/deliveries",
-            get(webhook_api::list_webhook_deliveries),
-        )
-        .route(
-            "/v1/admin/webhooks/{id}/deliveries/{delivery_id}/redeliver",
-            post(webhook_api::redeliver_webhook),
-        )
-        .route(
-            "/v1/admin/owners/{owner}/freeze",
-            put(freeze_api::freeze_owner).delete(freeze_api::unfreeze_owner),
-        )
-        .route("/v1/owners/{owner}/freeze", get(freeze_api::owner_freeze))
-        .route("/v1/owners/{owner}/limits", get(limits_api::owner_limits))
-        .route("/v1/owners/{owner}/usage", get(limits_api::owner_usage))
-        .route(
-            "/v1/repos/{owner}/{name}/usage",
-            get(limits_api::repo_usage),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/usage/breakdown",
-            get(limits_api::repo_usage_breakdown),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/storage-cap",
-            put(limits_api::set_repo_storage_cap),
-        )
-        .route("/v1/login", post(access_api::login))
-        .route(
-            "/v1/session",
-            get(session_api::current)
-                .post(session_api::sign_in)
-                .delete(session_api::sign_out),
-        )
-        .route("/v1/sign-in-options", get(oidc_api::sign_in_options))
-        .route("/v1/oidc/authorize", get(oidc_api::authorize))
-        .route("/v1/oidc/link", post(oidc_api::link))
-        .route("/v1/oidc/callback", get(oidc_api::callback))
-        .route("/v1/me/identities", get(oidc_api::list_identities))
-        .route(
-            "/v1/me/identities/{id}",
-            axum::routing::delete(oidc_api::unlink_identity),
-        )
-        .route("/v1/me/password", put(access_api::change_password))
-        .route(
-            "/v1/me/emails",
-            get(self_service_api::list_emails).post(self_service_api::add_email),
-        )
-        .route(
-            "/v1/me/emails/{address}",
-            delete(self_service_api::delete_email),
-        )
-        .route(
-            "/v1/me/emails/{address}/resend",
-            post(self_service_api::resend_email),
-        )
-        .route(
-            "/v1/me/emails/{address}/primary",
-            put(self_service_api::set_primary_email),
-        )
-        .route("/v1/me/username", put(self_service_api::rename_account))
-        .route(
-            "/v1/keys",
-            get(access_api::list_keys).post(access_api::add_key),
-        )
-        .route(
-            "/v1/keys/{id}",
-            axum::routing::delete(access_api::delete_key),
-        )
-        .route("/v1/me", get(access_api::me))
-        .route("/v1/me/profile", put(profile_api::update_profile))
-        .route(
-            "/v1/me/avatar",
-            put(profile_api::put_avatar).delete(profile_api::delete_avatar),
-        )
-        .route("/v1/users", get(profile_api::list_people))
-        .route("/v1/users/{user}", get(profile_api::get_profile))
-        .route("/v1/users/{user}/avatar", get(profile_api::get_avatar))
-        .route(
-            "/v1/orgs/{org}/profile",
-            get(profile_api::get_org_profile).put(profile_api::update_org_profile),
-        )
-        .route(
-            "/v1/orgs/{org}/avatar",
-            get(profile_api::get_org_avatar)
-                .put(profile_api::put_org_avatar)
-                .delete(profile_api::delete_org_avatar),
-        )
-        .route("/v1/me/locks", get(repo_api::my_locks))
-        .route(
-            "/v1/tokens",
-            get(access_api::list_tokens).post(access_api::create_token),
-        )
-        .route(
-            "/v1/tokens/{id}",
-            axum::routing::delete(access_api::revoke_token),
-        )
-        .route(
-            "/v1/orgs",
-            get(org_api::list_orgs).post(org_api::create_org),
-        )
-        .route(
-            "/v1/orgs/{org}",
-            get(org_api::get_org).delete(org_api::delete_org),
-        )
-        .route("/v1/orgs/{org}/audit", get(org_api::org_audit))
-        .route(
-            "/v1/orgs/{org}/members",
-            get(org_api::list_members).post(org_api::add_member),
-        )
-        .route("/v1/orgs/{org}/invitations", get(org_api::list_invitations))
-        .route(
-            "/v1/orgs/{org}/invitations/{user}",
-            axum::routing::delete(org_api::cancel_invitation),
-        )
-        .route("/v1/me/invitations", get(org_api::my_invitations))
-        .route(
-            "/v1/me/invitations/{org}/accept",
-            post(org_api::accept_invitation),
-        )
-        .route(
-            "/v1/me/invitations/{org}/decline",
-            post(org_api::decline_invitation),
-        )
-        .route(
-            "/v1/orgs/{org}/members/{user}",
-            axum::routing::patch(org_api::set_member_role).delete(org_api::remove_member),
-        )
-        .route(
-            "/v1/orgs/{org}/repo-policy",
-            get(repo_policy_api::get_repo_policy).put(repo_policy_api::set_repo_policy),
-        )
-        .route(
-            "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
-            put(repo_policy_api::set_creation_rule).delete(repo_policy_api::remove_creation_rule),
-        )
-        .route(
-            "/v1/orgs/{org}/teams",
-            get(team_api::list_teams).post(team_api::create_team),
-        )
-        .route(
-            "/v1/orgs/{org}/teams/{team}",
-            get(team_api::get_team)
-                .patch(team_api::update_team)
-                .delete(team_api::delete_team),
-        )
-        .route(
-            "/v1/orgs/{org}/teams/{team}/members/{user}",
-            put(team_api::add_team_member).delete(team_api::remove_team_member),
-        )
-        .route("/v1/me/orgs", get(org_api::my_orgs))
-        .route("/v1/explore/repos", get(repo_api::explore_repos))
-        .route(
-            "/v1/repos",
-            get(repo_api::list_repos).post(repo_api::create_repo),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}",
-            get(repo_api::get_repo)
-                .patch(repo_api::update_repo)
-                .delete(repo_api::delete_repo),
-        )
-        .route("/v1/repos/{owner}/{name}/me", get(repo_api::repo_me))
-        .route("/v1/repos/{owner}/{name}/users", post(repo_api::add_user))
-        .route(
-            "/v1/repos/{owner}/{name}/invites",
-            get(repo_api::list_invites).post(repo_api::create_invite),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/invites/{id}",
-            axum::routing::delete(repo_api::revoke_invite),
-        )
-        .route("/v1/repos/{owner}/{name}/roles", get(repo_api::list_roles))
-        .route(
-            "/v1/repos/{owner}/{name}/roles/{role}",
-            put(repo_api::set_role),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/members",
-            get(repo_api::list_members),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/members/{user}",
-            put(repo_api::set_member),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/teams",
-            get(team_api::list_repo_teams),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/teams/{team}",
-            put(team_api::set_repo_team).delete(team_api::remove_repo_team),
-        )
-        .route("/v1/repos/{owner}/{name}/locks", get(list_locks))
-        .route(
-            "/v1/repos/{owner}/{name}/info/lfs/locks",
-            get(lfs_api::list_locks).post(lfs_api::create_lock),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/info/lfs/locks/verify",
-            post(lfs_api::verify_locks),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/info/lfs/locks/{id}/unlock",
-            post(lfs_api::unlock),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/info/lfs/objects/batch",
-            post(lfs_api::batch),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/info/lfs/objects/verify",
-            post(lfs_api::verify_object),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}",
-            get(lfs_api::download).put(lfs_api::upload_object),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
-            axum::routing::head(lfs_api::tus::head)
-                .post(lfs_api::tus::create)
-                .patch(lfs_api::tus::patch)
-                .delete(lfs_api::tus::terminate)
-                .options(lfs_api::tus::options),
-        )
-        .route("/v1/repos/{owner}/{name}/files", get(list_files))
-        .route("/v1/repos/{owner}/{name}/tree", get(tree))
-        .route("/v1/repos/{owner}/{name}/summary", get(summary))
-        .route("/v1/repos/{owner}/{name}/content", get(get_content))
-        .route("/v1/repos/{owner}/{name}/checkout", post(checkout))
-        .route("/v1/repos/{owner}/{name}/release", post(release))
-        .route("/v1/repos/{owner}/{name}/checkin", post(checkin))
-        .route("/v1/repos/{owner}/{name}/changesets", post(changeset))
-        .route("/v1/repos/{owner}/{name}/restore", post(restore))
-        .route("/v1/repos/{owner}/{name}/force-unlock", post(force_unlock))
-        .route(
-            "/v1/repos/{owner}/{name}/policy/preview",
-            post(preview_policy),
-        )
-        .route("/v1/repos/{owner}/{name}/audit", get(audit))
-        .route("/v1/repos/{owner}/{name}/objects", put(put_object))
-        .route("/v1/repos/{owner}/{name}/objects/chunk", put(put_chunk))
-        .route(
-            "/v1/repos/{owner}/{name}/objects/missing",
-            post(missing_objects),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/objects/assemble",
-            post(assemble_object),
-        )
-        .route("/v1/repos/{owner}/{name}/history", get(history))
-        .route("/v1/repos/{owner}/{name}/verify", get(verify))
-        .route("/v1/repos/{owner}/{name}/commits", get(list_commits))
-        .route("/v1/repos/{owner}/{name}/commits/{commit}", get(get_commit))
-        .route("/v1/repos/{owner}/{name}/snapshot", get(snapshot))
-        .route(
-            "/v1/repos/{owner}/{name}/branches",
-            get(branch_api::list_branches).post(branch_api::create_branch),
-        )
-        .route("/v1/repos/{owner}/{name}/push", post(push_api::push))
-        .route("/v1/repos/{owner}/{name}/fetch", post(push_api::fetch))
-        .route(
-            "/v1/repos/{owner}/{name}/objects/{id}",
-            get(push_api::get_object),
-        )
-        .route("/v1/repos/{owner}/{name}/merge", post(merge_api::merge))
-        .route(
-            "/v1/repos/{owner}/{name}/merge/preview",
-            post(merge_api::preview_merge),
-        )
-        .route(
-            "/v1/repos/{owner}/{name}/branches/{*branch}",
-            get(branch_api::get_branch)
-                .delete(branch_api::delete_branch)
-                .patch(branch_api::rename_branch),
-        )
+    routes::routes()
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             self_service_api::moved_to_header,
@@ -996,69 +657,6 @@ impl IntoResponse for ApiError {
 
 pub(crate) type ApiResult<T> = Result<T, ApiError>;
 
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    let value = headers
-        .get(axum::http::header::AUTHORIZATION)?
-        .to_str()
-        .ok()?;
-    let (scheme, token) = value.split_once(' ')?;
-    scheme
-        .eq_ignore_ascii_case("bearer")
-        .then_some(token.trim())
-}
-
-/// Whether `identify` would authenticate the request by a bearer token or the dev header rather than a cookie.
-pub(crate) fn uses_non_cookie_credential(state: &AppState, headers: &HeaderMap) -> bool {
-    bearer_token(headers).is_some()
-        || (state.dev_auth.is_some()
-            && headers
-                .get(api::DEV_USER_HEADER)
-                .is_some_and(|v| v.to_str().is_ok()))
-}
-
-/// Names the account behind the request's credential: a bearer token, the dev header or a session cookie.
-/// A service credential is refused; only the admin routes take one.
-pub(crate) async fn identify(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
-    let who = identify_admin(state, headers).await?;
-    if matches!(who.credential, pyn_core::Credential::Service(_)) {
-        return Err(PynError::ServiceCredentialNotAllowed.into());
-    }
-    Ok(who)
-}
-
-/// Like `identify`, but a service credential is accepted too.
-pub(crate) async fn identify_admin(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
-    let dev_user = headers
-        .get(api::DEV_USER_HEADER)
-        .and_then(|v| v.to_str().ok());
-    let who = match (bearer_token(headers), &state.dev_auth, dev_user) {
-        (Some(token), _, _) => state.auth.authenticate(token).await?,
-        (None, Some(dev), Some(user)) => {
-            let who = dev.authenticate(user).await?;
-            state.access.reject_org(&who.user).await?;
-            who
-        }
-        _ => match session_api::session_cookie(headers) {
-            Some(cookie) => state.access.authenticate_session(cookie).await?.0,
-            None => return Err(PynError::Unauthenticated("missing credentials".into()).into()),
-        },
-    };
-    observe::note_account(&who.user);
-    Ok(who)
-}
-
-/// Like `identify`, but a request with no credential at all is anonymous (`None`); a bad one still fails.
-pub(crate) async fn identify_optional(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> ApiResult<Option<Identity>> {
-    let dev = state.dev_auth.is_some() && headers.contains_key(api::DEV_USER_HEADER);
-    if bearer_token(headers).is_none() && !dev && session_api::session_cookie(headers).is_none() {
-        return Ok(None);
-    }
-    identify(state, headers).await.map(Some)
-}
-
 /// Finds a repository the caller may know about and what they may do there. Anyone with no part in a private
 /// repository is told it does not exist.
 pub(crate) async fn open_visible(
@@ -1068,35 +666,6 @@ pub(crate) async fn open_visible(
     name: &str,
 ) -> ApiResult<(OpenRepo, Principal)> {
     Ok(state.repos.open_visible(owner, name, who).await?)
-}
-
-/// Authenticates the request and resolves `owner/name`, checking the caller holds `need` there.
-pub(crate) async fn authorize_repo(
-    state: &AppState,
-    headers: &HeaderMap,
-    owner: &str,
-    name: &str,
-    need: Option<Permission>,
-) -> ApiResult<(OpenRepo, Principal)> {
-    let who = identify(state, headers).await?;
-    let (open, principal) = open_visible(state, Some(&who), owner, name).await?;
-    if let Some(permission) = need {
-        principal.require(permission)?;
-    }
-    Ok((open, principal))
-}
-
-/// For read endpoints: like `authorize_repo`, but a public repository can be read without signing in.
-pub(crate) async fn authorize_read(
-    state: &AppState,
-    headers: &HeaderMap,
-    owner: &str,
-    name: &str,
-) -> ApiResult<OpenRepo> {
-    let who = identify_optional(state, headers).await?;
-    let (open, principal) = open_visible(state, who.as_ref(), owner, name).await?;
-    principal.require(Permission::Read)?;
-    Ok(open)
 }
 
 /// The branch a request names, the default branch when it names none.
@@ -1239,10 +808,8 @@ async fn capabilities() -> Json<api::ServerCapabilities> {
     responses((status = 200, body = Vec<api::Lock>)))]
 async fn list_locks(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader { repo, .. }: RepoReader,
 ) -> ApiResult<Json<Vec<api::Lock>>> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let mut locks: Vec<_> = repo
         .service
         .locks()
@@ -1262,12 +829,13 @@ async fn list_locks(
 ))]
 /// Lock an exclusive path for the caller.
 async fn checkout(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::CheckoutRequest>,
 ) -> ApiResult<Json<api::Lock>> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Lock)).await?;
     let user = who.user;
     let lock = repo
         .service
@@ -1287,12 +855,13 @@ async fn checkout(
 ))]
 /// Unlock a path the caller holds.
 async fn release(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::ReleaseRequest>,
 ) -> ApiResult<StatusCode> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Lock)).await?;
     repo.service
         .release(&RepoPath::from_stored(req.path)?, &who.user)
         .await?;
@@ -1308,12 +877,13 @@ async fn release(
 ))]
 async fn checkin(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::CheckinRequest>,
 ) -> ApiResult<Json<api::Revision>> {
-    let (repo, who) =
-        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let recorded = repo
         .service
         .checkin_recorded(
@@ -1341,12 +911,13 @@ async fn checkin(
 /// Check several paths in and remove others atomically as one commit with one message.
 async fn changeset(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::ChangesetRequest>,
 ) -> ApiResult<Json<api::ChangesetResponse>> {
-    let (repo, who) =
-        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let entries = req
         .entries
         .into_iter()
@@ -1399,12 +970,13 @@ async fn changeset(
 ))]
 async fn restore(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::RestoreRequest>,
 ) -> ApiResult<Json<api::Revision>> {
-    let (repo, who) =
-        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Restore)).await?;
     let recorded = repo
         .service
         .restore_recorded(
@@ -1453,11 +1025,13 @@ pub(crate) fn upload(
 async fn put_object(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo: open,
+        principal: who,
+        ..
+    }: RepoCaller,
     body: axum::body::Body,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
-    let (open, who) =
-        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let _permit = s.repos.upload_permit(&who.user)?;
     let (reader, len) = upload(&headers, body)?;
     let id = open
@@ -1476,12 +1050,13 @@ async fn put_object(
               (status = 429, body = api::ErrorBody, description = "uploads_busy: too many uploads by this user or on the server; Retry-After says how many seconds to wait")))]
 async fn put_chunk(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo: open,
+        principal: who,
+        ..
+    }: RepoCaller,
     body: axum::body::Body,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
-    let (open, who) =
-        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let _permit = s.repos.upload_permit(&who.user)?;
     use futures_util::TryStreamExt;
     let reader =
@@ -1521,12 +1096,9 @@ fn parse_object_id(text: &str) -> Result<pyn_core::ObjectId, PynError> {
     (status = 400, body = api::ErrorBody, description = "invalid_request for a malformed hash or more than 10000 hashes"),
 ))]
 async fn missing_objects(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller { repo: open, .. }: RepoCaller,
     Json(req): Json<api::MissingObjectsRequest>,
 ) -> ApiResult<Json<api::MissingObjectsResponse>> {
-    let (open, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     if req.hashes.len() > MAX_HASHES_PER_REQUEST {
         return Err(PynError::InvalidRequest(format!(
             "ask about at most {MAX_HASHES_PER_REQUEST} hashes at a time"
@@ -1550,12 +1122,9 @@ async fn missing_objects(
     (status = 413, body = api::ErrorBody, description = "object_too_large"),
 ))]
 async fn assemble_object(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller { repo: open, .. }: RepoCaller,
     Json(req): Json<api::AssembleObjectRequest>,
 ) -> ApiResult<Json<api::PutObjectResponse>> {
-    let (open, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     if req.chunks.len() > (MAX_OBJECT_BYTES / pyn_chunk::MIN_CHUNK as u64) as usize + 1 {
         return Err(PynError::InvalidRequest("too many chunks".into()).into());
     }
@@ -1595,11 +1164,9 @@ struct HistoryQuery {
               (status = 400, body = api::ErrorBody, description = "invalid_request for a bad filter or cursor, or path combined with filter")))]
 async fn history(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader { repo, .. }: RepoReader,
     Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<api::HistoryPage>> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     if let Some(path) = q.path {
         if q.filter.is_some() {
             return Err(
@@ -1660,13 +1227,14 @@ struct VerifyQuery {
               (status = 401, body = api::ErrorBody, description = "unauthenticated for a whole-repository check without credentials"),
               (status = 404, body = api::ErrorBody, description = "path_not_found for a path without revisions")))]
 async fn verify(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader {
+        identity: who,
+        repo,
+        principal,
+        ..
+    }: RepoReader,
     Query(q): Query<VerifyQuery>,
 ) -> ApiResult<Json<api::VerifyReport>> {
-    let who = identify_optional(&s, &headers).await?;
-    let (repo, principal) = open_visible(&s, who.as_ref(), &owner, &name).await?;
     principal.require(Permission::Read)?;
     if q.path.is_none() && who.is_none() {
         return Err(PynError::Unauthenticated(
@@ -1763,11 +1331,9 @@ async fn revision_param(
               (status = 404, body = api::ErrorBody, description = "branch_not_found")))]
 async fn list_commits(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader { repo, .. }: RepoReader,
     Query(q): Query<CommitsQuery>,
 ) -> ApiResult<Json<api::CommitPage>> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let before = match q.before {
         Some(spec) => Some(repo.service.resolve_commit(&spec).await?),
         None => None,
@@ -1825,10 +1391,9 @@ async fn list_commits(
               (status = 400, body = api::ErrorBody, description = "ambiguous_commit")))]
 async fn get_commit(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name, commit)): Path<(String, String, String)>,
+    RepoReader { repo, .. }: RepoReader,
+    Path((_, _, commit)): Path<(String, String, String)>,
 ) -> ApiResult<Json<api::Commit>> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let id = repo.service.resolve_commit(&commit).await?;
     let mut commit = [commit_dto(repo.service.get_commit(&id).await?)];
     self_service_api::annotate_commits(&s, &mut commit).await?;
@@ -1855,12 +1420,9 @@ struct SnapshotQuery {
               (status = 404, body = api::ErrorBody, description = "commit_not_found or branch_not_found"),
               (status = 400, body = api::ErrorBody, description = "ambiguous_commit")))]
 async fn snapshot(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader { repo, .. }: RepoReader,
     Query(q): Query<SnapshotQuery>,
 ) -> ApiResult<Json<api::SnapshotPage>> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let after = q.after.map(RepoPath::from_stored).transpose()?;
     let at = match (q.commit, q.branch) {
@@ -1923,11 +1485,9 @@ fn mode_dto(mode: pyn_core::Mode) -> api::Mode {
               (status = 404, body = api::ErrorBody, description = "branch_not_found")))]
 async fn list_files(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader { repo, .. }: RepoReader,
     Query(q): Query<FilesQuery>,
 ) -> ApiResult<Json<api::FilePage>> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let after = q.after.map(RepoPath::from_stored).transpose()?;
     let mut files = repo
@@ -1970,11 +1530,9 @@ struct TreeQuery {
               (status = 404, body = api::ErrorBody, description = "path_not_found or branch_not_found")))]
 async fn tree(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader { repo, .. }: RepoReader,
     Query(q): Query<TreeQuery>,
 ) -> ApiResult<Json<api::TreeListing>> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let raw = q.path.unwrap_or_default();
     let trimmed = raw.trim_end_matches('/');
     let dir = (!trimmed.is_empty())
@@ -2021,11 +1579,9 @@ struct SummaryQuery {
     responses((status = 200, body = api::RepoSummary)))]
 async fn summary(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader { repo, .. }: RepoReader,
     Query(q): Query<SummaryQuery>,
 ) -> ApiResult<Json<api::RepoSummary>> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let summary = repo
         .service
         .summary(q.activity.unwrap_or(10).clamp(1, 100))
@@ -2088,12 +1644,10 @@ struct ContentQuery {
               (status = 416, description = "the range lies outside the content; `Content-Range: bytes */<length>`"),
               (status = 404, body = api::ErrorBody, description = "revision_not_found or branch_not_found")))]
 async fn get_content(
-    State(s): State<AppState>,
     headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader { repo, .. }: RepoReader,
     Query(q): Query<ContentQuery>,
 ) -> ApiResult<Response> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let path = RepoPath::from_stored(q.path)?;
     let branch = branch_of(q.branch.as_deref());
     let revision = q.revision.map(RevisionId);
@@ -2215,13 +1769,13 @@ mod range_tests {
     (status = 409, body = api::ErrorBody, description = "not_locked"),
 ))]
 async fn force_unlock(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::ForceUnlockRequest>,
 ) -> ApiResult<Json<api::Lock>> {
-    let (repo, who) =
-        authorize_repo(&s, &headers, &owner, &name, Some(Permission::ForceUnlock)).await?;
     let actor = who.user;
     let lock = repo
         .service
@@ -2237,12 +1791,13 @@ async fn force_unlock(
 ))]
 async fn preview_policy(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::PolicyPreviewRequest>,
 ) -> ApiResult<Json<api::PolicyPreview>> {
-    let (repo, who) =
-        authorize_repo(&s, &headers, &owner, &name, Some(Permission::EditPolicy)).await?;
     let found = repo.service.preview_policy(&who, &req.content).await?;
     let mut stranded: Vec<_> = found.stranded.into_iter().map(stranded_dto).collect();
     self_service_api::annotate(&s, &mut stranded).await?;
@@ -2287,12 +1842,9 @@ struct AuditQueryParams {
     responses((status = 200, body = api::AuditPage), (status = 403, body = api::ErrorBody, description = "needs view_audit")))]
 async fn audit(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller { repo, .. }: RepoCaller,
     Query(q): Query<AuditQueryParams>,
 ) -> ApiResult<Json<api::AuditPage>> {
-    let (repo, _) =
-        authorize_repo(&s, &headers, &owner, &name, Some(Permission::ViewAudit)).await?;
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let query = AuditQuery {
         path: q.path.map(RepoPath::from_stored).transpose()?,

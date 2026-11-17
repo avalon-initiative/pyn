@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
-use pyn_server::ApiDoc;
-use utoipa::OpenApi;
+use pyn_server::openapi;
 
 fn path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/generated/openapi.json")
@@ -10,7 +9,7 @@ fn path() -> PathBuf {
 /// Fails when `docs/generated/openapi.json` is stale; `PYN_UPDATE_OPENAPI=1` rewrites it.
 #[test]
 fn published_openapi_document_is_current() {
-    let current = ApiDoc::openapi().to_pretty_json().unwrap() + "\n";
+    let current = openapi().to_pretty_json().unwrap() + "\n";
     if std::env::var_os("PYN_UPDATE_OPENAPI").is_some() {
         std::fs::write(path(), &current).unwrap();
         return;
@@ -23,7 +22,7 @@ fn published_openapi_document_is_current() {
 }
 
 fn spec() -> serde_json::Value {
-    serde_json::to_value(ApiDoc::openapi()).unwrap()
+    serde_json::to_value(openapi()).unwrap()
 }
 
 #[test]

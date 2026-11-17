@@ -2,14 +2,15 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use pyn_core::{
     CreateWebhook, Delivery, DeliveryStatus, PynError, SubscriptionUpdate, WebhookDetail,
 };
 use pyn_proto as api;
 use serde::Deserialize;
 
-use crate::{ApiResult, AppState, identify_admin};
+use crate::caller::ServiceCaller;
+use crate::{ApiResult, AppState};
 
 fn webhook_dto(d: WebhookDetail) -> api::Webhook {
     let s = d.subscription;
@@ -41,10 +42,9 @@ fn webhook_dto(d: WebhookDetail) -> api::Webhook {
 ))]
 pub(crate) async fn create_webhook(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Json(req): Json<api::CreateWebhookRequest>,
 ) -> ApiResult<(StatusCode, Json<api::CreatedWebhook>)> {
-    let who = identify_admin(&s, &headers).await?;
     let (detail, issued) = s
         .access
         .create_webhook(
@@ -71,9 +71,8 @@ pub(crate) async fn create_webhook(
               (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_webhooks")))]
 pub(crate) async fn list_webhooks(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
 ) -> ApiResult<Json<Vec<api::Webhook>>> {
-    let who = identify_admin(&s, &headers).await?;
     let all = s.access.list_webhooks(&who).await?;
     Ok(Json(all.into_iter().map(webhook_dto).collect()))
 }
@@ -85,10 +84,9 @@ pub(crate) async fn list_webhooks(
               (status = 404, body = api::ErrorBody, description = "webhook_not_found")))]
 pub(crate) async fn get_webhook(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<api::Webhook>> {
-    let who = identify_admin(&s, &headers).await?;
     Ok(Json(webhook_dto(s.access.get_webhook(&who, id).await?)))
 }
 
@@ -102,11 +100,10 @@ pub(crate) async fn get_webhook(
 ))]
 pub(crate) async fn update_webhook(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(id): Path<i64>,
     Json(req): Json<api::UpdateWebhookRequest>,
 ) -> ApiResult<Json<api::Webhook>> {
-    let who = identify_admin(&s, &headers).await?;
     let update = SubscriptionUpdate {
         name: req.name,
         url: req.url,
@@ -125,10 +122,9 @@ pub(crate) async fn update_webhook(
               (status = 404, body = api::ErrorBody, description = "webhook_not_found")))]
 pub(crate) async fn delete_webhook(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
-    let who = identify_admin(&s, &headers).await?;
     s.access.delete_webhook(&who, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -141,10 +137,9 @@ pub(crate) async fn delete_webhook(
               (status = 409, body = api::ErrorBody, description = "webhook_secret_limit: two secrets are already active; retire one first")))]
 pub(crate) async fn rotate_webhook_secret(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(id): Path<i64>,
 ) -> ApiResult<(StatusCode, Json<api::RotatedWebhookSecret>)> {
-    let who = identify_admin(&s, &headers).await?;
     let issued = s.access.rotate_webhook_secret(&who, id).await?;
     Ok((
         StatusCode::CREATED,
@@ -165,10 +160,9 @@ pub(crate) async fn rotate_webhook_secret(
               (status = 409, body = api::ErrorBody, description = "webhook_last_secret: rotate in a new secret first")))]
 pub(crate) async fn retire_webhook_secret(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path((id, secret_id)): Path<(i64, i64)>,
 ) -> ApiResult<StatusCode> {
-    let who = identify_admin(&s, &headers).await?;
     s.access.retire_webhook_secret(&who, id, secret_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -210,11 +204,10 @@ pub(crate) struct DeliveryParams {
               (status = 404, body = api::ErrorBody, description = "webhook_not_found")))]
 pub(crate) async fn list_webhook_deliveries(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(id): Path<i64>,
     Query(q): Query<DeliveryParams>,
 ) -> ApiResult<Json<api::WebhookDeliveryPage>> {
-    let who = identify_admin(&s, &headers).await?;
     let status = q
         .status
         .map(|v| {
@@ -243,10 +236,9 @@ pub(crate) async fn list_webhook_deliveries(
               (status = 404, body = api::ErrorBody, description = "webhook_not_found, or webhook_delivery_not_found when it is not a delivery of that subscription")))]
 pub(crate) async fn redeliver_webhook(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path((id, delivery_id)): Path<(i64, String)>,
 ) -> ApiResult<Json<api::WebhookDelivery>> {
-    let who = identify_admin(&s, &headers).await?;
     let d = s.access.redeliver_webhook(&who, id, &delivery_id).await?;
     Ok(Json(delivery_dto(d)))
 }
