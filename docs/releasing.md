@@ -2,11 +2,12 @@
 
 A release is a `v<MAJOR>.<MINOR>.<PATCH>[-title-slug]` tag on `main`. Pushing the tag starts the
 [release workflow](../.github/workflows/release.yml); nothing publishes without a `v*` tag, and there is no manual
-publish path. Provisional: the pre-releases `v0.1.0-alpha` to `v0.1.3-alpha` have been cut this way; the version stays in 0.1.x for now.
+publish path. Provisional: the releases `v0.1.0-alpha` to `v0.1.3-alpha` have been cut this way; the version stays in 0.1.x for now.
 
-The optional suffix is a free-text title slug (`v1.0.0-first-stable`). It does not change what is published, except that a
-suffix starting with `alpha`, `beta`, `rc` or `pre` (any case, then end, `.`, `-` or a digit; `v1.0.0-rc.1`,
-`v1.0.0-beta2`) marks the GitHub Release as a pre-release. The Release title is the tag.
+The optional suffix is a free-text title slug (`v1.0.0-first-stable`). It is only a title and changes no flag: no release is
+marked as a pre-release, whatever the suffix. The Release title is the tag. The newest release (the highest `X.Y.Z`, the
+title ignored) is marked Latest; a release for an older line (a backport) is created with `--latest=false`, so it never
+takes Latest from a higher version.
 
 ## Cutting a release
 
@@ -20,7 +21,7 @@ suffix starting with `alpha`, `beta`, `rc` or `pre` (any case, then end, `.`, `-
    `Cargo.lock`, regenerates `docs/generated/openapi.json` (it embeds the version) and commits
    `[RELEASE] - v<version>[-slug]`, which is also the pull request title. After a confirmation it pushes the branch and opens the pull request; declining
    prints the two commands to run later. Nothing is pushed to `main`, and a failure after the branch exists prints how to
-   remove it.
+   remove it. The pull request description has an empty `## TLDR` section and the script reminds you to fill it in before merging.
 3. Merge the pull request (squash); the commit subject becomes `[RELEASE] - v<version>[-slug] (#N)`.
 4. On the updated `main`, run `make release-publish`. It checks that HEAD is the squash-merged release commit (the earlier `[noissue] - Release v<version>[-slug] (#N)` subject is still accepted) and that the
    version files match, asks for confirmation, then creates the annotated tag on that commit and pushes only the tag.
@@ -72,8 +73,11 @@ for the gate.
 4. Once the image is built and the gate passed or was skipped, publishes the multi-arch manifest
    `ghcr.io/avalon-initiative/pyn-core:v<MAJOR>.<MINOR>.<PATCH>` (linux/amd64 and linux/arm64). The image tag is the plain
    version only, never the title (`v1.0.0-first-stable` publishes `pyn-core:v1.0.0`); there is no `latest` tag.
-5. Once the same condition holds and the binaries are built, creates the GitHub Release with the archives, a `SHA256SUMS` file and generated notes; the title is the tag, and
-   only an `alpha`, `beta`, `rc` or `pre` suffix marks it as a pre-release.
+5. Once the same condition holds and the binaries are built, creates the GitHub Release with the archives, a `SHA256SUMS` file and the release notes; the title is the tag. The body
+   ([`scripts/release-body.sh`](../scripts/release-body.sh)) is the non-empty `## TLDR` section of the release pull request
+   of the tagged commit (up to the next `##` heading), then GitHub's generated "What's changed"; without a TLDR it is the
+   generated notes alone. [`scripts/release-latest.sh`](../scripts/release-latest.sh) picks `--latest` or `--latest=false`
+   by comparing `X.Y.Z` with the existing release tags.
 6. In parallel with step 5, after step 4, runs the [smoke test](#smoke-test) against the published images. It is not a dependency of the
    GitHub Release and never blocks it.
 

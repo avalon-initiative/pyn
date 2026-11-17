@@ -28,7 +28,6 @@ mkdir -p "$fix"
   for t in $tags; do printf '%s  {\n    "tag_name": "%s",\n    "prerelease": true\n  }' "$sep" "$t"; sep=$',\n'; done
   echo; echo ']'
 } >"$fix/releases.json"
-printf '[\n  {\n    "tag_name": "v0.1.2-alpha"\n  }\n]\n' >"$fix/releases1.json"
 for t in $tags v1.0.0; do
   d="$fix/dl/$t"; mkdir -p "$d"
   for p in $platforms; do
@@ -69,7 +68,8 @@ printf 'PYN_VERSION=\nPYN_API_URL=\n# PYN_WEB_PUBLISH=127.0.0.1:8080\n' >"$fix/r
 cp "$work/env.example" "$fix/raw/v0.1.2-alpha/.env.example"
 cp "$work/env.example" "$fix/raw/v0.1.1-alpha/.env.example"
 cp "$work/env.example" "$fix/raw/v1.0.0/.env.example"
-printf '[\n  {\n    "tag_name": "v1.0.0"\n  }\n]\n' >"$fix/latest.json"
+printf '{\n  "tag_name": "v0.1.2-alpha"\n}\n' >"$fix/latest.json"
+printf '{\n  "tag_name": "v1.0.0"\n}\n' >"$fix/latest-v1.json"
 printf 'ID=ubuntu\nID_LIKE=debian\n' >"$fix/os-debian"
 printf 'ID=fedora\n' >"$fix/os-fedora"
 printf '#!/bin/sh\necho docker-installer >>"$LOG"\ncp "$FIX/stub-docker" "$BIN/docker"\n' >"$fix/get-docker.sh"
@@ -106,8 +106,7 @@ if [ -n "${FAKE_CURL_FAIL:-}" ] && [[ $url == *"$FAKE_CURL_FAIL"* ]]; then exit 
 if [ -n "${FAKE_NET_DOWN:-}" ]; then [ -z "$wfmt" ] || printf 000; exit 6; fi
 code=200
 case $url in
-  *api.github.com*releases/latest) f=$FIX/latest.json; [ -n "${FAKE_STABLE:-}" ] || f=/nonexistent; code=${FAKE_API_CODE:-200} ;;
-  *api.github.com*per_page=1) f=$FIX/releases1.json; code=${FAKE_API_CODE:-200} ;;
+  *api.github.com*releases/latest) f=$FIX/latest.json; [ -z "${FAKE_LATEST_V1:-}" ] || f=$FIX/latest-v1.json; [ -z "${FAKE_NO_RELEASES:-}" ] || f=/nonexistent; code=${FAKE_API_CODE:-200} ;;
   *api.github.com*per_page=100) f=$FIX/releases.json; code=${FAKE_API_CODE:-200} ;;
   *github.com/*/releases/download/*) f=$FIX/dl/$(basename "$(dirname "$url")")/$(basename "$url") ;;
   *raw.githubusercontent.com/*/deploy/*) ref=${url#*githubusercontent.com/avalon-initiative/pyn/}; ref=${ref%%/*}; f=$FIX/raw/$ref/${url##*/} ;;
@@ -255,7 +254,7 @@ run_install --dir "$c/pyn" --shape full --yes
 expect "default version is the newest release" ok_rc
 expect "newest: image tag drops the title suffix" has "$c/pyn/.env" "PYN_VERSION=v0.1.2"
 expect "newest: Compose file comes from the newest tag" has "$c/log" "raw.githubusercontent.com/avalon-initiative/pyn/v0.1.2-alpha/deploy/docker-compose.yml"
-expect "newest: asks the single-release endpoint" has "$c/log" "per_page=1"
+expect "newest: asks the latest-release endpoint" has "$c/log" "releases/latest"
 
 # Docker writes under --dir, so give every Docker case its own directory.
 dock() { # dock NAME flags...: run a Docker install into $c/pyn
@@ -294,8 +293,7 @@ run_install
 expect "prompted run (server, docker, defaults) succeeds" ok_rc
 expect "shape menu is shown" has "$out" "What do you want to install?"
 expect "method menu is shown" has "$out" "How do you want to run it?"
-expect "release menu defaults to the pre-release while no stable exists" has "$out" "(v0.1.2-alpha) (default)"
-expect "release menu says there is no stable release" has "$out" "none yet: every release so far is a pre-release"
+expect "release menu defaults to the latest release" has "$out" "Latest release (v0.1.2-alpha) (default)"
 expect "the resolved tag is shown" has "$out" "resolved release: v0.1.2-alpha"
 expect "public URL default is this host on 7878 for a server" has "$c/pyn/.env" "PYN_PUBLIC_URL=http://10.0.0.5:7878"
 expect "shape answer 2 selected the server file" has "$c/pyn/docker-compose.yml" "docker-compose.server.yml"
@@ -303,7 +301,7 @@ expect "server publish is opened for a non-local address" has "$c/pyn/.env" "PYN
 
 case_start p2
 tty_file="$c/answers"
-printf 'full\ndocker\n%s\n\n3\n0.1.1\nhttps://pyn.example.com\ny\n' "$c/pyn" >"$tty_file"
+printf 'full\ndocker\n%s\n\n2\n0.1.1\nhttps://pyn.example.com\ny\n' "$c/pyn" >"$tty_file"
 run_install
 expect "typed names, bare version and URL are taken" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
 expect "typed bare version selects its tag" has "$c/pyn/.env" "PYN_VERSION=v0.1.1"
@@ -311,7 +309,7 @@ expect "an https address keeps the port on loopback" lacks "$c/pyn/.env" "PYN_WE
 
 case_start p3
 tty_file="$c/answers"
-printf 'full\ndocker\n%s\n\n3\nv9.9.9\n' "$c/pyn" >"$tty_file"
+printf 'full\ndocker\n%s\n\n2\nv9.9.9\n' "$c/pyn" >"$tty_file"
 run_install
 expect "an unknown version typed at the prompt fails" bad_rc
 
@@ -552,45 +550,31 @@ case_start o5 systemctl; extra_env=()
 run_install --yes --shape server --method native
 expect "an explicit native choice without systemd still stops" bad_rc
 
-# Release channels
+# Latest release
 chan() { case_start "$1"; extra_env=(); }
-chan h1; extra_env=(FAKE_STABLE=1); tty_file="$c/answers"
+chan h1; extra_env=(FAKE_LATEST_V1=1); tty_file="$c/answers"
 printf 'full\ndocker\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install
-expect "stable exists: it is the menu default" has "$out" "Latest stable release (v1.0.0) (default)"
-expect "stable exists: its tag is resolved" has "$out" "resolved release: v1.0.0"
-expect "stable exists: image tag v1.0.0" has "$c/pyn/.env" "PYN_VERSION=v1.0.0"
-chan h2; extra_env=(FAKE_STABLE=1); tty_file="$c/answers"
-printf 'full\ndocker\n%s\n\n2\n\n\n' "$c/pyn" >"$tty_file"
+expect "the latest release is the menu default" has "$out" "Latest release (v1.0.0) (default)"
+expect "the latest release's tag is resolved" has "$out" "resolved release: v1.0.0"
+expect "the latest release's image tag" has "$c/pyn/.env" "PYN_VERSION=v1.0.0"
+chan h2; tty_file="$c/answers"
+printf 'full\ndocker\n%s\n\n2\n0.1.1\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install
-expect "choice 2 is the latest pre-release" has "$c/pyn/.env" "PYN_VERSION=v0.1.2"
-chan h3; tty_file="$c/answers"
-printf 'full\ndocker\n%s\n\n1\n2\n\n\n' "$c/pyn" >"$tty_file"
-run_install
-expect "no stable: choosing stable asks again" has "$out" "There is no stable release yet"
-expect "no stable: then the pre-release is used" has "$c/pyn/.env" "PYN_VERSION=v0.1.2"
-chan h4; extra_env=(FAKE_STABLE=1)
+expect "menu choice 2 asks for a tag" has "$c/pyn/.env" "PYN_VERSION=v0.1.1"
+chan h4; extra_env=(FAKE_LATEST_V1=1)
 run_install --yes --dir "$c/pyn"
-expect "--yes picks stable when it exists" has "$c/pyn/.env" "PYN_VERSION=v1.0.0"
-chan h5
+expect "--yes takes the latest release" has "$c/pyn/.env" "PYN_VERSION=v1.0.0"
+chan h5; extra_env=(FAKE_NO_RELEASES=1)
 run_install --yes --dir "$c/pyn"
-expect "--yes falls back to the pre-release and says so" has "$out" "no stable release exists yet"
-chan h6
-run_install --yes --channel stable --dir "$c/pyn"
-expect "--channel stable fails when no stable exists" bad_rc
-expect "and explains" has "$err" "every release so far is a pre-release"
-chan h7; extra_env=(FAKE_STABLE=1)
-run_install --yes --channel pre --dir "$c/pyn"
-expect "--channel pre takes the newest release overall" has "$c/pyn/.env" "PYN_VERSION=v0.1.2"
-chan h8; extra_env=(FAKE_STABLE=1)
-run_install --yes --channel stable --dir "$c/pyn"
-expect "--channel stable takes the latest stable" has "$c/pyn/.env" "PYN_VERSION=v1.0.0"
+expect "no release at all fails" bad_rc
+expect "and says so" has "$err" "lists no releases"
 chan h9
-run_install --yes --channel bogus
-expect "an invalid channel fails" bad_rc
-chan h10; extra_env=(FAKE_STABLE=1)
-run_install --yes --channel stable --version 0.1.1 --dir "$c/pyn"
-expect "--version wins over --channel" has "$c/pyn/.env" "PYN_VERSION=v0.1.1"
+run_install --yes --channel stable
+expect "--channel is no longer an option" bad_rc
+chan h10; extra_env=(FAKE_LATEST_V1=1)
+run_install --yes --version 0.1.1 --dir "$c/pyn"
+expect "--version wins over the latest release" has "$c/pyn/.env" "PYN_VERSION=v0.1.1"
 
 # Existing folder: use / refresh / fresh
 seed() { # seed NAME: a Docker install of v0.1.1 with a local Compose edit and a custom setting
@@ -930,12 +914,12 @@ expect "no curl stdout reaches the error output" lacks "$c/err" "NOISE-OUT"
 expect "no curl stderr reaches the error output" lacks "$c/err" "NOISE-ERR"
 expect "the expected 404 and the main fallback happened" has "$c/out" "using the one from main"
 case_start n_q2; extra_env=(FAKE_CURL_NOISE=1)
-run_install --yes --channel pre --version 0.1.1 --shape full --dir "$c/pyn"
+run_install --yes --version 0.1.1 --shape full --dir "$c/pyn"
 expect "noisy curl with a typed version stays quiet" lacks "$c/out" "NOISE"
 expect "noisy curl with a typed version succeeds" ok_rc
-case_start n_q3; extra_env=(FAKE_CURL_NOISE=1 FAKE_STABLE=1)
-run_install --yes --channel stable --shape full --dir "$c/pyn"
-expect "noisy curl on the stable path stays quiet" lacks "$c/out" "NOISE"
+case_start n_q3; extra_env=(FAKE_CURL_NOISE=1 FAKE_LATEST_V1=1)
+run_install --yes --shape full --dir "$c/pyn"
+expect "noisy curl on the latest-release path stays quiet" lacks "$c/out" "NOISE"
 case_start n_q4; extra_env=(FAKE_CURL_NOISE=1 FAKE_CURL_FAIL=docker-compose.yml)
 run_install --yes --shape full --dir "$c/pyn"
 expect "a failing download fails the install" bad_rc
