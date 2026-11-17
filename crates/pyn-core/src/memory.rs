@@ -8,8 +8,8 @@ use chrono::{DateTime, Duration, Utc};
 use pyn_object::ObjectId;
 
 use crate::access::{
-    AccountKind, AccountRecord, AccountStatus, InvitationAccept, InvitationCreate, InviteId,
-    InviteRecord, NewAccount, OrgInvitation, OrgRole, Permission, Role, RoleDefinitions,
+    AccessMode, AccountKind, AccountRecord, AccountStatus, InvitationAccept, InvitationCreate,
+    InviteId, InviteRecord, NewAccount, OrgInvitation, OrgRole, Permission, Role, RoleDefinitions,
     ServerSettings, ServiceCredentialRecord, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
     TokenId, TokenRecord, VerificationRecord,
 };
@@ -3519,6 +3519,11 @@ impl AccessStore for MemoryAccessStore {
         st.accounts.insert(admin.user, account);
         st.settings = Some(settings);
         Ok(true)
+    }
+
+    async fn set_access_mode(&self, mode: AccessMode) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st.settings.as_mut().map(|s| s.access_mode = mode).is_some())
     }
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()> {

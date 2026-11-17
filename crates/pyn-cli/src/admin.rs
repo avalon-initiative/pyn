@@ -138,6 +138,7 @@ pub fn setup(api: &Api, args: SetupArgs, interactive: bool) -> Result<()> {
         server_name: args.server_name,
         public_url: args.public_url,
         registration: args.registration.unwrap_or(status.registration),
+        access_mode: None,
     };
     let done: api::SetupCompleted = api
         .send(api.anonymous(Method::POST, "/v1/setup").json(&body))?

@@ -25,7 +25,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/account/deletion": {
@@ -177,6 +177,57 @@
           }
         },
         "x-pyn-reach": "full_scope_pending"
+      }
+    },
+    "/v1/admin/access": {
+      "put": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "set_access_mode",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServerAccess"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the mode now in force; it applies to the next request, and setting the current mode changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerAccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: not private or public",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required: also for any service credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
       }
     },
     "/v1/admin/audit": {
@@ -1762,7 +1813,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/explore/repos": {
@@ -2010,7 +2061,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/me": {
@@ -2932,7 +2983,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/oidc/callback": {
@@ -2975,7 +3026,7 @@
             "description": "to the web app: the return_to path (or /) with the session cookie set, or /sign-in?error=<code> on failure"
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/oidc/link": {
@@ -5052,7 +5103,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/register/resend": {
@@ -5086,7 +5137,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/register/verify": {
@@ -5127,7 +5178,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/registration": {
@@ -5147,7 +5198,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/repos": {
@@ -9011,7 +9062,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       },
       "delete": {
         "tags": [
@@ -9033,7 +9084,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/setup": {
@@ -9053,7 +9104,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       },
       "post": {
         "tags": [
@@ -9121,7 +9172,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/sign-in-options": {
@@ -9141,7 +9192,7 @@
             }
           }
         },
-        "x-pyn-reach": "public"
+        "x-pyn-reach": "open"
       }
     },
     "/v1/tokens": {
@@ -9460,6 +9511,14 @@
   },
   "components": {
     "schemas": {
+      "AccessMode": {
+        "type": "string",
+        "description": "Whether a signed-out caller can read anything: `private` shows nothing, `public` shows public things.",
+        "enum": [
+          "private",
+          "public"
+        ]
+      },
       "Account": {
         "type": "object",
         "description": "The signed-in account, independent of any repository.",
@@ -13873,6 +13932,18 @@
           }
         }
       },
+      "ServerAccess": {
+        "type": "object",
+        "description": "The server's access mode, as read and as changed by an administrator.",
+        "required": [
+          "access_mode"
+        ],
+        "properties": {
+          "access_mode": {
+            "$ref": "#/components/schemas/AccessMode"
+          }
+        }
+      },
       "ServerCapabilities": {
         "type": "object",
         "description": "What this server supports beyond the base API; a client checks it before it relies on a newer route.",
@@ -14099,6 +14170,17 @@
           "registration"
         ],
         "properties": {
+          "access_mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccessMode",
+                "description": "Omit it to take the server's configured default (`PYN_ACCESS`, else `private`)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "email": {
             "type": [
               "string",
@@ -14140,9 +14222,14 @@
         "required": [
           "initialised",
           "public_url",
-          "registration"
+          "registration",
+          "access_mode"
         ],
         "properties": {
+          "access_mode": {
+            "$ref": "#/components/schemas/AccessMode",
+            "description": "What setup recorded or an administrator set later; before setup, the configured default."
+          },
           "initialised": {
             "type": "boolean"
           },

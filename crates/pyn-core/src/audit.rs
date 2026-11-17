@@ -71,6 +71,7 @@ pub enum AuditAction {
     ServiceCredentialCreated,
     ServiceCredentialRevoked,
     ServerSetupCompleted,
+    ServerAccessModeChanged,
     AdminGranted,
     AdminRevoked,
     AccountRenamed,
@@ -102,7 +103,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 72] = [
+    pub const ALL: [AuditAction; 73] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -147,6 +148,7 @@ impl AuditAction {
         AuditAction::ServiceCredentialCreated,
         AuditAction::ServiceCredentialRevoked,
         AuditAction::ServerSetupCompleted,
+        AuditAction::ServerAccessModeChanged,
         AuditAction::AdminGranted,
         AuditAction::AdminRevoked,
         AuditAction::AccountRenamed,
@@ -223,6 +225,7 @@ impl AuditAction {
             Self::ServiceCredentialCreated => "service_credential_created",
             Self::ServiceCredentialRevoked => "service_credential_revoked",
             Self::ServerSetupCompleted => "server_setup_completed",
+            Self::ServerAccessModeChanged => "server_access_mode_changed",
             Self::AdminGranted => "admin_granted",
             Self::AdminRevoked => "admin_revoked",
             Self::AccountRenamed => "account_renamed",

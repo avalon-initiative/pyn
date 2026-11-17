@@ -81,6 +81,7 @@ warns while it is still set.
 | --- | --- |
 | `PYN_PUBLIC_URL=https://...` | Marks session cookies `Secure` and is used in links; setup records the address too |
 | `PYN_SECRET_KEY` | Encrypts webhook secrets at rest; compose refuses to start without it |
+| `PYN_ACCESS` | `private` (default) refuses every signed-out request except sign-in, sign-up and setup; `public` lets signed-out visitors read public repositories and profiles. Used by first-run setup and as the default until it; after setup the stored value wins and an administrator changes it at runtime (see [server access mode](concepts/access.md#server-access-mode)) |
 | `PYN_REGISTRATION` | `invite` (default) or `closed` for a private server; `open` needs the [sign-up protections](concepts/access.md#protecting-open-registration) |
 | `PYN_TRUST_FORWARDED_FOR=true` | Only behind a proxy that sets `X-Forwarded-For`, so rate limits see client addresses |
 | `PYN_ALLOWED_ORIGINS` | Required for a web app served from another origin, such as a web-only deployment pointing here (its address, no path) |

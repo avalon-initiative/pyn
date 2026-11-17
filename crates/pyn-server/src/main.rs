@@ -425,6 +425,10 @@ async fn main() -> anyhow::Result<()> {
             Ok(mode) => mode.parse()?,
             Err(_) => defaults.registration,
         },
+        access_mode: match std::env::var("PYN_ACCESS") {
+            Ok(mode) => mode.parse()?,
+            Err(_) => defaults.access_mode,
+        },
         session_days: number("PYN_SESSION_DAYS", defaults.session_days)?,
         require_email_verification: flag_or("PYN_EMAIL_VERIFICATION", true),
         require_approval: flag("PYN_REQUIRE_APPROVAL"),

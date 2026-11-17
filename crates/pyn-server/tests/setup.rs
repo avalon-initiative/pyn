@@ -187,3 +187,35 @@ async fn the_setup_audit_entry_is_visible_to_the_administrator() {
     assert_eq!(page.entries.len(), 1);
     assert_eq!(page.entries[0].action, "server_setup_completed");
 }
+
+#[tokio::test]
+async fn setup_records_the_access_mode_and_a_new_server_is_private_by_default() {
+    let before = app();
+    let (_, body) = send(&before, get("/v1/setup")).await;
+    let info: api::SetupStatus = serde_json::from_slice(&body).unwrap();
+    assert_eq!(info.access_mode, "private");
+    send(&before, post("/v1/setup", setup_body(TOKEN))).await;
+    let (_, body) = send(&before, get("/v1/setup")).await;
+    let info: api::SetupStatus = serde_json::from_slice(&body).unwrap();
+    assert_eq!(info.access_mode, "private");
+
+    let public = app();
+    let mut body = setup_body(TOKEN);
+    body["access_mode"] = "public".into();
+    assert_eq!(
+        send(&public, post("/v1/setup", body)).await.0,
+        StatusCode::CREATED
+    );
+    let (_, body) = send(&public, get("/v1/setup")).await;
+    let info: api::SetupStatus = serde_json::from_slice(&body).unwrap();
+    assert_eq!(info.access_mode, "public");
+    let (status, _) = send(&public, get("/v1/users/root")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let invalid = app();
+    let mut body = setup_body(TOKEN);
+    body["access_mode"] = "sideways".into();
+    let (status, reply) = send(&invalid, post("/v1/setup", body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(code(&reply), "invalid_request");
+}

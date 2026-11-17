@@ -16,7 +16,7 @@ with none shows its name, join date and repositories.
 Limits count characters, not bytes (links count bytes). A blank value is cleared. A field that breaks a limit is refused with
 `400 invalid_request` and nothing is changed.
 
-A profile is public, readable signed out, except for the fields its owner hides (see [Privacy](#privacy)). An email
+A profile is public, readable signed out on a `public` [server](access.md#server-access-mode) (a `private` one needs a sign-in), except for the fields its owner hides (see [Privacy](#privacy)). An email
 address is never part of a profile response, whoever asks.
 
 ## Privacy
@@ -47,8 +47,8 @@ lifetime.
 | Route | What it does |
 | --- | --- |
 | `GET /v1/users` | The people directory: browse and search accounts. Needs a full-scope credential. |
-| `GET /v1/users/{user}` | The public profile. Works signed out. |
-| `GET /v1/users/{user}/avatar` | The avatar image. Works signed out. |
+| `GET /v1/users/{user}` | The public profile. Works signed out on a `public` server. |
+| `GET /v1/users/{user}/avatar` | The avatar image. Works signed out on a `public` server. |
 | `PUT /v1/me/profile` | Replaces your display name, bio, location, company and links. A field left out is cleared. |
 | `PUT /v1/me/avatar` | Sets your avatar from the request body (the raw image bytes). |
 | `DELETE /v1/me/avatar` | Removes your avatar. |
@@ -132,7 +132,7 @@ at most 1 MiB, judged from the bytes) and shares their storage.
 | `PUT /v1/orgs/{org}/profile` | Replaces the description. |
 | `PUT /v1/orgs/{org}/avatar` | Sets the avatar from the request body (the raw image bytes). |
 | `DELETE /v1/orgs/{org}/avatar` | Removes the avatar. |
-| `GET /v1/orgs/{org}/avatar` | The image, readable signed out so it can sit in an `<img>`; `404 avatar_not_found` when none. |
+| `GET /v1/orgs/{org}/avatar` | The image, readable signed out on a `public` server so it can sit in an `<img>`; `404 avatar_not_found` when none. |
 
 Editing is for organization owners with a full-scope credential (`403 not_org_owner` for anyone else), and is refused while
 the organization is [frozen](limits.md#freezing-an-owner). An organization may change its avatar 30 times an hour. The

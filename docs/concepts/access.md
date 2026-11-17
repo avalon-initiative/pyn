@@ -252,6 +252,45 @@ as `404 token_not_found`; only a server administrator reaches those. A token id 
 someone the caller cannot manage, gets the same answer. A bearer token with an unknown id and one with a wrong secret get
 the same `401`.
 
+## Server access mode
+
+A server is `private` or `public`; the setting is stored with the server, separate from the registration mode below.
+A new server is `private` unless first-run setup (or `PYN_ACCESS` before it) says `public`, and so is every server that
+existed before the setting did.
+
+| Mode | What a signed-out caller can read |
+| --- | --- |
+| `private` (default) | nothing, except what a visitor needs to sign in or sign up (listed below) |
+| `public` | what a signed-out caller reads on any server: public repositories (tree, files, history, fetch), public profiles and avatars, organization avatars and the repository explore list |
+
+On a `private` server every route declared `public`, `optional_sign_in`, `public_repo_read` or `public_repo_visible`
+(see [route reach](#route-reach)) refuses a request that carries no credential: `401 unauthenticated`, except on a
+repository route, which answers `404 repo_not_found` exactly as it does for a private repository, so it neither
+confirms nor denies that a repository exists. That covers anonymous clone and fetch of a public repository, profiles,
+avatars, the explore list and organization avatars. A request that carries a credential is judged as on a `public` server: a signed-in account sees what it
+sees there (a public repository stays readable by any signed-in account), a bad credential is still `401`, and a
+service credential is still refused where it was. Stored data and repository visibility flags are never touched by the mode, and
+existing tokens keep working. LFS routes and the people and organization lookups already need a credential on both modes.
+
+These stay open in both modes, because a signed-out visitor needs them to reach a server at all: `GET /healthz`,
+`GET /openapi.json`, `GET /v1/capabilities`, `GET`/`POST /v1/setup`, `GET /v1/registration`,
+`POST /v1/register`, `POST /v1/register/verify`, `POST /v1/register/resend`, `POST /v1/login`, `POST`/`DELETE /v1/session`,
+`GET /v1/sign-in-options`, `GET /v1/oidc/authorize`, `GET /v1/oidc/callback`, and the tus `OPTIONS` preflight. Accepting an
+organization or repository invitation needs a signed-in account on both modes. They carry reach `open`.
+
+Anyone can read the mode without a credential: `GET /v1/setup` returns `access_mode`, so a client can choose its
+signed-out pages. A server administrator changes it with `PUT /v1/admin/access` and `{"access_mode": "private"|"public"}`
+(a full-scope administrator credential; a scoped token, a service credential or an ordinary account gets `403`). The
+change applies to the next request on that server copy, and to other copies within a minute (the settings are re-read
+every minute). It is recorded in the [server audit log](#protecting-open-registration) as `server_access_mode_changed`
+with the actor and both modes, and in the server log at `info`. Setting the mode already in force changes nothing and
+records nothing.
+
+First-run setup takes an optional `access_mode`. When it is omitted, `PYN_ACCESS` (`private` or `public`) is used, else
+`private`. After setup the stored value wins: `PYN_ACCESS` is only the default for a server that has no stored value,
+so changing it on a set-up server does nothing. The web panel that warns about each direction (what becomes readable
+signed out, and what stops working at once) is a client concern; the API only does what it is told.
+
 ## Joining a server
 
 The person running the server chooses how people join with `PYN_REGISTRATION`:
@@ -361,9 +400,10 @@ is off, or on but nothing is delivered.
 | `POST /v1/admin/users/{user}/delete` | `{reason, immediately?}` for a disabled account: `{user, deleted, purge_at}`; see [deleting an account](#deleting-an-account). `409` `account_not_disabled`, `account_owns_resources`, `account_frozen`, `last_server_admin` |
 | `GET /v1/account/deletion`, `POST /v1/account/deletion`, `POST /v1/account/deletion/restore` | the signed-in account's own deletion: status, schedule (`{password}`) and restore; they also answer for a pending account |
 | `PUT /v1/admin/users/{user}/admin` | grants the flag; the updated account. `400 invalid_request` if the account is not active; granting again changes nothing |
+| `PUT /v1/admin/access` | `{access_mode}`: the [server access mode](#server-access-mode) now in force; administrators only, never a service credential |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_deletion_scheduled`, `account_deletion_restored`, `account_deleted`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_deletion_scheduled`, `account_deletion_restored`, `account_deleted`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
 
 On the command line (server administrators; each listing is an aligned table with the name last):
 
@@ -481,8 +521,9 @@ core (full scope, namespace management, administrator and service scopes, per-re
 
 | Reach (`x-pyn-reach`) | Accepts |
 | --- | --- |
-| `public` | everyone; no credential is read |
-| `optional_sign_in` | signed out, or any user credential |
+| `open` | everyone, in both access modes; no credential is read |
+| `public` | everyone on a `public` server; on a `private` one a valid credential. No credential is read otherwise |
+| `optional_sign_in` | signed out or any user credential on a `public` server; any user credential on a `private` one |
 | `session` | a web session cookie only |
 | `any_credential` | any user credential; the response narrows to the credential's scope |
 | `full_scope` | a session, a full-scope token or the development identity |
@@ -493,11 +534,11 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `full_scope_or_service:<scope>` | a full-scope user (the core limits it to its own owner), or a service credential holding the scope |
 | `repo_scoped:<permission>` | a signed-in credential holding the permission in the named repository |
 | `repo_visible` | a signed-in credential that can see the named repository; the operation decides the permission |
-| `public_repo_read` | `read` in the named repository; a public repository needs no credential |
+| `public_repo_read` | `read` in the named repository; a public repository needs no credential on a `public` server, a `private` one needs a credential and answers a signed-out caller `404 repo_not_found` |
 | `public_repo_visible` | like `public_repo_read`, but the operation decides the permission |
 
-A repository-scoped token reaches only `public`, `optional_sign_in`, `any_credential` and the repository kinds; a service
-credential reaches only `public`, the `service` kinds and `full_scope_or_service`. `crates/pyn-server/tests/reach.rs` checks that the table and the
+A repository-scoped token reaches only `open`, `public`, `optional_sign_in`, `any_credential` and the repository kinds; a service
+credential reaches only `open`, `public` (on a `public` server), the `service` kinds and `full_scope_or_service`. `crates/pyn-server/tests/reach.rs` checks that the table and the
 document agree and calls every route with each credential kind, so a new route with no declaration, or one that a credential
 reaches against its declaration, fails the build.
 
@@ -517,10 +558,10 @@ public address are re-read from the database every minute, so a copy picks up ch
 
 | Route | Notes |
 | --- | --- |
-| `GET /v1/setup` | `{initialised, server_name?, public_url, registration}`; no secrets. Before setup `public_url` and `registration` are the configured defaults |
-| `POST /v1/setup` | `{token, username, password, email?, server_name?, public_url?, registration}` gives `201 {user}`; `403 invalid_setup_token`, `400 invalid_request`, `409 already_initialised`, `429 too_many_attempts` |
+| `GET /v1/setup` | `{initialised, server_name?, public_url, registration, access_mode}`; no secrets. Before setup `public_url`, `registration` and `access_mode` are the configured defaults |
+| `POST /v1/setup` | `{token, username, password, email?, server_name?, public_url?, registration, access_mode?}` gives `201 {user}`; `403 invalid_setup_token`, `400 invalid_request`, `409 already_initialised`, `429 too_many_attempts` |
 
-`registration` is `open`, `invite` or `closed`. What setup records replaces `PYN_REGISTRATION` and `PYN_PUBLIC_URL`; the
+`registration` is `open`, `invite` or `closed`; `access_mode` is `private` or `public` (see [server access mode](#server-access-mode)). What setup records replaces `PYN_REGISTRATION`, `PYN_ACCESS` and `PYN_PUBLIC_URL`; the
 other registration settings (`PYN_EMAIL_VERIFICATION`, `PYN_REQUIRE_APPROVAL`) stay environment settings. The
 administrator signs in with the password it set (`pyn login`, or on the web) and creates repositories like anyone else.
 Setup is written to the [server audit log](#protecting-open-registration) as `server_setup_completed` with the

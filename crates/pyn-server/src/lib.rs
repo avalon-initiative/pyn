@@ -138,6 +138,7 @@ struct RepoAddress {
         deletion_api::restore_account_deletion,
         deletion_api::admin_settings,
         admin_api::grant_admin,
+        admin_api::set_access_mode,
         admin_api::revoke_admin,
         admin_api::audit,
         admin_api::create_org,
@@ -311,6 +312,8 @@ struct RepoAddress {
         api::FileMode,
         api::Person,
         api::SetupStatus,
+        api::ServerAccess,
+        api::AccessMode,
         api::SetupRequest,
         api::SetupCompleted,
         api::RegistrationInfo,
@@ -454,7 +457,7 @@ pub fn router_with_log(
 }
 
 fn routes(state: AppState) -> Router {
-    routes::routes()
+    routes::routes(&state)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             self_service_api::moved_to_header,

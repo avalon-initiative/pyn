@@ -7,7 +7,7 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use pyn_core::{PynError, RegistrationMode, SetupRequest};
+use pyn_core::{AccessMode, PynError, RegistrationMode, SetupRequest};
 use pyn_proto as api;
 
 use crate::client::Client;
@@ -21,6 +21,7 @@ pub(crate) async fn setup_status(State(s): State<AppState>) -> ApiResult<Json<ap
         server_name: status.server_name,
         public_url: status.public_url,
         registration: status.registration.as_str().to_string(),
+        access_mode: status.access_mode.as_str().to_string(),
     }))
 }
 
@@ -46,6 +47,11 @@ pub(crate) async fn complete_setup(
             server_name: req.server_name.as_deref(),
             public_url: req.public_url.as_deref(),
             registration: RegistrationMode::from_str(&req.registration)?,
+            access_mode: req
+                .access_mode
+                .as_deref()
+                .map(AccessMode::from_str)
+                .transpose()?,
             client: client.as_deref(),
         })
         .await?;
