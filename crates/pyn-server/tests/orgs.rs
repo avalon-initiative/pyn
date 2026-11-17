@@ -627,6 +627,48 @@ async fn my_orgs_lists_the_callers_organizations_with_their_role() {
 }
 
 #[tokio::test]
+async fn an_organization_lookup_shows_the_role_to_a_full_scope_caller_only() {
+    let app = server(OrgCreation::Anyone).await;
+    let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
+    create_org(&app, &alice, "acme").await;
+    join(&app, &alice, "acme", "bob", &bob, "member").await;
+    call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/repos",
+        Some(json!({"name": "own"})),
+    )
+    .await;
+    let limited = call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/tokens",
+        Some(json!({"name": "t", "permissions": ["read"], "repos": ["alice/own"]})),
+    )
+    .await
+    .json::<api::CreatedToken>()
+    .token;
+
+    let role = |r: Reply| {
+        assert_eq!(r.status, StatusCode::OK);
+        r.json::<api::OrgInfo>().role
+    };
+    let get = |who: String| {
+        let app = app.clone();
+        async move { call(&app, &who, "GET", "/v1/orgs/acme", None).await }
+    };
+    assert_eq!(role(get(alice.clone()).await).as_deref(), Some("owner"));
+    assert_eq!(role(get(bob).await).as_deref(), Some("member"));
+    let r = get(limited).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let info = r.json::<api::OrgInfo>();
+    assert_eq!(info.name, "acme");
+    assert_eq!(info.role, None);
+}
+
+#[tokio::test]
 async fn removal_drops_direct_grants_and_direct_grants_need_membership() {
     let app = server(OrgCreation::Anyone).await;
     let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);

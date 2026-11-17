@@ -3100,7 +3100,7 @@
         ],
         "responses": {
           "200": {
-            "description": "any signed-in account can look an organization up",
+            "description": "any signed-in account can look an organization up; role is the caller's and is absent for a token that is not full-scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -3888,7 +3888,7 @@
         ],
         "responses": {
           "200": {
-            "description": "any signed-in account can read it, as it can look the organization up",
+            "description": "any signed-in account can read it, as it can look the organization up; it holds nothing specific to the caller",
             "content": {
               "application/json": {
                 "schema": {
