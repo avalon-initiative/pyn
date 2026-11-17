@@ -1,0 +1,908 @@
+//! The route table: every route with the credential reach it declares. `routes()` builds the router from it and
+//! `openapi()` mirrors each reach as `x-pyn-reach`. See docs/concepts/access.md.
+
+use std::collections::HashMap;
+use std::convert::Infallible;
+
+use axum::handler::Handler;
+use axum::http::Method;
+use axum::routing::{MethodFilter, MethodRouter};
+use axum::{Extension, Json, Router};
+use pyn_core::{Permission, ServiceScope};
+use utoipa::OpenApi;
+use utoipa::openapi::extensions::Extensions;
+
+use crate::{
+    AppState, access_api, admin_api, branch_api, deletion_api, freeze_api, lfs_api, limits_api,
+    merge_api, oidc_api, org_api, profile_api, push_api, repo_api, repo_policy_api,
+    self_service_api, session_api, setup_api, team_api, webhook_api,
+};
+
+/// Which credentials a route accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// No credential is read.
+    Public,
+    /// Signed out or any user credential; a credential that is sent must be valid.
+    OptionalSignIn,
+    /// A web session cookie only (also while the account is scheduled for deletion).
+    Session,
+    /// Any user credential; the response is narrowed to what the credential's scope allows.
+    AnyCredential,
+    /// A session, a full-scope token or the development identity.
+    FullScope,
+    /// Full scope, and also an account scheduled for deletion (the routes that restore it).
+    FullScopePending,
+    /// Full scope, or an unscoped token holding `manage_roles`.
+    Namespace,
+    /// A server administrator on a full-scope credential; service credentials are refused.
+    AdminOnly,
+    /// A server administrator, or a service credential holding the scope.
+    Service(ServiceScope),
+    /// A full-scope user (the core then limits it to its own owner), or a service credential holding the scope.
+    FullScopeOrService(ServiceScope),
+    /// A signed-in credential that holds the permission in the named repository.
+    RepoScoped(Permission),
+    /// A signed-in credential that can see the named repository; the operation decides the permission.
+    RepoVisible,
+    /// Signed out or signed in, holding `read` in the named repository (a public one needs no credential).
+    PublicRepoRead,
+    /// Signed out or signed in, able to see the named repository; the operation decides the permission.
+    PublicRepoVisible,
+}
+
+impl Reach {
+    /// The stable name published as `x-pyn-reach`.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Public => "public".into(),
+            Self::OptionalSignIn => "optional_sign_in".into(),
+            Self::Session => "session".into(),
+            Self::AnyCredential => "any_credential".into(),
+            Self::FullScope => "full_scope".into(),
+            Self::FullScopePending => "full_scope_pending".into(),
+            Self::Namespace => "namespace".into(),
+            Self::AdminOnly => "admin_only".into(),
+            Self::Service(s) => format!("service:{}", s.as_str()),
+            Self::FullScopeOrService(s) => format!("full_scope_or_service:{}", s.as_str()),
+            Self::RepoScoped(p) => format!("repo_scoped:{}", p.as_str()),
+            Self::RepoVisible => "repo_visible".into(),
+            Self::PublicRepoRead => "public_repo_read".into(),
+            Self::PublicRepoVisible => "public_repo_visible".into(),
+        }
+    }
+}
+
+/// The reach of the matched route, put in the request's extensions for the caller extractors.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Declared(pub(crate) Reach);
+
+/// One operation of the table.
+pub struct Declaration {
+    pub method: Method,
+    pub path: &'static str,
+    pub reach: Reach,
+}
+
+struct Entry {
+    declaration: Declaration,
+    route: MethodRouter<AppState, Infallible>,
+}
+
+fn on<H, T>(method: Method, path: &'static str, reach: Reach, handler: H) -> Entry
+where
+    H: Handler<T, AppState>,
+    T: 'static,
+{
+    let filter = MethodFilter::try_from(method.clone()).expect("a routable method");
+    Entry {
+        declaration: Declaration {
+            method,
+            path,
+            reach,
+        },
+        route: MethodRouter::new()
+            .on(filter, handler)
+            .layer(Extension(Declared(reach))),
+    }
+}
+
+macro_rules! verbs {
+    ($($name:ident => $method:ident),*) => {$(
+        fn $name<H, T>(path: &'static str, reach: Reach, handler: H) -> Entry
+        where
+            H: Handler<T, AppState>,
+            T: 'static,
+        {
+            on(Method::$method, path, reach, handler)
+        }
+    )*};
+}
+
+verbs!(get => GET, post => POST, put => PUT, patch => PATCH, delete => DELETE, head => HEAD, options => OPTIONS);
+
+fn table() -> Vec<Entry> {
+    vec![
+        get("/healthz", Reach::Public, crate::health),
+        get("/v1/capabilities", Reach::Public, crate::capabilities),
+        get("/openapi.json", Reach::Public, || async { Json(openapi()) }),
+        get("/v1/setup", Reach::Public, setup_api::setup_status),
+        post("/v1/setup", Reach::Public, setup_api::complete_setup),
+        get("/v1/registration", Reach::Public, access_api::registration),
+        post("/v1/register", Reach::Public, access_api::register),
+        post(
+            "/v1/register/verify",
+            Reach::Public,
+            access_api::verify_email,
+        ),
+        post(
+            "/v1/register/resend",
+            Reach::Public,
+            access_api::resend_verification,
+        ),
+        get(
+            "/v1/admin/users",
+            Reach::Service(ServiceScope::ManageAccounts),
+            admin_api::list_accounts,
+        ),
+        post(
+            "/v1/admin/users/{user}/approve",
+            Reach::Service(ServiceScope::ManageAccounts),
+            admin_api::approve,
+        ),
+        post(
+            "/v1/admin/users/{user}/disable",
+            Reach::Service(ServiceScope::ManageAccounts),
+            admin_api::disable,
+        ),
+        post(
+            "/v1/admin/users/{user}/enable",
+            Reach::Service(ServiceScope::ManageAccounts),
+            admin_api::enable,
+        ),
+        post(
+            "/v1/admin/users/{user}/delete",
+            Reach::Service(ServiceScope::ManageAccounts),
+            deletion_api::admin_delete_account,
+        ),
+        get(
+            "/v1/admin/settings",
+            Reach::Service(ServiceScope::ManageAccounts),
+            deletion_api::admin_settings,
+        ),
+        get(
+            "/v1/account/deletion",
+            Reach::FullScopePending,
+            deletion_api::account_deletion_status,
+        ),
+        post(
+            "/v1/account/deletion",
+            Reach::FullScope,
+            deletion_api::schedule_account_deletion,
+        ),
+        post(
+            "/v1/account/deletion/restore",
+            Reach::FullScopePending,
+            deletion_api::restore_account_deletion,
+        ),
+        put(
+            "/v1/admin/users/{user}/admin",
+            Reach::AdminOnly,
+            admin_api::grant_admin,
+        ),
+        delete(
+            "/v1/admin/users/{user}/admin",
+            Reach::AdminOnly,
+            admin_api::revoke_admin,
+        ),
+        get("/v1/admin/audit", Reach::AdminOnly, admin_api::audit),
+        post(
+            "/v1/admin/orgs",
+            Reach::Service(ServiceScope::ManageOrganizations),
+            admin_api::create_org,
+        ),
+        delete(
+            "/v1/admin/orgs/{org}",
+            Reach::Service(ServiceScope::ManageOrganizations),
+            admin_api::delete_org,
+        ),
+        get(
+            "/v1/admin/service-credentials",
+            Reach::AdminOnly,
+            admin_api::list_service_credentials,
+        ),
+        post(
+            "/v1/admin/service-credentials",
+            Reach::AdminOnly,
+            admin_api::create_service_credential,
+        ),
+        delete(
+            "/v1/admin/service-credentials/{name}",
+            Reach::AdminOnly,
+            admin_api::revoke_service_credential,
+        ),
+        get(
+            "/v1/admin/limits",
+            Reach::Service(ServiceScope::ManageLimits),
+            limits_api::list_limits,
+        ),
+        patch(
+            "/v1/admin/owners/{owner}/limits",
+            Reach::Service(ServiceScope::ManageLimits),
+            limits_api::set_owner_limits,
+        ),
+        get(
+            "/v1/admin/webhooks",
+            Reach::Service(ServiceScope::ManageWebhooks),
+            webhook_api::list_webhooks,
+        ),
+        post(
+            "/v1/admin/webhooks",
+            Reach::Service(ServiceScope::ManageWebhooks),
+            webhook_api::create_webhook,
+        ),
+        get(
+            "/v1/admin/webhooks/{id}",
+            Reach::Service(ServiceScope::ManageWebhooks),
+            webhook_api::get_webhook,
+        ),
+        patch(
+            "/v1/admin/webhooks/{id}",
+            Reach::Service(ServiceScope::ManageWebhooks),
+            webhook_api::update_webhook,
+        ),
+        delete(
+            "/v1/admin/webhooks/{id}",
+            Reach::Service(ServiceScope::ManageWebhooks),
+            webhook_api::delete_webhook,
+        ),
+        post(
+            "/v1/admin/webhooks/{id}/secrets",
+            Reach::Service(ServiceScope::ManageWebhooks),
+            webhook_api::rotate_webhook_secret,
+        ),
+        delete(
+            "/v1/admin/webhooks/{id}/secrets/{secret_id}",
+            Reach::Service(ServiceScope::ManageWebhooks),
+            webhook_api::retire_webhook_secret,
+        ),
+        get(
+            "/v1/admin/webhooks/{id}/deliveries",
+            Reach::Service(ServiceScope::ManageWebhooks),
+            webhook_api::list_webhook_deliveries,
+        ),
+        post(
+            "/v1/admin/webhooks/{id}/deliveries/{delivery_id}/redeliver",
+            Reach::Service(ServiceScope::ManageWebhooks),
+            webhook_api::redeliver_webhook,
+        ),
+        put(
+            "/v1/admin/owners/{owner}/freeze",
+            Reach::Service(ServiceScope::ManageFreeze),
+            freeze_api::freeze_owner,
+        ),
+        delete(
+            "/v1/admin/owners/{owner}/freeze",
+            Reach::Service(ServiceScope::ManageFreeze),
+            freeze_api::unfreeze_owner,
+        ),
+        get(
+            "/v1/owners/{owner}/freeze",
+            Reach::FullScopeOrService(ServiceScope::ManageFreeze),
+            freeze_api::owner_freeze,
+        ),
+        get(
+            "/v1/owners/{owner}/limits",
+            Reach::FullScopeOrService(ServiceScope::ManageLimits),
+            limits_api::owner_limits,
+        ),
+        get(
+            "/v1/owners/{owner}/usage",
+            Reach::FullScopeOrService(ServiceScope::ManageLimits),
+            limits_api::owner_usage,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/usage",
+            Reach::PublicRepoRead,
+            limits_api::repo_usage,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/usage/breakdown",
+            Reach::RepoVisible,
+            limits_api::repo_usage_breakdown,
+        ),
+        put(
+            "/v1/repos/{owner}/{name}/storage-cap",
+            Reach::FullScopeOrService(ServiceScope::ManageLimits),
+            limits_api::set_repo_storage_cap,
+        ),
+        post("/v1/login", Reach::Public, access_api::login),
+        get("/v1/session", Reach::Session, session_api::current),
+        post("/v1/session", Reach::Public, session_api::sign_in),
+        delete("/v1/session", Reach::Public, session_api::sign_out),
+        get(
+            "/v1/sign-in-options",
+            Reach::Public,
+            oidc_api::sign_in_options,
+        ),
+        get("/v1/oidc/authorize", Reach::Public, oidc_api::authorize),
+        post("/v1/oidc/link", Reach::FullScope, oidc_api::link),
+        get("/v1/oidc/callback", Reach::Public, oidc_api::callback),
+        get(
+            "/v1/me/identities",
+            Reach::FullScope,
+            oidc_api::list_identities,
+        ),
+        delete(
+            "/v1/me/identities/{id}",
+            Reach::FullScope,
+            oidc_api::unlink_identity,
+        ),
+        put(
+            "/v1/me/password",
+            Reach::FullScope,
+            access_api::change_password,
+        ),
+        get(
+            "/v1/me/emails",
+            Reach::FullScope,
+            self_service_api::list_emails,
+        ),
+        post(
+            "/v1/me/emails",
+            Reach::FullScope,
+            self_service_api::add_email,
+        ),
+        delete(
+            "/v1/me/emails/{address}",
+            Reach::FullScope,
+            self_service_api::delete_email,
+        ),
+        post(
+            "/v1/me/emails/{address}/resend",
+            Reach::FullScope,
+            self_service_api::resend_email,
+        ),
+        put(
+            "/v1/me/emails/{address}/primary",
+            Reach::FullScope,
+            self_service_api::set_primary_email,
+        ),
+        put(
+            "/v1/me/username",
+            Reach::FullScope,
+            self_service_api::rename_account,
+        ),
+        get("/v1/keys", Reach::FullScope, access_api::list_keys),
+        post("/v1/keys", Reach::FullScope, access_api::add_key),
+        delete("/v1/keys/{id}", Reach::FullScope, access_api::delete_key),
+        get("/v1/me", Reach::AnyCredential, access_api::me),
+        put(
+            "/v1/me/profile",
+            Reach::FullScope,
+            profile_api::update_profile,
+        ),
+        put("/v1/me/avatar", Reach::FullScope, profile_api::put_avatar),
+        delete(
+            "/v1/me/avatar",
+            Reach::FullScope,
+            profile_api::delete_avatar,
+        ),
+        get("/v1/users", Reach::FullScope, profile_api::list_people),
+        get(
+            "/v1/users/{user}",
+            Reach::OptionalSignIn,
+            profile_api::get_profile,
+        ),
+        get(
+            "/v1/users/{user}/avatar",
+            Reach::OptionalSignIn,
+            profile_api::get_avatar,
+        ),
+        get(
+            "/v1/orgs/{org}/profile",
+            Reach::AnyCredential,
+            profile_api::get_org_profile,
+        ),
+        put(
+            "/v1/orgs/{org}/profile",
+            Reach::FullScope,
+            profile_api::update_org_profile,
+        ),
+        get(
+            "/v1/orgs/{org}/avatar",
+            Reach::Public,
+            profile_api::get_org_avatar,
+        ),
+        put(
+            "/v1/orgs/{org}/avatar",
+            Reach::FullScope,
+            profile_api::put_org_avatar,
+        ),
+        delete(
+            "/v1/orgs/{org}/avatar",
+            Reach::FullScope,
+            profile_api::delete_org_avatar,
+        ),
+        get("/v1/me/locks", Reach::AnyCredential, repo_api::my_locks),
+        get("/v1/tokens", Reach::FullScope, access_api::list_tokens),
+        post("/v1/tokens", Reach::FullScope, access_api::create_token),
+        delete(
+            "/v1/tokens/{id}",
+            Reach::FullScope,
+            access_api::revoke_token,
+        ),
+        get("/v1/orgs", Reach::FullScope, org_api::list_orgs),
+        post("/v1/orgs", Reach::Namespace, org_api::create_org),
+        get("/v1/orgs/{org}", Reach::AnyCredential, org_api::get_org),
+        delete("/v1/orgs/{org}", Reach::Namespace, org_api::delete_org),
+        get("/v1/orgs/{org}/audit", Reach::FullScope, org_api::org_audit),
+        get(
+            "/v1/orgs/{org}/members",
+            Reach::FullScope,
+            org_api::list_members,
+        ),
+        post(
+            "/v1/orgs/{org}/members",
+            Reach::Namespace,
+            org_api::add_member,
+        ),
+        get(
+            "/v1/orgs/{org}/invitations",
+            Reach::FullScope,
+            org_api::list_invitations,
+        ),
+        delete(
+            "/v1/orgs/{org}/invitations/{user}",
+            Reach::Namespace,
+            org_api::cancel_invitation,
+        ),
+        get(
+            "/v1/me/invitations",
+            Reach::FullScope,
+            org_api::my_invitations,
+        ),
+        post(
+            "/v1/me/invitations/{org}/accept",
+            Reach::Namespace,
+            org_api::accept_invitation,
+        ),
+        post(
+            "/v1/me/invitations/{org}/decline",
+            Reach::Namespace,
+            org_api::decline_invitation,
+        ),
+        patch(
+            "/v1/orgs/{org}/members/{user}",
+            Reach::Namespace,
+            org_api::set_member_role,
+        ),
+        delete(
+            "/v1/orgs/{org}/members/{user}",
+            Reach::Namespace,
+            org_api::remove_member,
+        ),
+        get(
+            "/v1/orgs/{org}/repo-policy",
+            Reach::FullScope,
+            repo_policy_api::get_repo_policy,
+        ),
+        put(
+            "/v1/orgs/{org}/repo-policy",
+            Reach::Namespace,
+            repo_policy_api::set_repo_policy,
+        ),
+        put(
+            "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
+            Reach::Namespace,
+            repo_policy_api::set_creation_rule,
+        ),
+        delete(
+            "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
+            Reach::Namespace,
+            repo_policy_api::remove_creation_rule,
+        ),
+        get(
+            "/v1/orgs/{org}/teams",
+            Reach::FullScope,
+            team_api::list_teams,
+        ),
+        post(
+            "/v1/orgs/{org}/teams",
+            Reach::Namespace,
+            team_api::create_team,
+        ),
+        get(
+            "/v1/orgs/{org}/teams/{team}",
+            Reach::FullScope,
+            team_api::get_team,
+        ),
+        patch(
+            "/v1/orgs/{org}/teams/{team}",
+            Reach::Namespace,
+            team_api::update_team,
+        ),
+        delete(
+            "/v1/orgs/{org}/teams/{team}",
+            Reach::Namespace,
+            team_api::delete_team,
+        ),
+        put(
+            "/v1/orgs/{org}/teams/{team}/members/{user}",
+            Reach::Namespace,
+            team_api::add_team_member,
+        ),
+        delete(
+            "/v1/orgs/{org}/teams/{team}/members/{user}",
+            Reach::Namespace,
+            team_api::remove_team_member,
+        ),
+        get("/v1/me/orgs", Reach::FullScope, org_api::my_orgs),
+        get(
+            "/v1/explore/repos",
+            Reach::OptionalSignIn,
+            repo_api::explore_repos,
+        ),
+        get("/v1/repos", Reach::AnyCredential, repo_api::list_repos),
+        post("/v1/repos", Reach::Namespace, repo_api::create_repo),
+        get(
+            "/v1/repos/{owner}/{name}",
+            Reach::PublicRepoVisible,
+            repo_api::get_repo,
+        ),
+        patch(
+            "/v1/repos/{owner}/{name}",
+            Reach::RepoVisible,
+            repo_api::update_repo,
+        ),
+        delete(
+            "/v1/repos/{owner}/{name}",
+            Reach::RepoVisible,
+            repo_api::delete_repo,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/me",
+            Reach::RepoVisible,
+            repo_api::repo_me,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/users",
+            Reach::RepoVisible,
+            repo_api::add_user,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/invites",
+            Reach::RepoVisible,
+            repo_api::list_invites,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/invites",
+            Reach::RepoVisible,
+            repo_api::create_invite,
+        ),
+        delete(
+            "/v1/repos/{owner}/{name}/invites/{id}",
+            Reach::RepoVisible,
+            repo_api::revoke_invite,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/roles",
+            Reach::RepoVisible,
+            repo_api::list_roles,
+        ),
+        put(
+            "/v1/repos/{owner}/{name}/roles/{role}",
+            Reach::RepoVisible,
+            repo_api::set_role,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/members",
+            Reach::RepoVisible,
+            repo_api::list_members,
+        ),
+        put(
+            "/v1/repos/{owner}/{name}/members/{user}",
+            Reach::RepoVisible,
+            repo_api::set_member,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/teams",
+            Reach::RepoVisible,
+            team_api::list_repo_teams,
+        ),
+        put(
+            "/v1/repos/{owner}/{name}/teams/{team}",
+            Reach::RepoVisible,
+            team_api::set_repo_team,
+        ),
+        delete(
+            "/v1/repos/{owner}/{name}/teams/{team}",
+            Reach::RepoVisible,
+            team_api::remove_repo_team,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/locks",
+            Reach::PublicRepoRead,
+            crate::list_locks,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/info/lfs/locks",
+            Reach::RepoScoped(Permission::Read),
+            lfs_api::list_locks,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/info/lfs/locks",
+            Reach::RepoScoped(Permission::Lock),
+            lfs_api::create_lock,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/info/lfs/locks/verify",
+            Reach::RepoScoped(Permission::Read),
+            lfs_api::verify_locks,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/info/lfs/locks/{id}/unlock",
+            Reach::RepoScoped(Permission::Lock),
+            lfs_api::unlock,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/batch",
+            Reach::RepoVisible,
+            lfs_api::batch,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/verify",
+            Reach::RepoScoped(Permission::Checkin),
+            lfs_api::verify_object,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}",
+            Reach::RepoScoped(Permission::Read),
+            lfs_api::download,
+        ),
+        put(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}",
+            Reach::RepoScoped(Permission::Checkin),
+            lfs_api::upload_object,
+        ),
+        head(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
+            Reach::RepoScoped(Permission::Checkin),
+            lfs_api::tus::head,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
+            Reach::RepoScoped(Permission::Checkin),
+            lfs_api::tus::create,
+        ),
+        patch(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
+            Reach::RepoScoped(Permission::Checkin),
+            lfs_api::tus::patch,
+        ),
+        delete(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
+            Reach::RepoScoped(Permission::Checkin),
+            lfs_api::tus::terminate,
+        ),
+        options(
+            "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
+            Reach::Public,
+            lfs_api::tus::options,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/files",
+            Reach::PublicRepoRead,
+            crate::list_files,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/tree",
+            Reach::PublicRepoRead,
+            crate::tree,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/summary",
+            Reach::PublicRepoRead,
+            crate::summary,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/content",
+            Reach::PublicRepoRead,
+            crate::get_content,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/checkout",
+            Reach::RepoScoped(Permission::Lock),
+            crate::checkout,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/release",
+            Reach::RepoScoped(Permission::Lock),
+            crate::release,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/checkin",
+            Reach::RepoScoped(Permission::Checkin),
+            crate::checkin,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/changesets",
+            Reach::RepoScoped(Permission::Checkin),
+            crate::changeset,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/restore",
+            Reach::RepoScoped(Permission::Restore),
+            crate::restore,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/force-unlock",
+            Reach::RepoScoped(Permission::ForceUnlock),
+            crate::force_unlock,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/policy/preview",
+            Reach::RepoScoped(Permission::EditPolicy),
+            crate::preview_policy,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/audit",
+            Reach::RepoScoped(Permission::ViewAudit),
+            crate::audit,
+        ),
+        put(
+            "/v1/repos/{owner}/{name}/objects",
+            Reach::RepoScoped(Permission::Checkin),
+            crate::put_object,
+        ),
+        put(
+            "/v1/repos/{owner}/{name}/objects/chunk",
+            Reach::RepoScoped(Permission::Checkin),
+            crate::put_chunk,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/objects/missing",
+            Reach::RepoScoped(Permission::Checkin),
+            crate::missing_objects,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/objects/assemble",
+            Reach::RepoScoped(Permission::Checkin),
+            crate::assemble_object,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/history",
+            Reach::PublicRepoRead,
+            crate::history,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/verify",
+            Reach::PublicRepoVisible,
+            crate::verify,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/commits",
+            Reach::PublicRepoRead,
+            crate::list_commits,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/commits/{commit}",
+            Reach::PublicRepoRead,
+            crate::get_commit,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/snapshot",
+            Reach::PublicRepoRead,
+            crate::snapshot,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/branches",
+            Reach::PublicRepoRead,
+            branch_api::list_branches,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/branches",
+            Reach::RepoScoped(Permission::Checkin),
+            branch_api::create_branch,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/push",
+            Reach::RepoScoped(Permission::Checkin),
+            push_api::push,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/fetch",
+            Reach::PublicRepoRead,
+            push_api::fetch,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/objects/{id}",
+            Reach::PublicRepoRead,
+            push_api::get_object,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/merge",
+            Reach::RepoScoped(Permission::Checkin),
+            merge_api::merge,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/merge/preview",
+            Reach::RepoScoped(Permission::Read),
+            merge_api::preview_merge,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/branches/{*branch}",
+            Reach::PublicRepoRead,
+            branch_api::get_branch,
+        ),
+        delete(
+            "/v1/repos/{owner}/{name}/branches/{*branch}",
+            Reach::RepoScoped(Permission::Checkin),
+            branch_api::delete_branch,
+        ),
+        patch(
+            "/v1/repos/{owner}/{name}/branches/{*branch}",
+            Reach::RepoScoped(Permission::Checkin),
+            branch_api::rename_branch,
+        ),
+    ]
+}
+
+/// Every operation with its declared reach.
+pub fn declarations() -> Vec<Declaration> {
+    table().into_iter().map(|e| e.declaration).collect()
+}
+
+pub(crate) fn routes() -> Router<AppState> {
+    let mut paths: Vec<&'static str> = Vec::new();
+    let mut merged: HashMap<&'static str, MethodRouter<AppState, Infallible>> = HashMap::new();
+    for entry in table() {
+        let path = entry.declaration.path;
+        match merged.remove(path) {
+            Some(existing) => merged.insert(path, existing.merge(entry.route)),
+            None => {
+                paths.push(path);
+                merged.insert(path, entry.route)
+            }
+        };
+    }
+    paths.into_iter().fold(Router::new(), |router, path| {
+        router.route(path, merged.remove(path).expect("merged above"))
+    })
+}
+
+/// The OpenAPI document with each operation's reach as `x-pyn-reach`.
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    let mut doc = crate::ApiDoc::openapi();
+    for d in declarations() {
+        let path = openapi_path(d.path);
+        let Some(item) = doc.paths.paths.get_mut(&path) else {
+            continue;
+        };
+        let op = match d.method {
+            Method::GET => &mut item.get,
+            Method::POST => &mut item.post,
+            Method::PUT => &mut item.put,
+            Method::PATCH => &mut item.patch,
+            Method::DELETE => &mut item.delete,
+            Method::HEAD => &mut item.head,
+            Method::OPTIONS => &mut item.options,
+            _ => continue,
+        };
+        if let Some(op) = op {
+            let mut ext = op.extensions.take().unwrap_or_default();
+            ext.merge(
+                Extensions::builder()
+                    .add("x-pyn-reach", d.reach.label())
+                    .build(),
+            );
+            op.extensions = Some(ext);
+        }
+    }
+    doc
+}
+
+/// The OpenAPI spelling of a route path: a catch-all `{*name}` is `{name}`.
+pub fn openapi_path(path: &str) -> String {
+    path.replace("{*", "{")
+}

@@ -471,6 +471,36 @@ with the actor `@service:<name>`; organization actions also appear in that organ
 
 A credential missing the scope gets `403 service_scope_required`; a revoked or unknown one gets `401 unauthenticated`.
 
+## Route reach
+
+Every route declares which credentials it accepts, in one table (`crates/pyn-server/src/routes.rs`) that also builds the
+router. The OpenAPI document publishes each declaration as `x-pyn-reach` on the operation; the LFS and tus routes are in
+the table but not in the document. A handler learns who is calling only through an extractor tied to its declared reach
+(`crates/pyn-server/src/caller.rs`), so it cannot read an identity without declaring what it needs. The checks inside the
+core (full scope, namespace management, administrator and service scopes, per-repository permissions) stay as a second line.
+
+| Reach (`x-pyn-reach`) | Accepts |
+| --- | --- |
+| `public` | everyone; no credential is read |
+| `optional_sign_in` | signed out, or any user credential |
+| `session` | a web session cookie only |
+| `any_credential` | any user credential; the response narrows to the credential's scope |
+| `full_scope` | a session, a full-scope token or the development identity |
+| `full_scope_pending` | `full_scope`, also while the account is scheduled for deletion |
+| `namespace` | full scope, or an unscoped token holding `manage_roles` |
+| `admin_only` | a server administrator; service credentials are refused |
+| `service:<scope>` | a server administrator, or a service credential holding the scope |
+| `full_scope_or_service:<scope>` | a full-scope user (the core limits it to its own owner), or a service credential holding the scope |
+| `repo_scoped:<permission>` | a signed-in credential holding the permission in the named repository |
+| `repo_visible` | a signed-in credential that can see the named repository; the operation decides the permission |
+| `public_repo_read` | `read` in the named repository; a public repository needs no credential |
+| `public_repo_visible` | like `public_repo_read`, but the operation decides the permission |
+
+A repository-scoped token reaches only `public`, `optional_sign_in`, `any_credential` and the repository kinds; a service
+credential reaches only `public`, the `service` kinds and `full_scope_or_service`. `crates/pyn-server/tests/reach.rs` checks that the table and the
+document agree and calls every route with each credential kind, so a new route with no declaration, or one that a credential
+reaches against its declaration, fails the build.
+
 ## First-run setup
 
 A new server is uninitialised. Until setup completes it serves only `GET /v1/setup`, `POST /v1/setup` and `GET /healthz`;

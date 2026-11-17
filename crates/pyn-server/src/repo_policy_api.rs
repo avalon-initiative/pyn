@@ -4,14 +4,15 @@ use std::str::FromStr;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use pyn_core::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
     SubjectKind, UserId,
 };
 use pyn_proto as api;
 
-use crate::{ApiResult, AppState, identify};
+use crate::caller::{FullScopeCaller, NamespaceCaller};
+use crate::{ApiResult, AppState};
 
 fn rule_info(rule: CreationRule) -> api::CreationRuleInfo {
     api::CreationRuleInfo {
@@ -40,10 +41,9 @@ fn subject(kind: &str, name: &str) -> pyn_core::Result<CreationSubject> {
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn get_repo_policy(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<api::RepoPolicyInfo>> {
-    let who = identify(&s, &headers).await?;
     let policy = s.access.repo_policy(&who, &UserId::new(org)).await?;
     Ok(Json(policy_info(policy)))
 }
@@ -57,11 +57,10 @@ pub(crate) async fn get_repo_policy(
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn set_repo_policy(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path(org): Path<String>,
     Json(req): Json<api::SetRepoPolicyRequest>,
 ) -> ApiResult<Json<api::RepoPolicyInfo>> {
-    let who = identify(&s, &headers).await?;
     let base = MemberCreation::from_str(&req.member_creation)?;
     let policy = s
         .access
@@ -83,11 +82,10 @@ pub(crate) async fn set_repo_policy(
               (status = 409, body = api::ErrorBody, description = "user_not_org_member")))]
 pub(crate) async fn set_creation_rule(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path((org, effect, kind, name)): Path<(String, String, String, String)>,
     Json(req): Json<api::SetCreationRuleRequest>,
 ) -> ApiResult<Json<api::CreationRuleInfo>> {
-    let who = identify(&s, &headers).await?;
     let rule = CreationRule {
         effect: CreationEffect::from_str(&effect)?,
         subject: subject(&kind, &name)?,
@@ -111,10 +109,9 @@ pub(crate) async fn set_creation_rule(
               (status = 404, body = api::ErrorBody, description = "org_not_found or creation_rule_not_found")))]
 pub(crate) async fn remove_creation_rule(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path((org, effect, kind, name)): Path<(String, String, String, String)>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access
         .remove_creation_rule(
             &who,

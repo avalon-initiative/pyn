@@ -7,13 +7,14 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use pyn_core::{FetchQuery, ObjectId, Permission, PushObjects, PynError};
+use pyn_core::{FetchQuery, ObjectId, PushObjects, PynError};
 use pyn_proto as api;
 
+use crate::caller::{RepoCaller, RepoReader};
 use crate::self_service_api::{annotate, annotate_revisions};
 use crate::{
-    ApiResult, AppState, FileContent, RepoAddress, authorize_read, authorize_repo, branch_of,
-    lock_dto, parse_object_id, parse_range, range_not_satisfiable, revision_dto, stranded_dto,
+    ApiResult, AppState, FileContent, RepoAddress, branch_of, lock_dto, parse_object_id,
+    parse_range, range_not_satisfiable, revision_dto, stranded_dto,
 };
 
 /// The largest push body: the encoded commits and trees, never file content.
@@ -57,12 +58,13 @@ fn decode(objects: Vec<api::PushObject>) -> Result<Vec<(ObjectId, Vec<u8>)>, Pyn
 ))]
 pub(crate) async fn push(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
     body: Body,
 ) -> ApiResult<Json<api::PushResponse>> {
-    let (repo, who) =
-        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let req = read_json::<api::PushRequest>(body, MAX_PUSH_BYTES).await?;
     let branch = branch_of(req.branch.as_deref());
     let objects = PushObjects {
@@ -100,11 +102,9 @@ pub(crate) async fn push(
 ))]
 pub(crate) async fn fetch(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader { repo, .. }: RepoReader,
     Json(req): Json<api::FetchRequest>,
 ) -> ApiResult<Json<api::FetchResponse>> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let query = FetchQuery {
         branches: req.branches,
         haves: req
@@ -158,11 +158,10 @@ pub(crate) async fn fetch(
               (status = 400, body = api::ErrorBody, description = "invalid_request for a malformed id"),
               (status = 404, body = api::ErrorBody, description = "object_not_found when no revision of the repository has the blob")))]
 pub(crate) async fn get_object(
-    State(s): State<AppState>,
     headers: HeaderMap,
-    Path((owner, name, id)): Path<(String, String, String)>,
+    RepoReader { repo, .. }: RepoReader,
+    Path((_, _, id)): Path<(String, String, String)>,
 ) -> ApiResult<Response> {
-    let repo = authorize_read(&s, &headers, &owner, &name).await?;
     let id = parse_object_id(&id)?;
     let wanted = headers
         .get(axum::http::header::RANGE)

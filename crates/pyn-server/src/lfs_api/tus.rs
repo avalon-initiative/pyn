@@ -5,9 +5,10 @@ use axum::extract::{Path, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, LOCATION};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use pyn_core::{Permission, PynError, TusError, TusStatus};
+use pyn_core::{PynError, TusError, TusStatus};
 
-use super::{LfsError, authorize_repo, check_oid, repo_name, request_origin, with_bearer};
+use super::{LfsError, check_oid, repo_name, request_origin, with_bearer};
+use crate::caller::LfsCaller;
 use crate::{AppState, MAX_OBJECT_BYTES, upload};
 
 const TUS_VERSION: &str = "1.0.0";
@@ -78,18 +79,13 @@ pub(crate) async fn options() -> Response {
 }
 
 pub(crate) async fn head(
-    State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name, oid)): Path<(String, String, String)>,
 ) -> Result<Response, LfsError> {
-    let (repo, _) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Checkin),
-    )
-    .await?;
+    let (repo, _, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     check_oid(&oid)?;
     let st = match repo.service.lfs_tus_status(&oid).await {
         Ok(Some(st)) => st,
@@ -103,20 +99,16 @@ pub(crate) async fn head(
 
 pub(crate) async fn create(
     State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name, oid)): Path<(String, String, String)>,
 ) -> Result<Response, LfsError> {
     if let Some(res) = version_refusal(&headers) {
         return Ok(res);
     }
-    let (repo, who) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Checkin),
-    )
-    .await?;
+    let (repo, who, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     check_oid(&oid)?;
     let Some(size) = number(&headers, &UPLOAD_LENGTH) else {
         return Ok(wrong("Upload-Length is required"));
@@ -143,6 +135,7 @@ pub(crate) async fn create(
 
 pub(crate) async fn patch(
     State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name, oid)): Path<(String, String, String)>,
     body: axum::body::Body,
@@ -150,14 +143,9 @@ pub(crate) async fn patch(
     if let Some(res) = version_refusal(&headers) {
         return Ok(res);
     }
-    let (repo, who) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Checkin),
-    )
-    .await?;
+    let (repo, who, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     check_oid(&oid)?;
     let is_offset_type = headers
         .get(CONTENT_TYPE)
@@ -191,21 +179,16 @@ pub(crate) async fn patch(
 }
 
 pub(crate) async fn terminate(
-    State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name, oid)): Path<(String, String, String)>,
 ) -> Result<Response, LfsError> {
     if let Some(res) = version_refusal(&headers) {
         return Ok(res);
     }
-    let (repo, who) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Checkin),
-    )
-    .await?;
+    let (repo, who, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     check_oid(&oid)?;
     match repo.service.lfs_tus_cancel(&who.user, &oid).await {
         Ok(()) => Ok(tus(StatusCode::NO_CONTENT.into_response())),

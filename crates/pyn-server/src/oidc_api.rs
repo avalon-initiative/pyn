@@ -10,9 +10,10 @@ use pyn_core::{ExternalIdentity, ExternalSignIn, OidcBegin, OidcFinish, OidcStar
 use pyn_proto as api;
 use serde::Deserialize;
 
+use crate::caller::FullScopeCaller;
 use crate::client::Client;
 use crate::session_api::{cookie_value, is_https, set_cookie};
-use crate::{ApiResult, AppState, identify};
+use crate::{ApiResult, AppState};
 
 const BINDING_PATH: &str = "/v1/oidc";
 const BINDING_MAX_AGE: i64 = 600;
@@ -110,9 +111,9 @@ pub(crate) async fn link(
     State(s): State<AppState>,
     Client(client): Client,
     headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Query(q): Query<AuthorizeQuery>,
 ) -> ApiResult<Response> {
-    let who = identify(&s, &headers).await?;
     let begin = s
         .access
         .begin_oidc(OidcStart {
@@ -199,9 +200,8 @@ pub(crate) async fn callback(
 ))]
 pub(crate) async fn list_identities(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
 ) -> ApiResult<Json<Vec<api::ExternalIdentityInfo>>> {
-    let who = identify(&s, &headers).await?;
     let identities = s.access.external_identities(&who).await?;
     Ok(Json(identities.into_iter().map(identity_info).collect()))
 }
@@ -215,10 +215,9 @@ pub(crate) async fn list_identities(
     ))]
 pub(crate) async fn unlink_identity(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access.unlink_external_identity(&who, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

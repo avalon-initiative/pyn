@@ -2,12 +2,13 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
 use pyn_core::{AccountEmail, PynError, UserId};
 use pyn_proto as api;
 
-use crate::{ApiResult, AppState, identify};
+use crate::caller::FullScopeCaller;
+use crate::{ApiResult, AppState};
 
 fn email_dto(e: AccountEmail) -> api::AccountEmail {
     api::AccountEmail {
@@ -24,9 +25,8 @@ fn email_dto(e: AccountEmail) -> api::AccountEmail {
 ))]
 pub(crate) async fn list_emails(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
 ) -> ApiResult<Json<Vec<api::AccountEmail>>> {
-    let who = identify(&s, &headers).await?;
     let held = s.access.list_emails(&who).await?;
     Ok(Json(held.into_iter().map(email_dto).collect()))
 }
@@ -39,10 +39,9 @@ pub(crate) async fn list_emails(
 ))]
 pub(crate) async fn add_email(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::AddEmailRequest>,
 ) -> ApiResult<(StatusCode, Json<api::AccountEmail>)> {
-    let who = identify(&s, &headers).await?;
     s.access.add_email(&who, &req.address).await?;
     let address = pyn_core::account::normalize_email(&req.address)?;
     let added = s
@@ -62,10 +61,9 @@ pub(crate) async fn add_email(
 ))]
 pub(crate) async fn resend_email(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(address): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access.resend_email(&who, &address).await?;
     Ok(StatusCode::ACCEPTED)
 }
@@ -77,10 +75,9 @@ pub(crate) async fn resend_email(
 ))]
 pub(crate) async fn set_primary_email(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(address): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access.set_primary_email(&who, &address).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -92,10 +89,9 @@ pub(crate) async fn set_primary_email(
 ))]
 pub(crate) async fn delete_email(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(address): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access.remove_email(&who, &address).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -110,10 +106,9 @@ pub(crate) async fn delete_email(
 ))]
 pub(crate) async fn rename_account(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::RenameRequest>,
 ) -> ApiResult<Json<api::Renamed>> {
-    let who = identify(&s, &headers).await?;
     let done = s
         .access
         .rename_account(&who, &req.username, req.password.as_deref())

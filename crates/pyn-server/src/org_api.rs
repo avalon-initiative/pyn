@@ -2,7 +2,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use std::str::FromStr;
 
@@ -10,7 +10,8 @@ use pyn_core::{AccountRecord, AuditQuery, OrgAdd, OrgInvitation, OrgRole, UserId
 use pyn_proto as api;
 use serde::Deserialize;
 
-use crate::{ApiResult, AppState, identify};
+use crate::caller::{AnyCaller, FullScopeCaller, NamespaceCaller};
+use crate::{ApiResult, AppState};
 
 pub(crate) fn org_info(org: AccountRecord, role: Option<OrgRole>) -> api::OrgInfo {
     api::OrgInfo {
@@ -29,10 +30,9 @@ pub(crate) fn org_info(org: AccountRecord, role: Option<OrgRole>) -> api::OrgInf
 ))]
 pub(crate) async fn create_org(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Json(req): Json<api::CreateOrgRequest>,
 ) -> ApiResult<(StatusCode, Json<api::OrgInfo>)> {
-    let who = identify(&s, &headers).await?;
     let org = s.access.create_org(&who, &req.name).await?;
     Ok((
         StatusCode::CREATED,
@@ -46,9 +46,8 @@ pub(crate) async fn create_org(
               (status = 403, body = api::ErrorBody, description = "a token that is not full-scope")))]
 pub(crate) async fn list_orgs(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
 ) -> ApiResult<Json<Vec<api::OrgInfo>>> {
-    let who = identify(&s, &headers).await?;
     let orgs = s.access.orgs_for(&who).await?;
     Ok(Json(
         orgs.into_iter()
@@ -63,9 +62,9 @@ pub(crate) async fn list_orgs(
               (status = 403, body = api::ErrorBody, description = "a token that is not full-scope")))]
 pub(crate) async fn my_orgs(
     state: State<AppState>,
-    headers: HeaderMap,
+    caller: FullScopeCaller,
 ) -> ApiResult<Json<Vec<api::OrgInfo>>> {
-    list_orgs(state, headers).await
+    list_orgs(state, caller).await
 }
 
 #[utoipa::path(get, path = "/v1/orgs/{org}",
@@ -74,10 +73,9 @@ pub(crate) async fn my_orgs(
               (status = 404, body = api::ErrorBody, description = "org_not_found (also for a user name)")))]
 pub(crate) async fn get_org(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    AnyCaller(who): AnyCaller,
     Path(name): Path<String>,
 ) -> ApiResult<Json<api::OrgInfo>> {
-    let who = identify(&s, &headers).await?;
     let name = UserId::new(name);
     let org = s.access.org(&name).await?;
     let role = s.access.org_role_for(&who, &name).await?;
@@ -92,10 +90,9 @@ pub(crate) async fn get_org(
               (status = 409, body = api::ErrorBody, description = "org_not_empty: it still owns repositories; org_deleting: another delete of it is in flight")))]
 pub(crate) async fn delete_org(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path(name): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access.delete_org(&who, &UserId::new(name)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -115,11 +112,10 @@ pub(crate) struct OrgAuditParams {
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn org_audit(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(name): Path<String>,
     Query(q): Query<OrgAuditParams>,
 ) -> ApiResult<Json<api::AuditPage>> {
-    let who = identify(&s, &headers).await?;
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let query = AuditQuery {
         before: q.before,
@@ -149,10 +145,9 @@ pub(crate) async fn org_audit(
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn list_members(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<Vec<api::OrgMember>>> {
-    let who = identify(&s, &headers).await?;
     let members = s.access.org_members(&who, &UserId::new(org)).await?;
     let mut members: Vec<_> = members.into_iter().map(member_info).collect();
     crate::self_service_api::annotate_identities(&s, &mut members).await?;
@@ -178,11 +173,10 @@ fn member_info((user, role): (UserId, OrgRole)) -> api::OrgMember {
               (status = 409, body = api::ErrorBody, description = "already_org_member, or already_invited")))]
 pub(crate) async fn add_member(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path(org): Path<String>,
     Json(req): Json<api::AddOrgMemberRequest>,
 ) -> ApiResult<Response> {
-    let who = identify(&s, &headers).await?;
     let role = req
         .role
         .as_deref()
@@ -216,10 +210,9 @@ fn invitation_info(i: OrgInvitation) -> api::OrgInvitation {
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn list_invitations(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<Vec<api::OrgInvitation>>> {
-    let who = identify(&s, &headers).await?;
     let found = s.access.org_invitations(&who, &UserId::new(org)).await?;
     Ok(Json(found.into_iter().map(invitation_info).collect()))
 }
@@ -232,10 +225,9 @@ pub(crate) async fn list_invitations(
               (status = 404, body = api::ErrorBody, description = "org_not_found, or org_invitation_not_found")))]
 pub(crate) async fn cancel_invitation(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path((org, user)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access
         .cancel_org_invitation(&who, &UserId::new(org), &UserId::new(user))
         .await?;
@@ -248,9 +240,8 @@ pub(crate) async fn cancel_invitation(
               (status = 403, body = api::ErrorBody, description = "a token that is not full-scope")))]
 pub(crate) async fn my_invitations(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
 ) -> ApiResult<Json<Vec<api::OrgInvitation>>> {
-    let who = identify(&s, &headers).await?;
     let found = s.access.my_org_invitations(&who).await?;
     Ok(Json(found.into_iter().map(invitation_info).collect()))
 }
@@ -263,10 +254,9 @@ pub(crate) async fn my_invitations(
               (status = 409, body = api::ErrorBody, description = "member_limit_reached: the organization is full; the invitation stays")))]
 pub(crate) async fn accept_invitation(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<api::OrgInfo>> {
-    let who = identify(&s, &headers).await?;
     let (org, role) = s
         .access
         .accept_org_invitation(&who, &UserId::new(org))
@@ -281,10 +271,9 @@ pub(crate) async fn accept_invitation(
               (status = 404, body = api::ErrorBody, description = "org_not_found, or org_invitation_not_found")))]
 pub(crate) async fn decline_invitation(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path(org): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access
         .decline_org_invitation(&who, &UserId::new(org))
         .await?;
@@ -308,11 +297,10 @@ fn parse_role(role: &str) -> Result<OrgRole, pyn_core::PynError> {
               (status = 409, body = api::ErrorBody, description = "last_org_owner: the only owner cannot be demoted")))]
 pub(crate) async fn set_member_role(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path((org, user)): Path<(String, String)>,
     Json(req): Json<api::SetOrgRoleRequest>,
 ) -> ApiResult<Json<api::OrgMember>> {
-    let who = identify(&s, &headers).await?;
     let role = parse_role(&req.role)?;
     let user = UserId::new(user);
     s.access
@@ -330,10 +318,9 @@ pub(crate) async fn set_member_role(
               (status = 409, body = api::ErrorBody, description = "last_org_owner: the only owner cannot leave")))]
 pub(crate) async fn remove_member(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path((org, user)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access
         .remove_org_member(&who, &UserId::new(org), &UserId::new(user))
         .await?;

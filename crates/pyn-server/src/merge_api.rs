@@ -1,20 +1,19 @@
 //! Merging a branch or commit into a branch: a preview, and the write.
 
 use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+use axum::extract::State;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use pyn_core::merge::{
     Change, Conflict, ConflictKind, FastForward, Inputs, MergeOutcome, MergeReport, MergeRequest,
     Resolution, Side,
 };
-use pyn_core::{ObjectId, Permission, PynError, REPO_ALGORITHM, RepoPath};
+use pyn_core::{ObjectId, PynError, REPO_ALGORITHM, RepoPath};
 use pyn_proto as api;
 
+use crate::caller::RepoCaller;
 use crate::{
-    ApiResult, AppState, RepoAddress, authorize_repo, file_mode_dto, file_mode_from, mode_dto,
-    stranded_dto,
+    ApiResult, AppState, RepoAddress, file_mode_dto, file_mode_from, mode_dto, stranded_dto,
 };
 
 fn object_id(hex: &str, what: &str) -> Result<ObjectId, PynError> {
@@ -134,11 +133,9 @@ fn report_dto(r: MergeReport) -> api::MergeReport {
 /// Preview a merge.
 pub(crate) async fn preview_merge(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller { repo, .. }: RepoCaller,
     Json(req): Json<api::MergeRequest>,
 ) -> ApiResult<Json<api::MergeReport>> {
-    let (repo, _) = authorize_repo(&s, &headers, &owner, &name, Some(Permission::Read)).await?;
     let report = repo.service.merge_preview(&request_from(req)?).await?;
     let mut report = report_dto(report);
     crate::self_service_api::annotate(&s, &mut report.stranded).await?;
@@ -155,12 +152,13 @@ pub(crate) async fn preview_merge(
 /// Merge a branch or commit into a branch.
 pub(crate) async fn merge(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::MergeRequest>,
 ) -> ApiResult<Json<api::MergeReport>> {
-    let (repo, who) =
-        authorize_repo(&s, &headers, &owner, &name, Some(Permission::Checkin)).await?;
     let report = repo.service.merge(&who, request_from(req)?).await?;
     let mut report = report_dto(report);
     crate::self_service_api::annotate(&s, &mut report.stranded).await?;

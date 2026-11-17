@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use chrono::Duration;
 use pyn_core::{
     AccountStatus, InviteId, InviteRecord, LockLimit, MAX_INVITE_HOURS, Permission, PynError,
@@ -14,9 +14,8 @@ use pyn_proto as api;
 use serde::Deserialize;
 
 use crate::access_api::names;
-use crate::{
-    ApiResult, AppState, RepoAddress, authorize_repo, identify, identify_optional, open_visible,
-};
+use crate::caller::{AnyCaller, NamespaceCaller, OptionalCaller, RepoCaller, RepoReader};
+use crate::{ApiResult, AppState, RepoAddress};
 
 fn visibility_dto(v: pyn_core::Visibility) -> api::Visibility {
     match v {
@@ -75,10 +74,9 @@ pub(crate) struct ListReposQuery {
               (status = 401, body = api::ErrorBody)))]
 pub(crate) async fn list_repos(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    AnyCaller(who): AnyCaller,
     Query(q): Query<ListReposQuery>,
 ) -> ApiResult<Json<Vec<api::RepoInfo>>> {
-    let who = identify(&s, &headers).await?;
     let owner = q.owner.map(UserId::new);
     let repos = s.repos.list(&who, owner.as_ref()).await?;
     let mut infos = Vec::with_capacity(repos.len());
@@ -104,10 +102,9 @@ pub(crate) struct ExploreQuery {
               (status = 401, body = api::ErrorBody, description = "credentials were sent but are not valid")))]
 pub(crate) async fn explore_repos(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    OptionalCaller(who): OptionalCaller,
     Query(q): Query<ExploreQuery>,
 ) -> ApiResult<Json<api::RepoPage>> {
-    let who = identify_optional(&s, &headers).await?;
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let (found, next_after) = s
         .repos
@@ -126,9 +123,8 @@ pub(crate) async fn explore_repos(
               (status = 401, body = api::ErrorBody)))]
 pub(crate) async fn my_locks(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    AnyCaller(who): AnyCaller,
 ) -> ApiResult<Json<Vec<api::MyLock>>> {
-    let who = identify(&s, &headers).await?;
     let locks = s.repos.locks_of(&who).await?;
     Ok(Json(
         locks
@@ -152,10 +148,9 @@ pub(crate) async fn my_locks(
 ))]
 pub(crate) async fn create_repo(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Json(req): Json<api::CreateRepoRequest>,
 ) -> ApiResult<(StatusCode, Json<api::RepoInfo>)> {
-    let who = identify(&s, &headers).await?;
     let owner = req.owner.map_or_else(|| who.user.clone(), UserId::new);
     let settings = (req.lease_hours.is_some() || req.max_locks_per_user.is_some()).then(|| {
         let defaults = RepoSettings::default();
@@ -188,11 +183,12 @@ pub(crate) async fn create_repo(
 ))]
 pub(crate) async fn get_repo(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoReader {
+        identity: who,
+        repo: open,
+        ..
+    }: RepoReader,
 ) -> ApiResult<Json<api::RepoInfo>> {
-    let who = identify_optional(&s, &headers).await?;
-    let (open, _) = open_visible(&s, who.as_ref(), &owner, &name).await?;
     let role = s.access.role_for(&open.record.id, who.as_ref()).await?;
     let limit = open.service.lock_limit();
     Ok(Json(repo_info(&s, open.record, role, limit).await?))
@@ -207,12 +203,13 @@ pub(crate) async fn get_repo(
 ))]
 pub(crate) async fn update_repo(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        identity: who,
+        repo: open,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::UpdateRepoRequest>,
 ) -> ApiResult<Json<api::RepoInfo>> {
-    let who = identify(&s, &headers).await?;
-    let (open, _) = open_visible(&s, Some(&who), &owner, &name).await?;
     let update = RepoUpdate {
         name: req.name,
         visibility: req.visibility.map(visibility_from),
@@ -238,11 +235,12 @@ pub(crate) async fn update_repo(
 ))]
 pub(crate) async fn delete_repo(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        identity: who,
+        repo: open,
+        ..
+    }: RepoCaller,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
-    let (open, _) = open_visible(&s, Some(&who), &owner, &name).await?;
     s.repos.delete(&who, &open.record).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -253,10 +251,8 @@ pub(crate) async fn delete_repo(
 ))]
 pub(crate) async fn repo_me(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller { principal: who, .. }: RepoCaller,
 ) -> ApiResult<Json<api::Me>> {
-    let (_, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     Ok(Json(api::Me {
         user_id: s.access.account_id(&who.user).await?.to_string(),
         user: who.user.to_string(),
@@ -276,10 +272,12 @@ fn parse_permissions(
               (status = 404, body = api::ErrorBody, description = "repo_not_found")))]
 pub(crate) async fn list_roles(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
 ) -> ApiResult<Json<Vec<api::RoleGrant>>> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     let defs = s
         .access
         .role_definitions(&who, &repo.record.id, &repo.record.address())
@@ -301,11 +299,14 @@ pub(crate) async fn list_roles(
 ))]
 pub(crate) async fn set_role(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name, role)): Path<(String, String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
+    Path((_, _, role)): Path<(String, String, String)>,
     Json(req): Json<api::SetRoleRequest>,
 ) -> ApiResult<StatusCode> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     let permissions = parse_permissions(&req.permissions)?;
     s.access
         .set_role_permissions(&who, &repo.record.id, Role::from_str(&role)?, permissions)
@@ -317,10 +318,12 @@ pub(crate) async fn set_role(
     responses((status = 200, body = Vec<api::Member>, description = "everyone with access, one row each: the effective role and its source (direct, team or org_owner); needs manage_users")))]
 pub(crate) async fn list_members(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
 ) -> ApiResult<Json<Vec<api::Member>>> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     let members = s.access.members(&who, &repo.record.id).await?;
     let mut members: Vec<_> = members
         .into_iter()
@@ -343,11 +346,14 @@ pub(crate) async fn list_members(
 ))]
 pub(crate) async fn set_member(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name, user)): Path<(String, String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
+    Path((_, _, user)): Path<(String, String, String)>,
     Json(req): Json<api::SetMemberRequest>,
 ) -> ApiResult<StatusCode> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     s.access
         .set_user_role(
             &who,
@@ -379,12 +385,13 @@ fn invite_info(i: InviteRecord) -> api::InviteInfo {
 ))]
 pub(crate) async fn add_user(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        identity: who,
+        repo,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::AddUserRequest>,
 ) -> ApiResult<(StatusCode, Json<api::Registered>)> {
-    let who = identify(&s, &headers).await?;
-    let (repo, _) = open_visible(&s, Some(&who), &owner, &name).await?;
     let role = Role::from_str(&req.role)?;
     let user = s
         .access
@@ -405,12 +412,13 @@ pub(crate) async fn add_user(
 ))]
 pub(crate) async fn create_invite(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        identity: who,
+        repo,
+        ..
+    }: RepoCaller,
     Json(req): Json<api::CreateInviteRequest>,
 ) -> ApiResult<Json<api::CreatedInvite>> {
-    let who = identify(&s, &headers).await?;
-    let (repo, _) = open_visible(&s, Some(&who), &owner, &name).await?;
     let role = Role::from_str(&req.role)?;
     let valid_for = Duration::try_hours(req.hours).ok_or_else(|| {
         PynError::InvalidRequest(format!(
@@ -431,10 +439,12 @@ pub(crate) async fn create_invite(
     responses((status = 200, body = Vec<api::InviteInfo>)))]
 pub(crate) async fn list_invites(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
 ) -> ApiResult<Json<Vec<api::InviteInfo>>> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     let invites = s.access.list_invites(&who, &repo.record.id).await?;
     Ok(Json(invites.into_iter().map(invite_info).collect()))
 }
@@ -444,10 +454,13 @@ pub(crate) async fn list_invites(
     responses((status = 204), (status = 400, body = api::ErrorBody)))]
 pub(crate) async fn revoke_invite(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name, id)): Path<(String, String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
+    Path((_, _, id)): Path<(String, String, String)>,
 ) -> ApiResult<StatusCode> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     s.access
         .revoke_invite(&who, &repo.record.id, &InviteId(id))
         .await?;

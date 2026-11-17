@@ -12,8 +12,9 @@ use pyn_core::{Lock, Permission, PynError, RepoPath, is_lfs_oid};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
+use crate::caller::LfsCaller;
 use crate::{
-    ApiError, AppState, MAX_OBJECT_BYTES, authorize_repo, is_internal, parse_range, public_message,
+    ApiError, AppState, MAX_OBJECT_BYTES, is_internal, parse_range, public_message,
     range_not_satisfiable, status_for, upload,
 };
 
@@ -280,7 +281,7 @@ fn conflict(lock: Option<Lock>) -> Response {
 }
 
 pub(crate) async fn create_lock(
-    State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
     body: Bytes,
@@ -288,14 +289,9 @@ pub(crate) async fn create_lock(
     require_json(&headers)?;
     let req: CreateRequest = serde_json::from_slice(&body)
         .map_err(|e| LfsError::Malformed(format!("invalid request: {e}")))?;
-    let (repo, who) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Lock),
-    )
-    .await?;
+    let (repo, who, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     let path = RepoPath::new(req.path)?;
     if let Some(existing) = repo.service.lock_of(&path).await? {
         return Ok(conflict(Some(existing)));
@@ -314,19 +310,14 @@ pub(crate) async fn create_lock(
 }
 
 pub(crate) async fn list_locks(
-    State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
     Query(q): Query<ListQuery>,
 ) -> LfsResult {
-    let (repo, _) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Read),
-    )
-    .await?;
+    let (repo, _, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     let mut locks = repo.service.locks().await?;
     if let Some(path) = &q.path {
         locks.retain(|l| l.path.as_str() == path);
@@ -346,21 +337,16 @@ pub(crate) async fn list_locks(
 }
 
 pub(crate) async fn verify_locks(
-    State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
     body: Bytes,
 ) -> LfsResult {
     require_json(&headers)?;
     let req: VerifyRequest = parse(&body)?;
-    let (repo, who) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Read),
-    )
-    .await?;
+    let (repo, who, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     let (locks, next_cursor) = page(
         repo.service.locks().await?,
         req.cursor.as_deref(),
@@ -379,21 +365,16 @@ pub(crate) async fn verify_locks(
 }
 
 pub(crate) async fn unlock(
-    State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name, id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> LfsResult {
     require_json(&headers)?;
     let req: UnlockRequest = parse(&body)?;
-    let (repo, who) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Lock),
-    )
-    .await?;
+    let (repo, who, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     let lock = repo
         .service
         .locks()
@@ -536,6 +517,7 @@ fn check_size(size: i64) -> Result<u64, LfsError> {
 
 pub(crate) async fn batch(
     State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
     body: Bytes,
@@ -584,14 +566,10 @@ pub(crate) async fn batch(
     } else {
         Permission::Read
     };
-    let (repo, _) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(need),
-    )
-    .await?;
+    let (repo, principal, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
+    principal.require(need)?;
     if upload {
         repo.service.ensure_writable().await?;
     }
@@ -683,18 +661,14 @@ pub(crate) async fn batch(
 
 pub(crate) async fn upload_object(
     State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name, oid)): Path<(String, String, String)>,
     body: axum::body::Body,
 ) -> LfsResult {
-    let (repo, who) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Checkin),
-    )
-    .await?;
+    let (repo, who, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     check_oid(&oid)?;
     let _permit = s.repos.upload_permit(&who.user)?;
     let (reader, size) = upload(&headers, body)?;
@@ -705,18 +679,13 @@ pub(crate) async fn upload_object(
 }
 
 pub(crate) async fn download(
-    State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name, oid)): Path<(String, String, String)>,
 ) -> LfsResult {
-    let (repo, _) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Read),
-    )
-    .await?;
+    let (repo, _, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     check_oid(&oid)?;
     let object = repo
         .service
@@ -767,7 +736,7 @@ pub(crate) async fn download(
 }
 
 pub(crate) async fn verify_object(
-    State(s): State<AppState>,
+    caller: LfsCaller,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
     body: Bytes,
@@ -775,14 +744,9 @@ pub(crate) async fn verify_object(
     require_json(&headers)?;
     let req: VerifyObject = serde_json::from_slice(&body)
         .map_err(|e| LfsError::Malformed(format!("invalid request: {e}")))?;
-    let (repo, _) = authorize_repo(
-        &s,
-        &with_bearer(&headers),
-        &owner,
-        repo_name(&name),
-        Some(Permission::Checkin),
-    )
-    .await?;
+    let (repo, _, _) = caller
+        .authorize(&with_bearer(&headers), &owner, repo_name(&name))
+        .await?;
     check_oid(&req.oid)?;
     let size = check_size(req.size)?;
     let object = repo

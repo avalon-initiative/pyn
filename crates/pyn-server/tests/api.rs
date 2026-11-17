@@ -603,7 +603,6 @@ async fn a_token_cannot_ask_for_more_than_its_owner_holds() {
         .await
         .unwrap();
     let app = router(st);
-    let _ = admin;
 
     let body =
         serde_json::json!({"name": "sneaky", "repos": [REPO], "permissions": ["read", "restore"]});
@@ -617,11 +616,7 @@ async fn a_token_cannot_ask_for_more_than_its_owner_holds() {
     );
     let body = serde_json::json!({"name": "nope", "repos": [REPO], "permissions": ["flying"]});
     assert_eq!(
-        status(
-            &app,
-            with_token("POST", "/v1/tokens", &wendy_token, Some(body))
-        )
-        .await,
+        status(&app, with_token("POST", "/v1/tokens", &admin, Some(body))).await,
         StatusCode::BAD_REQUEST
     );
 }

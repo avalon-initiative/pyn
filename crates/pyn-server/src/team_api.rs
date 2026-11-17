@@ -4,11 +4,12 @@ use std::str::FromStr;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use pyn_core::{Role, TeamDetail, UserId};
 use pyn_proto as api;
 
-use crate::{ApiResult, AppState, RepoAddress, authorize_repo, identify};
+use crate::caller::{FullScopeCaller, NamespaceCaller, RepoCaller};
+use crate::{ApiResult, AppState, RepoAddress};
 
 fn team_info(d: TeamDetail) -> api::TeamInfo {
     api::TeamInfo {
@@ -36,10 +37,9 @@ fn team_info(d: TeamDetail) -> api::TeamInfo {
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn list_teams(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<Vec<api::TeamInfo>>> {
-    let who = identify(&s, &headers).await?;
     let teams = s.access.teams(&who, &UserId::new(org)).await?;
     Ok(Json(teams.into_iter().map(team_info).collect()))
 }
@@ -54,11 +54,10 @@ pub(crate) async fn list_teams(
               (status = 409, body = api::ErrorBody, description = "team_exists")))]
 pub(crate) async fn create_team(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path(org): Path<String>,
     Json(req): Json<api::CreateTeamRequest>,
 ) -> ApiResult<(StatusCode, Json<api::TeamInfo>)> {
-    let who = identify(&s, &headers).await?;
     let team = s
         .access
         .create_team(
@@ -80,10 +79,9 @@ pub(crate) async fn create_team(
               (status = 404, body = api::ErrorBody, description = "org_not_found or team_not_found")))]
 pub(crate) async fn get_team(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    FullScopeCaller(who): FullScopeCaller,
     Path((org, team)): Path<(String, String)>,
 ) -> ApiResult<Json<api::TeamInfo>> {
-    let who = identify(&s, &headers).await?;
     let team = s.access.team(&who, &UserId::new(org), &team).await?;
     Ok(Json(team_info(team)))
 }
@@ -98,11 +96,10 @@ pub(crate) async fn get_team(
               (status = 404, body = api::ErrorBody, description = "org_not_found or team_not_found")))]
 pub(crate) async fn update_team(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path((org, team)): Path<(String, String)>,
     Json(req): Json<api::UpdateTeamRequest>,
 ) -> ApiResult<Json<api::TeamInfo>> {
-    let who = identify(&s, &headers).await?;
     let team = s
         .access
         .update_team(
@@ -124,10 +121,9 @@ pub(crate) async fn update_team(
               (status = 404, body = api::ErrorBody, description = "org_not_found or team_not_found")))]
 pub(crate) async fn delete_team(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path((org, team)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access.delete_team(&who, &UserId::new(org), &team).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -142,10 +138,9 @@ pub(crate) async fn delete_team(
               (status = 409, body = api::ErrorBody, description = "user_not_org_member: add them to the organization first")))]
 pub(crate) async fn add_team_member(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path((org, team, user)): Path<(String, String, String)>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access
         .add_team_member(&who, &UserId::new(org), &team, &UserId::new(user))
         .await?;
@@ -161,10 +156,9 @@ pub(crate) async fn add_team_member(
               (status = 404, body = api::ErrorBody, description = "org_not_found, team_not_found or team_member_not_found")))]
 pub(crate) async fn remove_team_member(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    NamespaceCaller(who): NamespaceCaller,
     Path((org, team, user)): Path<(String, String, String)>,
 ) -> ApiResult<StatusCode> {
-    let who = identify(&s, &headers).await?;
     s.access
         .remove_team_member(&who, &UserId::new(org), &team, &UserId::new(user))
         .await?;
@@ -177,10 +171,12 @@ pub(crate) async fn remove_team_member(
               (status = 404, body = api::ErrorBody, description = "repo_not_found")))]
 pub(crate) async fn list_repo_teams(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name)): Path<(String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
 ) -> ApiResult<Json<Vec<api::RepoTeam>>> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     let teams = s.access.repo_teams(&who, &repo.record.id).await?;
     Ok(Json(
         teams
@@ -205,11 +201,14 @@ pub(crate) async fn list_repo_teams(
               (status = 404, body = api::ErrorBody, description = "repo_not_found or team_not_found")))]
 pub(crate) async fn set_repo_team(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name, team)): Path<(String, String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
+    Path((_, _, team)): Path<(String, String, String)>,
     Json(req): Json<api::SetTeamRoleRequest>,
 ) -> ApiResult<StatusCode> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     s.access
         .set_team_access(&who, &repo.record.id, &team, Role::from_str(&req.role)?)
         .await?;
@@ -224,10 +223,13 @@ pub(crate) async fn set_repo_team(
               (status = 404, body = api::ErrorBody, description = "repo_not_found or team_not_found")))]
 pub(crate) async fn remove_repo_team(
     State(s): State<AppState>,
-    headers: HeaderMap,
-    Path((owner, name, team)): Path<(String, String, String)>,
+    RepoCaller {
+        repo,
+        principal: who,
+        ..
+    }: RepoCaller,
+    Path((_, _, team)): Path<(String, String, String)>,
 ) -> ApiResult<StatusCode> {
-    let (repo, who) = authorize_repo(&s, &headers, &owner, &name, None).await?;
     s.access
         .remove_team_access(&who, &repo.record.id, &team)
         .await?;

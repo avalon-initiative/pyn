@@ -2,11 +2,11 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use pyn_core::{AccountKind, UserId};
 use pyn_proto as api;
 
-use crate::{ApiResult, AppState, identify_admin};
+use crate::caller::ServiceCaller;
+use crate::{ApiResult, AppState};
 
 fn freeze_dto(owner: String, state: pyn_core::OwnerFreezeState) -> api::OwnerFreeze {
     api::OwnerFreeze {
@@ -29,10 +29,9 @@ fn freeze_dto(owner: String, state: pyn_core::OwnerFreezeState) -> api::OwnerFre
               (status = 404, body = api::ErrorBody, description = "user_not_found, for an administrator or a service credential only")))]
 pub(crate) async fn owner_freeze(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(owner): Path<String>,
 ) -> ApiResult<Json<api::OwnerFreeze>> {
-    let who = identify_admin(&s, &headers).await?;
     let state = s.access.owner_freeze(&who, &UserId::new(&owner)).await?;
     Ok(Json(freeze_dto(owner, state)))
 }
@@ -47,11 +46,10 @@ pub(crate) async fn owner_freeze(
 ))]
 pub(crate) async fn freeze_owner(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(owner): Path<String>,
     Json(req): Json<api::FreezeRequest>,
 ) -> ApiResult<Json<api::OwnerFreeze>> {
-    let who = identify_admin(&s, &headers).await?;
     let state = s
         .access
         .freeze_owner(&who, &UserId::new(&owner), &req.reason)
@@ -68,10 +66,9 @@ pub(crate) async fn freeze_owner(
 ))]
 pub(crate) async fn unfreeze_owner(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    ServiceCaller(who): ServiceCaller,
     Path(owner): Path<String>,
 ) -> ApiResult<Json<api::OwnerFreeze>> {
-    let who = identify_admin(&s, &headers).await?;
     let state = s.access.unfreeze_owner(&who, &UserId::new(&owner)).await?;
     Ok(Json(freeze_dto(owner, state)))
 }
