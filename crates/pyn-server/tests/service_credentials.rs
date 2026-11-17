@@ -312,7 +312,7 @@ async fn a_credential_is_refused_outside_the_admin_routes() {
         (
             "POST",
             "/v1/tokens",
-            Some(json!({"name": "t", "permissions": ["read"], "repos": ["a/b"]})),
+            Some(cred::token_body("t", ["a/b"], ["read"])),
         ),
     ] {
         let r = call(&app, c, m, u, body).await;

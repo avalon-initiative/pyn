@@ -589,7 +589,7 @@ async fn made_token(app: &Router, session: &str, repos: &[&str]) -> String {
         session,
         "POST",
         "/v1/tokens",
-        Some(json!({"name": "t", "permissions": ["read"], "repos": repos})),
+        Some(cred::token_body("t", repos, ["read"])),
     )
     .await;
     assert!(

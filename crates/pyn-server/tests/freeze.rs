@@ -795,7 +795,7 @@ async fn reads_sign_in_and_releasing_a_lock_continue_under_a_freeze() {
         held,
         "POST",
         "/v1/tokens",
-        Some(json!({"name": "ci", "repos": ["alice/game"], "permissions": ["read"]})),
+        Some(cred::token_body("ci", ["alice/game"], ["read"])),
     )
     .await;
     assert_ne!(r.code(), "owner_frozen");
@@ -908,7 +908,7 @@ async fn reading_the_freeze_needs_a_full_scope_credential() {
             session,
             "POST",
             "/v1/tokens",
-            Some(json!({"name": "t", "repos": repos, "permissions": perms})),
+            Some(cred::token_body("t", repos, perms)),
         )
         .await;
         assert!(

@@ -552,13 +552,15 @@ impl Repositories {
             Credential::Unrestricted => all.iter().map(|r| r.id.clone()).collect(),
             Credential::Session => self.access.repos_of(&who.user).await?.into_iter().collect(),
             Credential::Service(_) => HashSet::new(),
-            Credential::Token(t) => self
-                .access
-                .repos_of(&who.user)
-                .await?
-                .into_iter()
-                .filter(|r| t.repos.is_empty() || t.repos.contains(r))
-                .collect(),
+            Credential::Token(t) => {
+                let owners: HashMap<_, _> = all.iter().map(|r| (&r.id, &r.owner)).collect();
+                self.access
+                    .repos_of(&who.user)
+                    .await?
+                    .into_iter()
+                    .filter(|r| owners.get(r).is_some_and(|o| t.covers(r, o)))
+                    .collect()
+            }
         };
         let mut out = Vec::new();
         for record in all.into_iter().filter(|r| member.contains(&r.id)) {
@@ -605,7 +607,7 @@ impl Repositories {
         let mut out = Vec::new();
         let mut readable: HashMap<crate::RepoId, Option<RepoRecord>> = HashMap::new();
         for (id, lock) in self.meta.list_locks_of(&who.user, self.clock.now()).await? {
-            if !who.covers_repo(&id) {
+            if !self.access.covers(&id, who).await? {
                 continue;
             }
             if !readable.contains_key(&id) {

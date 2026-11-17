@@ -9253,8 +9253,18 @@
               }
             }
           },
+          "400": {
+            "description": "invalid_request: an unknown resource, level or access mode, a level above the resource's top one, a selected repository the owner does not own, or both expires_at and never",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "asked for a permission the caller lacks in a listed repository",
+            "description": "not_org_member: the owner is an organization the caller is not in",
             "content": {
               "application/json": {
                 "schema": {
@@ -10740,32 +10750,47 @@
         "type": "object",
         "required": [
           "name",
-          "permissions",
-          "repos"
+          "repository_access",
+          "permissions"
         ],
         "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "expires_at": {
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "description": "When the token expires; without it and without `never` the token lasts 30 days."
           },
           "name": {
             "type": "string"
           },
+          "never": {
+            "type": "boolean",
+            "description": "Never expires; not combinable with `expires_at`."
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The resource owner: the caller's own account or an organization they belong to. Defaults to the caller."
+          },
           "permissions": {
             "type": "array",
             "items": {
-              "type": "string"
-            }
-          },
-          "repos": {
-            "type": "array",
-            "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/TokenPermission"
             },
-            "description": "Repositories the token is valid for, as `owner/name`; at least one."
+            "description": "Metadata read is implied for `all` and `selected`; none are allowed with `public`."
+          },
+          "repository_access": {
+            "$ref": "#/components/schemas/RepositoryAccess"
           }
         }
       },
@@ -13558,6 +13583,26 @@
           }
         }
       },
+      "RepositoryAccess": {
+        "type": "object",
+        "description": "Which repositories of the token's owner it reaches.",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "description": "`public` (none beyond the public repositories every token can read), `all` (every repository the owner\nhas now and later) or `selected` (only `repos`)."
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`owner/name` of each selected repository, all owned by the token's owner; empty unless `selected`."
+          }
+        }
+      },
       "RepositoryCreatedData": {
         "type": "object",
         "description": "`repository.created`.",
@@ -14517,8 +14562,10 @@
           "id",
           "user",
           "name",
+          "owner",
+          "repository_access",
           "permissions",
-          "repos",
+          "sign_in",
           "created_at"
         ],
         "properties": {
@@ -14526,12 +14573,19 @@
             "type": "string",
             "format": "date-time"
           },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "expires_at": {
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Absent means the token never expires."
           },
           "id": {
             "type": "string"
@@ -14546,18 +14600,18 @@
           "name": {
             "type": "string"
           },
+          "owner": {
+            "type": "string",
+            "description": "The resource owner."
+          },
           "permissions": {
             "type": "array",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/TokenPermission"
             }
           },
-          "repos": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "`owner/name` of each repository the token is limited to; empty means every repository."
+          "repository_access": {
+            "$ref": "#/components/schemas/RepositoryAccess"
           },
           "revoked_at": {
             "type": [
@@ -14566,8 +14620,31 @@
             ],
             "format": "date-time"
           },
+          "sign_in": {
+            "type": "boolean",
+            "description": "Issued by `pyn login`: a full-scope credential rather than a fine-grained token."
+          },
           "user": {
-            "type": "string"
+            "type": "string",
+            "description": "The account that created the token and whose role it is capped by."
+          }
+        }
+      },
+      "TokenPermission": {
+        "type": "object",
+        "description": "One permission of a fine-grained token: a resource at a level.",
+        "required": [
+          "resource",
+          "level"
+        ],
+        "properties": {
+          "level": {
+            "type": "string",
+            "description": "`read` or `write` (write includes read); `admin` for `locks` only (includes write)."
+          },
+          "resource": {
+            "type": "string",
+            "description": "`metadata`, `contents`, `locks`, `policy`, `members`, `administration` or `audit`."
           }
         }
       },

@@ -6,7 +6,7 @@ use chrono::{Duration, TimeZone, Utc};
 use pyn_core::memory::MemoryAccessStore;
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, Clock, Credential, Identity, ManualClock, Permission,
-    PynError, RegistrationMode, RepoId, Role, ServiceScope, TokenId, TokenRecord, UserId,
+    PynError, RegistrationMode, RepoId, Role, ServiceScope, UserId,
 };
 
 struct World {
@@ -57,22 +57,27 @@ fn session(user: &str) -> Identity {
     }
 }
 
+fn full_token(w: &World, user: &str) -> Identity {
+    Identity {
+        user: UserId::new(user),
+        credential: Credential::Token(pyn_core::fixtures::sign_in_record(
+            "tk",
+            user,
+            w.clock.now(),
+        )),
+    }
+}
+
 fn token(w: &World, user: &str, permissions: &[Permission], repos: Vec<RepoId>) -> Identity {
     Identity {
         user: UserId::new(user),
-        credential: Credential::Token(TokenRecord {
-            id: TokenId("tk".into()),
-            user: UserId::new(user),
-            name: "t".into(),
-            secret_hash: String::new(),
-            permissions: permissions.iter().copied().collect(),
+        credential: Credential::Token(pyn_core::fixtures::token_record(
+            "tk",
+            user,
+            permissions,
             repos,
-            created_at: w.clock.now(),
-            expires_at: None,
-            revoked_at: None,
-            last_used_at: None,
-            sign_in: false,
-        }),
+            w.clock.now(),
+        )),
     }
 }
 
@@ -104,6 +109,14 @@ async fn creating_an_invitation_needs_a_full_scope_credential_in_every_server_co
             (
                 "scoped token, administrator",
                 token(&w, "boss", &all, repo.clone()),
+            ),
+            (
+                "fine-grained token with every grant, normal user",
+                token(&w, "wendy", &all, Vec::new()),
+            ),
+            (
+                "fine-grained token with every grant, administrator",
+                token(&w, "boss", &all, Vec::new()),
             ),
             (
                 "narrow token, normal user",
@@ -145,12 +158,9 @@ async fn creating_an_invitation_needs_a_full_scope_credential_in_every_server_co
 
         let allowed = [
             ("session of a member", session("wendy")),
-            ("full-scope token", token(&w, "wendy", &all, Vec::new())),
+            ("full-scope token", full_token(&w, "wendy")),
             ("administrator session", session("boss")),
-            (
-                "administrator full-scope token",
-                token(&w, "boss", &all, Vec::new()),
-            ),
+            ("administrator full-scope token", full_token(&w, "boss")),
             (
                 "dev identity",
                 Identity {
@@ -206,10 +216,13 @@ async fn a_scoped_token_cannot_list_or_revoke_a_members_keys_and_tokens() {
         .svc
         .create_token(
             &session("carol"),
-            "t",
-            [Permission::Read].into(),
-            vec![w.repo.clone()],
-            None,
+            pyn_core::fixtures::new_token_for(
+                &session("carol"),
+                "t",
+                [Permission::Read],
+                vec![w.repo.clone()],
+                None,
+            ),
         )
         .await
         .unwrap();

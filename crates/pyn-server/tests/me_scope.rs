@@ -124,7 +124,7 @@ struct World {
 }
 
 async fn token(app: &Router, who: &Cred, perms: &[&str]) -> Cred {
-    let body = json!({"name": "ci", "permissions": perms, "repos": ["alice/game"]});
+    let body = cred::token_body("ci", ["alice/game"], perms);
     let r = call(app, who, "POST", "/v1/tokens", Some(body)).await;
     assert!(
         r.status.is_success(),

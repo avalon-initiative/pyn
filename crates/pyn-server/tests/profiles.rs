@@ -1152,9 +1152,23 @@ async fn the_people_directory_needs_a_full_scope_credential() {
             r.json::<api::CreatedToken>().token
         }
     };
-    let scoped =
-        make(json!({"name": "ci", "permissions": ["read"], "repos": ["alice/game"]})).await;
-    let every_permission = make(json!({"name": "all", "repos": ["alice/game"], "permissions": ["read", "lock", "checkin", "restore", "force_unlock", "edit_policy", "manage_users", "manage_roles", "view_audit"]})).await;
+    let scoped = make(cred::token_body("ci", ["alice/game"], ["read"])).await;
+    let every_permission = make(cred::token_body(
+        "all",
+        ["alice/game"],
+        [
+            "read",
+            "lock",
+            "checkin",
+            "restore",
+            "force_unlock",
+            "edit_policy",
+            "manage_users",
+            "manage_roles",
+            "view_audit",
+        ],
+    ))
+    .await;
     let r = call(
         &app,
         "root",

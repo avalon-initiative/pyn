@@ -1,13 +1,14 @@
 //! Account endpoints: registration, sign-in, the caller's tokens and keys. None of them name a repository.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use pyn_core::{
-    Permission, PynError, Registration, RepoId, SignUp, SshKeyRecord, TokenId, TokenRecord, UserId,
+    GrantLevel, NewToken, Permission, PynError, Registration, RepoAccess, RepoId, SignUp,
+    SshKeyRecord, TokenExpiry, TokenId, TokenRecord, TokenResource, UserId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -20,10 +21,6 @@ pub(crate) fn names(permissions: &BTreeSet<Permission>) -> Vec<String> {
     permissions.iter().map(|p| p.as_str().to_string()).collect()
 }
 
-fn parse_permissions(names: &[String]) -> Result<BTreeSet<Permission>, PynError> {
-    names.iter().map(|n| Permission::from_str(n)).collect()
-}
-
 async fn token_info(s: &AppState, t: TokenRecord) -> ApiResult<api::TokenInfo> {
     let mut repos = Vec::new();
     for id in &t.repos {
@@ -33,8 +30,21 @@ async fn token_info(s: &AppState, t: TokenRecord) -> ApiResult<api::TokenInfo> {
         id: t.id.to_string(),
         user: t.user.to_string(),
         name: t.name,
-        permissions: names(&t.permissions),
-        repos,
+        description: t.description,
+        owner: t.owner.to_string(),
+        repository_access: api::RepositoryAccess {
+            mode: t.repo_access.as_str().to_string(),
+            repos,
+        },
+        permissions: t
+            .grants
+            .iter()
+            .map(|(r, l)| api::TokenPermission {
+                resource: r.as_str().to_string(),
+                level: l.as_str().to_string(),
+            })
+            .collect(),
+        sign_in: t.sign_in,
         created_at: t.created_at,
         expires_at: t.expires_at,
         revoked_at: t.revoked_at,
@@ -69,7 +79,9 @@ pub(crate) async fn me(
 
 #[utoipa::path(post, path = "/v1/tokens", request_body = api::CreateTokenRequest, responses(
     (status = 200, body = api::CreatedToken),
-    (status = 403, body = api::ErrorBody, description = "asked for a permission the caller lacks in a listed repository"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request: an unknown resource, level or access mode, a level above the resource's top one, a selected repository the owner does not own, or both expires_at and never"),
+    (status = 403, body = api::ErrorBody, description = "forbidden: a grant adds nothing the caller holds in a selected repository"),
+    (status = 403, body = api::ErrorBody, description = "not_org_member: the owner is an organization the caller is not in"),
     (status = 404, body = api::ErrorBody, description = "repo_not_found"),
 ))]
 pub(crate) async fn create_token(
@@ -77,19 +89,51 @@ pub(crate) async fn create_token(
     FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::CreateTokenRequest>,
 ) -> ApiResult<Json<api::CreatedToken>> {
-    let permissions = parse_permissions(&req.permissions)?;
+    let mut grants = BTreeMap::new();
+    for p in &req.permissions {
+        let resource = TokenResource::from_str(&p.resource)?;
+        let level = GrantLevel::from_str(&p.level)?;
+        if grants.insert(resource, level).is_some() {
+            return Err(PynError::InvalidRequest(format!(
+                "permission {:?} is listed twice",
+                p.resource
+            ))
+            .into());
+        }
+    }
+    let expiry = match (req.expires_at, req.never) {
+        (Some(_), true) => {
+            return Err(PynError::InvalidRequest(
+                "expires_at and never cannot both be given".into(),
+            )
+            .into());
+        }
+        (Some(at), false) => TokenExpiry::At(at),
+        (None, true) => TokenExpiry::Never,
+        (None, false) => TokenExpiry::Default,
+    };
+    let owner = req
+        .owner
+        .as_deref()
+        .map_or_else(|| who.user.clone(), UserId::new);
     let mut repos: Vec<RepoId> = Vec::new();
-    for address in &req.repos {
-        let (owner, name) = address.split_once('/').ok_or_else(|| {
+    for address in &req.repository_access.repos {
+        let (repo_owner, name) = address.split_once('/').ok_or_else(|| {
             PynError::InvalidRequest(format!("{address:?} is not an owner/name repository"))
         })?;
-        let (open, _) = open_visible(&s, Some(&who), owner, name).await?;
+        let (open, _) = open_visible(&s, Some(&who), repo_owner, name).await?;
         repos.push(open.record.id);
     }
-    let (record, token) = s
-        .access
-        .create_token(&who, &req.name, permissions, repos, req.expires_at)
-        .await?;
+    let request = NewToken {
+        name: req.name,
+        description: req.description,
+        owner,
+        expiry,
+        repo_access: RepoAccess::from_str(&req.repository_access.mode)?,
+        repos,
+        grants,
+    };
+    let (record, token) = s.access.create_token(&who, request).await?;
     Ok(Json(api::CreatedToken {
         token,
         info: token_info(&s, record).await?,

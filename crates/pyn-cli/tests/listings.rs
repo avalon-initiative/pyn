@@ -154,7 +154,7 @@ fn administration_listings_have_stable_columns() {
     let tokens = cell_rows(&env.ok(&home, "alice", &["token", "list"]));
     assert_eq!(tokens[0], ["ID", "STATE", "EXPIRES", "NAME", "PERMISSIONS"]);
     assert_eq!(tokens[1][1], "active");
-    assert_eq!(tokens[1][3..], ["ci", "read"]);
+    assert_eq!(tokens[1][3..], ["ci", "metadata:read,contents:read"]);
 
     let audit = cell_rows(&env.ok(&home, "alice", &["audit"]));
     assert_eq!(

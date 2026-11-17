@@ -1007,9 +1007,12 @@ enum TokenCommand {
         /// Comma-separated repositories (owner/name) the token is valid for; the current repository by default.
         #[arg(long, value_delimiter = ',')]
         repos: Vec<String>,
-        /// Expire the token after this many days.
-        #[arg(long)]
+        /// Expire the token after this many days; 30 by default.
+        #[arg(long, conflicts_with = "never")]
         expires_days: Option<i64>,
+        /// Never expire the token.
+        #[arg(long)]
+        never: bool,
     },
     /// List your tokens, or another user's with --for (needs manage_users in a repository they belong to).
     List {
@@ -4149,6 +4152,49 @@ fn invitation_command(api: &Api, cmd: InvitationCommand) -> Result<()> {
     Ok(())
 }
 
+/// The one account that owns every repository named, which becomes the token's resource owner.
+fn token_owner(repos: &[String]) -> Result<String> {
+    let mut owners = repos.iter().map(|r| r.split_once('/').map(|(o, _)| o));
+    let first = owners
+        .next()
+        .flatten()
+        .context("repositories are owner/name")?;
+    for owner in owners {
+        anyhow::ensure!(
+            owner == Some(first),
+            "a token covers the repositories of one owner; make one token per owner"
+        );
+    }
+    Ok(first.to_string())
+}
+
+/// The closest resource and level for each internal permission name.
+fn token_permissions(names: &[String]) -> Result<Vec<api::TokenPermission>> {
+    let mut levels: std::collections::BTreeMap<&str, u8> = std::collections::BTreeMap::new();
+    for name in names {
+        let (resource, level) = match name.as_str() {
+            "read" => ("contents", 1),
+            "checkin" | "restore" => ("contents", 2),
+            "lock" => ("locks", 2),
+            "force_unlock" => ("locks", 3),
+            "edit_policy" => ("policy", 2),
+            "manage_users" => ("members", 2),
+            "manage_roles" => ("administration", 2),
+            "view_audit" => ("audit", 1),
+            other => anyhow::bail!("unknown permission {other:?}"),
+        };
+        let held = levels.entry(resource).or_default();
+        *held = (*held).max(level);
+    }
+    Ok(levels
+        .into_iter()
+        .map(|(resource, level)| api::TokenPermission {
+            resource: resource.to_string(),
+            level: ["read", "read", "write", "admin"][level as usize].to_string(),
+        })
+        .collect())
+}
+
 fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
     match cmd {
         TokenCommand::Create {
@@ -4156,6 +4202,7 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
             permissions,
             repos,
             expires_days,
+            never,
         } => {
             let repos = if repos.is_empty() {
                 vec![api.repo.clone().context(if api.on_git {
@@ -4166,11 +4213,18 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
             } else {
                 repos
             };
+            let owner = token_owner(&repos)?;
             let body = api::CreateTokenRequest {
                 name,
-                permissions,
-                repos,
+                description: None,
+                owner: Some(owner),
                 expires_at: expires_days.map(|d| chrono::Utc::now() + chrono::Duration::days(d)),
+                never,
+                repository_access: api::RepositoryAccess {
+                    mode: "selected".into(),
+                    repos,
+                },
+                permissions: token_permissions(&permissions)?,
             };
             let made: api::CreatedToken = api
                 .send(api.request(Method::POST, "/v1/tokens").json(&body))?
@@ -4200,7 +4254,11 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
                         state.to_string(),
                         t.expires_at.map_or("never".to_string(), time::local),
                         t.name,
-                        t.permissions.join(","),
+                        t.permissions
+                            .iter()
+                            .map(|p| format!("{}:{}", p.resource, p.level))
+                            .collect::<Vec<_>>()
+                            .join(","),
                     ]
                 })
                 .collect();

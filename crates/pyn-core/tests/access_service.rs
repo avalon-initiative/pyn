@@ -102,10 +102,13 @@ async fn a_token_authenticates_with_the_intersection_of_token_and_role() {
         .svc
         .create_token(
             &session("wendy"),
-            "ci",
-            perms(&[Read, Checkin]),
-            vec![w.repo.clone()],
-            None,
+            pyn_core::fixtures::new_token_for(
+                &session("wendy"),
+                "ci",
+                perms(&[Read, Checkin]),
+                vec![w.repo.clone()],
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -146,23 +149,23 @@ async fn a_token_cannot_hold_more_than_its_owner() {
         .svc
         .create_token(
             &wendy,
-            "sneaky",
-            perms(&[Read, Restore]),
-            repos.clone(),
-            None,
+            pyn_core::fixtures::new_token_for(
+                &wendy,
+                "sneaky",
+                perms(&[Read, EditPolicy]),
+                repos.clone(),
+                None,
+            ),
         )
         .await
         .unwrap_err();
-    assert!(matches!(err, PynError::Forbidden(Restore)), "{err}");
+    assert!(matches!(err, PynError::Forbidden(EditPolicy)), "{err}");
     let err = w
         .svc
-        .create_token(&wendy, "empty", perms(&[]), repos, None)
-        .await
-        .unwrap_err();
-    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
-    let err = w
-        .svc
-        .create_token(&wendy, "nowhere", perms(&[Read]), vec![], None)
+        .create_token(
+            &wendy,
+            pyn_core::fixtures::new_token_for(&wendy, "empty", perms(&[]), repos, None),
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
@@ -170,10 +173,22 @@ async fn a_token_cannot_hold_more_than_its_owner() {
         .svc
         .create_token(
             &wendy,
-            "elsewhere",
-            perms(&[Read]),
-            vec![RepoId::new("other")],
-            None,
+            pyn_core::fixtures::new_token_for(&wendy, "nowhere", perms(&[Read]), vec![], None),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    let err = w
+        .svc
+        .create_token(
+            &wendy,
+            pyn_core::fixtures::new_token_for(
+                &wendy,
+                "elsewhere",
+                perms(&[Read]),
+                vec![RepoId::new("other")],
+                None,
+            ),
         )
         .await
         .unwrap_err();
@@ -204,10 +219,13 @@ async fn bad_revoked_expired_and_out_of_scope_tokens_are_rejected() {
         .svc
         .create_token(
             &root,
-            "t",
-            perms(&[Read]),
-            vec![w.repo.clone()],
-            Some(Utc.with_ymd_and_hms(2026, 10, 8, 10, 0, 0).unwrap()),
+            pyn_core::fixtures::new_token_for(
+                &root,
+                "t",
+                perms(&[Read]),
+                vec![w.repo.clone()],
+                Some(Utc.with_ymd_and_hms(2026, 10, 8, 10, 0, 0).unwrap()),
+            ),
         )
         .await
         .unwrap();
@@ -226,7 +244,16 @@ async fn bad_revoked_expired_and_out_of_scope_tokens_are_rejected() {
 
     let (rec2, full2) = w
         .svc
-        .create_token(&root, "t2", perms(&[Read]), vec![w.repo.clone()], None)
+        .create_token(
+            &root,
+            pyn_core::fixtures::new_token_for(
+                &root,
+                "t2",
+                perms(&[Read]),
+                vec![w.repo.clone()],
+                None,
+            ),
+        )
         .await
         .unwrap();
     w.svc.revoke_token(&root, &rec2.id).await.unwrap();
@@ -237,10 +264,13 @@ async fn bad_revoked_expired_and_out_of_scope_tokens_are_rejected() {
         .svc
         .create_token(
             &root,
-            "scoped",
-            perms(&[Read]),
-            vec![RepoId::new("elsewhere")],
-            None,
+            pyn_core::fixtures::new_token_for(
+                &root,
+                "scoped",
+                perms(&[Read]),
+                vec![RepoId::new("elsewhere")],
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -262,7 +292,16 @@ async fn tokens_belong_to_their_owner_unless_an_admin_steps_in() {
     let (alice, bob, root) = (session("alice"), session("bob"), session("root"));
     let (rec, _) = w
         .svc
-        .create_token(&alice, "mine", perms(&[Read]), vec![w.repo.clone()], None)
+        .create_token(
+            &alice,
+            pyn_core::fixtures::new_token_for(
+                &alice,
+                "mine",
+                perms(&[Read]),
+                vec![w.repo.clone()],
+                None,
+            ),
+        )
         .await
         .unwrap();
 
@@ -497,10 +536,13 @@ async fn a_scoped_token_with_manage_users_adds_only_existing_accounts() {
         .svc
         .create_token(
             &session("wendy"),
-            "manage",
-            perms(&[Read, ManageUsers]),
-            vec![w.repo.clone()],
-            None,
+            pyn_core::fixtures::new_token_for(
+                &session("wendy"),
+                "manage",
+                perms(&[Read, ManageUsers]),
+                vec![w.repo.clone()],
+                None,
+            ),
         )
         .await
         .unwrap();

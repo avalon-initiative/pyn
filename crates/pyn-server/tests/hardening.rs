@@ -13,8 +13,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AuthProvider, RegistrationMode, Repositories, Rules, SystemClock,
-    UserId,
+    AccessConfig, AccessService, AuthProvider, Permission, RegistrationMode, Repositories, Rules,
+    SystemClock, UserId,
 };
 use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
@@ -29,6 +29,13 @@ async fn server(mode: RegistrationMode) -> Router {
 }
 
 async fn server_with(mode: RegistrationMode, require_approval: bool) -> Router {
+    server_parts(mode, require_approval).await.0
+}
+
+async fn server_parts(
+    mode: RegistrationMode,
+    require_approval: bool,
+) -> (Router, Arc<AccessService>) {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
@@ -57,14 +64,17 @@ async fn server_with(mode: RegistrationMode, require_approval: bool) -> Router {
         clock,
         Rules::from_toml("[meta]\ndefault = \"shared\"\n").unwrap(),
     ));
-    router(AppState {
+    let app = router(AppState {
         repos,
         objects,
         access: access.clone(),
-        auth: Arc::new(BearerAuth { access }),
+        auth: Arc::new(BearerAuth {
+            access: access.clone(),
+        }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
-    })
+    });
+    (app, access)
 }
 
 struct Reply {
@@ -225,11 +235,18 @@ async fn login_token(app: &Router, name: &str) -> String {
     r.json::<api::CreatedToken>().token
 }
 
-async fn scoped_token(app: &Router, user_token: &str, permissions: &[&str]) -> String {
-    let body = json!({"name": "s", "permissions": permissions, "repos": ["root/seed"]});
-    let r = send(app, user_token, "POST", "/v1/tokens", Some(body)).await;
-    assert_eq!(r.status, StatusCode::OK);
-    r.json::<api::CreatedToken>().token
+/// A fine-grained token of `user` for every repository of `root`, minted without the creation checks.
+async fn scoped_token(access: &AccessService, user: &str, permissions: &[&str]) -> String {
+    let permissions: Vec<Permission> = permissions.iter().map(|p| p.parse().unwrap()).collect();
+    access
+        .token_for_tests(
+            &UserId::new(user),
+            &UserId::new("root"),
+            permissions,
+            Vec::new(),
+        )
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -239,7 +256,7 @@ async fn adding_an_account_needs_a_full_scope_credential() {
         (RegistrationMode::Closed, false),
         (RegistrationMode::Open, true),
     ] {
-        let app = server_with(mode, approval).await;
+        let (app, access) = server_parts(mode, approval).await;
         let plain_open = mode == RegistrationMode::Open && !approval;
         let add = |who: String, name: &'static str| {
             let app = app.clone();
@@ -275,8 +292,8 @@ async fn adding_an_account_needs_a_full_scope_credential() {
             login_token(&app, "boss").await,
         );
         let manage = ["manage_users"];
-        let wendy_scoped = scoped_token(&app, &wendy, &manage).await;
-        let boss_scoped = scoped_token(&app, &boss, &manage).await;
+        let wendy_scoped = scoped_token(&access, "wendy", &manage).await;
+        let boss_scoped = scoped_token(&access, "boss", &manage).await;
         let minted = send(
             &app,
             "root",
@@ -390,30 +407,53 @@ async fn a_manager_sees_only_tokens_scoped_to_repositories_they_manage() {
         token_for(&app, "bob").await,
         token_for(&app, "carol").await,
     );
+    let r = send(
+        &app,
+        &alice,
+        "POST",
+        "/v1/orgs",
+        Some(json!({"name": "acme"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    for (user, token) in [("bob", &bob), ("carol", &carol)] {
+        let r = send(
+            &app,
+            &alice,
+            "POST",
+            "/v1/orgs/acme/members",
+            Some(json!({"user": user})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::ACCEPTED, "{user}");
+        let r = send(&app, token, "POST", "/v1/me/invitations/acme/accept", None).await;
+        assert_eq!(r.status, StatusCode::OK, "{user}");
+    }
     for name in ["game", "vault"] {
-        send(
+        let r = send(
             &app,
             &alice,
             "POST",
             "/v1/repos",
-            Some(json!({"name": name})),
+            Some(json!({"name": name, "owner": "acme"})),
         )
         .await;
-        grant(&app, &alice, &format!("alice/{name}"), "carol", "writer").await;
+        assert_eq!(r.status, StatusCode::CREATED, "{name}");
+        grant(&app, &alice, &format!("acme/{name}"), "carol", "writer").await;
     }
-    grant(&app, &alice, "alice/game", "bob", "admin").await;
+    grant(&app, &alice, "acme/game", "bob", "admin").await;
     let mut ids = Vec::new();
     for (name, repos) in [
-        ("g", json!(["alice/game"])),
-        ("v", json!(["alice/vault"])),
-        ("both", json!(["alice/game", "alice/vault"])),
+        ("g", vec!["acme/game"]),
+        ("v", vec!["acme/vault"]),
+        ("both", vec!["acme/game", "acme/vault"]),
     ] {
         let r = send(
             &app,
             &carol,
             "POST",
             "/v1/tokens",
-            Some(json!({"name": name, "permissions": ["read"], "repos": repos})),
+            Some(cred::token_body(name, repos, ["read"])),
         )
         .await;
         ids.push(r.json::<api::CreatedToken>().info.id);
@@ -425,7 +465,10 @@ async fn a_manager_sees_only_tokens_scoped_to_repositories_they_manage() {
         seen.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
         ["g"]
     );
-    assert!(seen.iter().all(|t| t.repos == ["alice/game"]));
+    assert!(
+        seen.iter()
+            .all(|t| t.repository_access.repos == ["acme/game"])
+    );
     for id in &ids[1..] {
         let r = send(&app, &bob, "DELETE", &format!("/v1/tokens/{id}"), None).await;
         assert!(r.is(StatusCode::NOT_FOUND, "token_not_found"));
@@ -537,7 +580,7 @@ async fn new_writes_refuse_reserved_and_oversized_paths_and_text() {
             &alice,
             "POST",
             "/v1/tokens",
-            Some(json!({"name": name, "permissions": ["read"], "repos": ["alice/game"]})),
+            Some(cred::token_body(&name, ["alice/game"], ["read"])),
         )
         .await;
         assert!(r.is(StatusCode::BAD_REQUEST, "invalid_request"));
@@ -580,7 +623,7 @@ async fn a_missing_repository_and_one_the_caller_cannot_see_answer_identically()
         &bob,
         "POST",
         "/v1/tokens",
-        Some(json!({"name": "t", "permissions": ["read"], "repos": ["bob/own"]})),
+        Some(cred::token_body("t", ["bob/own"], ["read"])),
     )
     .await
     .json::<api::CreatedToken>()
@@ -654,7 +697,7 @@ async fn an_unknown_token_and_a_token_the_caller_cannot_manage_answer_identicall
         &alice,
         "POST",
         "/v1/tokens",
-        Some(json!({"name": "ci", "permissions": ["read"], "repos": ["alice/game"]})),
+        Some(cred::token_body("ci", ["alice/game"], ["read"])),
     )
     .await
     .json::<api::CreatedToken>()

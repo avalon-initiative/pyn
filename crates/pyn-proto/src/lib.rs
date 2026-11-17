@@ -1082,24 +1082,57 @@ fn present<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
     Option::deserialize(d).map(Some)
 }
 
+/// One permission of a fine-grained token: a resource at a level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TokenPermission {
+    /// `metadata`, `contents`, `locks`, `policy`, `members`, `administration` or `audit`.
+    pub resource: String,
+    /// `read` or `write` (write includes read); `admin` for `locks` only (includes write).
+    pub level: String,
+}
+
+/// Which repositories of the token's owner it reaches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepositoryAccess {
+    /// `public` (none beyond the public repositories every token can read), `all` (every repository the owner
+    /// has now and later) or `selected` (only `repos`).
+    pub mode: String,
+    /// `owner/name` of each selected repository, all owned by the token's owner; empty unless `selected`.
+    #[serde(default)]
+    pub repos: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateTokenRequest {
     pub name: String,
-    pub permissions: Vec<String>,
-    /// Repositories the token is valid for, as `owner/name`; at least one.
-    pub repos: Vec<String>,
+    pub description: Option<String>,
+    /// The resource owner: the caller's own account or an organization they belong to. Defaults to the caller.
+    pub owner: Option<String>,
+    /// When the token expires; without it and without `never` the token lasts 30 days.
     pub expires_at: Option<DateTime<Utc>>,
+    /// Never expires; not combinable with `expires_at`.
+    #[serde(default)]
+    pub never: bool,
+    pub repository_access: RepositoryAccess,
+    /// Metadata read is implied for `all` and `selected`; none are allowed with `public`.
+    pub permissions: Vec<TokenPermission>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TokenInfo {
     pub id: String,
+    /// The account that created the token and whose role it is capped by.
     pub user: String,
     pub name: String,
-    pub permissions: Vec<String>,
-    /// `owner/name` of each repository the token is limited to; empty means every repository.
-    pub repos: Vec<String>,
+    pub description: Option<String>,
+    /// The resource owner.
+    pub owner: String,
+    pub repository_access: RepositoryAccess,
+    pub permissions: Vec<TokenPermission>,
+    /// Issued by `pyn login`: a full-scope credential rather than a fine-grained token.
+    pub sign_in: bool,
     pub created_at: DateTime<Utc>,
+    /// Absent means the token never expires.
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,

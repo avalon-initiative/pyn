@@ -5,12 +5,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::access::{
-    AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, Identity, InvitationAccept,
-    InvitationCreate, InviteId, InviteRecord, NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation,
-    OrgInvitation, OrgMemberAdd, OrgRole, Permission, Principal, RegistrationMode, Role,
-    RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,
-    SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
-    account, invite, service_credential, session, ssh, token, verification,
+    AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, GrantLevel, Identity,
+    InvitationAccept, InvitationCreate, InviteId, InviteRecord, NewAccount,
+    ORG_DELETE_MARK_SECONDS, OrgCreation, OrgInvitation, OrgMemberAdd, OrgRole, Permission,
+    Principal, RegistrationMode, RepoAccess, Role, RoleDefinitions, RoleSource, ServerSettings,
+    ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
+    TokenId, TokenRecord, TokenResource, VerificationRecord, account, grant_delta, invite,
+    service_credential, session, ssh, token, verification,
 };
 use crate::account_self::{AccountEmail, EmailAdd, EmailRemove, PrimaryChange, RenameOutcome};
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
@@ -1023,6 +1024,41 @@ fn join<T: ToString>(items: impl Iterator<Item = T>) -> String {
     items.map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
 }
 
+/// Days a token lives when its creator names no expiry.
+pub const DEFAULT_TOKEN_DAYS: i64 = 30;
+
+/// When a new token expires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenExpiry {
+    At(DateTime<Utc>),
+    Never,
+    Default,
+}
+
+/// A request for a fine-grained token.
+#[derive(Debug, Clone)]
+pub struct NewToken {
+    pub name: String,
+    pub description: Option<String>,
+    pub owner: UserId,
+    pub expiry: TokenExpiry,
+    pub repo_access: RepoAccess,
+    /// Used only with `RepoAccess::Selected`.
+    pub repos: Vec<RepoId>,
+    pub grants: BTreeMap<TokenResource, GrantLevel>,
+}
+
+struct IssuedToken<'a> {
+    name: &'a str,
+    description: Option<&'a str>,
+    owner: UserId,
+    repo_access: RepoAccess,
+    repos: Vec<RepoId>,
+    grants: BTreeMap<TokenResource, GrantLevel>,
+    expires_at: Option<DateTime<Utc>>,
+    sign_in: bool,
+}
+
 fn org_cannot_sign_in() -> PynError {
     unauthenticated("organizations cannot sign in; act as one of their owners")
 }
@@ -1286,22 +1322,43 @@ impl AccessService {
                 email: None,
             }),
             Credential::Token(record) => {
-                if !record.repos.is_empty() && !record.repos.contains(repo) {
+                if !self.token_covers(record, repo).await? {
                     return Err(unauthenticated("token is not valid for this repository"));
                 }
                 let role = self.role_permissions(repo, &who.user).await?;
                 Ok(Principal {
                     user: who.user.clone(),
-                    permissions: record.permissions.intersection(&role).copied().collect(),
+                    permissions: record.permissions().intersection(&role).copied().collect(),
                     email: self.account_email(&who.user).await?,
                 })
             }
         }
     }
 
+    /// Whether the token's owner owns `repo` and its repository access reaches it. Without a registry no
+    /// repository has an owner, so only the access mode decides.
+    async fn token_covers(&self, record: &TokenRecord, repo: &RepoId) -> Result<bool> {
+        let owner = match &self.registry {
+            Some(registry) => match registry.get_repo(repo).await? {
+                Some(r) => r.owner,
+                None => return Ok(record.sign_in),
+            },
+            None => record.owner.clone(),
+        };
+        Ok(record.covers(repo, &owner))
+    }
+
+    /// Whether the credential may act in `repo`; see `Identity::covers_repo`.
+    pub async fn covers(&self, repo: &RepoId, who: &Identity) -> Result<bool> {
+        match &who.credential {
+            Credential::Token(record) => self.token_covers(record, repo).await,
+            _ => Ok(!matches!(who.credential, Credential::Service(_))),
+        }
+    }
+
     /// Like `principal_in`, but a token that does not cover `repo` holds nothing there instead of failing.
     pub async fn principal_or_none(&self, repo: &RepoId, who: &Identity) -> Result<Principal> {
-        if who.covers_repo(repo) {
+        if self.covers(repo, who).await? {
             return self.principal_in(repo, who).await;
         }
         Ok(Principal {
@@ -1317,65 +1374,197 @@ impl AccessService {
         self.principal_in(repo, &who).await
     }
 
-    /// Creates a token for the actor, scoped to `repos`. It can hold only permissions the actor holds in each of
-    /// them. Returns the record and the full token string, which is not stored and cannot be shown again.
+    /// Creates a fine-grained token for the actor, capped by their role in each selected repository. Returns the
+    /// record and the full token string, which is not stored and cannot be shown again.
     pub async fn create_token(
         &self,
         actor: &Identity,
-        name: &str,
-        permissions: BTreeSet<Permission>,
-        repos: Vec<RepoId>,
-        expires_at: Option<DateTime<Utc>>,
+        req: NewToken,
     ) -> Result<(TokenRecord, String)> {
         actor.require_full_scope()?;
-        if repos.is_empty() {
-            return Err(PynError::InvalidRequest(
-                "a token needs at least one repository".into(),
-            ));
+        self.require_token_owner(actor, &req.owner).await?;
+        let grants = Self::token_grants(&req)?;
+        if req.repo_access == RepoAccess::Selected {
+            self.require_owned(&req.owner, &req.repos).await?;
         }
-        let expires_at = Self::within_creator(actor, &permissions, &repos, expires_at)?;
-        for repo in &repos {
-            let held = self.principal_in(repo, actor).await?;
-            for p in &permissions {
-                held.require(*p)?;
+        let now = self.clock.now();
+        let expires_at = match req.expiry {
+            TokenExpiry::At(t) => Some(t),
+            TokenExpiry::Never => None,
+            TokenExpiry::Default => Some(now + Duration::days(DEFAULT_TOKEN_DAYS)),
+        };
+        let expires_at = Self::within_creator(actor, &req, &grants, expires_at)?;
+        if req.repo_access == RepoAccess::Selected {
+            for repo in &req.repos {
+                let held = self.principal_in(repo, actor).await?;
+                Self::require_grants_held(&held, &grants)?;
             }
         }
         let (record, full) = self
-            .issue_token(&actor.user, name, permissions, repos, expires_at, false)
+            .issue_token(
+                &actor.user,
+                IssuedToken {
+                    name: &req.name,
+                    description: req.description.as_deref(),
+                    owner: req.owner,
+                    repo_access: req.repo_access,
+                    repos: req.repos,
+                    grants,
+                    expires_at,
+                    sign_in: false,
+                },
+            )
             .await?;
         let detail = format!(
-            "token {} {:?} for {}: permissions [{}], repos [{}], expires {}",
+            "token {} {:?} for {}: owner {}, access {}, grants [{}], repos [{}], expires {}",
             record.id,
             record.name,
             record.user,
-            join(record.permissions.iter()),
+            record.owner,
+            record.repo_access.as_str(),
+            join(
+                record
+                    .grants
+                    .iter()
+                    .map(|(r, l)| format!("{}:{}", r.as_str(), l.as_str()))
+            ),
             join_bounded(record.repos.iter()),
             record
                 .expires_at
                 .map_or("never".to_string(), |t| t.to_rfc3339()),
         );
-        for repo in &record.repos {
-            self.record(repo, &actor.user, AuditAction::TokenCreated, detail.clone())
-                .await?;
-        }
+        self.record_token_event(&record, &actor.user, AuditAction::TokenCreated, detail)
+            .await?;
         Ok((record, full))
     }
 
-    /// A token credential mints nothing broader than itself: its permissions and repositories bound the new
-    /// token's, and the expiry is capped at its own.
+    /// Every grant must add something the creator holds; the rest is cut off by their role at use time.
+    fn require_grants_held(
+        held: &Principal,
+        grants: &BTreeMap<TokenResource, GrantLevel>,
+    ) -> Result<()> {
+        for (resource, level) in grants {
+            let delta = grant_delta(*resource, *level);
+            if let Some(first) = delta.first()
+                && !delta.iter().any(|p| held.has(*p))
+            {
+                return Err(PynError::Forbidden(*first));
+            }
+        }
+        Ok(())
+    }
+
+    /// The audit scopes of a token: each selected repository, else its owner's organization or the server.
+    async fn record_token_event(
+        &self,
+        record: &TokenRecord,
+        actor: &UserId,
+        action: AuditAction,
+        detail: String,
+    ) -> Result<()> {
+        if record.repo_access == RepoAccess::Selected {
+            for repo in &record.repos {
+                self.record(repo, actor, action, detail.clone()).await?;
+            }
+            return Ok(());
+        }
+        let scope = if record.owner == record.user {
+            AuditScope::Server
+        } else {
+            AuditScope::Org(record.owner.clone())
+        };
+        self.record(scope, actor, action, detail).await
+    }
+
+    /// A token's owner is the creator's own account or an organization the creator belongs to.
+    async fn require_token_owner(&self, actor: &Identity, owner: &UserId) -> Result<()> {
+        if owner == &actor.user || self.store.org_role(owner, &actor.user).await?.is_some() {
+            return Ok(());
+        }
+        Err(PynError::NotOrgMember(owner.to_string()))
+    }
+
+    /// Every repository in `repos` must exist and belong to `owner`.
+    async fn require_owned(&self, owner: &UserId, repos: &[RepoId]) -> Result<()> {
+        let Some(registry) = &self.registry else {
+            return Ok(());
+        };
+        for repo in repos {
+            match registry.get_repo(repo).await? {
+                Some(r) if &r.owner == owner => {}
+                Some(_) => {
+                    return Err(PynError::InvalidRequest(format!(
+                        "repository {repo} is not owned by {owner}"
+                    )));
+                }
+                None => return Err(PynError::RepoNotFound(repo.to_string())),
+            }
+        }
+        Ok(())
+    }
+
+    /// The request's grants normalised: each within its resource's top level, metadata read present exactly when
+    /// the token reaches repositories beyond the public ones.
+    fn token_grants(req: &NewToken) -> Result<BTreeMap<TokenResource, GrantLevel>> {
+        let mut grants = req.grants.clone();
+        for (resource, level) in &grants {
+            if *level > resource.max_level() {
+                return Err(PynError::InvalidRequest(format!(
+                    "{} cannot be given at level {}",
+                    resource.as_str(),
+                    level.as_str()
+                )));
+            }
+        }
+        match req.repo_access {
+            RepoAccess::Public => {
+                if !grants.is_empty() || !req.repos.is_empty() {
+                    return Err(PynError::InvalidRequest(
+                        "a token for public repositories takes no permissions or repositories"
+                            .into(),
+                    ));
+                }
+            }
+            RepoAccess::All | RepoAccess::Selected => {
+                if req.repo_access == RepoAccess::All && !req.repos.is_empty() {
+                    return Err(PynError::InvalidRequest(
+                        "access to all repositories takes no repository list".into(),
+                    ));
+                }
+                if req.repo_access == RepoAccess::Selected && req.repos.is_empty() {
+                    return Err(PynError::InvalidRequest(
+                        "a token needs at least one repository".into(),
+                    ));
+                }
+                grants.insert(TokenResource::Metadata, GrantLevel::Read);
+                if grants.len() < 2 {
+                    return Err(PynError::InvalidRequest(
+                        "a token needs at least one permission".into(),
+                    ));
+                }
+            }
+        }
+        Ok(grants)
+    }
+
+    /// A token credential mints nothing broader than itself: its grants and owner bound the new token's, and
+    /// the expiry is capped at its own.
     fn within_creator(
         actor: &Identity,
-        permissions: &BTreeSet<Permission>,
-        repos: &[RepoId],
+        req: &NewToken,
+        grants: &BTreeMap<TokenResource, GrantLevel>,
         expires_at: Option<DateTime<Utc>>,
     ) -> Result<Option<DateTime<Utc>>> {
         let Credential::Token(own) = &actor.credential else {
             return Ok(expires_at);
         };
-        if let Some(p) = permissions.iter().find(|p| !own.permissions.contains(p)) {
-            return Err(PynError::Forbidden(*p));
-        }
-        if !own.repos.is_empty() && repos.iter().any(|r| !own.repos.contains(r)) {
+        let held = Principal {
+            user: actor.user.clone(),
+            permissions: own.permissions(),
+            email: None,
+        };
+        Self::require_grants_held(&held, grants)?;
+        if !own.sign_in && own.owner != req.owner {
             return Err(PynError::Forbidden(Permission::ManageRoles));
         }
         Ok(match (expires_at, own.expires_at) {
@@ -1385,25 +1574,19 @@ impl AccessService {
         })
     }
 
-    /// Mints a token without an audit event, for sign-in sessions. An empty `repos`
-    /// means every repository; the owner's role still caps what it can do in each.
+    /// Mints a token without an audit event.
     async fn issue_token(
         &self,
         user: &UserId,
-        name: &str,
-        permissions: BTreeSet<Permission>,
-        repos: Vec<RepoId>,
-        expires_at: Option<DateTime<Utc>>,
-        sign_in: bool,
+        t: IssuedToken<'_>,
     ) -> Result<(TokenRecord, String)> {
-        let name = validate_label("token name", name)?;
-        if permissions.is_empty() {
-            return Err(PynError::InvalidRequest(
-                "a token needs at least one permission".into(),
-            ));
-        }
+        let name = validate_label("token name", t.name)?;
+        let description = t
+            .description
+            .map(|d| validate_label("token description", d))
+            .transpose()?;
         let now = self.clock.now();
-        if expires_at.is_some_and(|t| t <= now) {
+        if t.expires_at.is_some_and(|e| e <= now) {
             return Err(PynError::InvalidRequest(
                 "expiry must be in the future".into(),
             ));
@@ -1413,14 +1596,17 @@ impl AccessService {
             id,
             user: user.clone(),
             name,
+            description,
             secret_hash,
-            permissions,
-            repos,
+            owner: t.owner,
+            repo_access: t.repo_access,
+            repos: t.repos,
+            grants: t.grants,
             created_at: now,
-            expires_at,
+            expires_at: t.expires_at,
             revoked_at: None,
             last_used_at: None,
-            sign_in,
+            sign_in: t.sign_in,
         };
         self.store.create_token(record.clone()).await?;
         Ok((record, full))
@@ -1468,12 +1654,12 @@ impl AccessService {
     }
 
     /// Whether the actor holds `manage_users` in every repository the token is scoped to; a token for all
-    /// repositories qualifies only for a server admin.
+    /// repositories, or only public ones, qualifies only for a server admin.
     async fn manages_token(&self, actor: &Identity, record: &TokenRecord) -> Result<bool> {
         if self.is_server_admin(actor).await? {
             return Ok(true);
         }
-        if record.repos.is_empty() {
+        if record.repo_access != RepoAccess::Selected {
             return Ok(false);
         }
         for repo in &record.repos {
@@ -1527,10 +1713,8 @@ impl AccessService {
         };
         self.store.revoke_token(id, self.clock.now()).await?;
         let detail = format!("token {} {:?} of {}", record.id, record.name, record.user);
-        for repo in &record.repos {
-            self.record(repo, &actor.user, AuditAction::TokenRevoked, detail.clone())
-                .await?;
-        }
+        self.record_token_event(&record, &actor.user, AuditAction::TokenRevoked, detail)
+            .await?;
         Ok(())
     }
 
@@ -1846,11 +2030,16 @@ impl AccessService {
         let expires = self.clock.now() + Duration::days(self.config.session_days);
         self.issue_token(
             &user,
-            "sign-in",
-            Permission::ALL.into(),
-            Vec::new(),
-            Some(expires),
-            true,
+            IssuedToken {
+                name: "sign-in",
+                description: None,
+                owner: user.clone(),
+                repo_access: RepoAccess::All,
+                repos: Vec::new(),
+                grants: TokenRecord::full_grants(),
+                expires_at: Some(expires),
+                sign_in: true,
+            },
         )
         .await
     }
@@ -2512,11 +2701,48 @@ impl AccessService {
         let (_, full) = self
             .issue_token(
                 user,
-                "test",
-                Permission::ALL.into(),
-                Vec::new(),
-                None,
-                false,
+                IssuedToken {
+                    name: "test",
+                    description: None,
+                    owner: user.clone(),
+                    repo_access: RepoAccess::All,
+                    repos: Vec::new(),
+                    grants: TokenRecord::full_grants(),
+                    expires_at: None,
+                    sign_in: true,
+                },
+            )
+            .await?;
+        Ok(full)
+    }
+
+    /// Mints a token of `owner` for `user` on `repos` from internal permissions, skipping every creation check.
+    #[cfg(feature = "test-support")]
+    pub async fn token_for_tests(
+        &self,
+        user: &UserId,
+        owner: &UserId,
+        permissions: impl IntoIterator<Item = Permission>,
+        repos: Vec<RepoId>,
+    ) -> Result<String> {
+        let permissions: Vec<_> = permissions.into_iter().collect();
+        let (_, full) = self
+            .issue_token(
+                user,
+                IssuedToken {
+                    name: "test",
+                    description: None,
+                    owner: owner.clone(),
+                    repo_access: if repos.is_empty() {
+                        RepoAccess::All
+                    } else {
+                        RepoAccess::Selected
+                    },
+                    repos,
+                    grants: crate::fixtures::grants_for(&permissions),
+                    expires_at: None,
+                    sign_in: false,
+                },
             )
             .await?;
         Ok(full)
@@ -2563,7 +2789,9 @@ impl AccessService {
     /// The caller's role in `repo`, absent for a repository the credential does not cover.
     pub async fn role_for(&self, repo: &RepoId, who: Option<&Identity>) -> Result<Option<Role>> {
         match who {
-            Some(who) if who.covers_repo(repo) => self.effective_role(repo, &who.user).await,
+            Some(who) if self.covers(repo, who).await? => {
+                self.effective_role(repo, &who.user).await
+            }
             _ => Ok(None),
         }
     }

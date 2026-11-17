@@ -7,8 +7,8 @@ use pyn_core::memory::{
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AuditAction, AuditEvent, AuditQuery, AuditScope,
     AuditStore, Credential, Identity, ManualClock, OrgCreation, OrgRole, Permission, PynError,
-    Registration, RegistrationMode, RepoMember, Repositories, Role, RoleSource, Rules, TokenRecord,
-    UserId, Visibility,
+    Registration, RegistrationMode, RepoMember, Repositories, Role, RoleSource, Rules, UserId,
+    Visibility,
 };
 
 const PASSWORD: &str = "correct horse battery";
@@ -80,19 +80,13 @@ fn session(name: &str) -> Identity {
 fn token_for(name: &str, permissions: &[Permission]) -> Identity {
     Identity {
         user: user(name),
-        credential: Credential::Token(TokenRecord {
-            id: pyn_core::TokenId("aaaaaaaaaaaa".into()),
-            user: user(name),
-            name: "t".into(),
-            secret_hash: String::new(),
-            permissions: permissions.iter().copied().collect(),
-            repos: Vec::new(),
-            created_at: Utc::now(),
-            expires_at: None,
-            revoked_at: None,
-            last_used_at: None,
-            sign_in: false,
-        }),
+        credential: Credential::Token(pyn_core::fixtures::token_record(
+            "aaaaaaaaaaaa",
+            name,
+            permissions,
+            Vec::new(),
+            Utc::now(),
+        )),
     }
 }
 
@@ -406,7 +400,10 @@ async fn organization_owners_resolve_to_admin_on_every_repository_it_owns() {
     );
     assert!(w.repos.list(&carol, None).await.unwrap().is_empty());
 
-    let narrowed = token_for("alice", &[Permission::Read]);
+    let mut narrowed = token_for("alice", &[Permission::Read]);
+    if let Credential::Token(t) = &mut narrowed.credential {
+        t.owner = user("acme");
+    }
     let who = w.access.principal_in(&game.id, &narrowed).await.unwrap();
     assert_eq!(
         who.permissions.into_iter().collect::<Vec<_>>(),

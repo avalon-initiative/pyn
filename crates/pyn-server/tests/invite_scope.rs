@@ -13,8 +13,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AuthProvider, RegistrationMode, Repositories, Rules, SystemClock,
-    UserId,
+    AccessConfig, AccessService, AuthProvider, Permission, RegistrationMode, Repositories, Rules,
+    SystemClock, UserId,
 };
 use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
@@ -36,7 +36,7 @@ const ALL: [&str; 9] = [
 ];
 const ORIGIN: &str = "http://localhost:5173";
 
-async fn server(mode: RegistrationMode, require_approval: bool) -> Router {
+async fn server(mode: RegistrationMode, require_approval: bool) -> (Router, Arc<AccessService>) {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
@@ -66,14 +66,17 @@ async fn server(mode: RegistrationMode, require_approval: bool) -> Router {
         clock,
         Rules::from_toml("[meta]\ndefault = \"shared\"\n").unwrap(),
     ));
-    router(AppState {
+    let app = router(AppState {
         repos,
         objects,
         access: access.clone(),
-        auth: Arc::new(BearerAuth { access }),
+        auth: Arc::new(BearerAuth {
+            access: access.clone(),
+        }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
-    })
+    });
+    (app, access)
 }
 
 struct Reply {
@@ -139,11 +142,19 @@ async fn session(app: &Router, name: &str) -> Cred {
     Cred::session(&cookie, &info.csrf_token)
 }
 
-async fn scoped(app: &Router, owner: &Cred, permissions: &[&str]) -> Cred {
-    let body = json!({"name": "s", "permissions": permissions, "repos": ["root/seed"]});
-    let r = send(app, owner, "POST", "/v1/tokens", Some(body)).await;
-    assert_eq!(r.status, StatusCode::OK);
-    Cred::token(&r.json::<api::CreatedToken>().token)
+/// A fine-grained token of `user` for every repository of `root`, minted without the creation checks.
+async fn scoped(access: &AccessService, user: &str, permissions: &[&str]) -> Cred {
+    let permissions: Vec<Permission> = permissions.iter().map(|p| p.parse().unwrap()).collect();
+    let secret = access
+        .token_for_tests(
+            &UserId::new(user),
+            &UserId::new("root"),
+            permissions,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    Cred::token(&secret)
 }
 
 async fn who_am_i(app: &Router, who: &Cred) -> String {
@@ -184,7 +195,7 @@ struct Creds {
     service: Cred,
 }
 
-async fn setup(app: &Router) -> Creds {
+async fn setup(app: &Router, access: &AccessService) -> Creds {
     let root = Cred::dev("root");
     let r = send(
         app,
@@ -213,9 +224,9 @@ async fn setup(app: &Router) -> Creds {
     .await;
     Creds {
         session: session(app, "wendy").await,
-        wendy_scoped: scoped(app, &wendy, &ALL).await,
-        wendy_narrow: scoped(app, &wendy, &["read", "manage_users"]).await,
-        boss_scoped: scoped(app, &boss, &ALL).await,
+        wendy_scoped: scoped(access, "wendy", &ALL).await,
+        wendy_narrow: scoped(access, "wendy", &["read", "manage_users"]).await,
+        boss_scoped: scoped(access, "boss", &ALL).await,
         full_token: wendy,
         boss_token: boss,
         service: Cred::service(&minted.json::<api::CreatedServiceCredential>().secret),
@@ -229,8 +240,8 @@ async fn creating_an_invitation_needs_a_full_scope_credential() {
         (RegistrationMode::Closed, false),
         (RegistrationMode::Open, true),
     ] {
-        let app = server(mode, approval).await;
-        let c = setup(&app).await;
+        let (app, access) = server(mode, approval).await;
+        let c = setup(&app, &access).await;
         let label = format!("{mode:?} approval={approval}");
 
         assert_eq!(who_am_i(&app, &c.session).await, "wendy");
@@ -284,8 +295,8 @@ async fn creating_an_invitation_needs_a_full_scope_credential() {
 
 #[tokio::test]
 async fn an_invitation_made_by_a_full_scope_member_still_registers_on_a_closed_server() {
-    let app = server(RegistrationMode::InviteOnly, false).await;
-    let c = setup(&app).await;
+    let (app, access) = server(RegistrationMode::InviteOnly, false).await;
+    let c = setup(&app, &access).await;
     let r = invite(&app, &c.session).await;
     let code = r.json::<api::CreatedInvite>().code;
     let body = json!({"username": "newbie", "password": PASSWORD, "invite": code});

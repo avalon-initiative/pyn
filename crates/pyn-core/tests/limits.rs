@@ -654,19 +654,13 @@ fn token_of(
 ) -> Identity {
     Identity {
         user: user(name),
-        credential: Credential::Token(pyn_core::TokenRecord {
-            id: pyn_core::TokenId("aaaaaaaaaaaa".into()),
-            user: user(name),
-            name: "t".into(),
-            secret_hash: String::new(),
-            permissions: permissions.iter().copied().collect(),
+        credential: Credential::Token(pyn_core::fixtures::token_record(
+            "aaaaaaaaaaaa",
+            name,
+            permissions,
             repos,
-            created_at: Utc::now(),
-            expires_at: None,
-            revoked_at: None,
-            last_used_at: None,
-            sign_in: false,
-        }),
+            Utc::now(),
+        )),
     }
 }
 
@@ -701,7 +695,7 @@ async fn owner_limits_and_usage_need_a_full_scope_credential() {
         .await
         .unwrap();
 
-    let full = token_of("alice", &Permission::ALL, vec![]);
+    let full = sign_in_of("alice");
     let scoped = token_of("alice", &Permission::ALL, vec![open.id.clone()]);
     let reader = token_of("alice", &[Permission::Read], vec![]);
     let org_owner_scoped = token_of("alice", &Permission::ALL, vec![org_repo.id.clone()]);
@@ -721,7 +715,7 @@ async fn owner_limits_and_usage_need_a_full_scope_credential() {
     w.repos.owner_report(&full, &user("acme")).await.unwrap();
     w.repos.owner_report(&root, &user("alice")).await.unwrap();
     w.repos
-        .owner_report(&token_of("root", &Permission::ALL, vec![]), &user("alice"))
+        .owner_report(&sign_in_of("root"), &user("alice"))
         .await
         .unwrap();
 
@@ -743,4 +737,15 @@ async fn owner_limits_and_usage_need_a_full_scope_credential() {
     assert!(w.repos.owner_report(&blind, &user("alice")).await.is_err());
     let seer = service_named(&w, "seer", &[ServiceScope::ManageLimits]).await;
     w.repos.owner_report(&seer, &user("alice")).await.unwrap();
+}
+
+fn sign_in_of(name: &str) -> Identity {
+    Identity {
+        user: user(name),
+        credential: Credential::Token(pyn_core::fixtures::sign_in_record(
+            "aaaaaaaaaaaa",
+            name,
+            Utc::now(),
+        )),
+    }
 }

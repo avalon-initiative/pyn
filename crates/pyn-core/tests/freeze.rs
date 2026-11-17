@@ -812,19 +812,13 @@ async fn freezing_and_unfreezing_are_audited_and_unfreezing_an_open_owner_is_a_n
 fn token_of(name: &str, permissions: &[Permission], repos: Vec<pyn_core::RepoId>) -> Identity {
     Identity {
         user: user(name),
-        credential: Credential::Token(pyn_core::TokenRecord {
-            id: pyn_core::TokenId("aaaaaaaaaaaa".into()),
-            user: user(name),
-            name: "t".into(),
-            secret_hash: String::new(),
-            permissions: permissions.iter().copied().collect(),
+        credential: Credential::Token(pyn_core::fixtures::token_record(
+            "aaaaaaaaaaaa",
+            name,
+            permissions,
             repos,
-            created_at: Utc::now(),
-            expires_at: None,
-            revoked_at: None,
-            last_used_at: None,
-            sign_in: false,
-        }),
+            Utc::now(),
+        )),
     }
 }
 
@@ -851,16 +845,16 @@ async fn reading_the_state_needs_a_full_scope_credential() {
         .await
         .unwrap();
 
-    let full = token_of("alice", &Permission::ALL, vec![]);
+    let full = sign_in_of("alice");
     w.access.owner_freeze(&full, &user("alice")).await.unwrap();
     w.access.owner_freeze(&full, &user("acme")).await.unwrap();
     w.access
-        .owner_freeze(&token_of("bob", &Permission::ALL, vec![]), &user("acme"))
+        .owner_freeze(&sign_in_of("bob"), &user("acme"))
         .await
         .unwrap();
     root(&w).await;
     w.access
-        .owner_freeze(&token_of("root", &Permission::ALL, vec![]), &user("alice"))
+        .owner_freeze(&sign_in_of("root"), &user("alice"))
         .await
         .unwrap();
 
@@ -886,5 +880,16 @@ async fn reading_the_state_needs_a_full_scope_credential() {
         let err = w.access.owner_freeze(&who, &user(owner)).await.unwrap_err();
         assert!(matches!(err, PynError::Forbidden(_)), "{owner}: {err}");
         assert_eq!(err.code(), "forbidden");
+    }
+}
+
+fn sign_in_of(name: &str) -> Identity {
+    Identity {
+        user: user(name),
+        credential: Credential::Token(pyn_core::fixtures::sign_in_record(
+            "aaaaaaaaaaaa",
+            name,
+            Utc::now(),
+        )),
     }
 }

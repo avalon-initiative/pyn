@@ -10,8 +10,7 @@ use pyn_core::memory::{
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AccountStatus, AuditAction, AuditQuery, AuditScope,
     AuditStore, Credential, Identity, ManualClock, Permission, ProfileFields, ProfileVisibility,
-    PynError, Registration, RegistrationMode, RepoId, Repositories, Rules, TokenId, TokenRecord,
-    UserId,
+    PynError, Registration, RegistrationMode, RepoId, Repositories, Rules, UserId,
 };
 
 const PASSWORD: &str = "correct horse battery";
@@ -810,19 +809,13 @@ async fn a_rename_cannot_take_a_purged_accounts_reserved_name() {
 fn token_identity(name: &str, perms: &[Permission], repos: &[&str]) -> Identity {
     Identity {
         user: user(name),
-        credential: Credential::Token(TokenRecord {
-            id: TokenId("t1".into()),
-            user: user(name),
-            name: "ci".into(),
-            secret_hash: String::new(),
-            permissions: perms.iter().copied().collect(),
-            repos: repos.iter().map(|r| RepoId::new(*r)).collect(),
-            created_at: Utc::now(),
-            expires_at: None,
-            revoked_at: None,
-            last_used_at: None,
-            sign_in: false,
-        }),
+        credential: Credential::Token(pyn_core::fixtures::token_record(
+            "t1",
+            name,
+            perms,
+            repos.iter().map(|r| RepoId::new(*r)).collect(),
+            Utc::now(),
+        )),
     }
 }
 
@@ -830,7 +823,7 @@ fn token_identity(name: &str, perms: &[Permission], repos: &[&str]) -> Identity 
 async fn the_deletion_status_needs_a_full_scope_credential() {
     let w = world();
     sign_up(&w, "alice").await;
-    let full = token_identity("alice", &Permission::ALL, &[]);
+    let full = sign_in_of("alice");
     assert!(w.access.deletion_status(&full).await.unwrap().is_none());
     assert!(w.access.deletion_status(&session("alice")).await.is_ok());
 
@@ -874,5 +867,16 @@ async fn profile_for_gives_only_a_full_scope_credential_the_hidden_fields() {
         let seen = w.access.profile_for(&who).await.unwrap();
         assert_eq!(seen.fields.bio, None);
         assert_eq!(seen.fields.company.as_deref(), Some("Acme"));
+    }
+}
+
+fn sign_in_of(name: &str) -> Identity {
+    Identity {
+        user: user(name),
+        credential: Credential::Token(pyn_core::fixtures::sign_in_record(
+            "aaaaaaaaaaaa",
+            name,
+            Utc::now(),
+        )),
     }
 }

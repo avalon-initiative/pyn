@@ -400,13 +400,12 @@ async fn world_in(mode: AccessMode, kind: Kind, reach: Reach) -> (Router, Cred) 
                 Kind::ScopedAll => (Permission::ALL.into(), "game"),
                 _ => (Permission::ALL.into(), "other"),
             };
-            let (_, token) = access
-                .create_token(
-                    &as_alice,
-                    "scoped",
+            let token = access
+                .token_for_tests(
+                    &UserId::new("alice"),
+                    &UserId::new("alice"),
                     permissions,
                     vec![ids[repo].clone()],
-                    None,
                 )
                 .await
                 .unwrap();

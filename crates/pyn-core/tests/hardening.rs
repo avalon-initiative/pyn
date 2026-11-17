@@ -213,9 +213,12 @@ async fn a_token_on_many_repositories_writes_a_bounded_audit_detail() {
         credential: Credential::Session,
     };
     let perms: BTreeSet<Permission> = [Permission::Read].into();
-    svc.create_token(&actor, "ci", perms, repos.clone(), None)
-        .await
-        .unwrap();
+    svc.create_token(
+        &actor,
+        pyn_core::fixtures::new_token_for(&actor, "ci", perms, repos.clone(), None),
+    )
+    .await
+    .unwrap();
     let events = audit
         .list(
             &AuditScope::Repo(repos[0].clone()),

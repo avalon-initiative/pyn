@@ -9,10 +9,12 @@ use chrono::{Duration, TimeZone, Utc};
 use crate::access::{
     AccessMode, AccountKind, AccountStatus, InvitationAccept, InvitationCreate, InviteId,
     InviteRecord, NewAccount, OrgInvitation, OrgRole, Permission, Principal, RegistrationMode,
-    Role, RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,
-    SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
+    RepoAccess, Role, RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord,
+    ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord,
+    VerificationRecord,
 };
 use crate::clock::Clock;
+use crate::fixtures::new_token;
 use crate::memory::{MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore};
 use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
@@ -20,8 +22,8 @@ use crate::repo_policy::{
 };
 use crate::types::{AccountId, TeamId};
 use crate::{
-    AccessService, AccessStore, Credential, Identity, OrgDeleteMark, OrgMemberChange, RepoMember,
-    Repositories,
+    AccessService, AccessStore, Credential, Identity, NewToken, OrgDeleteMark, OrgMemberChange,
+    RepoMember, Repositories, TokenExpiry,
 };
 use crate::{
     AuditAction, AuditQuery, AuditScope, AuditStore, ChangeEntry, FileMode, ManualClock,
@@ -3493,17 +3495,15 @@ fn at(minutes: i64) -> chrono::DateTime<Utc> {
 
 fn token(id: &str, owner: &str, created: i64) -> TokenRecord {
     TokenRecord {
-        id: TokenId(id.to_string()),
-        user: user(owner),
-        name: format!("token {id}"),
-        secret_hash: "00".repeat(32),
-        permissions: [Permission::Read, Permission::Checkin].into(),
-        repos: vec![RepoId::new("game")],
-        created_at: at(created),
+        description: Some("a token".into()),
         expires_at: Some(at(created + 60)),
-        revoked_at: None,
-        last_used_at: None,
-        sign_in: false,
+        ..crate::fixtures::token_record(
+            id,
+            owner,
+            &[Permission::Read, Permission::Checkin],
+            vec![RepoId::new("game")],
+            at(created),
+        )
     }
 }
 
@@ -5307,10 +5307,16 @@ fn session(name: &str) -> Identity {
 }
 
 fn token_identity(name: &str, permissions: &[Permission]) -> Identity {
+    token_identity_of(name, name, permissions)
+}
+
+fn token_identity_of(name: &str, owner: &str, permissions: &[Permission]) -> Identity {
     Identity {
         user: user(name),
         credential: Credential::Token(TokenRecord {
-            permissions: permissions.iter().copied().collect(),
+            owner: user(owner),
+            grants: crate::fixtures::grants_for(permissions),
+            repo_access: RepoAccess::All,
             repos: Vec::new(),
             ..token("tk", name, 0)
         }),
@@ -5463,8 +5469,9 @@ pub async fn effective_roles_resolve_across_direct_team_and_owner_grants(store: 
         [game.clone(), tools.clone()]
     );
 
-    let token = token_identity(
+    let token = token_identity_of(
         "dave",
+        "acme",
         &[
             Permission::Read,
             Permission::Lock,
@@ -7898,14 +7905,17 @@ pub async fn account_routes_need_a_full_scope_credential(store: Access) {
     access.add_creator(&game, &user("alice")).await.unwrap();
     let scoped = |permissions: &[Permission], repos: Vec<RepoId>| Identity {
         user: user("alice"),
-        credential: Credential::Token(TokenRecord {
-            permissions: permissions.iter().copied().collect(),
+        credential: Credential::Token(crate::fixtures::token_record(
+            "tk",
+            "alice",
+            permissions,
             repos,
-            ..token("tk", "alice", 0)
-        }),
+            at(0),
+        )),
     };
     let narrow = [
         scoped(&[Permission::Read], Vec::new()),
+        scoped(&Permission::ALL, Vec::new()),
         scoped(&Permission::ALL, vec![game.clone()]),
         scoped(
             &[Permission::Read, Permission::ManageUsers],
@@ -7914,7 +7924,7 @@ pub async fn account_routes_need_a_full_scope_credential(store: Access) {
     ];
     let alice = user("alice");
     for who in &narrow {
-        let read = [Permission::Read].into();
+        let read = [Permission::Read];
         let refused = [
             access.add_ssh_key(who, None, KEY).await.err(),
             access.list_ssh_keys(who, &alice).await.err(),
@@ -7922,7 +7932,7 @@ pub async fn account_routes_need_a_full_scope_credential(store: Access) {
             access.list_tokens(who, &alice).await.err(),
             access.revoke_token(who, &TokenId("x".into())).await.err(),
             access
-                .create_token(who, "ci", read, vec![game.clone()], None)
+                .create_token(who, new_token("ci", "alice", &read, vec![game.clone()]))
                 .await
                 .err(),
             access
@@ -7941,17 +7951,21 @@ pub async fn account_routes_need_a_full_scope_credential(store: Access) {
         assert!(!access.is_server_admin(who).await.unwrap());
     }
 
-    let full = scoped(&Permission::ALL, Vec::new());
+    let full = Identity {
+        user: user("alice"),
+        credential: Credential::Token(TokenRecord {
+            sign_in: true,
+            grants: TokenRecord::full_grants(),
+            ..crate::fixtures::token_record("tk", "alice", &[], Vec::new(), at(0))
+        }),
+    };
     assert!(full.is_full_scope() && session("alice").is_full_scope());
     access.add_ssh_key(&full, None, KEY).await.unwrap();
     assert_eq!(access.list_ssh_keys(&full, &alice).await.unwrap().len(), 1);
     let (made, _) = access
         .create_token(
             &session("alice"),
-            "ci",
-            [Permission::Read].into(),
-            vec![game],
-            None,
+            new_token("ci", "alice", &[Permission::Read], vec![game]),
         )
         .await
         .unwrap();
@@ -7977,32 +7991,29 @@ pub async fn a_token_mints_nothing_that_outlives_it(store: Access) {
     let full = Identity {
         user: user("alice"),
         credential: Credential::Token(TokenRecord {
-            permissions: Permission::ALL.into(),
-            repos: Vec::new(),
+            sign_in: true,
+            grants: TokenRecord::full_grants(),
             ..token("tk", "alice", 0)
         }),
     };
     let expiry = |asked| {
         let (access, full, game) = (&access, &full, game.clone());
         async move {
-            access
-                .create_token(full, "ci", [Permission::Read].into(), vec![game], asked)
-                .await
-                .unwrap()
-                .0
-                .expires_at
+            let req = NewToken {
+                expiry: asked,
+                ..new_token("ci", "alice", &[Permission::Read], vec![game])
+            };
+            access.create_token(full, req).await.unwrap().0.expires_at
         }
     };
-    assert_eq!(expiry(None).await, Some(at(60)));
-    assert_eq!(expiry(Some(at(500))).await, Some(at(60)));
-    assert_eq!(expiry(Some(at(30))).await, Some(at(30)));
+    assert_eq!(expiry(TokenExpiry::Never).await, Some(at(60)));
+    assert_eq!(expiry(TokenExpiry::Default).await, Some(at(60)));
+    assert_eq!(expiry(TokenExpiry::At(at(500))).await, Some(at(60)));
+    assert_eq!(expiry(TokenExpiry::At(at(30))).await, Some(at(30)));
     let made = access
         .create_token(
             &session("alice"),
-            "ci",
-            [Permission::Read].into(),
-            vec![game],
-            None,
+            new_token("ci", "alice", &[Permission::Read], vec![game]),
         )
         .await
         .unwrap()
@@ -8058,11 +8069,13 @@ pub async fn managers_cannot_act_on_admins_or_repository_owners(store: Access) {
 
     let only_users = |permissions: &[Permission]| Identity {
         user: user("root"),
-        credential: Credential::Token(TokenRecord {
-            permissions: permissions.iter().copied().collect(),
-            repos: Vec::new(),
-            ..token("tk", "root", 0)
-        }),
+        credential: Credential::Token(crate::fixtures::token_record(
+            "tk",
+            "root",
+            permissions,
+            Vec::new(),
+            at(0),
+        )),
     };
     assert!(
         !access
@@ -8071,8 +8084,23 @@ pub async fn managers_cannot_act_on_admins_or_repository_owners(store: Access) {
             .unwrap()
     );
     assert!(
-        access
+        !access
             .is_server_admin(&only_users(&Permission::ALL))
+            .await
+            .unwrap(),
+        "a fine-grained token holding every grant is not full scope"
+    );
+    let sign_in = TokenRecord {
+        sign_in: true,
+        grants: TokenRecord::full_grants(),
+        ..token("tk", "root", 0)
+    };
+    assert!(
+        access
+            .is_server_admin(&Identity {
+                user: user("root"),
+                credential: Credential::Token(sign_in)
+            })
             .await
             .unwrap()
     );
@@ -8169,18 +8197,22 @@ pub async fn a_manager_sees_and_revokes_only_tokens_within_the_repositories_they
         Arc::new(crate::MemoryLimitEvents::new()),
     )
     .with_registry(meta.clone());
-    let (game, vault) = (RepoId::new("alice/game"), RepoId::new("alice/vault"));
+    let (game, vault) = (RepoId::new("acme/game"), RepoId::new("acme/vault"));
+    access.create_org(&session("alice"), "acme").await.unwrap();
     for (id, name) in [(&game, "game"), (&vault, "vault")] {
-        meta.create_repo(repo_record(id.as_str(), "alice", name))
+        meta.create_repo(repo_record(id.as_str(), "acme", name))
             .await
             .unwrap();
     }
-    for name in ["alice", "bob", "carol", "root"] {
+    for name in ["bob", "carol", "root"] {
         store.create_user(&user(name), at(0)).await.unwrap();
     }
     store.set_admin(&user("root"), true).await.unwrap();
-    for repo in [&game, &vault] {
-        access.add_creator(repo, &user("alice")).await.unwrap();
+    for name in ["bob", "carol", "root"] {
+        store
+            .add_org_member(&user("acme"), &user(name), OrgRole::Member)
+            .await
+            .unwrap();
     }
     let owner = access.principal(&game, &user("alice")).await.unwrap();
     let owner_vault = access.principal(&vault, &user("alice")).await.unwrap();
@@ -8199,7 +8231,7 @@ pub async fn a_manager_sees_and_revokes_only_tokens_within_the_repositories_they
             .unwrap();
     }
     let (carol, bob, root) = (session("carol"), session("bob"), session("root"));
-    let perms: std::collections::BTreeSet<Permission> = [Permission::Read].into();
+    let perms = [Permission::Read];
     let mut ids = Vec::new();
     for repos in [
         vec![game.clone()],
@@ -8207,7 +8239,7 @@ pub async fn a_manager_sees_and_revokes_only_tokens_within_the_repositories_they
         vec![game.clone(), vault.clone()],
     ] {
         let (record, _) = access
-            .create_token(&carol, "t", perms.clone(), repos, None)
+            .create_token(&carol, new_token("t", "acme", &perms, repos))
             .await
             .unwrap();
         ids.push(record.id);
@@ -8246,11 +8278,366 @@ pub async fn a_manager_sees_and_revokes_only_tokens_within_the_repositories_they
     access.revoke_token(&root, &ids[2]).await.unwrap();
 }
 
+pub async fn tokens_keep_their_owner_repository_access_and_grants(store: Access) {
+    use crate::{GrantLevel::*, TokenResource::*};
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    let all = TokenRecord {
+        description: None,
+        owner: user("acme"),
+        repo_access: RepoAccess::All,
+        repos: Vec::new(),
+        grants: [
+            (Metadata, Read),
+            (Contents, Write),
+            (Locks, Admin),
+            (Audit, Read),
+        ]
+        .into(),
+        expires_at: None,
+        ..token("aaaaaaaaaaaa", "alice", 1)
+    };
+    let public = TokenRecord {
+        repo_access: RepoAccess::Public,
+        repos: Vec::new(),
+        grants: Default::default(),
+        ..token("bbbbbbbbbbbb", "alice", 2)
+    };
+    let sign_in = crate::fixtures::sign_in_record("cccccccccccc", "alice", at(3));
+    for record in [&all, &public, &sign_in] {
+        store.create_token(record.clone()).await.unwrap();
+        let got = store.get_token(&record.id).await.unwrap().unwrap();
+        assert_eq!(&got, record);
+    }
+    let got = store.get_token(&all.id).await.unwrap().unwrap();
+    assert_eq!(got.owner, user("acme"));
+    assert_eq!(got.grants.get(&Locks), Some(&Admin));
+    assert!(got.permissions().contains(&Permission::ForceUnlock));
+    let got = store.get_token(&sign_in.id).await.unwrap().unwrap();
+    assert!(got.sign_in && got.permissions() == Permission::ALL.into());
+}
+
+/// alice owns `alice/game` and `alice/lobby`, and the organization `acme` (with bob as a member) owns
+/// `acme/tools`; alice and bob each hold a role in what they should.
+async fn token_world(store: &Access) -> (AccessService, Arc<MemoryMetadataStore>) {
+    let meta = Arc::new(MemoryMetadataStore::new());
+    let access = AccessService::new(
+        store.clone(),
+        Arc::new(ManualClock::new(at(0))),
+        Arc::new(crate::MemoryLimitEvents::new()),
+    )
+    .with_registry(meta.clone());
+    for name in ["alice", "bob"] {
+        store.create_user(&user(name), at(0)).await.unwrap();
+    }
+    access.create_org(&session("alice"), "acme").await.unwrap();
+    store
+        .add_org_member(&user("acme"), &user("bob"), OrgRole::Member)
+        .await
+        .unwrap();
+    for (id, owner, name) in [
+        ("alice/game", "alice", "game"),
+        ("alice/lobby", "alice", "lobby"),
+        ("acme/tools", "acme", "tools"),
+    ] {
+        meta.create_repo(repo_record(id, owner, name))
+            .await
+            .unwrap();
+    }
+    for id in ["alice/game", "alice/lobby"] {
+        access
+            .add_creator(&RepoId::new(id), &user("alice"))
+            .await
+            .unwrap();
+    }
+    (access, meta)
+}
+
+async fn mint(access: &AccessService, actor: &str, req: NewToken) -> Identity {
+    let (_, secret) = access.create_token(&session(actor), req).await.unwrap();
+    access.identify(&secret).await.unwrap()
+}
+
+fn request(owner: &str, access: RepoAccess, repos: &[&str]) -> NewToken {
+    NewToken {
+        repo_access: access,
+        ..new_token(
+            "ci",
+            owner,
+            &[Permission::Read, Permission::Checkin],
+            repos.iter().map(|r| RepoId::new(*r)).collect(),
+        )
+    }
+}
+
+pub async fn a_token_acts_only_where_its_owner_and_repository_access_reach(store: Access) {
+    let (access, _) = token_world(&store).await;
+    let reach = |who: Identity| {
+        let access = &access;
+        async move {
+            let mut out = Vec::new();
+            for id in ["alice/game", "alice/lobby", "acme/tools"] {
+                let held = access.principal_in(&RepoId::new(id), &who).await.is_ok();
+                out.push((
+                    id,
+                    held,
+                    access.covers(&RepoId::new(id), &who).await.unwrap(),
+                ));
+            }
+            out
+        }
+    };
+    let selected = mint(
+        &access,
+        "alice",
+        request("alice", RepoAccess::Selected, &["alice/game"]),
+    )
+    .await;
+    assert_eq!(
+        reach(selected).await,
+        [
+            ("alice/game", true, true),
+            ("alice/lobby", false, false),
+            ("acme/tools", false, false)
+        ],
+        "selected: only the listed repository"
+    );
+    let all = mint(&access, "alice", request("alice", RepoAccess::All, &[])).await;
+    assert_eq!(
+        reach(all).await,
+        [
+            ("alice/game", true, true),
+            ("alice/lobby", true, true),
+            ("acme/tools", false, false)
+        ],
+        "all: every repository of the owner, none of another owner's"
+    );
+    let public = mint(
+        &access,
+        "alice",
+        NewToken {
+            grants: Default::default(),
+            ..request("alice", RepoAccess::Public, &[])
+        },
+    )
+    .await;
+    assert_eq!(
+        reach(public).await,
+        [
+            ("alice/game", false, false),
+            ("alice/lobby", false, false),
+            ("acme/tools", false, false)
+        ],
+        "public: no repository beyond public reads"
+    );
+    let org = mint(&access, "alice", request("acme", RepoAccess::All, &[])).await;
+    assert_eq!(
+        reach(org).await,
+        [
+            ("alice/game", false, false),
+            ("alice/lobby", false, false),
+            ("acme/tools", true, true)
+        ],
+        "an organization's token reaches the organization's repositories only"
+    );
+}
+
+pub async fn a_token_owner_is_the_creator_or_an_organization_they_belong_to(store: Access) {
+    let (access, _) = token_world(&store).await;
+    let err = |r: crate::Result<(TokenRecord, String)>| r.unwrap_err();
+    let bob = session("bob");
+    let own = access
+        .create_token(&bob, request("bob", RepoAccess::All, &[]))
+        .await;
+    assert!(own.is_ok(), "the creator's own account");
+    let org = access
+        .create_token(&bob, request("acme", RepoAccess::All, &[]))
+        .await;
+    assert!(org.is_ok(), "an organization the creator belongs to");
+    let other = access
+        .create_token(&bob, request("alice", RepoAccess::All, &[]))
+        .await;
+    assert!(matches!(err(other), PynError::NotOrgMember(_)));
+    let nobody = access
+        .create_token(&session("alice"), request("nobody", RepoAccess::All, &[]))
+        .await;
+    assert!(matches!(err(nobody), PynError::NotOrgMember(_)));
+    let foreign = access
+        .create_token(
+            &session("alice"),
+            request("alice", RepoAccess::Selected, &["acme/tools"]),
+        )
+        .await;
+    assert!(
+        matches!(err(foreign), PynError::InvalidRequest(_)),
+        "a selected repository must belong to the owner"
+    );
+}
+
+pub async fn a_token_acts_with_the_intersection_of_its_grants_and_the_creators_role(store: Access) {
+    use crate::{GrantLevel::*, TokenResource::*};
+    let (access, _) = token_world(&store).await;
+    let tools = RepoId::new("acme/tools");
+    let owner = access.principal(&tools, &user("alice")).await.unwrap();
+    access
+        .set_user_role(&owner, &tools, &user("bob"), Role::Writer)
+        .await
+        .unwrap();
+    let admin = NewToken {
+        grants: [(Contents, Read), (Locks, Admin)].into(),
+        ..request("acme", RepoAccess::Selected, &["acme/tools"])
+    };
+    let err = access
+        .create_token(&session("bob"), admin)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::Forbidden(Permission::ForceUnlock)),
+        "{err}"
+    );
+    let req = NewToken {
+        grants: [(Contents, Write), (Locks, Write)].into(),
+        ..request("acme", RepoAccess::Selected, &["acme/tools"])
+    };
+    let bob = mint(&access, "bob", req).await;
+    let held = access.principal_in(&tools, &bob).await.unwrap().permissions;
+    assert_eq!(
+        held,
+        [Permission::Read, Permission::Lock, Permission::Checkin].into(),
+        "contents write includes restore, which the writer role lacks, so it is cut off"
+    );
+    access
+        .set_user_role(&owner, &tools, &user("bob"), Role::Reader)
+        .await
+        .unwrap();
+    let held = access.principal_in(&tools, &bob).await.unwrap().permissions;
+    assert_eq!(
+        held,
+        [Permission::Read].into(),
+        "demotion narrows the token"
+    );
+
+    let policy = NewToken {
+        grants: [(Contents, Read), (Policy, Write)].into(),
+        ..request("acme", RepoAccess::Selected, &["acme/tools"])
+    };
+    let err = access
+        .create_token(&session("bob"), policy)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::Forbidden(Permission::EditPolicy)),
+        "a token is never given more than its creator holds: {err}"
+    );
+}
+
+pub async fn token_grants_are_validated_and_expiry_defaults_to_thirty_days(store: Access) {
+    use crate::{GrantLevel::*, TokenResource::*};
+    let (access, _) = token_world(&store).await;
+    let alice = session("alice");
+    let made = |expiry| {
+        let (access, alice) = (&access, &alice);
+        async move {
+            let req = NewToken {
+                expiry,
+                ..request("alice", RepoAccess::All, &[])
+            };
+            access.create_token(alice, req).await.map(|(r, _)| r)
+        }
+    };
+    assert_eq!(
+        made(TokenExpiry::Default).await.unwrap().expires_at,
+        Some(at(0) + Duration::days(30))
+    );
+    assert_eq!(made(TokenExpiry::Never).await.unwrap().expires_at, None);
+    assert_eq!(
+        made(TokenExpiry::At(at(90))).await.unwrap().expires_at,
+        Some(at(90))
+    );
+    let past = made(TokenExpiry::At(at(0))).await.unwrap_err();
+    assert!(matches!(past, PynError::InvalidRequest(_)));
+
+    let record = made(TokenExpiry::Never).await.unwrap();
+    assert_eq!(
+        record.grants.get(&Metadata),
+        Some(&Read),
+        "metadata read is implied for a token with repository access"
+    );
+    for (grants, access_mode) in [
+        ([(Contents, Admin)].into(), RepoAccess::All),
+        ([(Audit, Write)].into(), RepoAccess::All),
+        ([(Metadata, Write)].into(), RepoAccess::All),
+        ([(Contents, Read)].into(), RepoAccess::Public),
+        ([].into(), RepoAccess::All),
+    ] {
+        let req = NewToken {
+            grants,
+            ..request("alice", access_mode, &[])
+        };
+        let err = access.create_token(&alice, req).await.unwrap_err();
+        assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+    }
+    let listed = NewToken {
+        repos: vec![RepoId::new("alice/game")],
+        ..request("alice", RepoAccess::All, &[])
+    };
+    let err = access.create_token(&alice, listed).await.unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err}");
+}
+
+pub async fn only_a_sign_in_token_is_full_scope_and_reaches_every_owner(store: Access) {
+    let (access, _) = token_world(&store).await;
+    let every = [Permission::Read].into_iter().chain(Permission::ALL);
+    let every: Vec<_> = every.collect();
+    let all_grants = NewToken {
+        grants: TokenRecord::full_grants(),
+        ..request("alice", RepoAccess::All, &[])
+    };
+    let fine = mint(&access, "alice", all_grants).await;
+    assert!(
+        !fine.is_full_scope(),
+        "every grant is still a fine-grained token"
+    );
+    assert!(matches!(
+        fine.require_full_scope(),
+        Err(PynError::Forbidden(_))
+    ));
+    let held = match &fine.credential {
+        Credential::Token(t) => t.permissions(),
+        _ => unreachable!(),
+    };
+    assert!(every.iter().all(|p| held.contains(p)));
+    assert!(!access.is_server_admin(&fine).await.unwrap());
+
+    let sign_in = Identity {
+        user: user("alice"),
+        credential: Credential::Token(crate::fixtures::sign_in_record("tk", "alice", at(0))),
+    };
+    assert!(sign_in.is_full_scope());
+    sign_in.require_full_scope().unwrap();
+    for id in ["alice/game", "acme/tools"] {
+        assert!(access.covers(&RepoId::new(id), &sign_in).await.unwrap());
+    }
+    let err = access
+        .create_token(&fine, request("alice", RepoAccess::All, &[]))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::Forbidden(_)),
+        "a fine-grained token mints none"
+    );
+}
+
 /// Generates one `#[tokio::test]` per access-store case for the store built by `$factory`.
 #[macro_export]
 macro_rules! access_contract_tests {
     ($factory:expr $(, #[$attr:meta])*) => {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; tokens_round_trip_and_list_newest_first);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; tokens_keep_their_owner_repository_access_and_grants);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_token_acts_only_where_its_owner_and_repository_access_reach);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_token_owner_is_the_creator_or_an_organization_they_belong_to);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_token_acts_with_the_intersection_of_its_grants_and_the_creators_role);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; token_grants_are_validated_and_expiry_defaults_to_thirty_days);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; only_a_sign_in_token_is_full_scope_and_reaches_every_owner);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; added_addresses_are_unique_pending_until_verified_and_the_primary_must_be_verified);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_address_promotes_a_verified_one_and_can_keep_the_last);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_rename_moves_what_names_the_account_and_refuses_a_taken_name);
