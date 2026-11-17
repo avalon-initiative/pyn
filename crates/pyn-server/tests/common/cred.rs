@@ -175,3 +175,54 @@ pub async fn send(
         body: body.collect().await.unwrap().to_bytes().to_vec(),
     }
 }
+
+/// A token-creation body for the nine internal permission names, mapped onto the closest grants, on selected
+/// repositories (`owner/name`) of the first one's owner. An empty list names no repository.
+pub fn token_body<R: AsRef<str>, P: AsRef<str>>(
+    name: &str,
+    repos: impl IntoIterator<Item = R>,
+    permissions: impl IntoIterator<Item = P>,
+) -> serde_json::Value {
+    let repos: Vec<String> = repos.into_iter().map(|r| r.as_ref().to_string()).collect();
+    let mut levels: std::collections::BTreeMap<String, &str> = std::collections::BTreeMap::new();
+    let rank = |l: &str| {
+        ["read", "write", "admin"]
+            .iter()
+            .position(|x| *x == l)
+            .unwrap_or(0)
+    };
+    for p in permissions {
+        let (resource, level) = match p.as_ref() {
+            "read" => ("contents", "read"),
+            "checkin" | "restore" => ("contents", "write"),
+            "lock" => ("locks", "write"),
+            "force_unlock" => ("locks", "admin"),
+            "edit_policy" => ("policy", "write"),
+            "manage_users" => ("members", "write"),
+            "manage_roles" => ("administration", "write"),
+            "view_audit" => ("audit", "read"),
+            other => (other, "read"),
+        };
+        let held = levels.entry(resource.to_string()).or_insert(level);
+        if rank(held) < rank(level) {
+            *held = level;
+        }
+    }
+    let permissions: Vec<_> = levels
+        .into_iter()
+        .map(|(resource, level)| serde_json::json!({"resource": resource, "level": level}))
+        .collect();
+    let mut body = serde_json::json!({
+        "name": name,
+        "repository_access": {"mode": "selected", "repos": repos},
+        "permissions": permissions,
+    });
+    if let Some(owner) = repos
+        .first()
+        .and_then(|r| r.split_once('/'))
+        .map(|(o, _)| o)
+    {
+        body["owner"] = owner.into();
+    }
+    body
+}

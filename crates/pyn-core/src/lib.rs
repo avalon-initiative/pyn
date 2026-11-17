@@ -41,20 +41,23 @@ pub mod webhook;
 pub mod webhook_secret;
 pub mod webhook_url;
 
+#[cfg(any(feature = "contract", feature = "test-support"))]
+pub use access::fixtures;
 pub use access::{
-    AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, Identity, InvitationAccept,
-    InvitationCreate, InviteId, InviteRecord, NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation,
-    OrgInvitation, OrgMemberAdd, OrgRole, Permission, Principal, RegistrationMode, Role,
-    RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord, ServiceScope,
-    SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
-    account, invite, service_credential, session, ssh, team, token, verification,
+    AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, GrantLevel, Identity,
+    InvitationAccept, InvitationCreate, InviteId, InviteRecord, NewAccount,
+    ORG_DELETE_MARK_SECONDS, OrgCreation, OrgInvitation, OrgMemberAdd, OrgRole, Permission,
+    Principal, RegistrationMode, RepoAccess, Role, RoleDefinitions, RoleSource, ServerSettings,
+    ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
+    TokenId, TokenRecord, TokenResource, VerificationRecord, account, invite, permissions_of,
+    service_credential, session, ssh, team, token, verification,
 };
 pub use access_service::{
     ACCOUNT_DELETION_ACTOR, AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke,
-    ExternalPolicy, ExternalSignIn, MAX_INVITE_HOURS, OidcBegin, OidcFinish, OidcStart, OrgAdd,
-    OrgDeleteMark, OrgMemberChange, OwnerFreezeState, OwnerLimits, RateLimits, Registration,
-    RepoMember, SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp, TeamDetail,
-    generate_setup_token,
+    DEFAULT_TOKEN_DAYS, ExternalPolicy, ExternalSignIn, MAX_INVITE_HOURS, NewToken, OidcBegin,
+    OidcFinish, OidcStart, OrgAdd, OrgDeleteMark, OrgMemberChange, OwnerFreezeState, OwnerLimits,
+    RateLimits, Registration, RepoMember, SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp,
+    TeamDetail, TokenExpiry, generate_setup_token,
 };
 pub use access_service::{
     AdminRecovery, CreateWebhook, DeliveryPage, HOST_RECOVERY_ACTOR, IssuedSecret, WebhookDetail,

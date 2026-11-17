@@ -10,9 +10,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, AuthProvider, Credential, Identity, MetadataStore,
-    RegistrationMode, RepoId, RepoRecord, RepoSettings, Repositories, Rules, SystemClock, UserId,
-    Visibility,
+    AccessConfig, AccessService, AuthProvider, MetadataStore, RegistrationMode, RepoId, RepoRecord,
+    RepoSettings, Repositories, Rules, SystemClock, UserId, Visibility,
 };
 use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
@@ -93,13 +92,6 @@ async fn state_full(
         auth: Arc::new(BearerAuth { access }),
         dev_auth: dev.then(|| Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: true,
-    }
-}
-
-fn session(user: &str) -> Identity {
-    Identity {
-        user: UserId::new(user),
-        credential: Credential::Session,
     }
 }
 
@@ -488,6 +480,18 @@ async fn status(app: &axum::Router, req: Request<Body>) -> StatusCode {
     app.clone().oneshot(req).await.unwrap().status()
 }
 
+/// A full-scope token of the account that owns the test repository.
+async fn owner_token(state: &AppState) -> String {
+    let owner = UserId::new("owner");
+    let token = state.access.admin_for_tests(&owner).await.unwrap();
+    state
+        .access
+        .add_creator(&RepoId::new(REPO_ID), &owner)
+        .await
+        .unwrap();
+    token
+}
+
 async fn admin_token(state: &AppState) -> String {
     let root = UserId::new("root");
     let token = state.access.admin_for_tests(&root).await.unwrap();
@@ -528,7 +532,7 @@ async fn health_and_openapi_need_no_credentials() {
 #[tokio::test]
 async fn a_read_only_token_can_read_but_not_lock_or_check_in() {
     let st = state(false).await;
-    let admin = admin_token(&st).await;
+    let owner = owner_token(&st).await;
     let app = router(st);
 
     let made: api::CreatedToken = body_json(
@@ -536,15 +540,27 @@ async fn a_read_only_token_can_read_but_not_lock_or_check_in() {
             .oneshot(with_token(
                 "POST",
                 "/v1/tokens",
-                &admin,
-                Some(serde_json::json!({"name": "ci", "repos": [REPO], "permissions": ["read"]})),
+                &owner,
+                Some(cred::token_body("ci", [REPO], ["read"])),
             ))
             .await
             .unwrap(),
     )
     .await;
     assert!(made.token.starts_with("pyn_"));
-    assert_eq!(made.info.permissions, ["read"]);
+    assert_eq!(
+        made.info.permissions,
+        [
+            api::TokenPermission {
+                resource: "metadata".into(),
+                level: "read".into(),
+            },
+            api::TokenPermission {
+                resource: "contents".into(),
+                level: "read".into(),
+            }
+        ]
+    );
 
     assert_eq!(
         status(
@@ -595,21 +611,19 @@ async fn a_token_cannot_ask_for_more_than_its_owner_holds() {
         .principal(&RepoId::new(REPO_ID), &UserId::new("wendy"))
         .await
         .unwrap();
-    let (_, wendy_token) = st
+    let wendy_token = st
         .access
-        .create_token(
-            &session("wendy"),
-            "w",
+        .token_for_tests(
+            &UserId::new("wendy"),
+            &UserId::new("owner"),
             wendy.permissions.clone(),
             vec![RepoId::new(REPO_ID)],
-            None,
         )
         .await
         .unwrap();
     let app = router(st);
 
-    let body =
-        serde_json::json!({"name": "sneaky", "repos": [REPO], "permissions": ["read", "restore"]});
+    let body = cred::token_body("sneaky", [REPO], ["read", "restore"]);
     assert_eq!(
         status(
             &app,
@@ -618,7 +632,7 @@ async fn a_token_cannot_ask_for_more_than_its_owner_holds() {
         .await,
         StatusCode::FORBIDDEN
     );
-    let body = serde_json::json!({"name": "nope", "repos": [REPO], "permissions": ["flying"]});
+    let body = cred::token_body("nope", [REPO], ["flying"]);
     assert_eq!(
         status(&app, with_token("POST", "/v1/tokens", &admin, Some(body))).await,
         StatusCode::BAD_REQUEST
@@ -629,6 +643,7 @@ async fn a_token_cannot_ask_for_more_than_its_owner_holds() {
 async fn a_revoked_token_stops_working_and_whoami_reports_the_caller() {
     let st = state(false).await;
     let admin = admin_token(&st).await;
+    let owner = owner_token(&st).await;
     let app = router(st);
 
     let account: api::Account = body_json(
@@ -653,8 +668,8 @@ async fn a_revoked_token_stops_working_and_whoami_reports_the_caller() {
             .oneshot(with_token(
                 "POST",
                 "/v1/tokens",
-                &admin,
-                Some(serde_json::json!({"name": "tmp", "repos": [REPO], "permissions": ["read"]})),
+                &owner,
+                Some(cred::token_body("tmp", [REPO], ["read"])),
             ))
             .await
             .unwrap(),
@@ -809,14 +824,13 @@ async fn restore_needs_the_permission_the_lock_and_the_confirmation() {
         .principal(&RepoId::new(REPO_ID), &UserId::new("wendy"))
         .await
         .unwrap();
-    let (_, writer) = st
+    let writer = st
         .access
-        .create_token(
-            &session("wendy"),
-            "w",
+        .token_for_tests(
+            &UserId::new("wendy"),
+            &UserId::new("owner"),
             wendy.permissions.clone(),
             vec![RepoId::new(REPO_ID)],
-            None,
         )
         .await
         .unwrap();
@@ -947,16 +961,14 @@ async fn member_token(st: &AppState, name: &str, role: pyn_core::Role) -> String
         .await
         .unwrap();
     st.access
-        .create_token(
-            &session(name),
-            name,
+        .token_for_tests(
+            &UserId::new(name),
+            &UserId::new("owner"),
             who.permissions.clone(),
             vec![RepoId::new(REPO_ID)],
-            None,
         )
         .await
         .unwrap()
-        .1
 }
 
 #[tokio::test]
@@ -1743,12 +1755,12 @@ async fn bearer_requests_need_no_csrf_token_even_beside_a_session_cookie() {
         .unwrap();
     let (set, _, _) = web_sign_in(&app, None).await;
     let cookie = set.split(';').next().unwrap().to_string();
-    let root = admin_token(&st).await;
+    let root = owner_token(&st).await;
     let mut req = with_token(
         "POST",
         "/v1/tokens",
         &root,
-        Some(serde_json::json!({"name": "ci", "repos": [REPO], "permissions": ["read"]})),
+        Some(cred::token_body("ci", [REPO], ["read"])),
     );
     req.headers_mut().insert("cookie", cookie.parse().unwrap());
     assert_eq!(status(&app, req).await, StatusCode::OK);
@@ -1758,6 +1770,7 @@ async fn bearer_requests_need_no_csrf_token_even_beside_a_session_cookie() {
 async fn member_role_and_token_changes_are_audited_without_secrets() {
     let st = state(false).await;
     let admin = admin_token(&st).await;
+    let owner = owner_token(&st).await;
     let wendy = member_token(&st, "wendy", pyn_core::Role::Writer).await;
     let app = router(st);
     let send = |method, uri: &str, tok: &str, body| {
@@ -1784,8 +1797,8 @@ async fn member_role_and_token_changes_are_audited_without_secrets() {
         send(
             "POST",
             "/v1/tokens",
-            &admin,
-            Some(serde_json::json!({"name": "ci", "repos": [REPO], "permissions": ["read"]})),
+            &owner,
+            Some(cred::token_body("ci", [REPO], ["read"])),
         )
         .await
         .unwrap(),
@@ -1824,11 +1837,11 @@ async fn member_role_and_token_changes_are_audited_without_secrets() {
         seen,
         [
             ("token_revoked", "root"),
-            ("token_created", "root"),
+            ("token_created", "owner"),
             ("role_permissions_changed", "root"),
             ("role_changed", "root"),
-            ("token_created", "wendy"),
             ("member_added", "root"),
+            ("member_added", "owner"),
             ("member_added", "root"),
         ]
     );
@@ -2148,6 +2161,10 @@ async fn my_locks_span_the_repositories_the_caller_can_read() {
         lock("one", &alice, "Content/z.bin").await.status(),
         StatusCode::OK
     );
+    assert_eq!(
+        lock("two", &alice, "Content/y.bin").await.status(),
+        StatusCode::OK
+    );
 
     let mine = |token: String| {
         let app = app.clone();
@@ -2174,8 +2191,8 @@ async fn my_locks_span_the_repositories_the_caller_can_read() {
         &app,
         "POST",
         "/v1/tokens",
-        &bob,
-        Some(serde_json::json!({"name": "ci", "repos": ["alice/one"], "permissions": ["read"]})),
+        &alice,
+        Some(cred::token_body("ci", ["alice/one"], ["read", "lock"])),
     )
     .await;
     let scoped = body_json::<api::CreatedToken>(r).await.token;
@@ -2196,7 +2213,7 @@ async fn my_locks_span_the_repositories_the_caller_can_read() {
     .await;
     assert_eq!(release.status(), StatusCode::NO_CONTENT);
     assert_eq!(mine(bob).await.len(), 1);
-    assert_eq!(mine(alice).await.len(), 1);
+    assert_eq!(mine(alice).await.len(), 2);
 
     let anon_status = app
         .clone()
@@ -2268,12 +2285,12 @@ async fn a_token_works_only_in_the_repositories_it_was_made_for() {
         "POST",
         "/v1/tokens",
         &alice,
-        Some(serde_json::json!({"name": "ci", "repos": ["alice/one"], "permissions": ["read"]})),
+        Some(cred::token_body("ci", ["alice/one"], ["read"])),
     )
     .await;
     assert_eq!(r.status(), StatusCode::OK);
     let made: api::CreatedToken = body_json(r).await;
-    assert_eq!(made.info.repos, ["alice/one"]);
+    assert_eq!(made.info.repository_access.repos, ["alice/one"]);
 
     for (repo, expected) in [("one", StatusCode::OK), ("two", StatusCode::NOT_FOUND)] {
         let uri = format!("/v1/repos/alice/{repo}/files");
@@ -2287,7 +2304,7 @@ async fn a_token_works_only_in_the_repositories_it_was_made_for() {
         "POST",
         "/v1/tokens",
         &alice,
-        Some(serde_json::json!({"name": "ci", "repos": [], "permissions": ["read"]})),
+        Some(cred::token_body("ci", Vec::<&str>::new(), ["read"])),
     )
     .await;
     assert_eq!(none.status(), StatusCode::BAD_REQUEST);
@@ -2296,7 +2313,7 @@ async fn a_token_works_only_in_the_repositories_it_was_made_for() {
         "POST",
         "/v1/tokens",
         &alice,
-        Some(serde_json::json!({"name": "ci", "repos": ["bob/nope"], "permissions": ["read"]})),
+        Some(cred::token_body("ci", ["bob/nope"], ["read"])),
     )
     .await;
     assert_eq!(other.status(), StatusCode::NOT_FOUND);
@@ -2320,7 +2337,7 @@ async fn a_token_works_only_in_the_repositories_it_was_made_for() {
     assert!(
         tokens
             .iter()
-            .any(|t| t.name == "sign-in" && t.repos.is_empty())
+            .any(|t| t.name == "sign-in" && t.sign_in && t.repository_access.mode == "all")
     );
 }
 
@@ -2980,9 +2997,11 @@ async fn a_token_limited_to_another_repository_still_reads_a_public_one_and_noth
         "POST",
         "/v1/tokens",
         &v.alice,
-        Some(serde_json::json!({
-            "name": "closed only", "permissions": ["read", "lock"], "repos": ["alice/closed"]
-        })),
+        Some(cred::token_body(
+            "closed only",
+            ["alice/closed"],
+            ["read", "lock"],
+        )),
     )
     .await;
     let scoped = body_json::<api::CreatedToken>(made).await.token;
@@ -4487,18 +4506,16 @@ async fn alice_with_a_ci_token() -> (AppState, axum::Router, String) {
         .add_creator(&RepoId::new(REPO_ID), &UserId::new("alice"))
         .await
         .unwrap();
-    let (_, ci) = st
+    let ci = st
         .access
-        .create_token(
-            &session("alice"),
-            "ci",
+        .token_for_tests(
+            &UserId::new("alice"),
+            &UserId::new("owner"),
             [
                 pyn_core::Permission::Read,
                 pyn_core::Permission::ManageUsers,
-            ]
-            .into(),
+            ],
             vec![RepoId::new(REPO_ID)],
-            None,
         )
         .await
         .unwrap();
@@ -4511,7 +4528,7 @@ async fn account_routes_refuse_a_token_narrower_than_the_owner() {
     let (_, app, ci) = alice_with_a_ci_token().await;
     let key =
         serde_json::json!({"key": include_str!("../../pyn-core/tests/fixtures/keys/ed1.pub")});
-    let new_token = serde_json::json!({"name": "more", "repos": [REPO], "permissions": ["read"]});
+    let new_token = cred::token_body("more", [REPO], ["read"]);
     let password = serde_json::json!({"current": PASSWORD, "new": "another long password"});
     let calls = [
         ("POST", "/v1/keys", Some(key)),
@@ -4559,7 +4576,8 @@ async fn a_session_and_a_sign_in_token_still_manage_the_account() {
         .strip_prefix("pyn_session=")
         .unwrap()
         .to_string();
-    let body = serde_json::json!({"name": "ci", "repos": [REPO], "permissions": ["read"]});
+    create_repo(&app, &sign_in, "one").await;
+    let body = cred::token_body("ci", ["alice/one"], ["read"]);
     let r = app
         .clone()
         .oneshot(with_cookie(
@@ -4636,15 +4654,13 @@ async fn a_password_change_ends_sign_in_tokens_and_keeps_created_ones() {
 async fn only_a_full_scope_credential_acts_as_a_server_admin() {
     let st = state(false).await;
     let admin = admin_token(&st).await;
-    let root = session("root");
-    let (_, limited) = st
+    let limited = st
         .access
-        .create_token(
-            &root,
-            "users",
-            [pyn_core::Permission::ManageUsers].into(),
+        .token_for_tests(
+            &UserId::new("root"),
+            &UserId::new("owner"),
+            [pyn_core::Permission::ManageUsers],
             vec![RepoId::new(REPO_ID)],
-            None,
         )
         .await
         .unwrap();

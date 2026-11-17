@@ -23,6 +23,8 @@ use cred::{Cred, Sent, send};
 
 const PASSWORD: &str = "correct horse battery";
 const GRANTED: [&str; 3] = ["checkin", "lock", "read"];
+/// Contents write carries both check-in and restore.
+const EFFECTIVE: [&str; 4] = ["checkin", "lock", "read", "restore"];
 
 async fn server() -> Router {
     let clock = Arc::new(SystemClock);
@@ -123,7 +125,7 @@ async fn world() -> World {
     )
     .await;
     assert!(r.status.is_success(), "{}", text(&r));
-    let body = json!({"name": "ci", "permissions": GRANTED, "repos": ["alice/game"]});
+    let body = cred::token_body("ci", ["alice/game"], GRANTED);
     let r = send(&app, &full, "POST", "/v1/tokens", Some(body), &[]).await;
     let scoped = Cred::token(&json::<api::CreatedToken>(&r).token);
     let body = json!({"name": "billing", "scopes": ["manage_accounts"]});
@@ -180,7 +182,10 @@ async fn a_repository_scoped_token_resolves_as_alice_with_the_reduced_view() {
     assert_eq!(me.user, "alice");
     let mut got = me.permissions;
     got.sort();
-    assert_eq!(got, GRANTED, "the token's own permissions, not all of them");
+    assert_eq!(
+        got, EFFECTIVE,
+        "the token's own permissions, not all of them"
+    );
 }
 
 #[tokio::test]

@@ -519,10 +519,13 @@ async fn alice_with_a_created_token(w: &World) -> (String, String) {
         .svc
         .create_token(
             &identity("alice"),
-            "ci",
-            [Permission::Read].into(),
-            vec![w.repo.clone()],
-            None,
+            pyn_core::fixtures::new_token_for(
+                &identity("alice"),
+                "ci",
+                [Permission::Read],
+                vec![w.repo.clone()],
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -571,17 +574,15 @@ async fn a_first_password_is_set_only_from_a_web_session() {
     let full_token = Identity {
         user: user.clone(),
         credential: Credential::Token(pyn_core::TokenRecord {
-            id: pyn_core::TokenId("tk".into()),
-            user: user.clone(),
-            name: "t".into(),
-            secret_hash: String::new(),
-            permissions: Permission::ALL.into(),
-            repos: Vec::new(),
-            created_at: w.clock.now(),
-            expires_at: None,
-            revoked_at: None,
-            last_used_at: None,
             sign_in: true,
+            grants: pyn_core::TokenRecord::full_grants(),
+            ..pyn_core::fixtures::token_record(
+                "tk",
+                user.as_str(),
+                &Permission::ALL,
+                Vec::new(),
+                w.clock.now(),
+            )
         }),
     };
     let err = w
@@ -663,19 +664,13 @@ fn token_identity(
 ) -> Identity {
     Identity {
         user: UserId::new(user),
-        credential: Credential::Token(pyn_core::TokenRecord {
-            id: pyn_core::TokenId("tk".into()),
-            user: UserId::new(user),
-            name: "t".into(),
-            secret_hash: String::new(),
-            permissions: permissions.iter().copied().collect(),
+        credential: Credential::Token(pyn_core::fixtures::token_record(
+            "tk",
+            user,
+            permissions,
             repos,
-            created_at: w.clock.now(),
-            expires_at: None,
-            revoked_at: None,
-            last_used_at: None,
-            sign_in: false,
-        }),
+            w.clock.now(),
+        )),
     }
 }
 
@@ -720,6 +715,18 @@ async fn adding_an_account_needs_a_full_scope_credential_in_every_server_config(
                 "root",
                 &all[..],
                 repo.clone(),
+            ),
+            (
+                "fine-grained token with every grant, of a normal user",
+                "wendy",
+                &all[..],
+                Vec::new(),
+            ),
+            (
+                "fine-grained token with every grant, of an administrator",
+                "root",
+                &all[..],
+                Vec::new(),
             ),
             (
                 "manage_users-only token of an administrator",
@@ -778,7 +785,14 @@ async fn adding_an_account_needs_a_full_scope_credential_in_every_server_config(
             ("session", identity("wendy")),
             (
                 "full-scope token",
-                token_identity(&w, "wendy", &all, Vec::new()),
+                Identity {
+                    user: UserId::new("wendy"),
+                    credential: Credential::Token(pyn_core::fixtures::sign_in_record(
+                        "tk",
+                        "wendy",
+                        w.clock.now(),
+                    )),
+                },
             ),
         ];
         for (what, who) in normal {
@@ -807,7 +821,14 @@ async fn adding_an_account_needs_a_full_scope_credential_in_every_server_config(
             ("admin session", identity("root")),
             (
                 "admin full-scope token",
-                token_identity(&w, "root", &all, Vec::new()),
+                Identity {
+                    user: UserId::new("root"),
+                    credential: Credential::Token(pyn_core::fixtures::sign_in_record(
+                        "tk",
+                        "root",
+                        w.clock.now(),
+                    )),
+                },
             ),
             (
                 "dev identity",
@@ -885,4 +906,21 @@ fn a_generated_password_is_valid_and_different_each_time() {
     let a = pyn_core::account::generate_password().unwrap();
     pyn_core::account::validate_password(&a).unwrap();
     assert_ne!(a, pyn_core::account::generate_password().unwrap());
+}
+
+#[tokio::test]
+async fn a_sign_in_token_is_a_full_scope_credential_for_its_account() {
+    let w = world(RegistrationMode::Open);
+    w.svc
+        .register(Registration::new("alice", PASSWORD))
+        .await
+        .unwrap();
+    let (record, raw) = w.svc.login("alice", PASSWORD, None).await.unwrap();
+    assert!(record.sign_in);
+    assert_eq!(record.owner, UserId::new("alice"));
+    assert_eq!(record.repo_access, pyn_core::RepoAccess::All);
+    assert_eq!(record.permissions(), Permission::ALL.into());
+    let who = w.svc.identify(&raw).await.unwrap();
+    assert!(who.is_full_scope());
+    assert!(who.covers_repo(&w.repo, &UserId::new("someone-else")));
 }

@@ -552,7 +552,7 @@ fn a_policy_commit_from_someone_without_the_policy_permission_is_refused() {
     );
     let token = env.ok(
         &home,
-        "bob",
+        "alice",
         &[
             "token",
             "create",

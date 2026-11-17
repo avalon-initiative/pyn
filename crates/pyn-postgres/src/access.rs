@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -7,14 +7,14 @@ use pyn_core::{
     AccessMode, AccessStore, AccountDeletion, AccountDisable, AccountEmail, AccountId, AccountKind,
     AccountPurge, AccountRecord, AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule,
     CreationScope, CreationSubject, DeletionSchedule, EmailAdd, EmailRemove, EventDraft,
-    ExternalCreate, ExternalIdentity, IdentityUnlink, InvitationAccept, InvitationCreate, InviteId,
-    InviteRecord, Limits, LimitsChange, LimitsEvent, MemberCreation, NameReservation, NewAccount,
-    NewExternalAccount, OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgProfile,
-    OrgRole, Permission, PrimaryChange, Profile, ProfileFields, ProfileVisibility, PynError,
-    RateLimitStore, RateState, RegistrationMode, RenameOutcome, RepoId, RepoPolicy, Result, Role,
-    RoleDefinitions, ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord,
-    SignupStage, SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord, UserId,
-    VerificationRecord,
+    ExternalCreate, ExternalIdentity, GrantLevel, IdentityUnlink, InvitationAccept,
+    InvitationCreate, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent, MemberCreation,
+    NameReservation, NewAccount, NewExternalAccount, OidcFlow, OrgDeleteMark, OrgInvitation,
+    OrgMemberChange, OrgProfile, OrgRole, Permission, PrimaryChange, Profile, ProfileFields,
+    ProfileVisibility, PynError, RateLimitStore, RateState, RegistrationMode, RenameOutcome,
+    RepoAccess, RepoId, RepoPolicy, Result, Role, RoleDefinitions, ServerSettings,
+    ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind,
+    TeamId, TeamRecord, TokenId, TokenRecord, TokenResource, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -27,6 +27,28 @@ fn permissions(names: Vec<String>) -> Result<BTreeSet<Permission>> {
 
 fn names(permissions: &BTreeSet<Permission>) -> Vec<String> {
     permissions.iter().map(|p| p.as_str().to_string()).collect()
+}
+
+fn grants(names: Vec<String>) -> Result<BTreeMap<TokenResource, GrantLevel>> {
+    names
+        .iter()
+        .map(|n| {
+            let (resource, level) = n
+                .split_once(':')
+                .ok_or_else(|| PynError::Storage(format!("bad token grant {n:?}")))?;
+            Ok((
+                TokenResource::from_str(resource)?,
+                GrantLevel::from_str(level)?,
+            ))
+        })
+        .collect()
+}
+
+fn grant_names(grants: &BTreeMap<TokenResource, GrantLevel>) -> Vec<String> {
+    grants
+        .iter()
+        .map(|(r, l)| format!("{}:{}", r.as_str(), l.as_str()))
+        .collect()
 }
 
 fn identity_from(row: &PgRow) -> ExternalIdentity {
@@ -256,7 +278,10 @@ fn token_from(row: &PgRow) -> Result<TokenRecord> {
         user: UserId::new(row.get::<String, _>("user_id")),
         name: row.get("name"),
         secret_hash: row.get("secret_hash"),
-        permissions: permissions(row.get("permissions"))?,
+        description: row.get("description"),
+        owner: UserId::new(row.get::<String, _>("owner")),
+        repo_access: RepoAccess::from_str(&row.get::<String, _>("repo_access"))?,
+        grants: grants(row.get("grants"))?,
         repos: row
             .get::<Vec<String>, _>("repos")
             .into_iter()
@@ -983,14 +1008,17 @@ impl AccessStore for PgMetadataStore {
 
     async fn create_token(&self, token: TokenRecord) -> Result<()> {
         sqlx::query(
-            "INSERT INTO tokens (id, user_id, name, secret_hash, permissions, repos, created_at, expires_at, revoked_at, last_used_at, sign_in)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            "INSERT INTO tokens (id, user_id, name, secret_hash, description, owner, repo_access, grants, repos, created_at, expires_at, revoked_at, last_used_at, sign_in)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(&token.id.0)
         .bind(token.user.as_str())
         .bind(&token.name)
         .bind(&token.secret_hash)
-        .bind(names(&token.permissions))
+        .bind(&token.description)
+        .bind(token.owner.as_str())
+        .bind(token.repo_access.as_str())
+        .bind(grant_names(&token.grants))
         .bind(token.repos.iter().map(|r| r.as_str().to_string()).collect::<Vec<_>>())
         .bind(token.created_at)
         .bind(token.expires_at)
@@ -1005,7 +1033,7 @@ impl AccessStore for PgMetadataStore {
 
     async fn get_token(&self, id: &TokenId) -> Result<Option<TokenRecord>> {
         let row = sqlx::query(
-            "SELECT id, user_id, name, secret_hash, permissions, repos, created_at, expires_at, revoked_at, last_used_at, sign_in
+            "SELECT id, user_id, name, secret_hash, description, owner, repo_access, grants, repos, created_at, expires_at, revoked_at, last_used_at, sign_in
              FROM tokens WHERE id = $1",
         )
             .bind(&id.0)
@@ -1017,7 +1045,7 @@ impl AccessStore for PgMetadataStore {
 
     async fn list_tokens(&self, user: &UserId) -> Result<Vec<TokenRecord>> {
         let rows = sqlx::query(
-            "SELECT id, user_id, name, secret_hash, permissions, repos, created_at, expires_at, revoked_at, last_used_at, sign_in
+            "SELECT id, user_id, name, secret_hash, description, owner, repo_access, grants, repos, created_at, expires_at, revoked_at, last_used_at, sign_in
              FROM tokens WHERE user_id = $1 ORDER BY created_at DESC, id",
         )
         .bind(user.as_str())

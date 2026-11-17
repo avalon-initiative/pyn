@@ -172,10 +172,13 @@ async fn a_limited_token_cannot_create_repositories() {
         .access
         .create_token(
             &alice,
-            "ci",
-            [Permission::Read, Permission::Checkin].into(),
-            vec![first.id.clone()],
-            None,
+            pyn_core::fixtures::new_token_for(
+                &alice,
+                "ci",
+                [Permission::Read, Permission::Checkin],
+                vec![first.id.clone()],
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -395,10 +398,13 @@ async fn access_changes_and_tokens_are_audited_in_their_own_repository() {
         .access
         .create_token(
             &alice,
-            "ci",
-            [Permission::Read].into(),
-            vec![one.id.clone(), two.id.clone()],
-            None,
+            pyn_core::fixtures::new_token_for(
+                &alice,
+                "ci",
+                [Permission::Read],
+                vec![one.id.clone(), two.id.clone()],
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -700,10 +706,13 @@ async fn scoped_world() -> Scoped {
         .access
         .create_token(
             &alice,
-            "ci",
-            [Permission::Read].into(),
-            vec![ids[0].clone()],
-            None,
+            pyn_core::fixtures::new_token_for(
+                &alice,
+                "ci",
+                [Permission::Read],
+                vec![ids[0].clone()],
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -786,6 +795,64 @@ async fn my_locks_of_a_scoped_token_are_only_in_its_repositories() {
 #[tokio::test]
 async fn a_credential_covers_the_repositories_it_names() {
     let s = scoped_world().await;
-    assert!(s.scoped.covers_repo(&s.game) && !s.scoped.covers_repo(&s.lobby));
-    assert!(s.full.covers_repo(&s.lobby) && session("alice").covers_repo(&s.lobby));
+    let alice = user("alice");
+    assert!(s.scoped.covers_repo(&s.game, &alice) && !s.scoped.covers_repo(&s.lobby, &alice));
+    assert!(s.full.covers_repo(&s.lobby, &alice) && session("alice").covers_repo(&s.lobby, &alice));
+}
+
+#[tokio::test]
+async fn a_token_reads_public_repositories_it_does_not_cover_but_never_writes_to_them() {
+    use pyn_core::{NewToken, RepoAccess, TokenExpiry};
+    let s = scoped_world().await;
+    let alice = session("alice");
+    let mint = |access: RepoAccess, repos: Vec<pyn_core::RepoId>| {
+        let (w, alice) = (&s.w, &alice);
+        async move {
+            let grants = match access {
+                RepoAccess::Public => Default::default(),
+                _ => pyn_core::fixtures::grants_for(&[
+                    Permission::Read,
+                    Permission::Lock,
+                    Permission::Checkin,
+                ]),
+            };
+            let req = NewToken {
+                name: "t".into(),
+                description: None,
+                owner: user("alice"),
+                expiry: TokenExpiry::Never,
+                repo_access: access,
+                repos,
+                grants,
+            };
+            let (_, raw) = w.access.create_token(alice, req).await.unwrap();
+            w.access.identify(&raw).await.unwrap()
+        }
+    };
+    let selected = mint(RepoAccess::Selected, vec![s.game.clone()]).await;
+    let public = mint(RepoAccess::Public, Vec::new()).await;
+    let held = |who: &Identity, name: &'static str| {
+        let (w, who) = (&s.w, who.clone());
+        async move {
+            let open = w.repos.open("alice", name).await.unwrap();
+            let p = w
+                .repos
+                .principal_for(&open.record, Some(&who))
+                .await
+                .unwrap()
+                .unwrap();
+            p.permissions
+        }
+    };
+    let writes = [
+        Permission::Read,
+        Permission::Lock,
+        Permission::Checkin,
+        Permission::Restore,
+    ]
+    .into();
+    assert_eq!(held(&selected, "game").await, writes);
+    assert_eq!(held(&selected, "lobby").await, [Permission::Read].into());
+    assert_eq!(held(&public, "game").await, [Permission::Read].into());
+    assert_eq!(held(&public, "lobby").await, [Permission::Read].into());
 }

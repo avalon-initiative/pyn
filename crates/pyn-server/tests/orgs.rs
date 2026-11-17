@@ -645,7 +645,7 @@ async fn an_organization_lookup_shows_the_role_to_a_full_scope_caller_only() {
         &alice,
         "POST",
         "/v1/tokens",
-        Some(json!({"name": "t", "permissions": ["read"], "repos": ["alice/own"]})),
+        Some(cred::token_body("t", ["alice/own"], ["read"])),
     )
     .await
     .json::<api::CreatedToken>()

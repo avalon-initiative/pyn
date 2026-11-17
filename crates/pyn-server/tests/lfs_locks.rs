@@ -13,8 +13,8 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessService, Credential, Identity, MetadataStore, RegistrationMode, RepoId,
-    RepoRecord, RepoSettings, Repositories, Role, Rules, SystemClock, UserId, Visibility,
+    AccessConfig, AccessService, MetadataStore, RegistrationMode, RepoId, RepoRecord, RepoSettings,
+    Repositories, Role, Rules, SystemClock, UserId, Visibility,
 };
 use pyn_server::auth::BearerAuth;
 use pyn_server::{AppState, router};
@@ -37,13 +37,6 @@ struct World {
     ruth: String,
 }
 
-fn session(user: &str) -> Identity {
-    Identity {
-        user: UserId::new(user),
-        credential: Credential::Session,
-    }
-}
-
 async fn member(st: &AppState, name: &str, role: Role) -> String {
     let root = st
         .access
@@ -64,16 +57,14 @@ async fn member(st: &AppState, name: &str, role: Role) -> String {
         .await
         .unwrap();
     st.access
-        .create_token(
-            &session(name),
-            name,
+        .token_for_tests(
+            &UserId::new(name),
+            &UserId::new("owner"),
             who.permissions.clone(),
             vec![RepoId::new(REPO_ID)],
-            None,
         )
         .await
         .unwrap()
-        .1
 }
 
 async fn world() -> World {

@@ -363,6 +363,8 @@ struct RepoAddress {
         api::UpdateRepoRequest,
         api::CreateTokenRequest,
         api::TokenInfo,
+        api::TokenPermission,
+        api::RepositoryAccess,
         api::CreatedToken,
         api::RoleGrant,
         api::SetRoleRequest,

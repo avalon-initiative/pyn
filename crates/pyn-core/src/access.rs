@@ -163,23 +163,22 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// A session, an unrestricted credential, or an unscoped token holding every permission.
+    /// A session, an unrestricted credential, or a sign-in token. A fine-grained token never is, whatever it holds.
     pub fn is_full_scope(&self) -> bool {
         match &self.credential {
             Credential::Session | Credential::Unrestricted => true,
             Credential::Service(_) => false,
-            Credential::Token(t) => {
-                t.repos.is_empty() && Permission::ALL.iter().all(|p| t.permissions.contains(p))
-            }
+            Credential::Token(t) => t.sign_in,
         }
     }
 
-    /// Whether the credential may act in `repo`: a token only in its repositories, a service in none.
-    pub fn covers_repo(&self, repo: &RepoId) -> bool {
+    /// Whether the credential may act in `repo`, owned by `owner`: a token only where its owner and
+    /// repository access reach, a service in none.
+    pub fn covers_repo(&self, repo: &RepoId, owner: &UserId) -> bool {
         match &self.credential {
             Credential::Session | Credential::Unrestricted => true,
             Credential::Service(_) => false,
-            Credential::Token(t) => t.repos.is_empty() || t.repos.contains(repo),
+            Credential::Token(t) => t.covers(repo, owner),
         }
     }
 
@@ -190,21 +189,28 @@ impl Identity {
         }
         match &self.credential {
             Credential::Service(_) => Err(PynError::ServiceCredentialNotAllowed),
-            Credential::Token(t) => Err(PynError::Forbidden(
-                Permission::ALL
-                    .into_iter()
-                    .find(|p| !t.permissions.contains(p))
-                    .unwrap_or(Permission::ManageRoles),
-            )),
+            Credential::Token(t) => {
+                let held = t.permissions();
+                Err(PynError::Forbidden(
+                    Permission::ALL
+                        .into_iter()
+                        .find(|p| !held.contains(p))
+                        .unwrap_or(Permission::ManageRoles),
+                ))
+            }
             _ => Ok(()),
         }
     }
 
-    /// A token must be unscoped and carry `manage_roles` to create or delete repositories and organizations.
+    /// A token must be a sign-in token, or its own account's token for every repository with `manage_roles`,
+    /// to create or delete repositories and organizations.
     pub fn require_namespace_management(&self) -> Result<()> {
         match &self.credential {
             Credential::Token(t)
-                if !t.repos.is_empty() || !t.permissions.contains(&Permission::ManageRoles) =>
+                if !t.sign_in
+                    && (t.repo_access != RepoAccess::All
+                        || t.owner != self.user
+                        || !t.permissions().contains(&Permission::ManageRoles)) =>
             {
                 Err(PynError::Forbidden(Permission::ManageRoles))
             }
@@ -267,16 +273,222 @@ pub struct TokenRecord {
     pub id: TokenId,
     pub user: UserId,
     pub name: String,
+    pub description: Option<String>,
     pub secret_hash: String,
-    pub permissions: BTreeSet<Permission>,
-    /// Empty means every repository the user can access.
+    /// The account the token acts for: the creator's own, or one organization they may create tokens for.
+    pub owner: UserId,
+    pub repo_access: RepoAccess,
+    /// Used only with `RepoAccess::Selected`.
     pub repos: Vec<RepoId>,
+    /// The source of truth for what the token may do; `permissions()` derives the internal set.
+    pub grants: BTreeMap<TokenResource, GrantLevel>,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
     /// Issued by a password sign-in rather than created on request.
     pub sign_in: bool,
+}
+
+impl TokenRecord {
+    pub fn permissions(&self) -> BTreeSet<Permission> {
+        permissions_of(&self.grants)
+    }
+
+    /// Whether the token may act in `repo`, owned by `repo_owner`. Sign-in tokens reach every repository.
+    pub fn covers(&self, repo: &RepoId, repo_owner: &UserId) -> bool {
+        if self.sign_in {
+            return true;
+        }
+        if &self.owner != repo_owner {
+            return false;
+        }
+        match self.repo_access {
+            RepoAccess::Public => false,
+            RepoAccess::All => true,
+            RepoAccess::Selected => self.repos.contains(repo),
+        }
+    }
+
+    /// The grants of a sign-in token: the most each resource allows.
+    pub fn full_grants() -> BTreeMap<TokenResource, GrantLevel> {
+        TokenResource::ALL
+            .into_iter()
+            .map(|r| (r, r.max_level()))
+            .collect()
+    }
+}
+
+/// What a fine-grained token may touch, per the permission catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenResource {
+    Metadata,
+    Contents,
+    Locks,
+    Policy,
+    Members,
+    Administration,
+    Audit,
+}
+
+impl TokenResource {
+    pub const ALL: [TokenResource; 7] = [
+        Self::Metadata,
+        Self::Contents,
+        Self::Locks,
+        Self::Policy,
+        Self::Members,
+        Self::Administration,
+        Self::Audit,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Metadata => "metadata",
+            Self::Contents => "contents",
+            Self::Locks => "locks",
+            Self::Policy => "policy",
+            Self::Members => "members",
+            Self::Administration => "administration",
+            Self::Audit => "audit",
+        }
+    }
+
+    /// The highest level the catalog offers: `admin` for locks, `write` for most, `read` for metadata and audit.
+    pub fn max_level(self) -> GrantLevel {
+        match self {
+            Self::Metadata | Self::Audit => GrantLevel::Read,
+            Self::Locks => GrantLevel::Admin,
+            _ => GrantLevel::Write,
+        }
+    }
+}
+
+impl FromStr for TokenResource {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|r| r.as_str() == s)
+            .ok_or_else(|| PynError::InvalidRequest(format!("unknown token resource {s:?}")))
+    }
+}
+
+/// A permission level; each includes the ones below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantLevel {
+    Read,
+    Write,
+    Admin,
+}
+
+impl GrantLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+impl FromStr for GrantLevel {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        [Self::Read, Self::Write, Self::Admin]
+            .into_iter()
+            .find(|l| l.as_str() == s)
+            .ok_or_else(|| PynError::InvalidRequest(format!("unknown permission level {s:?}")))
+    }
+}
+
+/// Which repositories of its owner a token reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoAccess {
+    /// None beyond the public repositories every token can read.
+    Public,
+    /// Every repository the owner has now and later.
+    All,
+    /// The repositories listed on the token.
+    Selected,
+}
+
+impl RepoAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::All => "all",
+            Self::Selected => "selected",
+        }
+    }
+}
+
+impl FromStr for RepoAccess {
+    type Err = PynError;
+    fn from_str(s: &str) -> Result<Self> {
+        [Self::Public, Self::All, Self::Selected]
+            .into_iter()
+            .find(|a| a.as_str() == s)
+            .ok_or_else(|| PynError::InvalidRequest(format!("unknown repository access {s:?}")))
+    }
+}
+
+/// The internal permissions a set of grants amounts to; the only place grants turn into permissions.
+pub fn permissions_of(grants: &BTreeMap<TokenResource, GrantLevel>) -> BTreeSet<Permission> {
+    use Permission::*;
+    let mut out = BTreeSet::new();
+    for (resource, level) in grants {
+        let write = *level >= GrantLevel::Write;
+        match resource {
+            TokenResource::Metadata => {}
+            TokenResource::Contents => {
+                out.insert(Read);
+                if write {
+                    out.extend([Checkin, Restore]);
+                }
+            }
+            TokenResource::Locks => {
+                out.insert(Read);
+                if write {
+                    out.insert(Lock);
+                }
+                if *level >= GrantLevel::Admin {
+                    out.insert(ForceUnlock);
+                }
+            }
+            TokenResource::Members => {
+                out.insert(Read);
+                if write {
+                    out.insert(ManageUsers);
+                }
+            }
+            TokenResource::Policy if write => {
+                out.insert(EditPolicy);
+            }
+            TokenResource::Administration if write => {
+                out.insert(ManageRoles);
+            }
+            TokenResource::Policy | TokenResource::Administration => {}
+            TokenResource::Audit => {
+                out.insert(ViewAudit);
+            }
+        }
+    }
+    out
+}
+
+/// What one grant adds over the next lower level of the same resource.
+pub fn grant_delta(resource: TokenResource, level: GrantLevel) -> BTreeSet<Permission> {
+    let at = |l| permissions_of(&BTreeMap::from([(resource, l)]));
+    let lower = match level {
+        GrantLevel::Read => BTreeSet::new(),
+        GrantLevel::Write => at(GrantLevel::Read),
+        GrantLevel::Admin => at(GrantLevel::Write),
+    };
+    at(level).difference(&lower).copied().collect()
 }
 
 /// Token strings look like `pyn_<12 hex id>_<64 hex secret>`.
@@ -1220,5 +1432,117 @@ pub mod ssh {
             fingerprint,
             comment,
         })
+    }
+}
+
+/// Fixtures for tests that think in the nine internal permissions.
+#[cfg(any(feature = "contract", feature = "test-support"))]
+pub mod fixtures {
+    use super::*;
+    use crate::access_service::{NewToken, TokenExpiry};
+
+    /// The closest grants for a permission list (the same mapping the token migration applies), with metadata read.
+    pub fn grants_for(permissions: &[Permission]) -> BTreeMap<TokenResource, GrantLevel> {
+        use GrantLevel::*;
+        let has = |p| permissions.contains(&p);
+        let mut grants = BTreeMap::from([(TokenResource::Metadata, Read)]);
+        if has(Permission::Checkin) || has(Permission::Restore) {
+            grants.insert(TokenResource::Contents, Write);
+        } else if has(Permission::Read) {
+            grants.insert(TokenResource::Contents, Read);
+        }
+        if has(Permission::ForceUnlock) {
+            grants.insert(TokenResource::Locks, Admin);
+        } else if has(Permission::Lock) {
+            grants.insert(TokenResource::Locks, Write);
+        }
+        for (permission, resource, level) in [
+            (Permission::EditPolicy, TokenResource::Policy, Write),
+            (Permission::ManageUsers, TokenResource::Members, Write),
+            (
+                Permission::ManageRoles,
+                TokenResource::Administration,
+                Write,
+            ),
+            (Permission::ViewAudit, TokenResource::Audit, Read),
+        ] {
+            if has(permission) {
+                grants.insert(resource, level);
+            }
+        }
+        grants
+    }
+
+    /// A stored token for `user`: `repos` empty means every repository of the owner.
+    pub fn token_record(
+        id: &str,
+        user: &str,
+        permissions: &[Permission],
+        repos: Vec<RepoId>,
+        now: DateTime<Utc>,
+    ) -> TokenRecord {
+        TokenRecord {
+            id: TokenId(id.to_string()),
+            user: UserId::new(user),
+            name: format!("token {id}"),
+            description: None,
+            secret_hash: "00".repeat(32),
+            owner: UserId::new(user),
+            repo_access: if repos.is_empty() {
+                RepoAccess::All
+            } else {
+                RepoAccess::Selected
+            },
+            repos,
+            grants: grants_for(permissions),
+            created_at: now,
+            expires_at: None,
+            revoked_at: None,
+            last_used_at: None,
+            sign_in: false,
+        }
+    }
+
+    /// A sign-in token: full scope, every grant, every owner.
+    pub fn sign_in_record(id: &str, user: &str, now: DateTime<Utc>) -> TokenRecord {
+        TokenRecord {
+            sign_in: true,
+            repo_access: RepoAccess::All,
+            grants: TokenRecord::full_grants(),
+            ..token_record(id, user, &[], Vec::new(), now)
+        }
+    }
+
+    /// A request for a token on the creator's own selected repositories that never expires.
+    pub fn new_token(
+        name: &str,
+        owner: &str,
+        permissions: &[Permission],
+        repos: Vec<RepoId>,
+    ) -> NewToken {
+        NewToken {
+            name: name.to_string(),
+            description: None,
+            owner: UserId::new(owner),
+            expiry: TokenExpiry::Never,
+            repo_access: RepoAccess::Selected,
+            repos,
+            grants: grants_for(permissions),
+        }
+    }
+
+    /// Like `new_token`, owned by the actor's account, with an optional fixed expiry (none means never).
+    pub fn new_token_for(
+        actor: &Identity,
+        name: &str,
+        permissions: impl IntoIterator<Item = Permission>,
+        repos: Vec<RepoId>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> NewToken {
+        let permissions: Vec<_> = permissions.into_iter().collect();
+        NewToken {
+            expiry: expires_at.map_or(TokenExpiry::Never, TokenExpiry::At),
+            ..new_token(name, actor.user.as_str(), &permissions, repos)
+        }
     }
 }

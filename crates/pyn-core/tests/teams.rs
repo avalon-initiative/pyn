@@ -7,7 +7,7 @@ use pyn_core::memory::{
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, AuditAction, AuditEvent, AuditQuery, AuditScope,
     AuditStore, Credential, Identity, ManualClock, OrgCreation, OrgRole, Permission, PynError,
-    RegistrationMode, Repositories, Role, Rules, TokenRecord, UserId, Visibility,
+    RegistrationMode, RepoAccess, Repositories, Role, Rules, UserId, Visibility,
 };
 
 struct World {
@@ -77,19 +77,13 @@ fn session(name: &str) -> Identity {
 fn token_for(name: &str, permissions: &[Permission]) -> Identity {
     Identity {
         user: user(name),
-        credential: Credential::Token(TokenRecord {
-            id: pyn_core::TokenId("aaaaaaaaaaaa".into()),
-            user: user(name),
-            name: "t".into(),
-            secret_hash: String::new(),
-            permissions: permissions.iter().copied().collect(),
-            repos: Vec::new(),
-            created_at: Utc::now(),
-            expires_at: None,
-            revoked_at: None,
-            last_used_at: None,
-            sign_in: false,
-        }),
+        credential: Credential::Token(pyn_core::fixtures::token_record(
+            "aaaaaaaaaaaa",
+            name,
+            permissions,
+            Vec::new(),
+            Utc::now(),
+        )),
     }
 }
 
@@ -365,9 +359,17 @@ async fn organization_reads_need_a_full_scope_credential() {
     let mut scoped = token_for("alice", &Permission::ALL);
     if let Credential::Token(t) = &mut scoped.credential {
         t.repos = vec![game(&w).await];
+        t.repo_access = RepoAccess::Selected;
     }
     let narrow = token_for("alice", &[Permission::Read]);
-    let full = token_for("alice", &Permission::ALL);
+    let full = Identity {
+        user: user("alice"),
+        credential: Credential::Token(pyn_core::fixtures::sign_in_record(
+            "aaaaaaaaaaaa",
+            "alice",
+            Utc::now(),
+        )),
+    };
     let q = AuditQuery {
         limit: 10,
         ..Default::default()

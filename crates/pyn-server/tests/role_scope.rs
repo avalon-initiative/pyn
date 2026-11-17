@@ -121,7 +121,7 @@ struct World {
 }
 
 async fn token(app: &Router, who: &Cred, perms: &[&str]) -> Cred {
-    let body = json!({"name": "ci", "permissions": perms, "repos": ["alice/game"]});
+    let body = cred::token_body("ci", ["alice/game"], perms);
     let r = call(app, who, "POST", "/v1/tokens", Some(body)).await;
     assert!(
         r.status.is_success(),
@@ -348,7 +348,7 @@ async fn signed_out_callers_have_no_role_and_service_credentials_are_refused() {
 }
 
 async fn token_for(app: &Router, who: &Cred, perms: &[&str], repo: &str) -> Cred {
-    let body = json!({"name": "ci", "permissions": perms, "repos": [repo]});
+    let body = cred::token_body("ci", [repo], perms);
     let r = call(app, who, "POST", "/v1/tokens", Some(body)).await;
     assert!(
         r.status.is_success(),

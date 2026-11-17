@@ -245,9 +245,9 @@ remove the keys and tokens of its members, except those of a server administrato
 account, or an owner of the owning organization), which only a server administrator can. [Server administrators](#protecting-open-registration) approve and disable
 accounts but do not gain that.
 
-Token management for another person is bounded by the same reach. A manager lists and revokes only the tokens limited to
-repositories where the manager holds `manage_users`, and the repositories shown are those. A token limited to any other
-repository, or one covering every repository (such as a sign-in token), is left out of the listing and revoking it reads
+Token management for another person is bounded by the same reach. A manager lists and revokes only the `selected` tokens whose
+repositories are all ones where the manager holds `manage_users`, and the repositories shown are those. Any other token
+(another repository, `all` or `public` access, or a sign-in token) is left out of the listing and revoking it reads
 as `404 token_not_found`; only a server administrator reaches those. A token id that does not exist, or that belongs to
 someone the caller cannot manage, gets the same answer. A bearer token with an unknown id and one with a wrong secret get
 the same `401`.
@@ -429,20 +429,79 @@ The admin routes answer `403 server_admin_required` to anyone else and `404 user
 
 ## Tokens
 
-A token belongs to a user. It carries a chosen subset of permissions (never more than the user holds in each repository
-it names), an optional expiry, and the repositories it is valid for (`--repos owner/name`, at least one; the sign-in
-tokens from `pyn login` are valid everywhere). It is shown once when created; only a hash is stored. A token
-authenticates with the intersection of its permissions and its owner's current role in the repository the request is
-for, so demoting a user narrows their tokens, and a revoked token stops working at once. A token used on a repository it
-was not made for is told the repository does not exist (`404 repo_not_found`, the answer a missing repository gets); on a public one it holds `read` only. A token limited to a repository can rename or delete that repository when it holds the
-administrator-class permission `manage_roles`, and can never create repositories; a token without that permission cannot. Tokens are meant for automation and CI; SSH keys and [OpenID Connect](external-sign-in.md) are for signing
-people in, and resolve to the same users and permissions.
+Tokens are modelled on GitHub's fine-grained tokens (decisions #1092 and #1099). A token is built once, for one **resource
+owner**, one set of repositories and a list of per-resource permissions, and is never widened or edited afterwards; to use one
+on a new repository, make a new token. It is shown once when created; only a hash is stored.
+
+| Choice | Values |
+| --- | --- |
+| Name, description | a label; the description is optional |
+| Resource owner | the creator's own account, or an organization the creator belongs to (`403 not_org_member` otherwise). The token acts only on repositories that owner owns |
+| Expiry | an `expires_at` date, `never: true`, or neither, which means 30 days. Both together is `400 invalid_request` |
+| Repository access | `public` (no repository beyond the public ones every token can read), `all` (every repository the owner has now and later) or `selected` (the listed `repos`, each owned by the owner) |
+| Permissions | a list of `{resource, level}` |
+
+**Permissions** apply to the token's repositories. Each is `read` or `write` (write includes read); `locks` also has `admin`
+(includes write). Metadata read is required with `all` or `selected` and is added when left out; `public` takes no permissions.
+
+| Resource | Read | Write | Admin | Internal permissions |
+| --- | --- | --- | --- | --- |
+| `metadata` | repository info and the caller's own role | (none) | | none by itself |
+| `contents` | clone, fetch, read files and history | check in, restore | | read; checkin and restore |
+| `locks` | list locks | take and release one's own locks | force-unlock another person's lock | read; lock; force_unlock |
+| `policy` | | edit the rules (`.pyn/pyn.toml`) | | edit_policy |
+| `members` | list members, roles, teams, invitations | add and remove members, change roles | | read; manage_users |
+| `administration` | | rename, delete, define roles | | manage_roles |
+| `audit` | read the repository audit log | (none) | | view_audit |
+
+The server turns the grants into the nine [permissions](#permissions-and-roles) with one mapping and keeps the grants as the
+record of what the token may do. A token authenticates with the **intersection** of those permissions and its creator's
+current role in the repository the request is for, so demoting the creator narrows their tokens, and a revoked token stops
+working at once. A token never holds more than its creator: each grant must add something the creator holds in every selected
+repository, and the role cuts off the rest at use time (contents `write` carries both check-in and restore, so a writer's
+token checks in but cannot restore). A token used on a repository it does not cover (another owner's, or outside `selected`)
+is told the repository does not exist (`404 repo_not_found`); on a public one it holds `read` only. A token can rename or delete a
+repository, or create repositories and organizations, only when it is a token of its own account for all repositories and holds
+`administration` write. Tokens are meant for automation and CI; SSH keys and [OpenID Connect](external-sign-in.md) are for
+signing people in, and resolve to the same users and permissions.
+
+A token for `all` repositories is also refused at creation (`403 forbidden`) when, for one of its grants, the creator holds none of the
+permissions the grant adds in any repository the owner has now: a token that could never do anything is an error, not a silent
+success. This is a convenience; the intersection at use time is what keeps a token within its creator. A member whose role is only
+in repository X therefore cannot select Y (a repository they cannot see is `404 repo_not_found`, as everywhere), and an `all` token
+of theirs acts only in X, only up to their role there, and answers any other repository as a missing one.
+
+A creator's own account is the usual owner, which means a collaborator's token cannot reach a repository somebody else owns; a
+collaborator works with a sign-in token or an organization-owned repository.
+
+**Sign-in tokens** (`pyn login`, `sign_in: true` in the listing) are not fine-grained tokens. They keep reaching every repository
+the account belongs to, whoever owns it, with every permission, and stay [full-scope credentials](#full-scope-credentials).
 
 ```bash
 pyn token create ci --permissions read,checkin --repos alice/game --expires-days 30
 pyn token list
 pyn token revoke <id>
 ```
+
+`pyn token create` maps `--permissions` onto the closest grants (read: contents read; checkin, restore: contents write; lock:
+locks write; force_unlock: locks admin; edit_policy: policy write; manage_users: members write; manage_roles: administration
+write; view_audit: audit read) and takes the owner from `--repos`; `--never` removes the expiry. The API takes the grants
+directly:
+
+```json
+POST /v1/tokens
+{
+  "name": "ci",
+  "description": "builds",
+  "owner": "alice",
+  "expires_at": null,
+  "never": false,
+  "repository_access": {"mode": "selected", "repos": ["alice/game"]},
+  "permissions": [{"resource": "contents", "level": "write"}, {"resource": "locks", "level": "write"}]
+}
+```
+
+`GET /v1/tokens` returns the same fields plus `user` (the creator) and `sign_in`.
 
 ## Error responses
 
@@ -451,19 +510,18 @@ the server log with the method and path of the request. Every other error keeps 
 
 ## Full-scope credentials
 
-Account management is limited to a full-scope credential: a web session, or a token that names no repository and holds every
-permission (the sign-in tokens from `pyn login`). It covers SSH keys (add, list, remove), tokens (create, list, revoke), the
-password, linking or unlinking an external identity, creating an account with `POST /v1/repos/{owner}/{name}/users`, and creating an invitation. A narrower token (read-only, limited to repositories, or with fewer
-permissions) is refused with `403 forbidden`; it keeps working for its own scope. A token credential cannot create a token that
-outlives it: the new token's expiry is capped at its own, and it never holds more permissions or repositories than the creator.
-A web session may create any token its owner could.
+Account management is limited to a full-scope credential: a web session or a sign-in token from `pyn login`. A fine-grained
+token is never full-scope, even one for every repository holding every grant. It covers SSH keys (add, list, remove), tokens (create, list, revoke), the
+password, linking or unlinking an external identity, creating an account with `POST /v1/repos/{owner}/{name}/users`, and creating an invitation. A fine-grained token is refused with `403 forbidden`; it keeps working for its own scope. A sign-in token cannot create a token that
+outlives it: the new token's expiry is capped at its own (so `never` from a sign-in token lasts as long as the sign-in does), and a
+web session may create any token its owner could.
 
 Two reads follow the same rule. `GET /v1/account/deletion` (the deletion status) needs a full-scope credential, like scheduling and
 restoring a deletion (a pending account's own session and sign-in tokens are full-scope, so they still reach it). `GET /v1/me` is open
 to every credential because a CI token may ask who it is, but a narrower one gets only the account name and id and the public profile
 view, never the owner's hidden fields, visibility settings or `has_password` ([profiles](profiles.md)).
 
-A token limited to repositories may still read any public repository, but it learns nothing of the owner's standing outside its grant:
+A fine-grained token may still read any public repository, but it learns nothing of the owner's standing outside its grant:
 the `role` on `GET /v1/repos/{owner}/{name}`, `GET /v1/explore/repos` and `GET /v1/users/{user}` is absent for a repository the
 token does not name (as for a stranger), the `role` on `GET /v1/orgs/{org}` is absent unless the credential is full-scope (the lookup itself still
 succeeds), and `GET /v1/me/locks` lists only locks in the token's repositories.
@@ -528,7 +586,7 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `any_credential` | any user credential; the response narrows to the credential's scope |
 | `full_scope` | a session, a full-scope token or the development identity |
 | `full_scope_pending` | `full_scope`, also while the account is scheduled for deletion |
-| `namespace` | full scope, or an unscoped token holding `manage_roles` |
+| `namespace` | full scope, or a token of the caller's own account for all repositories holding `administration` write |
 | `admin_only` | a server administrator; service credentials are refused |
 | `service:<scope>` | a server administrator, or a service credential holding the scope |
 | `full_scope_or_service:<scope>` | a full-scope user (the core limits it to its own owner), or a service credential holding the scope |

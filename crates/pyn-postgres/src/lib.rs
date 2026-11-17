@@ -2885,6 +2885,107 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "needs PYN_DATABASE_URL"]
+    async fn existing_tokens_map_onto_owners_repository_access_and_grants() {
+        use pyn_core::{AccessStore, GrantLevel, RepoAccess, TokenId, TokenResource};
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        for stmt in [
+            "ALTER TABLE tokens ADD COLUMN permissions text[]",
+            "ALTER TABLE tokens DROP COLUMN description, DROP COLUMN owner, DROP COLUMN repo_access, DROP COLUMN grants",
+            "DELETE FROM _sqlx_migrations WHERE version = 56",
+            "INSERT INTO users (id, created_at) VALUES ('alice', now())",
+        ] {
+            sqlx::query(stmt).execute(&store.pool).await.unwrap();
+        }
+        let legacy = [
+            ("aaaaaaaaaaaa", "{read,checkin}", "{alice/game}", false),
+            (
+                "bbbbbbbbbbbb",
+                "{read,lock,force_unlock,view_audit}",
+                "{}",
+                false,
+            ),
+            (
+                "cccccccccccc",
+                "{edit_policy,manage_users,manage_roles,restore}",
+                "{alice/game,alice/lobby}",
+                false,
+            ),
+            (
+                "dddddddddddd",
+                "{read,lock,checkin,restore,force_unlock,edit_policy,manage_users,manage_roles,view_audit}",
+                "{}",
+                true,
+            ),
+        ];
+        for (id, permissions, repos, sign_in) in legacy {
+            sqlx::query(
+                "INSERT INTO tokens (id, user_id, name, secret_hash, permissions, repos, created_at, sign_in)
+                 VALUES ($1, 'alice', 't', 'h', $2::text[], $3::text[], now(), $4)",
+            )
+            .bind(id)
+            .bind(permissions)
+            .bind(repos)
+            .bind(sign_in)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        migrate(&store).await;
+
+        let get = |id: &'static str| {
+            let store = &store;
+            async move {
+                AccessStore::get_token(store, &TokenId(id.into()))
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+        };
+        use GrantLevel::*;
+        use TokenResource::*;
+        let t = get("aaaaaaaaaaaa").await;
+        assert_eq!(
+            (t.owner.as_str(), t.repo_access),
+            ("alice", RepoAccess::Selected)
+        );
+        assert_eq!(t.repos, [RepoId::new("alice/game")]);
+        assert_eq!(t.grants, [(Metadata, Read), (Contents, Write)].into());
+        let t = get("bbbbbbbbbbbb").await;
+        assert_eq!(t.repo_access, RepoAccess::All);
+        assert_eq!(
+            t.grants,
+            [
+                (Metadata, Read),
+                (Contents, Read),
+                (Locks, Admin),
+                (Audit, Read)
+            ]
+            .into()
+        );
+        let t = get("cccccccccccc").await;
+        assert_eq!(t.repo_access, RepoAccess::Selected);
+        assert_eq!(
+            t.grants,
+            [
+                (Metadata, Read),
+                (Contents, Write),
+                (Policy, Write),
+                (Members, Write),
+                (Administration, Write)
+            ]
+            .into()
+        );
+        let t = get("dddddddddddd").await;
+        assert!(t.sign_in && t.repo_access == RepoAccess::All);
+        assert_eq!(t.grants, pyn_core::TokenRecord::full_grants());
+        assert_eq!(t.permissions(), pyn_core::Permission::ALL.into());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
     async fn an_empty_database_gets_no_default_repository() {
         let store = rewound_store().await;
         migrate(&store).await;
