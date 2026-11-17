@@ -270,7 +270,9 @@ repository, so the route needs a [full-scope credential](#full-scope-credentials
 to repositories or to fewer permissions is refused with `403 forbidden`, even one that holds `manage_users` there and even
 one of an administrator, and a service credential with `403 service_credential_not_allowed`. The administrator path
 likewise needs a full-scope credential of an administrator. Adding an existing person to a repository is not account
-creation and needs only `manage_users`. An invitation is a one-time code
+creation and needs only `manage_users`. Giving a role (`PUT /v1/repos/{owner}/{name}/members/{user}`, `pyn member set`) never creates an
+account, for any credential: the name must already be an account, or the answer is `404 user_not_found` and nothing is written.
+To bring in someone new, register them (`POST .../users`, `pyn user add`) or send an invitation. An invitation is a one-time code
 (`pyn invite create --role writer`) for one repository that carries the role the new person will get there and an expiry of 1 to 8760 hours; it
 is shown once, can be revoked only in the repository it belongs to, and cannot grant a role above the level of the person
 creating it. The new person runs `pyn register <name> --invite <code>` and gets that role in that repository.

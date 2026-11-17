@@ -1074,7 +1074,7 @@ enum UserCommand {
 #[derive(Subcommand)]
 enum MemberCommand {
     List,
-    /// Give a user a role, adding them if they are new.
+    /// Give an existing account a role; register new people with `pyn user add` or an invitation.
     Set {
         user: String,
         role: String,

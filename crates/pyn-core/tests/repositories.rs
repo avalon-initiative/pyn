@@ -255,6 +255,7 @@ async fn only_the_owner_renames_or_deletes_and_data_goes_with_the_repository() {
         .await
         .unwrap();
     let root = w.access.principal_in(&rec.id, &alice).await.unwrap();
+    w.access.account_for_tests(&user("bob")).await.unwrap();
     w.access
         .set_user_role(&root, &rec.id, &user("bob"), Role::Admin)
         .await
@@ -524,6 +525,7 @@ async fn a_stricter_role_still_reads_a_public_repository() {
         .await
         .unwrap();
     let root = w.access.principal_in(&public.id, &alice).await.unwrap();
+    w.access.account_for_tests(&user("bob")).await.unwrap();
     w.access
         .set_user_role(&root, &public.id, &user("bob"), Role::Reader)
         .await

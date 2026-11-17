@@ -1573,7 +1573,7 @@ impl AccessService {
         Ok(())
     }
 
-    /// Adds the user if new and gives them `role`.
+    /// Gives an existing account `role`; an unknown name is `UserNotFound` and nothing is written.
     pub async fn set_user_role(
         &self,
         actor: &Principal,
@@ -1586,8 +1586,10 @@ impl AccessService {
         self.require_can_grant(actor, repo, role).await?;
         self.require_can_change(actor, repo, user).await?;
         self.require_grantable(repo, user).await?;
+        if !self.store.user_exists(user).await? {
+            return Err(PynError::UserNotFound(user.to_string()));
+        }
         let before = self.store.role_of(repo, user).await?;
-        self.store.ensure_user(user, self.clock.now()).await?;
         self.store.set_role(repo, user, role).await?;
         self.record_role(repo, &actor.user, user, before, role)
             .await
@@ -2500,6 +2502,12 @@ impl AccessService {
             )
             .await?;
         Ok(full)
+    }
+
+    /// Creates a plain account without a password, the way a registered person exists before getting a role.
+    #[cfg(feature = "test-support")]
+    pub async fn account_for_tests(&self, user: &UserId) -> Result<()> {
+        self.store.ensure_user(user, self.clock.now()).await
     }
 
     /// Makes the user the admin of a repository they just created.

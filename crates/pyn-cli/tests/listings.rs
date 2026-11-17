@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{cell_rows, start, start_empty};
+use common::{cell_rows, start, start_empty, start_with_repo_and_accounts};
 
 #[test]
 fn locks_files_and_history_have_stable_columns() {
@@ -126,7 +126,7 @@ fn empty_listings_say_so_instead_of_printing_a_bare_header() {
 
 #[test]
 fn administration_listings_have_stable_columns() {
-    let env = start();
+    let env = start_with_repo_and_accounts(&["bob"]);
     env.seed("alice", "Source/a.cpp", "a", None);
     let home = env.dir("home");
 
