@@ -4186,6 +4186,9 @@ fn token_permissions(names: &[String]) -> Result<Vec<api::TokenPermission>> {
         let held = levels.entry(resource).or_default();
         *held = (*held).max(level);
     }
+    if levels.contains_key("contents") {
+        levels.entry("locks").or_insert(1);
+    }
     Ok(levels
         .into_iter()
         .map(|(resource, level)| api::TokenPermission {

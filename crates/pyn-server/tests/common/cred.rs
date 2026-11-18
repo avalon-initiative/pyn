@@ -226,3 +226,23 @@ pub fn token_body<R: AsRef<str>, P: AsRef<str>>(
     }
     body
 }
+
+/// A token-creation body for `owner`'s selected repositories with each resource at its level (`("contents", "write")`).
+pub fn grants_body(
+    name: &str,
+    owner: &str,
+    repos: &[&str],
+    grants: &[(&str, &str)],
+) -> serde_json::Value {
+    let repos: Vec<String> = repos.iter().map(|r| format!("{owner}/{r}")).collect();
+    let permissions: Vec<_> = grants
+        .iter()
+        .map(|(resource, level)| serde_json::json!({"resource": resource, "level": level}))
+        .collect();
+    serde_json::json!({
+        "name": name,
+        "owner": owner,
+        "repository_access": {"mode": "selected", "repos": repos},
+        "permissions": permissions,
+    })
+}

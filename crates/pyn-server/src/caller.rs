@@ -7,7 +7,10 @@ use axum::extract::{FromRequestParts, Path};
 use axum::http::HeaderMap;
 use axum::http::request::Parts;
 use pyn_core::repositories::OpenRepo;
-use pyn_core::{AccessMode, Credential, Identity, Permission, Principal, PynError, SessionRecord};
+use pyn_core::{
+    AccessMode, Credential, GrantLevel, GrantNeed, Identity, Principal, PynError, SessionRecord,
+    Visibility,
+};
 use pyn_proto as api;
 
 use crate::routes::{Declared, Reach};
@@ -99,16 +102,14 @@ pub(crate) async fn admit(
     }
     let signed_in = match reach {
         Reach::Public => identify_optional(state, headers).await?.is_some(),
-        Reach::PublicLfsRead => sends_credential(state, headers) || sends_basic(headers),
+        Reach::PublicLfsRead(_) => sends_credential(state, headers) || sends_basic(headers),
         _ => sends_credential(state, headers),
     };
     if signed_in {
         return Ok(());
     }
     match (reach, repo) {
-        (Reach::PublicRepoRead | Reach::PublicRepoVisible, Some(repo)) => {
-            Err(PynError::RepoNotFound(repo).into())
-        }
+        (Reach::PublicRepoRead(_), Some(repo)) => Err(PynError::RepoNotFound(repo).into()),
         _ => Err(PynError::Unauthenticated("sign in to use this server".into()).into()),
     }
 }
@@ -299,23 +300,36 @@ impl FromRequestParts<AppState> for RepoCaller {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
-        let need = match declared(parts) {
-            Reach::RepoScoped(permission) => Some(permission),
-            Reach::RepoVisible => None,
-            other => return Err(mismatch("RepoCaller", other)),
+        let Reach::RepoScoped(need) = declared(parts) else {
+            return Err(mismatch("RepoCaller", declared(parts)));
         };
         let identity = identify(s, &parts.headers).await?;
         let (owner, name) = address(parts, s).await?;
         let (repo, principal) = open_visible(s, Some(&identity), &owner, &name).await?;
-        if let Some(permission) = need {
-            principal.require(permission)?;
-        }
+        meets(Some(&identity), &repo, &principal, need)?;
         Ok(Self {
             repo,
             principal,
             identity,
         })
     }
+}
+
+/// Checks a route's declared need: a token's grants, then the principal's permissions (the role as the token narrows
+/// it). A read of a public repository needs neither, as anyone may make it.
+fn meets(
+    identity: Option<&Identity>,
+    repo: &OpenRepo,
+    principal: &Principal,
+    need: GrantNeed,
+) -> ApiResult<()> {
+    let public_read =
+        repo.record.visibility == Visibility::Public && need.level == GrantLevel::Read;
+    if let (Some(who), false) = (identity, public_read) {
+        who.require_grant(need)?;
+    }
+    principal.require_need(need)?;
+    Ok(())
 }
 
 /// The caller of a repository route that a public repository serves without a credential.
@@ -329,17 +343,13 @@ impl FromRequestParts<AppState> for RepoReader {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
-        let read = match declared(parts) {
-            Reach::PublicRepoRead => true,
-            Reach::PublicRepoVisible => false,
-            other => return Err(mismatch("RepoReader", other)),
+        let Reach::PublicRepoRead(need) = declared(parts) else {
+            return Err(mismatch("RepoReader", declared(parts)));
         };
         let identity = identify_optional(s, &parts.headers).await?;
         let (owner, name) = address(parts, s).await?;
         let (repo, principal) = open_visible(s, identity.as_ref(), &owner, &name).await?;
-        if read {
-            principal.require(Permission::Read)?;
-        }
+        meets(identity.as_ref(), &repo, &principal, need)?;
         Ok(Self {
             repo,
             principal,
@@ -352,7 +362,7 @@ impl FromRequestParts<AppState> for RepoReader {
 /// and read their body first.
 pub(crate) struct LfsCaller {
     state: AppState,
-    need: Option<Permission>,
+    need: GrantNeed,
     anonymous_read: bool,
 }
 
@@ -361,21 +371,19 @@ impl FromRequestParts<AppState> for LfsCaller {
 
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
         let need = match declared(parts) {
-            Reach::RepoScoped(permission) => Some(permission),
-            Reach::RepoVisible => None,
-            Reach::PublicLfsRead => Some(Permission::Read),
+            Reach::RepoScoped(need) | Reach::PublicLfsRead(need) => need,
             other => return Err(mismatch("LfsCaller", other)),
         };
         Ok(Self {
             state: s.clone(),
             need,
-            anonymous_read: matches!(declared(parts), Reach::PublicLfsRead),
+            anonymous_read: matches!(declared(parts), Reach::PublicLfsRead(_)),
         })
     }
 }
 
 impl LfsCaller {
-    /// Authenticates with `headers` and opens the named repository, holding the declared permission.
+    /// Authenticates with `headers` and opens the named repository, meeting the declared need.
     pub(crate) async fn authorize(
         &self,
         headers: &HeaderMap,
@@ -384,9 +392,7 @@ impl LfsCaller {
     ) -> ApiResult<(OpenRepo, Principal, Identity)> {
         let identity = identify(&self.state, headers).await?;
         let (repo, principal) = open_visible(&self.state, Some(&identity), owner, name).await?;
-        if let Some(permission) = self.need {
-            principal.require(permission)?;
-        }
+        meets(Some(&identity), &repo, &principal, self.need)?;
         Ok((repo, principal, identity))
     }
 
@@ -405,7 +411,7 @@ impl LfsCaller {
         }
         let identity = identify_optional(&self.state, headers).await?;
         let (repo, principal) = open_visible(&self.state, identity.as_ref(), owner, name).await?;
-        principal.require(Permission::Read)?;
+        meets(identity.as_ref(), &repo, &principal, self.need)?;
         Ok((repo, principal))
     }
 }

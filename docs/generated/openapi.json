@@ -5352,7 +5352,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_visible"
+        "x-pyn-reach": "public_repo_read:metadata:read"
       },
       "delete": {
         "tags": [
@@ -5404,7 +5404,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:administration:write"
       },
       "patch": {
         "tags": [
@@ -5492,7 +5492,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:administration:write"
       }
     },
     "/v1/repos/{owner}/{name}/audit": {
@@ -5587,7 +5587,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:view_audit"
+        "x-pyn-reach": "repo_scoped:audit:read"
       }
     },
     "/v1/repos/{owner}/{name}/branches": {
@@ -5632,7 +5632,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       },
       "post": {
         "tags": [
@@ -5711,7 +5711,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/branches/{branch}": {
@@ -5770,7 +5770,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       },
       "delete": {
         "tags": [
@@ -5859,7 +5859,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       },
       "patch": {
         "tags": [
@@ -5957,7 +5957,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/changesets": {
@@ -6036,7 +6036,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/checkin": {
@@ -6124,7 +6124,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/checkout": {
@@ -6203,7 +6203,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:lock"
+        "x-pyn-reach": "repo_scoped:locks:write"
       }
     },
     "/v1/repos/{owner}/{name}/commits": {
@@ -6353,7 +6353,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/commits/{commit}": {
@@ -6421,7 +6421,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/content": {
@@ -6514,7 +6514,7 @@
             "description": "the range lies outside the content; `Content-Range: bytes */<length>`"
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/fetch": {
@@ -6585,7 +6585,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/files": {
@@ -6662,7 +6662,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/force-unlock": {
@@ -6731,7 +6731,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:force_unlock"
+        "x-pyn-reach": "repo_scoped:locks:admin"
       }
     },
     "/v1/repos/{owner}/{name}/history": {
@@ -6836,7 +6836,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/invites": {
@@ -6879,7 +6879,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:members:write"
       },
       "post": {
         "tags": [
@@ -6937,7 +6937,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:members:write"
       }
     },
     "/v1/repos/{owner}/{name}/invites/{id}": {
@@ -6987,7 +6987,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:members:write"
       }
     },
     "/v1/repos/{owner}/{name}/locks": {
@@ -7029,7 +7029,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:locks:read"
       }
     },
     "/v1/repos/{owner}/{name}/me": {
@@ -7079,7 +7079,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:metadata:read"
       }
     },
     "/v1/repos/{owner}/{name}/members": {
@@ -7123,7 +7123,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:members:write"
       }
     },
     "/v1/repos/{owner}/{name}/members/{user}": {
@@ -7194,7 +7194,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:members:write"
       }
     },
     "/v1/repos/{owner}/{name}/merge": {
@@ -7286,7 +7286,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/merge/preview": {
@@ -7368,7 +7368,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:read"
+        "x-pyn-reach": "repo_scoped:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/objects": {
@@ -7453,7 +7453,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/objects/assemble": {
@@ -7522,7 +7522,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/objects/chunk": {
@@ -7607,7 +7607,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/objects/missing": {
@@ -7666,7 +7666,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/objects/{id}": {
@@ -7751,7 +7751,7 @@
             "description": "the range lies outside the content; `Content-Range: bytes */<length>`"
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/policy/preview": {
@@ -7819,7 +7819,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:edit_policy"
+        "x-pyn-reach": "repo_scoped:policy:write"
       }
     },
     "/v1/repos/{owner}/{name}/push": {
@@ -7930,7 +7930,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:checkin"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/release": {
@@ -7981,7 +7981,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:lock"
+        "x-pyn-reach": "repo_scoped:locks:write"
       }
     },
     "/v1/repos/{owner}/{name}/restore": {
@@ -8059,7 +8059,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_scoped:restore"
+        "x-pyn-reach": "repo_scoped:contents:write"
       }
     },
     "/v1/repos/{owner}/{name}/roles": {
@@ -8122,7 +8122,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:members:read"
       }
     },
     "/v1/repos/{owner}/{name}/roles/{role}": {
@@ -8183,7 +8183,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:administration:write"
       }
     },
     "/v1/repos/{owner}/{name}/snapshot": {
@@ -8279,7 +8279,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/storage-cap": {
@@ -8409,7 +8409,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/teams": {
@@ -8473,7 +8473,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:members:write"
       }
     },
     "/v1/repos/{owner}/{name}/teams/{team}": {
@@ -8556,7 +8556,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:members:write"
       },
       "delete": {
         "tags": [
@@ -8627,7 +8627,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:members:write"
       }
     },
     "/v1/repos/{owner}/{name}/tree": {
@@ -8704,7 +8704,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/usage": {
@@ -8745,7 +8745,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_read"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/usage/breakdown": {
@@ -8806,7 +8806,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:administration:write"
       }
     },
     "/v1/repos/{owner}/{name}/users": {
@@ -8876,7 +8876,7 @@
             }
           }
         },
-        "x-pyn-reach": "repo_visible"
+        "x-pyn-reach": "repo_scoped:members:write"
       }
     },
     "/v1/repos/{owner}/{name}/verify": {
@@ -8972,7 +8972,7 @@
             }
           }
         },
-        "x-pyn-reach": "public_repo_visible"
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/session": {

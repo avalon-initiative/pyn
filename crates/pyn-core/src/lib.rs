@@ -44,8 +44,8 @@ pub mod webhook_url;
 #[cfg(any(feature = "contract", feature = "test-support"))]
 pub use access::fixtures;
 pub use access::{
-    AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, GrantLevel, Identity,
-    InvitationAccept, InvitationCreate, InviteId, InviteRecord, NewAccount,
+    AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, GrantLevel, GrantNeed,
+    Identity, InvitationAccept, InvitationCreate, InviteId, InviteRecord, NewAccount,
     ORG_DELETE_MARK_SECONDS, OrgCreation, OrgInvitation, OrgMemberAdd, OrgRole, Permission,
     Principal, RegistrationMode, RepoAccess, Role, RoleDefinitions, RoleSource, ServerSettings,
     ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,

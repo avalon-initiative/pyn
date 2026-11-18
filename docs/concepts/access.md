@@ -263,7 +263,7 @@ existed before the setting did.
 | `private` (default) | nothing, except what a visitor needs to sign in or sign up (listed below) |
 | `public` | what a signed-out caller reads on any server: public repositories (tree, files, history, fetch, Git LFS object download), public profiles and avatars, the people directory (rate limited, see [protecting open registration](#protecting-open-registration)), organization avatars and the repository explore list |
 
-On a `private` server every route declared `public`, `optional_sign_in`, `public_repo_read`, `public_repo_visible` or `public_lfs_read`
+On a `private` server every route declared `public`, `optional_sign_in`, `public_repo_read` or `public_lfs_read`
 (see [route reach](#route-reach)) refuses a request that carries no credential: `401 unauthenticated`, except on a
 repository route, which answers `404 repo_not_found` exactly as it does for a private repository, so it neither
 confirms nor denies that a repository exists (a `public_lfs_read` route answers `401` in the LFS error format with `WWW-Authenticate`, so git-lfs asks for credentials). That covers anonymous clone and fetch of a public repository, profiles,
@@ -443,17 +443,20 @@ on a new repository, make a new token. It is shown once when created; only a has
 | Permissions | a list of `{resource, level}` |
 
 **Permissions** apply to the token's repositories. Each is `read` or `write` (write includes read); `locks` also has `admin`
-(includes write). Metadata read is required with `all` or `selected` and is added when left out; `public` takes no permissions.
+(includes write); `policy` has no read level (`400 invalid_request`). Metadata read is required with `all` or `selected` and is added
+when left out; `public` takes no permissions.
 
 | Resource | Read | Write | Admin | Internal permissions |
 | --- | --- | --- | --- | --- |
 | `metadata` | repository info and the caller's own role | (none) | | none by itself |
 | `contents` | clone, fetch, read files and history | check in, restore | | read; checkin and restore |
 | `locks` | list locks | take and release one's own locks | force-unlock another person's lock | read; lock; force_unlock |
-| `policy` | | edit the rules (`.pyn/pyn.toml`) | | edit_policy |
-| `members` | list members, roles, teams, invitations | add and remove members, change roles | | read; manage_users |
-| `administration` | | rename, delete, define roles | | manage_roles |
+| `policy` | (none) | edit the rules (`.pyn/pyn.toml`) | | edit_policy |
+| `members` | list roles | list members, teams and invitations; add and remove members, change roles | | read; manage_users |
+| `administration` | (none yet) | rename, delete, define roles, the usage breakdown | | manage_roles |
 | `audit` | read the repository audit log | (none) | | view_audit |
+
+Which resource and level each repository route needs is in [repository routes](#repository-routes).
 
 The server turns the grants into the nine [permissions](#permissions-and-roles) with one mapping and keeps the grants as the
 record of what the token may do. A token authenticates with the **intersection** of those permissions and its creator's
@@ -591,11 +594,45 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `admin_only` | a server administrator; service credentials are refused |
 | `service:<scope>` | a server administrator, or a service credential holding the scope |
 | `full_scope_or_service:<scope>` | a full-scope user (the core limits it to its own owner), or a service credential holding the scope |
-| `repo_scoped:<permission>` | a signed-in credential holding the permission in the named repository |
-| `repo_visible` | a signed-in credential that can see the named repository; the operation decides the permission |
-| `public_repo_read` | `read` in the named repository; a public repository needs no credential on a `public` server, a `private` one needs a credential and answers a signed-out caller `404 repo_not_found` |
-| `public_repo_visible` | like `public_repo_read`, but the operation decides the permission |
-| `public_lfs_read` | the Git LFS download routes (`POST .../info/lfs/objects/batch`, `GET .../info/lfs/objects/{oid}`): like `public_repo_read`, answered in the LFS error format, and a signed-out batch is accepted only for `operation: "download"` (an upload batch signed out is `401`); a private server answers a signed-out caller `401` |
+| `repo_scoped:<resource>:<level>` | a signed-in credential holding the resource at the level in the named repository (see [repository routes](#repository-routes)) |
+| `public_repo_read:<resource>:<level>` | like `repo_scoped`, and a public repository's reads need no credential on a `public` server; a `private` one needs a credential and answers a signed-out caller `404 repo_not_found` |
+| `public_lfs_read:<resource>:<level>` | the Git LFS download routes (`POST .../info/lfs/objects/batch`, `GET .../info/lfs/objects/{oid}`): like `public_repo_read`, answered in the LFS error format, and a signed-out batch is accepted only for `operation: "download"` (an upload batch signed out is `401`); a private server answers a signed-out caller `401` |
+
+### Repository routes
+
+A repository route declares the resource and level of the [token catalog](#tokens) that it needs. The extractor checks it
+twice, and a repository that the credential cannot see is answered `404 repo_not_found` before either:
+
+- A fine-grained token must hold the resource at the level (`403 forbidden`, "the token needs write access to contents"). Holding
+  another resource does not stand in for it: a token with only `locks` read cannot read files. A sign-in token holds every grant.
+- Every credential, tokens included, must then hold the internal permission the level adds, as `permissions_of` derives it
+  (contents write: `checkin`, or `restore` on the restore route; locks write: `lock`; locks admin: `force_unlock`; policy write:
+  `edit_policy`; members write: `manage_users`; administration write: `manage_roles`; audit read: `view_audit`; any read of
+  contents, locks or members: `read`). A session, the development identity and a sign-in token have no grants to check, so only their
+  role decides. Metadata read and administration read add no internal permission, so a route that needs only one of
+  them is open to anyone who can see the repository.
+
+A read of a public repository skips the grant check: any caller, signed out or with any token, may read it.
+
+| Resource and level | Routes |
+| --- | --- |
+| `metadata:read` | `GET /v1/repos/{owner}/{name}`, `.../me` |
+| `contents:read` | usage, files, tree, summary, content, history, verify, commits, snapshot, branches, fetch, objects, merge preview, and the LFS batch and object download (an upload batch needs `contents:write`, checked in the handler) |
+| `contents:write` | checkin, changesets, restore, branch create, rename and delete, push, merge, object upload, chunk, missing and assemble, LFS object upload, verify and tus |
+| `locks:read` | the lock lists: `.../locks`, LFS lock list and verify |
+| `locks:write` | checkout, release, LFS lock create and unlock |
+| `locks:admin` | force-unlock |
+| `policy:write` | policy preview |
+| `members:read` | list roles |
+| `members:write` | list members, invitations and teams; add a member, an invitation or a team; remove or change them; add a user (an invitation and a new user also need a full-scope credential, so no token reaches them) |
+| `administration:write` | rename, delete, define roles, the usage breakdown |
+| `audit:read` | the audit log |
+
+The listings under `members:write` and the usage breakdown are guarded at the write level because the core requires
+`manage_users` and `manage_roles` for them and no read-level grant adds those (decision #1117). Members read lists roles only,
+and administration read grants nothing yet. A token holding contents read also holds locks read, so a read-only token keeps
+listing locks; a token holding only locks read lists locks and reads no files, tree or history. Policy offers write only: the
+rules are `.pyn/pyn.toml`, read with `contents:read`.
 
 A repository-scoped token reaches only `open`, `public`, `optional_sign_in` (the people directory among them), `any_credential` and the repository kinds; a service
 credential reaches only `open`, `public` (on a `public` server), the `service` kinds and `full_scope_or_service`. `crates/pyn-server/tests/reach.rs` checks that the table and the
