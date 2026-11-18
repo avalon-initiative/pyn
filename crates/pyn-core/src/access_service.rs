@@ -1542,6 +1542,13 @@ impl AccessService {
     fn token_grants(req: &NewToken) -> Result<BTreeMap<TokenResource, GrantLevel>> {
         let mut grants = req.grants.clone();
         for (resource, level) in &grants {
+            if *level < resource.min_level() {
+                return Err(PynError::InvalidRequest(format!(
+                    "{} cannot be given at level {}",
+                    resource.as_str(),
+                    level.as_str()
+                )));
+            }
             if *level > resource.max_level() {
                 return Err(PynError::InvalidRequest(format!(
                     "{} cannot be given at level {}",

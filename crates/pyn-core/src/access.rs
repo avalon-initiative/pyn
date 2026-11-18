@@ -182,6 +182,17 @@ impl Identity {
         }
     }
 
+    /// A token must hold the grant; a session, the development identity and a sign-in token do not narrow by grants.
+    pub fn require_grant(&self, need: GrantNeed) -> Result<()> {
+        match &self.credential {
+            Credential::Token(t) if !t.sign_in => match t.grants.get(&need.resource) {
+                Some(level) if *level >= need.level => Ok(()),
+                _ => Err(PynError::GrantRequired(need)),
+            },
+            _ => Ok(()),
+        }
+    }
+
     /// Account-management operations need a full-scope credential.
     pub fn require_full_scope(&self) -> Result<()> {
         if self.is_full_scope() {
@@ -240,6 +251,11 @@ impl Principal {
         } else {
             Err(PynError::Forbidden(permission))
         }
+    }
+
+    /// Whether the principal holds the permission the need maps to, or the need maps to none.
+    pub fn require_need(&self, need: GrantNeed) -> Result<()> {
+        need.permission().map_or(Ok(()), |p| self.require(p))
     }
 
     /// Every permission, for the development identity.
@@ -355,6 +371,14 @@ impl TokenResource {
         }
     }
 
+    /// The lowest level the catalog offers: policy has no read level.
+    pub fn min_level(self) -> GrantLevel {
+        match self {
+            Self::Policy => GrantLevel::Write,
+            _ => GrantLevel::Read,
+        }
+    }
+
     /// The highest level the catalog offers: `admin` for locks, `write` for most, `read` for metadata and audit.
     pub fn max_level(self) -> GrantLevel {
         match self {
@@ -401,6 +425,43 @@ impl FromStr for GrantLevel {
             .into_iter()
             .find(|l| l.as_str() == s)
             .ok_or_else(|| PynError::InvalidRequest(format!("unknown permission level {s:?}")))
+    }
+}
+
+/// The resource and level a route needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GrantNeed {
+    pub resource: TokenResource,
+    pub level: GrantLevel,
+    via: Option<Permission>,
+}
+
+impl GrantNeed {
+    pub const fn new(resource: TokenResource, level: GrantLevel) -> Self {
+        Self {
+            resource,
+            level,
+            via: None,
+        }
+    }
+
+    /// Names the permission a role must hold where the level adds several (contents write: `checkin` or `restore`).
+    pub const fn via(mut self, permission: Permission) -> Self {
+        self.via = Some(permission);
+        self
+    }
+
+    /// The `resource:level` spelling published in `x-pyn-reach`.
+    pub fn label(self) -> String {
+        format!("{}:{}", self.resource.as_str(), self.level.as_str())
+    }
+
+    /// The permission a credential without grants must hold: what the level adds over the one below, as
+    /// `permissions_of` derives it. `None` where it adds none (metadata, policy read, administration read), so
+    /// seeing the repository is enough.
+    pub fn permission(self) -> Option<Permission> {
+        self.via
+            .or_else(|| grant_delta(self.resource, self.level).first().copied())
     }
 }
 
@@ -465,13 +526,15 @@ pub fn permissions_of(grants: &BTreeMap<TokenResource, GrantLevel>) -> BTreeSet<
                     out.insert(ManageUsers);
                 }
             }
-            TokenResource::Policy if write => {
-                out.insert(EditPolicy);
+            TokenResource::Policy => {
+                if write {
+                    out.insert(EditPolicy);
+                }
             }
             TokenResource::Administration if write => {
                 out.insert(ManageRoles);
             }
-            TokenResource::Policy | TokenResource::Administration => {}
+            TokenResource::Administration => {}
             TokenResource::Audit => {
                 out.insert(ViewAudit);
             }
@@ -1455,6 +1518,8 @@ pub mod fixtures {
             grants.insert(TokenResource::Locks, Admin);
         } else if has(Permission::Lock) {
             grants.insert(TokenResource::Locks, Write);
+        } else if grants.contains_key(&TokenResource::Contents) {
+            grants.insert(TokenResource::Locks, Read);
         }
         for (permission, resource, level) in [
             (Permission::EditPolicy, TokenResource::Policy, Write),
@@ -1544,5 +1609,72 @@ pub mod fixtures {
             expiry: expires_at.map_or(TokenExpiry::Never, TokenExpiry::At),
             ..new_token(name, actor.user.as_str(), &permissions, repos)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_need_maps_to_a_permission_its_level_adds() {
+        for resource in TokenResource::ALL {
+            for level in [GrantLevel::Read, GrantLevel::Write, GrantLevel::Admin] {
+                if level > resource.max_level() || level < resource.min_level() {
+                    continue;
+                }
+                let need = GrantNeed::new(resource, level);
+                assert_eq!(
+                    need.permission().is_some(),
+                    !grant_delta(resource, level).is_empty(),
+                    "{}",
+                    need.label()
+                );
+                if let Some(p) = need.permission() {
+                    assert!(
+                        grant_delta(resource, level).contains(&p),
+                        "{}",
+                        need.label()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_token_must_hold_the_level_of_the_resource() {
+        let token = |grants: &[(TokenResource, GrantLevel)]| Identity {
+            user: UserId::new("alice"),
+            credential: Credential::Token(TokenRecord {
+                id: TokenId("t".into()),
+                user: UserId::new("alice"),
+                name: "t".into(),
+                description: None,
+                secret_hash: String::new(),
+                owner: UserId::new("alice"),
+                repo_access: RepoAccess::All,
+                repos: Vec::new(),
+                grants: grants.iter().copied().collect(),
+                created_at: Utc::now(),
+                expires_at: None,
+                revoked_at: None,
+                last_used_at: None,
+                sign_in: false,
+            }),
+        };
+        use GrantLevel::*;
+        use TokenResource::*;
+        let who = token(&[(Metadata, Read), (Contents, Read), (Locks, Write)]);
+        assert!(who.require_grant(GrantNeed::new(Contents, Read)).is_ok());
+        assert!(who.require_grant(GrantNeed::new(Locks, Read)).is_ok());
+        assert!(who.require_grant(GrantNeed::new(Locks, Write)).is_ok());
+        assert!(who.require_grant(GrantNeed::new(Contents, Write)).is_err());
+        assert!(who.require_grant(GrantNeed::new(Locks, Admin)).is_err());
+        assert!(who.require_grant(GrantNeed::new(Audit, Read)).is_err());
+        let session = Identity {
+            user: UserId::new("alice"),
+            credential: Credential::Session,
+        };
+        assert!(session.require_grant(GrantNeed::new(Audit, Read)).is_ok());
     }
 }

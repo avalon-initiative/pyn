@@ -543,6 +543,7 @@ fn status_for(e: &PynError) -> StatusCode {
         PynError::NotLockHolder(_)
         | PynError::OwnerFrozen { .. }
         | PynError::Forbidden(_)
+        | PynError::GrantRequired(_)
         | PynError::RegistrationClosed
         | PynError::InvalidSetupToken
         | PynError::AccountInactive(_)
@@ -1240,7 +1241,6 @@ async fn verify(
     }: RepoReader,
     Query(q): Query<VerifyQuery>,
 ) -> ApiResult<Json<api::VerifyReport>> {
-    principal.require(Permission::Read)?;
     if q.path.is_none() && who.is_none() {
         return Err(PynError::Unauthenticated(
             "checking the whole repository needs a signed-in caller".into(),

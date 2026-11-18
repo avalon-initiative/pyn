@@ -11,7 +11,9 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodFilter, MethodRouter};
 use axum::{Extension, Json, Router};
-use pyn_core::{Permission, ServiceScope};
+use pyn_core::{
+    GrantLevel, GrantLevel::*, GrantNeed, Permission, ServiceScope, TokenResource, TokenResource::*,
+};
 use utoipa::OpenApi;
 use utoipa::openapi::extensions::Extensions;
 
@@ -20,6 +22,10 @@ use crate::{
     limits_api, merge_api, oidc_api, org_api, profile_api, push_api, repo_api, repo_policy_api,
     self_service_api, session_api, setup_api, team_api, webhook_api,
 };
+
+const fn need(resource: TokenResource, level: GrantLevel) -> GrantNeed {
+    GrantNeed::new(resource, level)
+}
 
 /// Which credentials a route accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,19 +53,15 @@ pub enum Reach {
     Service(ServiceScope),
     /// A full-scope user (the core then limits it to its own owner), or a service credential holding the scope.
     FullScopeOrService(ServiceScope),
-    /// A signed-in credential that holds the permission in the named repository.
-    RepoScoped(Permission),
-    /// A signed-in credential that can see the named repository; the operation decides the permission.
-    RepoVisible,
-    /// Signed out or signed in, holding `read` in the named repository (a public one needs no credential). A private
-    /// server answers a signed-out caller as it does for a private repository.
-    PublicRepoRead,
-    /// Signed out or signed in, able to see the named repository; the operation decides the permission.
-    /// A private server answers a signed-out caller as it does for a private repository.
-    PublicRepoVisible,
+    /// A signed-in credential holding the resource at the level in the named repository: a token through its grants, any
+    /// other credential through the role permissions `permissions_of` derives for them.
+    RepoScoped(GrantNeed),
+    /// Signed out or signed in, holding the resource at the level (a public repository's reads need no credential). A
+    /// private server answers a signed-out caller as it does for a private repository.
+    PublicRepoRead(GrantNeed),
     /// `public_repo_read` for the Git LFS download routes: the handler grants a signed-out caller only a download, and a
     /// refusal is in the LFS error format (`401` on a private server, which the clients answer by asking for credentials).
-    PublicLfsRead,
+    PublicLfsRead(GrantNeed),
 }
 
 impl Reach {
@@ -67,11 +69,7 @@ impl Reach {
     fn closed_when_private(self) -> bool {
         matches!(
             self,
-            Self::Public
-                | Self::OptionalSignIn
-                | Self::PublicRepoRead
-                | Self::PublicRepoVisible
-                | Self::PublicLfsRead
+            Self::Public | Self::OptionalSignIn | Self::PublicRepoRead(_) | Self::PublicLfsRead(_)
         )
     }
 
@@ -89,11 +87,9 @@ impl Reach {
             Self::AdminOnly => "admin_only".into(),
             Self::Service(s) => format!("service:{}", s.as_str()),
             Self::FullScopeOrService(s) => format!("full_scope_or_service:{}", s.as_str()),
-            Self::RepoScoped(p) => format!("repo_scoped:{}", p.as_str()),
-            Self::RepoVisible => "repo_visible".into(),
-            Self::PublicRepoRead => "public_repo_read".into(),
-            Self::PublicRepoVisible => "public_repo_visible".into(),
-            Self::PublicLfsRead => "public_lfs_read".into(),
+            Self::RepoScoped(n) => format!("repo_scoped:{}", n.label()),
+            Self::PublicRepoRead(n) => format!("public_repo_read:{}", n.label()),
+            Self::PublicLfsRead(n) => format!("public_lfs_read:{}", n.label()),
         }
     }
 }
@@ -329,12 +325,12 @@ fn table() -> Vec<Entry> {
         ),
         get(
             "/v1/repos/{owner}/{name}/usage",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             limits_api::repo_usage,
         ),
         get(
             "/v1/repos/{owner}/{name}/usage/breakdown",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Administration, Write)),
             limits_api::repo_usage_breakdown,
         ),
         put(
@@ -573,142 +569,142 @@ fn table() -> Vec<Entry> {
         post("/v1/repos", Reach::Namespace, repo_api::create_repo),
         get(
             "/v1/repos/{owner}/{name}",
-            Reach::PublicRepoVisible,
+            Reach::PublicRepoRead(need(Metadata, Read)),
             repo_api::get_repo,
         ),
         patch(
             "/v1/repos/{owner}/{name}",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Administration, Write)),
             repo_api::update_repo,
         ),
         delete(
             "/v1/repos/{owner}/{name}",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Administration, Write)),
             repo_api::delete_repo,
         ),
         get(
             "/v1/repos/{owner}/{name}/me",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Metadata, Read)),
             repo_api::repo_me,
         ),
         post(
             "/v1/repos/{owner}/{name}/users",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Members, Write)),
             repo_api::add_user,
         ),
         get(
             "/v1/repos/{owner}/{name}/invites",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Members, Write)),
             repo_api::list_invites,
         ),
         post(
             "/v1/repos/{owner}/{name}/invites",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Members, Write)),
             repo_api::create_invite,
         ),
         delete(
             "/v1/repos/{owner}/{name}/invites/{id}",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Members, Write)),
             repo_api::revoke_invite,
         ),
         get(
             "/v1/repos/{owner}/{name}/roles",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Members, Read)),
             repo_api::list_roles,
         ),
         put(
             "/v1/repos/{owner}/{name}/roles/{role}",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Administration, Write)),
             repo_api::set_role,
         ),
         get(
             "/v1/repos/{owner}/{name}/members",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Members, Write)),
             repo_api::list_members,
         ),
         put(
             "/v1/repos/{owner}/{name}/members/{user}",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Members, Write)),
             repo_api::set_member,
         ),
         get(
             "/v1/repos/{owner}/{name}/teams",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Members, Write)),
             team_api::list_repo_teams,
         ),
         put(
             "/v1/repos/{owner}/{name}/teams/{team}",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Members, Write)),
             team_api::set_repo_team,
         ),
         delete(
             "/v1/repos/{owner}/{name}/teams/{team}",
-            Reach::RepoVisible,
+            Reach::RepoScoped(need(Members, Write)),
             team_api::remove_repo_team,
         ),
         get(
             "/v1/repos/{owner}/{name}/locks",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Locks, Read)),
             crate::list_locks,
         ),
         get(
             "/v1/repos/{owner}/{name}/info/lfs/locks",
-            Reach::RepoScoped(Permission::Read),
+            Reach::RepoScoped(need(Locks, Read)),
             lfs_api::list_locks,
         ),
         post(
             "/v1/repos/{owner}/{name}/info/lfs/locks",
-            Reach::RepoScoped(Permission::Lock),
+            Reach::RepoScoped(need(Locks, Write)),
             lfs_api::create_lock,
         ),
         post(
             "/v1/repos/{owner}/{name}/info/lfs/locks/verify",
-            Reach::RepoScoped(Permission::Read),
+            Reach::RepoScoped(need(Locks, Read)),
             lfs_api::verify_locks,
         ),
         post(
             "/v1/repos/{owner}/{name}/info/lfs/locks/{id}/unlock",
-            Reach::RepoScoped(Permission::Lock),
+            Reach::RepoScoped(need(Locks, Write)),
             lfs_api::unlock,
         ),
         post(
             "/v1/repos/{owner}/{name}/info/lfs/objects/batch",
-            Reach::PublicLfsRead,
+            Reach::PublicLfsRead(need(Contents, Read)),
             lfs_api::batch,
         ),
         post(
             "/v1/repos/{owner}/{name}/info/lfs/objects/verify",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             lfs_api::verify_object,
         ),
         get(
             "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}",
-            Reach::PublicLfsRead,
+            Reach::PublicLfsRead(need(Contents, Read)),
             lfs_api::download,
         ),
         put(
             "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             lfs_api::upload_object,
         ),
         head(
             "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             lfs_api::tus::head,
         ),
         post(
             "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             lfs_api::tus::create,
         ),
         patch(
             "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             lfs_api::tus::patch,
         ),
         delete(
             "/v1/repos/{owner}/{name}/info/lfs/objects/{oid}/tus",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             lfs_api::tus::terminate,
         ),
         options(
@@ -718,157 +714,157 @@ fn table() -> Vec<Entry> {
         ),
         get(
             "/v1/repos/{owner}/{name}/files",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             crate::list_files,
         ),
         get(
             "/v1/repos/{owner}/{name}/tree",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             crate::tree,
         ),
         get(
             "/v1/repos/{owner}/{name}/summary",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             crate::summary,
         ),
         get(
             "/v1/repos/{owner}/{name}/content",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             crate::get_content,
         ),
         post(
             "/v1/repos/{owner}/{name}/checkout",
-            Reach::RepoScoped(Permission::Lock),
+            Reach::RepoScoped(need(Locks, Write)),
             crate::checkout,
         ),
         post(
             "/v1/repos/{owner}/{name}/release",
-            Reach::RepoScoped(Permission::Lock),
+            Reach::RepoScoped(need(Locks, Write)),
             crate::release,
         ),
         post(
             "/v1/repos/{owner}/{name}/checkin",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             crate::checkin,
         ),
         post(
             "/v1/repos/{owner}/{name}/changesets",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             crate::changeset,
         ),
         post(
             "/v1/repos/{owner}/{name}/restore",
-            Reach::RepoScoped(Permission::Restore),
+            Reach::RepoScoped(need(Contents, Write).via(Permission::Restore)),
             crate::restore,
         ),
         post(
             "/v1/repos/{owner}/{name}/force-unlock",
-            Reach::RepoScoped(Permission::ForceUnlock),
+            Reach::RepoScoped(need(Locks, Admin)),
             crate::force_unlock,
         ),
         post(
             "/v1/repos/{owner}/{name}/policy/preview",
-            Reach::RepoScoped(Permission::EditPolicy),
+            Reach::RepoScoped(need(Policy, Write)),
             crate::preview_policy,
         ),
         get(
             "/v1/repos/{owner}/{name}/audit",
-            Reach::RepoScoped(Permission::ViewAudit),
+            Reach::RepoScoped(need(Audit, Read)),
             crate::audit,
         ),
         put(
             "/v1/repos/{owner}/{name}/objects",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             crate::put_object,
         ),
         put(
             "/v1/repos/{owner}/{name}/objects/chunk",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             crate::put_chunk,
         ),
         post(
             "/v1/repos/{owner}/{name}/objects/missing",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             crate::missing_objects,
         ),
         post(
             "/v1/repos/{owner}/{name}/objects/assemble",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             crate::assemble_object,
         ),
         get(
             "/v1/repos/{owner}/{name}/history",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             crate::history,
         ),
         get(
             "/v1/repos/{owner}/{name}/verify",
-            Reach::PublicRepoVisible,
+            Reach::PublicRepoRead(need(Contents, Read)),
             crate::verify,
         ),
         get(
             "/v1/repos/{owner}/{name}/commits",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             crate::list_commits,
         ),
         get(
             "/v1/repos/{owner}/{name}/commits/{commit}",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             crate::get_commit,
         ),
         get(
             "/v1/repos/{owner}/{name}/snapshot",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             crate::snapshot,
         ),
         get(
             "/v1/repos/{owner}/{name}/branches",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             branch_api::list_branches,
         ),
         post(
             "/v1/repos/{owner}/{name}/branches",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             branch_api::create_branch,
         ),
         post(
             "/v1/repos/{owner}/{name}/push",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             push_api::push,
         ),
         post(
             "/v1/repos/{owner}/{name}/fetch",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             push_api::fetch,
         ),
         get(
             "/v1/repos/{owner}/{name}/objects/{id}",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             push_api::get_object,
         ),
         post(
             "/v1/repos/{owner}/{name}/merge",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             merge_api::merge,
         ),
         post(
             "/v1/repos/{owner}/{name}/merge/preview",
-            Reach::RepoScoped(Permission::Read),
+            Reach::RepoScoped(need(Contents, Read)),
             merge_api::preview_merge,
         ),
         get(
             "/v1/repos/{owner}/{name}/branches/{*branch}",
-            Reach::PublicRepoRead,
+            Reach::PublicRepoRead(need(Contents, Read)),
             branch_api::get_branch,
         ),
         delete(
             "/v1/repos/{owner}/{name}/branches/{*branch}",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             branch_api::delete_branch,
         ),
         patch(
             "/v1/repos/{owner}/{name}/branches/{*branch}",
-            Reach::RepoScoped(Permission::Checkin),
+            Reach::RepoScoped(need(Contents, Write)),
             branch_api::rename_branch,
         ),
     ]
@@ -894,7 +890,7 @@ async fn enforce_access_mode(
         .map(|((_, owner), (_, name))| format!("{owner}/{name}"));
     match caller::admit(&state, request.headers(), reach, repo).await {
         Ok(()) => next.run(request).await,
-        Err(e) if reach == Reach::PublicLfsRead => {
+        Err(e) if matches!(reach, Reach::PublicLfsRead(_)) => {
             crate::lfs_api::LfsError::from(e).into_response()
         }
         Err(e) => e.into_response(),

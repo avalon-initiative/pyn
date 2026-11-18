@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::access::{AccountStatus, Permission, ServiceScope};
+use crate::access::{AccountStatus, GrantNeed, Permission, ServiceScope};
 use crate::types::{RepoPath, RevisionId, UserId};
 
 pub type Result<T, E = PynError> = std::result::Result<T, E>;
@@ -220,6 +220,8 @@ pub enum PynError {
     OriginNotAllowed,
     #[error("permission {0} is required")]
     Forbidden(Permission),
+    #[error("the token needs {} access to {}", .0.level.as_str(), .0.resource.as_str())]
+    GrantRequired(GrantNeed),
     #[error("no token {0}")]
     TokenNotFound(String),
     #[error("{0}")]
@@ -401,7 +403,7 @@ impl PynError {
             Self::Unauthenticated(_) => "unauthenticated",
             Self::CsrfFailed => "csrf_failed",
             Self::OriginNotAllowed => "origin_not_allowed",
-            Self::Forbidden(_) => "forbidden",
+            Self::Forbidden(_) | Self::GrantRequired(_) => "forbidden",
             Self::TokenNotFound(_) => "token_not_found",
             Self::InvalidRequest(_) => "invalid_request",
             Self::NotLocked(_) => "not_locked",

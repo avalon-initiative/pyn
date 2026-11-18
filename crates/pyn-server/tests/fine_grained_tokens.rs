@@ -253,6 +253,12 @@ async fn invalid_requests_are_refused_with_existing_codes() {
             "alice",
             "all",
             &[],
+            &[("contents", "write"), ("policy", "read")],
+        ),
+        body(
+            "alice",
+            "all",
+            &[],
             &[("contents", "read"), ("contents", "write")],
         ),
         body("alice", "all", &[], &[]),
@@ -626,4 +632,38 @@ async fn a_grant_the_creator_does_not_hold_is_refused_and_a_collaborators_token_
         status(&w.app, &token, "GET", files).await,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn a_token_holding_only_locks_read_lists_locks_and_reads_no_contents() {
+    let w = world().await;
+    let r = create(
+        &w.app,
+        &w.alice,
+        body("alice", "selected", &["alice/game"], &[("locks", "read")]),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let token = r.json::<api::CreatedToken>().token;
+    for uri in [
+        "/v1/repos/alice/game/locks",
+        "/v1/repos/alice/game/info/lfs/locks",
+    ] {
+        assert_eq!(
+            status(&w.app, &token, "GET", uri).await,
+            StatusCode::OK,
+            "{uri}"
+        );
+    }
+    for uri in [
+        "/v1/repos/alice/game/files",
+        "/v1/repos/alice/game/tree",
+        "/v1/repos/alice/game/history",
+    ] {
+        assert_eq!(
+            status(&w.app, &token, "GET", uri).await,
+            StatusCode::FORBIDDEN,
+            "{uri}"
+        );
+    }
 }

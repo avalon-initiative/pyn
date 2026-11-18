@@ -2894,7 +2894,7 @@ mod tests {
         for stmt in [
             "ALTER TABLE tokens ADD COLUMN permissions text[]",
             "ALTER TABLE tokens DROP COLUMN description, DROP COLUMN owner, DROP COLUMN repo_access, DROP COLUMN grants",
-            "DELETE FROM _sqlx_migrations WHERE version = 56",
+            "DELETE FROM _sqlx_migrations WHERE version IN (56, 57)",
             "INSERT INTO users (id, created_at) VALUES ('alice', now())",
         ] {
             sqlx::query(stmt).execute(&store.pool).await.unwrap();
@@ -2952,7 +2952,10 @@ mod tests {
             ("alice", RepoAccess::Selected)
         );
         assert_eq!(t.repos, [RepoId::new("alice/game")]);
-        assert_eq!(t.grants, [(Metadata, Read), (Contents, Write)].into());
+        assert_eq!(
+            t.grants,
+            [(Metadata, Read), (Contents, Write), (Locks, Read)].into()
+        );
         let t = get("bbbbbbbbbbbb").await;
         assert_eq!(t.repo_access, RepoAccess::All);
         assert_eq!(
@@ -2972,6 +2975,7 @@ mod tests {
             [
                 (Metadata, Read),
                 (Contents, Write),
+                (Locks, Read),
                 (Policy, Write),
                 (Members, Write),
                 (Administration, Write)
@@ -2982,6 +2986,82 @@ mod tests {
         assert!(t.sign_in && t.repo_access == RepoAccess::All);
         assert_eq!(t.grants, pyn_core::TokenRecord::full_grants());
         assert_eq!(t.permissions(), pyn_core::Permission::ALL.into());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs PYN_DATABASE_URL"]
+    async fn a_token_holding_contents_and_no_locks_gains_locks_read() {
+        use pyn_core::{AccessStore, GrantLevel::*, TokenId, TokenResource::*};
+        let url = std::env::var("PYN_DATABASE_URL").expect("PYN_DATABASE_URL must be set");
+        let store = PgMetadataStore::connect_in_scratch_schema(&url)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 57")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO users (id, created_at) VALUES ('alice', now())")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let rows = [
+            ("aaaaaaaaaaaa", "{metadata:read,contents:read}", false),
+            ("bbbbbbbbbbbb", "{metadata:read,contents:write}", false),
+            (
+                "cccccccccccc",
+                "{metadata:read,contents:read,locks:write}",
+                false,
+            ),
+            ("dddddddddddd", "{metadata:read,audit:read}", false),
+            (
+                "eeeeeeeeeeee",
+                "{metadata:read,contents:write,locks:admin}",
+                true,
+            ),
+        ];
+        for (id, grants, sign_in) in rows {
+            sqlx::query(
+                "INSERT INTO tokens (id, user_id, name, secret_hash, owner, repo_access, repos, grants, created_at, sign_in)
+                 VALUES ($1, 'alice', 't', 'h', 'alice', 'all', '{}', $2::text[], now(), $3)",
+            )
+            .bind(id)
+            .bind(grants)
+            .bind(sign_in)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        migrate(&store).await;
+        let grants = |id: &'static str| {
+            let store = &store;
+            async move {
+                AccessStore::get_token(store, &TokenId(id.into()))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .grants
+            }
+        };
+        assert_eq!(
+            grants("aaaaaaaaaaaa").await,
+            [(Metadata, Read), (Contents, Read), (Locks, Read)].into()
+        );
+        assert_eq!(
+            grants("bbbbbbbbbbbb").await,
+            [(Metadata, Read), (Contents, Write), (Locks, Read)].into()
+        );
+        assert_eq!(
+            grants("cccccccccccc").await,
+            [(Metadata, Read), (Contents, Read), (Locks, Write)].into()
+        );
+        assert_eq!(
+            grants("dddddddddddd").await,
+            [(Metadata, Read), (Audit, Read)].into()
+        );
+        assert_eq!(
+            grants("eeeeeeeeeeee").await,
+            [(Metadata, Read), (Contents, Write), (Locks, Admin)].into()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

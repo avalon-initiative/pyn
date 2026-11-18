@@ -3,7 +3,7 @@
 
 #[path = "common/cred.rs"]
 mod cred;
-use cred::{Cred, WithCred};
+use cred::{Cred, WithCred, grants_body};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -16,8 +16,9 @@ use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
 };
 use pyn_core::{
-    AccessConfig, AccessMode, AccessService, AuthProvider, Credential, Identity, Permission,
-    RegistrationMode, Repositories, Rules, ServiceScope, SystemClock, UserId, Visibility,
+    AccessConfig, AccessMode, AccessService, AuthProvider, Credential, GrantLevel, GrantNeed,
+    Identity, Permission, RegistrationMode, Repositories, Rules, ServiceScope, SystemClock,
+    TokenResource, UserId, Visibility,
 };
 use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
@@ -190,27 +191,25 @@ fn expected(mode: AccessMode, reach: Reach, kind: Kind) -> Expect {
             kind,
             Kind::Session | Kind::Full | Kind::Admin | Kind::ServiceAll
         )),
-        Reach::RepoScoped(permission) => match kind {
-            Kind::ReadOnly => hit(permission == Permission::Read),
+        Reach::RepoScoped(need) => match kind {
+            Kind::ReadOnly => hit(read_only_holds(need)),
             Kind::Session | Kind::Full | Kind::Admin | Kind::ScopedAll => Reached,
             _ => Refused,
         },
-        Reach::RepoVisible => match kind {
-            Kind::ReadOnly => Any,
-            _ => hit(matches!(
-                kind,
-                Kind::Session | Kind::Full | Kind::Admin | Kind::ScopedAll
-            )),
-        },
-        Reach::PublicRepoRead | Reach::PublicRepoVisible | Reach::PublicLfsRead
-            if mode == AccessMode::Private =>
-        {
+        Reach::PublicRepoRead(_) | Reach::PublicLfsRead(_) if mode == AccessMode::Private => {
             hit(user)
         }
-        Reach::PublicRepoRead | Reach::PublicRepoVisible | Reach::PublicLfsRead => {
-            hit(!kind.service())
-        }
+        Reach::PublicRepoRead(_) | Reach::PublicLfsRead(_) => hit(!kind.service()),
     }
+}
+
+/// The `ReadOnly` token holds metadata, contents and locks at read.
+fn read_only_holds(need: GrantNeed) -> bool {
+    need.level == GrantLevel::Read
+        && matches!(
+            need.resource,
+            TokenResource::Metadata | TokenResource::Contents | TokenResource::Locks
+        )
 }
 
 struct Reply {
@@ -501,6 +500,35 @@ fn fill(path: &str, repo: &str) -> String {
     out
 }
 
+/// The resource and level a repository route declares.
+fn repo_need(reach: Reach) -> Option<GrantNeed> {
+    match reach {
+        Reach::RepoScoped(n) | Reach::PublicRepoRead(n) | Reach::PublicLfsRead(n) => Some(n),
+        _ => None,
+    }
+}
+
+/// A body the handler parses, so the answer comes from the permission check and not from the request's shape.
+fn valid_body(path: &str) -> Option<&'static str> {
+    Some(match path.rsplit('/').next()? {
+        "checkout" | "release" => r#"{"path":"Content/x.bin"}"#,
+        "checkin" => r#"{"path":"Content/x.bin","content":"","message":"m"}"#,
+        "changesets" => r#"{"entries":[],"deletions":[],"message":"m"}"#,
+        "restore" => r#"{"path":"Content/x.bin","revision":1,"base_revision":1,"confirm":"x"}"#,
+        "force-unlock" => r#"{"path":"Content/x.bin","reason":"r"}"#,
+        "preview" if path.contains("/policy/") => r#"{"content":""}"#,
+        "preview" | "merge" => r#"{"source":"topic"}"#,
+        "missing" => r#"{"hashes":[]}"#,
+        "assemble" => {
+            r#"{"chunks":["0000000000000000000000000000000000000000000000000000000000000000"]}"#
+        }
+        "branches" => r#"{"name":"topic"}"#,
+        "push" => r#"{"commits":[],"trees":[]}"#,
+        _ if path.contains("/branches/") => r#"{"name":"topic2"}"#,
+        _ => return None,
+    })
+}
+
 fn body_for(method: &Method, path: &str) -> Option<String> {
     if matches!(
         *method,
@@ -509,7 +537,17 @@ fn body_for(method: &Method, path: &str) -> Option<String> {
         return None;
     }
     Some(
-        if path.ends_with("/info/lfs/locks") {
+        if let Some(valid) = valid_body(path) {
+            valid
+        } else if path.ends_with("/users") {
+            r#"{"username":"bob","password":"correct horse battery","role":"reader"}"#
+        } else if path.ends_with("/invites") {
+            r#"{"role":"reader","hours":1}"#
+        } else if path.contains("/roles/") {
+            r#"{"permissions":["read"]}"#
+        } else if path.contains("/members/") || path.contains("/teams/") {
+            r#"{"role":"reader"}"#
+        } else if path.ends_with("/info/lfs/locks") {
             r#"{"path":"Content/x.bin"}"#
         } else if path.ends_with("/info/lfs/objects/batch") {
             r#"{"operation":"download","objects":[]}"#
@@ -562,10 +600,7 @@ async fn matrix(mode: AccessMode) {
     let mut failures = Vec::new();
     let mut calls = 0;
     for d in declarations() {
-        let public_repo = matches!(
-            d.reach,
-            Reach::PublicRepoRead | Reach::PublicRepoVisible | Reach::PublicLfsRead
-        );
+        let public_repo = matches!(d.reach, Reach::PublicRepoRead(_) | Reach::PublicLfsRead(_));
         let mut uri = fill(d.path, if public_repo { "open" } else { "game" });
         if d.path.ends_with("/verify") && d.method == Method::GET {
             uri.push_str("?path=a");
@@ -595,14 +630,7 @@ async fn matrix(mode: AccessMode) {
                 continue;
             }
             let refused = reply.refused(is_lfs(d.path));
-            let repo_route = matches!(
-                d.reach,
-                Reach::RepoScoped(_)
-                    | Reach::RepoVisible
-                    | Reach::PublicRepoRead
-                    | Reach::PublicRepoVisible
-                    | Reach::PublicLfsRead
-            );
+            let repo_route = repo_need(d.reach).is_some();
             if kind == Kind::OtherRepo
                 && repo_route
                 && !public_repo
@@ -615,7 +643,12 @@ async fn matrix(mode: AccessMode) {
                     String::from_utf8_lossy(&reply.body)
                 ));
             }
-            let expect = expected(mode, d.reach, kind);
+            let mut expect = expected(mode, d.reach, kind);
+            if matches!(kind, Kind::ReadOnly | Kind::ScopedAll)
+                && full_scope_in_core(&d.method, d.path)
+            {
+                expect = Expect::Refused;
+            }
             if mode == AccessMode::Private && kind == Kind::SignedOut && expect == Expect::Refused {
                 let answer = if public_repo {
                     ("repo_not_found", StatusCode::NOT_FOUND)
@@ -624,10 +657,7 @@ async fn matrix(mode: AccessMode) {
                 };
                 let closed = matches!(
                     d.reach,
-                    Reach::Public
-                        | Reach::OptionalSignIn
-                        | Reach::PublicRepoRead
-                        | Reach::PublicRepoVisible
+                    Reach::Public | Reach::OptionalSignIn | Reach::PublicRepoRead(_)
                 );
                 if closed
                     && d.method != Method::HEAD
@@ -686,9 +716,7 @@ fn the_table_uses_every_reach_kind() {
         "service",
         "full_scope_or_service",
         "repo_scoped",
-        "repo_visible",
         "public_repo_read",
-        "public_repo_visible",
         "public_lfs_read",
     ] {
         assert!(used.contains(kind), "no route declares {kind}");
@@ -698,7 +726,7 @@ fn the_table_uses_every_reach_kind() {
 /// A token made for another repository gets the answer a missing repository gets, and a public one only read.
 #[tokio::test]
 async fn a_token_for_another_repository_is_told_it_does_not_exist() {
-    let (app, cred) = world(Kind::OtherRepo, Reach::RepoVisible).await;
+    let (app, cred) = world(Kind::OtherRepo, Reach::Open).await;
     for method in [Method::GET, Method::PATCH, Method::DELETE] {
         let body = (method == Method::PATCH).then(|| "{}".to_string());
         let uncovered = send(
@@ -734,4 +762,312 @@ async fn a_token_for_another_repository_is_told_it_does_not_exist() {
     }
     let r = send(&app, &cred, &Method::GET, "/v1/repos/alice/open", None, &[]).await;
     assert_eq!(r.status, StatusCode::OK);
+}
+
+/// A server with alice (repositories game, open and other) and a fine-grained token of hers for `repo` holding exactly
+/// `grants` (metadata read is added by the server), created through the token API with her sign-in token.
+async fn fine_world(grants: &[(TokenResource, GrantLevel)], repo: &str) -> (Router, Cred) {
+    let st = state(AccessMode::Private);
+    let alice = UserId::new("alice");
+    let as_alice = Identity {
+        user: alice.clone(),
+        credential: Credential::Session,
+    };
+    let app = router(st.clone());
+    let password_body = json!({"username": "alice", "password": PASSWORD}).to_string();
+    let r = send(
+        &app,
+        &Cred::SignedOut,
+        &Method::POST,
+        "/v1/register",
+        Some(password_body.clone()),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    for (name, visibility) in [
+        ("game", Visibility::Private),
+        ("open", Visibility::Public),
+        ("other", Visibility::Private),
+    ] {
+        st.repos
+            .create(&as_alice, &alice, name, Some(visibility), None)
+            .await
+            .unwrap();
+    }
+    let r = send(
+        &app,
+        &Cred::SignedOut,
+        &Method::POST,
+        "/v1/login",
+        Some(password_body),
+        &[],
+    )
+    .await;
+    let full = Cred::token(
+        &serde_json::from_slice::<api::CreatedToken>(&r.body)
+            .unwrap()
+            .token,
+    );
+    let levels: Vec<_> = grants
+        .iter()
+        .map(|(r, l)| (r.as_str(), l.as_str()))
+        .collect();
+    let r = send(
+        &app,
+        &full,
+        &Method::POST,
+        "/v1/tokens",
+        Some(grants_body("fine", "alice", &[repo], &levels).to_string()),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let token = serde_json::from_slice::<api::CreatedToken>(&r.body)
+        .unwrap()
+        .token;
+    (app, Cred::token(&token))
+}
+
+/// The grants of a token holding exactly the declared need. Metadata is always held, so a metadata need adds audit
+/// read, the smallest other grant, to make a token the server accepts.
+fn exact_grants(need: GrantNeed) -> Vec<(TokenResource, GrantLevel)> {
+    match need.resource {
+        TokenResource::Metadata => vec![(TokenResource::Audit, GrantLevel::Read)],
+        resource => vec![(resource, need.level)],
+    }
+}
+
+/// Every other resource at its top level, and the declared one one level short (absent for a read).
+fn lacking_grants(need: GrantNeed) -> Vec<(TokenResource, GrantLevel)> {
+    let mut grants: Vec<_> = TokenResource::ALL
+        .into_iter()
+        .filter(|r| *r != need.resource && *r != TokenResource::Metadata)
+        .map(|r| (r, r.max_level()))
+        .collect();
+    match need.level {
+        GrantLevel::Read => {}
+        GrantLevel::Write if need.resource == TokenResource::Policy => {}
+        GrantLevel::Write => grants.push((need.resource, GrantLevel::Read)),
+        GrantLevel::Admin => grants.push((need.resource, GrantLevel::Write)),
+    }
+    grants
+}
+
+/// Routes whose core also demands a full-scope credential, which no fine-grained token is.
+fn full_scope_in_core(method: &Method, path: &str) -> bool {
+    *method == Method::POST && (path.ends_with("/users") || path.ends_with("/invites"))
+}
+
+/// For every repository route a token holding exactly the declared grant reaches it, one holding every other grant but
+/// not that one is refused, and one made for another repository gets the answer a missing repository gets.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fine_grained_token_reaches_exactly_what_its_grants_declare() {
+    let mut failures = Vec::new();
+    let mut calls = 0;
+    for d in declarations() {
+        let Some(need) = repo_need(d.reach) else {
+            continue;
+        };
+        let mut uri = fill(d.path, "game");
+        if d.path.ends_with("/verify") && d.method == Method::GET {
+            uri.push_str("?path=a");
+        }
+        let lfs = is_lfs(d.path);
+        let body = body_for(&d.method, d.path);
+        let headers = headers_for(d.path);
+        let label = |who: &str| format!("{} {} as {who} ({})", d.method, d.path, d.reach.label());
+        let describe = |r: &Reply| format!("{} {}", r.status, String::from_utf8_lossy(&r.body));
+
+        let (app, cred) = fine_world(&exact_grants(need), "game").await;
+        let r = send(&app, &cred, &d.method, &uri, body.clone(), &headers).await;
+        calls += 1;
+        let should_reach = !full_scope_in_core(&d.method, d.path);
+        if r.status.is_server_error() || r.refused(lfs) == should_reach {
+            failures.push(format!(
+                "{}: expected {}, got {}",
+                label("the exact grant"),
+                if should_reach {
+                    "to reach it"
+                } else {
+                    "a refusal"
+                },
+                describe(&r)
+            ));
+        }
+
+        if need.resource != TokenResource::Metadata {
+            let (app, cred) = fine_world(&lacking_grants(need), "game").await;
+            let r = send(&app, &cred, &d.method, &uri, body.clone(), &headers).await;
+            calls += 1;
+            if r.status != StatusCode::FORBIDDEN || !r.refused(lfs) {
+                failures.push(format!(
+                    "{}: expected a 403, got {}",
+                    label("every other grant"),
+                    describe(&r)
+                ));
+            }
+        }
+
+        let (app, cred) = fine_world(&exact_grants(need), "other").await;
+        let r = send(&app, &cred, &d.method, &uri, body, &headers).await;
+        calls += 1;
+        if d.method != Method::HEAD && (r.status != StatusCode::NOT_FOUND || !r.refused(lfs)) {
+            failures.push(format!(
+                "{}: expected the missing-repository answer, got {}",
+                label("a token for another repository"),
+                describe(&r)
+            ));
+        }
+    }
+    assert!(calls >= 150, "the matrix ran {calls} calls");
+    assert!(
+        failures.is_empty(),
+        "{} mismatches:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The catalog (decision #1099) applied to every repository route, written out apart from the table so a changed
+/// declaration is a visible change here. Where core demands more than the catalog's read level, the route is declared
+/// at the level core needs (listing members, invitations and teams, and the usage breakdown).
+const REPOSITORY_ROUTES: &[(&str, &str, &str)] = &[
+    ("GET", "/usage", "public_repo_read:contents:read"),
+    (
+        "GET",
+        "/usage/breakdown",
+        "repo_scoped:administration:write",
+    ),
+    ("GET", "", "public_repo_read:metadata:read"),
+    ("PATCH", "", "repo_scoped:administration:write"),
+    ("DELETE", "", "repo_scoped:administration:write"),
+    ("GET", "/me", "repo_scoped:metadata:read"),
+    ("POST", "/users", "repo_scoped:members:write"),
+    ("GET", "/invites", "repo_scoped:members:write"),
+    ("POST", "/invites", "repo_scoped:members:write"),
+    ("DELETE", "/invites/{id}", "repo_scoped:members:write"),
+    ("GET", "/roles", "repo_scoped:members:read"),
+    ("PUT", "/roles/{role}", "repo_scoped:administration:write"),
+    ("GET", "/members", "repo_scoped:members:write"),
+    ("PUT", "/members/{user}", "repo_scoped:members:write"),
+    ("GET", "/teams", "repo_scoped:members:write"),
+    ("PUT", "/teams/{team}", "repo_scoped:members:write"),
+    ("DELETE", "/teams/{team}", "repo_scoped:members:write"),
+    ("GET", "/locks", "public_repo_read:locks:read"),
+    ("GET", "/info/lfs/locks", "repo_scoped:locks:read"),
+    ("POST", "/info/lfs/locks", "repo_scoped:locks:write"),
+    ("POST", "/info/lfs/locks/verify", "repo_scoped:locks:read"),
+    (
+        "POST",
+        "/info/lfs/locks/{id}/unlock",
+        "repo_scoped:locks:write",
+    ),
+    (
+        "POST",
+        "/info/lfs/objects/batch",
+        "public_lfs_read:contents:read",
+    ),
+    (
+        "POST",
+        "/info/lfs/objects/verify",
+        "repo_scoped:contents:write",
+    ),
+    (
+        "GET",
+        "/info/lfs/objects/{oid}",
+        "public_lfs_read:contents:read",
+    ),
+    (
+        "PUT",
+        "/info/lfs/objects/{oid}",
+        "repo_scoped:contents:write",
+    ),
+    (
+        "HEAD",
+        "/info/lfs/objects/{oid}/tus",
+        "repo_scoped:contents:write",
+    ),
+    (
+        "POST",
+        "/info/lfs/objects/{oid}/tus",
+        "repo_scoped:contents:write",
+    ),
+    (
+        "PATCH",
+        "/info/lfs/objects/{oid}/tus",
+        "repo_scoped:contents:write",
+    ),
+    (
+        "DELETE",
+        "/info/lfs/objects/{oid}/tus",
+        "repo_scoped:contents:write",
+    ),
+    ("GET", "/files", "public_repo_read:contents:read"),
+    ("GET", "/tree", "public_repo_read:contents:read"),
+    ("GET", "/summary", "public_repo_read:contents:read"),
+    ("GET", "/content", "public_repo_read:contents:read"),
+    ("POST", "/checkout", "repo_scoped:locks:write"),
+    ("POST", "/release", "repo_scoped:locks:write"),
+    ("POST", "/checkin", "repo_scoped:contents:write"),
+    ("POST", "/changesets", "repo_scoped:contents:write"),
+    ("POST", "/restore", "repo_scoped:contents:write"),
+    ("POST", "/force-unlock", "repo_scoped:locks:admin"),
+    ("POST", "/policy/preview", "repo_scoped:policy:write"),
+    ("GET", "/audit", "repo_scoped:audit:read"),
+    ("PUT", "/objects", "repo_scoped:contents:write"),
+    ("PUT", "/objects/chunk", "repo_scoped:contents:write"),
+    ("POST", "/objects/missing", "repo_scoped:contents:write"),
+    ("POST", "/objects/assemble", "repo_scoped:contents:write"),
+    ("GET", "/history", "public_repo_read:contents:read"),
+    ("GET", "/verify", "public_repo_read:contents:read"),
+    ("GET", "/commits", "public_repo_read:contents:read"),
+    ("GET", "/commits/{commit}", "public_repo_read:contents:read"),
+    ("GET", "/snapshot", "public_repo_read:contents:read"),
+    ("GET", "/branches", "public_repo_read:contents:read"),
+    ("POST", "/branches", "repo_scoped:contents:write"),
+    ("POST", "/push", "repo_scoped:contents:write"),
+    ("POST", "/fetch", "public_repo_read:contents:read"),
+    ("GET", "/objects/{id}", "public_repo_read:contents:read"),
+    ("POST", "/merge", "repo_scoped:contents:write"),
+    ("POST", "/merge/preview", "repo_scoped:contents:read"),
+    (
+        "GET",
+        "/branches/{*branch}",
+        "public_repo_read:contents:read",
+    ),
+    (
+        "DELETE",
+        "/branches/{*branch}",
+        "repo_scoped:contents:write",
+    ),
+    ("PATCH", "/branches/{*branch}", "repo_scoped:contents:write"),
+];
+
+#[test]
+fn every_repository_route_declares_the_resource_and_level_of_the_catalog() {
+    const BASE: &str = "/v1/repos/{owner}/{name}";
+    let declared: BTreeMap<(String, String), String> = declarations()
+        .into_iter()
+        .filter(|d| repo_need(d.reach).is_some())
+        .map(|d| {
+            let suffix = d.path.strip_prefix(BASE).unwrap().to_string();
+            ((d.method.to_string(), suffix), d.reach.label())
+        })
+        .collect();
+    let pinned: BTreeMap<(String, String), String> = REPOSITORY_ROUTES
+        .iter()
+        .map(|(m, p, l)| ((m.to_string(), p.to_string()), l.to_string()))
+        .collect();
+    assert_eq!(
+        pinned.len(),
+        REPOSITORY_ROUTES.len(),
+        "a route is pinned twice"
+    );
+    assert_eq!(declared, pinned);
 }
