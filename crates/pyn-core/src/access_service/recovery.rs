@@ -13,11 +13,13 @@ pub struct AdminRecovery {
     pub reenabled: bool,
     /// Tokens the account held that are now revoked.
     pub tokens_revoked: usize,
+    /// Second factors the account had, now removed.
+    pub factors_removed: usize,
 }
 
 impl AccessService {
     /// Makes `username` an active administrator with `password`: creates the account, or enables it, completes its
-    /// sign-up and replaces its password. Its sessions and tokens end; other accounts are untouched.
+    /// sign-up and replaces its password. Its second factors, sessions and tokens end; other accounts are untouched.
     pub async fn recover_admin(&self, username: &str, password: &str) -> Result<AdminRecovery> {
         let user = account::validate_username(username)?;
         account::validate_password(password)?;
@@ -76,6 +78,7 @@ impl AccessService {
             }
         }
         self.store.delete_sessions_of(&user).await?;
+        let factors_removed = self.store.clear_two_factor(&user).await?;
 
         let how = match (created, reenabled) {
             (true, _) => "account created",
@@ -101,6 +104,7 @@ impl AccessService {
             created,
             reenabled,
             tokens_revoked,
+            factors_removed,
         })
     }
 

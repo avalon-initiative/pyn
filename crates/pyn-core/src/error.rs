@@ -214,6 +214,16 @@ pub enum PynError {
     PasswordSignInDisabled,
     #[error("authentication failed: {0}")]
     Unauthenticated(String),
+    #[error(
+        "this account needs a second factor: send the code from your authenticator app or a recovery code"
+    )]
+    SecondFactorRequired,
+    #[error("that code is not valid")]
+    SecondFactorInvalid,
+    #[error("confirm with a second factor first")]
+    FreshCheckRequired,
+    #[error("no such factor {0}")]
+    FactorNotFound(String),
     #[error("the request is missing a valid CSRF token")]
     CsrfFailed,
     #[error("the request's origin is not allowed")]
@@ -401,6 +411,10 @@ impl PynError {
             Self::LastSignInMethod => "last_sign_in_method",
             Self::PasswordSignInDisabled => "password_sign_in_disabled",
             Self::Unauthenticated(_) => "unauthenticated",
+            Self::SecondFactorRequired => "second_factor_required",
+            Self::SecondFactorInvalid => "second_factor_invalid",
+            Self::FreshCheckRequired => "fresh_check_required",
+            Self::FactorNotFound(_) => "factor_not_found",
             Self::CsrfFailed => "csrf_failed",
             Self::OriginNotAllowed => "origin_not_allowed",
             Self::Forbidden(_) | Self::GrantRequired(_) => "forbidden",

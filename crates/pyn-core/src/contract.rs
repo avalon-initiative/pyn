@@ -85,6 +85,8 @@ mod self_service;
 pub use self_service::*;
 mod profiles;
 pub use profiles::*;
+mod two_factor;
+pub use two_factor::*;
 
 struct Harness {
     store: Store,
@@ -8864,6 +8866,15 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_grant_that_adds_nothing_the_creator_holds_is_refused);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; an_all_token_is_refused_when_its_creator_holds_nothing_it_grants_anywhere);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_collaborators_personal_token_cannot_reach_a_repository_owned_by_someone_else);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_factor_is_pending_until_confirmed_and_an_account_keeps_one_pending);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_the_last_confirmed_factor_takes_the_accounts_other_second_factor_state);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_time_step_is_accepted_once_and_only_forward);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; recovery_codes_are_replaced_as_a_set_and_each_is_spent_once);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_delay_after_failed_attempts_grows_clears_on_success_and_is_per_account);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_fresh_check_belongs_to_one_credential_and_expired_ones_are_swept);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; clearing_two_factor_removes_everything_and_counts_the_confirmed_factors);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; resealing_rewrites_every_seed_or_none);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_rename_keeps_the_factors_and_a_purge_removes_them);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; added_addresses_are_unique_pending_until_verified_and_the_primary_must_be_verified);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_address_promotes_a_verified_one_and_can_keep_the_last);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_rename_moves_what_names_the_account_and_refuses_a_taken_name);

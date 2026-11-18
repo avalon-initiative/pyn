@@ -324,6 +324,7 @@ impl AccessState {
         for e in &mut self.emails {
             swap(&mut e.user);
         }
+        self.two_factor.rename(user, new);
         RenameOutcome::Renamed { account: id }
     }
 

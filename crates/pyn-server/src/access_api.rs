@@ -15,6 +15,7 @@ use serde::Deserialize;
 
 use crate::caller::{AccountCaller, AnyCaller, FullScopeCaller};
 use crate::client::Client;
+use crate::two_factor_api::require_fresh;
 use crate::{ApiResult, AppState, open_visible};
 
 pub(crate) fn names(permissions: &BTreeSet<Permission>) -> Vec<String> {
@@ -86,9 +87,11 @@ pub(crate) async fn me(
 ))]
 pub(crate) async fn create_token(
     State(s): State<AppState>,
+    headers: HeaderMap,
     FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::CreateTokenRequest>,
 ) -> ApiResult<Json<api::CreatedToken>> {
+    require_fresh(&s, &who, &headers).await?;
     let mut grants = BTreeMap::new();
     for p in &req.permissions {
         let resource = TokenResource::from_str(&p.resource)?;
@@ -169,9 +172,11 @@ pub(crate) async fn list_tokens(
 ))]
 pub(crate) async fn revoke_token(
     State(s): State<AppState>,
+    headers: HeaderMap,
     FullScopeCaller(who): FullScopeCaller,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    require_fresh(&s, &who, &headers).await?;
     s.access.revoke_token(&who, &TokenId(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -241,7 +246,7 @@ pub(crate) async fn resend_verification(
 
 #[utoipa::path(post, path = "/v1/login", request_body = api::LoginRequest, responses(
     (status = 200, body = api::CreatedToken, description = "an account its owner scheduled for deletion signs in too, but the token works only on /v1/account/deletion until the account is restored; every other route answers account_pending_deletion"),
-    (status = 401, body = api::ErrorBody, description = "unauthenticated"),
+    (status = 401, body = api::ErrorBody, description = "unauthenticated; or, after a right password, second_factor_required (the account has a second factor and no code was sent) or second_factor_invalid"),
     (status = 403, body = api::ErrorBody, description = "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled"),
     (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
 ))]
@@ -252,7 +257,12 @@ pub(crate) async fn login(
 ) -> ApiResult<Json<api::CreatedToken>> {
     let (record, token) = s
         .access
-        .login(&req.username, &req.password, client.as_deref())
+        .login_with(
+            &req.username,
+            &req.password,
+            req.code.as_deref(),
+            client.as_deref(),
+        )
         .await?;
     Ok(Json(api::CreatedToken {
         token,
@@ -263,6 +273,7 @@ pub(crate) async fn login(
 #[utoipa::path(put, path = "/v1/me/password", request_body = api::ChangePasswordRequest, responses(
     (status = 204),
     (status = 401, body = api::ErrorBody, description = "the current password is wrong"),
+    (status = 403, body = api::ErrorBody, description = "fresh_check_required: the account has a second factor"),
     (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
 ))]
 pub(crate) async fn change_password(
@@ -271,6 +282,7 @@ pub(crate) async fn change_password(
     FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::ChangePasswordRequest>,
 ) -> ApiResult<StatusCode> {
+    require_fresh(&s, &who, &headers).await?;
     s.access
         .change_password(
             &who,
@@ -306,9 +318,11 @@ pub(crate) struct KeysQuery {
 ))]
 pub(crate) async fn add_key(
     State(s): State<AppState>,
+    headers: HeaderMap,
     AccountCaller(who): AccountCaller,
     Json(req): Json<api::AddKeyRequest>,
 ) -> ApiResult<Json<api::SshKeyInfo>> {
+    require_fresh(&s, &who, &headers).await?;
     let key = s
         .access
         .add_ssh_key(&who, req.title.as_deref(), &req.key)
@@ -337,10 +351,12 @@ pub(crate) async fn list_keys(
               (status = 404, body = api::ErrorBody, description = "key_not_found")))]
 pub(crate) async fn delete_key(
     State(s): State<AppState>,
+    headers: HeaderMap,
     AccountCaller(who): AccountCaller,
     Path(id): Path<String>,
     Query(q): Query<KeysQuery>,
 ) -> ApiResult<StatusCode> {
+    require_fresh(&s, &who, &headers).await?;
     let user = q.user.map_or_else(|| who.user.clone(), UserId::new);
     s.access.delete_ssh_key(&who, &user, &id).await?;
     Ok(StatusCode::NO_CONTENT)

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use pyn_core::{
     AccessService, AccessStore, AdminRecovery, SecretKey, SystemClock, account, rotate_secret_key,
+    rotate_seed_key,
 };
 use pyn_postgres::PgMetadataStore;
 
@@ -127,6 +128,7 @@ pub async fn run(command: HostCommand) -> anyhow::Result<()> {
                 created = done.created,
                 reenabled = done.reenabled,
                 tokens_revoked = done.tokens_revoked,
+                factors_removed = done.factors_removed,
                 "host recovery: administrator recovered"
             );
             if let Some(password) = generated {
@@ -146,10 +148,11 @@ pub async fn run(command: HostCommand) -> anyhow::Result<()> {
             let current = key_from_env("PYN_SECRET_KEY")?;
             let new = key_from_env("PYN_NEW_SECRET_KEY")?
                 .ok_or_else(|| anyhow::anyhow!("PYN_NEW_SECRET_KEY is not set"))?;
-            let rewritten =
-                rotate_secret_key(connect().await?.as_ref(), current.as_ref(), &new).await?;
+            let store = connect().await?;
+            let seeds = rotate_seed_key(store.as_ref(), current.as_ref(), &new).await?;
+            let rewritten = rotate_secret_key(store.as_ref(), current.as_ref(), &new).await?;
             eprintln!(
-                "re-encrypted {rewritten} webhook secret(s) under key {}; set PYN_SECRET_KEY to the new key and restart the server",
+                "re-encrypted {rewritten} webhook secret(s) and {seeds} two-factor seed(s) under key {}; set PYN_SECRET_KEY to the new key and restart the server",
                 new.key_id()
             );
         }

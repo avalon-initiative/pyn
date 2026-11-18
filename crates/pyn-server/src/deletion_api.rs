@@ -2,10 +2,12 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use pyn_core::{AccountDeletion, UserId};
 use pyn_proto as api;
 
 use crate::caller::{FullScopeCaller, ServiceCaller};
+use crate::two_factor_api::require_fresh;
 use crate::{ApiResult, AppState};
 
 fn status(
@@ -43,14 +45,17 @@ pub(crate) async fn account_deletion_status(
     (status = 200, body = api::AccountDeletionStatus, description = "the account is disabled and will be deleted at purge_at unless restored; other credentials of the account now answer account_pending_deletion"),
     (status = 400, body = api::ErrorBody, description = "invalid_request: the account is already scheduled"),
     (status = 401, body = api::ErrorBody, description = "unauthenticated: the password is wrong"),
+    (status = 403, body = api::ErrorBody, description = "fresh_check_required: the account has a second factor"),
     (status = 409, body = api::ErrorBody, description = "account_owns_resources (the message lists the repositories and organizations to transfer or delete), account_frozen or last_server_admin"),
     (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
 ))]
 pub(crate) async fn schedule_account_deletion(
     State(s): State<AppState>,
+    headers: HeaderMap,
     FullScopeCaller(who): FullScopeCaller,
     Json(req): Json<api::DeleteOwnAccountRequest>,
 ) -> ApiResult<Json<api::AccountDeletionStatus>> {
+    require_fresh(&s, &who, &headers).await?;
     let deletion = s.access.schedule_own_deletion(&who, &req.password).await?;
     Ok(Json(status(
         &who.user,

@@ -8,6 +8,7 @@ use chrono::Utc;
 use pyn_core::{
     AccessService, AccessStore, AccountId, AccountKind, NewAccount, SecretKey, ServerSettings,
     SignupStage, SystemClock, UserId, WebhookStore, reveal_secret,
+    two_factor::{FactorKind, FactorRecord, reveal_seed, seal_seed},
 };
 use pyn_postgres::PgMetadataStore;
 
@@ -186,6 +187,24 @@ async fn rotate_secret_key_reencrypts_every_secret_on_postgres() {
         .unwrap();
     let sealed = old_key.seal("whsec_abc").unwrap();
     store.add_secret(sub.id, sealed, Utc::now()).await.unwrap();
+    let owner = UserId::new("alice");
+    store.ensure_user(&owner, Utc::now()).await.unwrap();
+    let sealed = seal_seed(Some(&old_key), b"01234567890123456789").unwrap();
+    store
+        .create_factor(FactorRecord {
+            id: "f1".into(),
+            user: owner.clone(),
+            kind: FactorKind::Totp,
+            label: "phone".into(),
+            secret: sealed.secret,
+            encrypted: sealed.encrypted,
+            key_id: sealed.key_id,
+            created_at: Utc::now(),
+            confirmed_at: Some(Utc::now()),
+            last_step: None,
+        })
+        .await
+        .unwrap();
 
     let out = pyn_server(
         &["rotate-secret-key"],
@@ -199,6 +218,11 @@ async fn rotate_secret_key_reencrypts_every_secret_on_postgres() {
     assert!(!out.status.success(), "the wrong current key is refused");
     let row = &store.list_active_secrets(sub.id).await.unwrap()[0];
     assert_eq!(reveal_secret(Some(&old_key), row).unwrap(), b"whsec_abc");
+    let seed = &store.factors_of(&owner).await.unwrap()[0];
+    assert_eq!(
+        reveal_seed(Some(&old_key), seed).unwrap(),
+        b"01234567890123456789"
+    );
 
     let out = pyn_server(
         &["rotate-secret-key"],
@@ -212,4 +236,9 @@ async fn rotate_secret_key_reencrypts_every_secret_on_postgres() {
     assert!(out.status.success(), "{}", text(&out.stderr));
     let row = &store.list_active_secrets(sub.id).await.unwrap()[0];
     assert_eq!(reveal_secret(Some(&new_key), row).unwrap(), b"whsec_abc");
+    let seed = &store.factors_of(&owner).await.unwrap()[0];
+    assert_eq!(
+        reveal_seed(Some(&new_key), seed).unwrap(),
+        b"01234567890123456789"
+    );
 }

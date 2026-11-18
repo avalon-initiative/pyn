@@ -114,6 +114,16 @@
               }
             }
           },
+          "403": {
+            "description": "fresh_check_required: the account has a second factor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "409": {
             "description": "account_owns_resources (the message lists the repositories and organizations to transfer or delete), account_frozen or last_server_admin",
             "content": {
@@ -2051,7 +2061,7 @@
             }
           },
           "401": {
-            "description": "unauthenticated",
+            "description": "unauthenticated; or, after a right password, second_factor_required (the account has a second factor and no code was sent) or second_factor_invalid",
             "content": {
               "application/json": {
                 "schema": {
@@ -2786,6 +2796,16 @@
               }
             }
           },
+          "403": {
+            "description": "fresh_check_required: the account has a second factor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "429": {
             "description": "too_many_attempts; Retry-After says how many seconds to wait",
             "content": {
@@ -2858,6 +2878,307 @@
           }
         },
         "x-pyn-reach": "account_scoped:account_profile:write"
+      }
+    },
+    "/v1/me/two-factor": {
+      "get": {
+        "tags": [
+          "two_factor_api"
+        ],
+        "operationId": "two_factor_status",
+        "responses": {
+          "200": {
+            "description": "the confirmed factors and the recovery codes left",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorStatus"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      }
+    },
+    "/v1/me/two-factor/recovery-codes": {
+      "post": {
+        "tags": [
+          "two_factor_api"
+        ],
+        "operationId": "recovery_codes",
+        "responses": {
+          "200": {
+            "description": "ten new codes, shown once; the old ones stop working",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodes"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: two-factor authentication is off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "fresh_check_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      }
+    },
+    "/v1/me/two-factor/totp": {
+      "post": {
+        "tags": [
+          "two_factor_api"
+        ],
+        "operationId": "begin_totp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BeginTotpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "a pending authenticator-app factor; it counts after `confirm`, and starting again replaces it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpEnrolment"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthenticated: the password is wrong or missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "fresh_check_required: the account already has a factor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      }
+    },
+    "/v1/me/two-factor/totp/{id}/confirm": {
+      "post": {
+        "tags": [
+          "two_factor_api"
+        ],
+        "operationId": "confirm_totp",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the pending factor",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the factor is on; the account's first one also gets its recovery codes, shown only now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpConfirmed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "second_factor_invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "factor_not_found: no such pending factor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      }
+    },
+    "/v1/me/two-factor/verify": {
+      "post": {
+        "tags": [
+          "two_factor_api"
+        ],
+        "operationId": "verify_second_factor",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "sensitive actions stay open on this credential until `fresh_until`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FreshCheck"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: two-factor authentication is off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "second_factor_invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      }
+    },
+    "/v1/me/two-factor/{id}": {
+      "delete": {
+        "tags": [
+          "two_factor_api"
+        ],
+        "operationId": "remove_factor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "a factor, or a pending enrolment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "removed; removing the last one turns two-factor authentication off and drops the recovery codes"
+          },
+          "403": {
+            "description": "fresh_check_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "factor_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/username": {
@@ -9052,7 +9373,7 @@
             }
           },
           "401": {
-            "description": "unauthenticated",
+            "description": "unauthenticated; or, after a right password, second_factor_required (the account has a second factor and no code was sent) or second_factor_invalid",
             "content": {
               "application/json": {
                 "schema": {
@@ -10286,6 +10607,25 @@
           }
         }
       },
+      "BeginTotpRequest": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A name for the app, such as `phone`. Defaults to `Authenticator app`."
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The current password. Required to turn two-factor authentication on for an account that has a password; an\naccount that already has a factor needs a fresh check instead."
+          }
+        }
+      },
       "Branch": {
         "type": "object",
         "description": "A branch: a name pointing at a commit. The default branch's `.pyn/pyn.toml` is the repository's policy.",
@@ -10517,6 +10857,18 @@
           },
           "path": {
             "type": "string"
+          }
+        }
+      },
+      "CodeRequest": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Six digits from the authenticator app, or a recovery code where the route says so."
           }
         }
       },
@@ -11378,6 +11730,19 @@
           }
         }
       },
+      "FreshCheck": {
+        "type": "object",
+        "description": "Until when the calling credential may do sensitive actions without another second-factor check.",
+        "required": [
+          "fresh_until"
+        ],
+        "properties": {
+          "fresh_until": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "HistoryPage": {
         "type": "object",
         "required": [
@@ -11745,6 +12110,13 @@
           "password"
         ],
         "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The authenticator-app code (or a recovery code) of an account with a second factor. Without it such an\naccount gets `401 second_factor_required` after a right password."
+          },
           "password": {
             "type": "string"
           },
@@ -13122,6 +13494,21 @@
           "content": {
             "type": "string",
             "description": "The object's git blob id; for a chunk upload, the SHA-256 hex of its bytes."
+          }
+        }
+      },
+      "RecoveryCodes": {
+        "type": "object",
+        "description": "New recovery codes, shown once. The old ones no longer work.",
+        "required": [
+          "recovery_codes"
+        ],
+        "properties": {
+          "recovery_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -14678,6 +15065,55 @@
           }
         }
       },
+      "TotpConfirmed": {
+        "type": "object",
+        "description": "A factor that is now on.",
+        "required": [
+          "factor",
+          "fresh_until"
+        ],
+        "properties": {
+          "factor": {
+            "$ref": "#/components/schemas/TwoFactorFactor"
+          },
+          "fresh_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "recovery_codes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Ten single-use recovery codes, shown only now, and only with the account's first factor."
+          }
+        }
+      },
+      "TotpEnrolment": {
+        "type": "object",
+        "description": "A pending authenticator-app enrolment. The seed is shown once; the factor counts only after `confirm`.",
+        "required": [
+          "id",
+          "secret",
+          "uri"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string",
+            "description": "The seed in base32, for typing into an app."
+          },
+          "uri": {
+            "type": "string",
+            "description": "The `otpauth://` URI to show as a QR code."
+          }
+        }
+      },
       "TreeEntry": {
         "type": "object",
         "required": [
@@ -14759,6 +15195,57 @@
           "exclusive",
           "mixed"
         ]
+      },
+      "TwoFactorFactor": {
+        "type": "object",
+        "description": "A second factor the account has turned on.",
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`totp` (an authenticator app)."
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "TwoFactorStatus": {
+        "type": "object",
+        "description": "The caller's second-factor state.",
+        "required": [
+          "enabled",
+          "factors",
+          "recovery_codes_left"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the account has a confirmed factor, so sign-in asks for a code."
+          },
+          "factors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TwoFactorFactor"
+            }
+          },
+          "recovery_codes_left": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
       },
       "UpdateOrgProfileRequest": {
         "type": "object",

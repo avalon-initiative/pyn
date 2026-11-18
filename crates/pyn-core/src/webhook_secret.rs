@@ -72,26 +72,41 @@ impl SecretKey {
 
     /// The secret as the store keeps it: encrypted under this key.
     pub fn seal(&self, secret: &str) -> Result<NewSecret> {
+        Ok(NewSecret {
+            secret: self.seal_bytes(secret.as_bytes(), AAD)?,
+            encrypted: true,
+            key_id: Some(self.key_id.clone()),
+        })
+    }
+
+    /// Encrypts `data` bound to `aad`, so a sealed value cannot be moved to another kind of secret.
+    pub(crate) fn seal_bytes(&self, data: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
         let mut nonce = [0u8; NONCE_BYTES];
         getrandom::fill(&mut nonce)
             .map_err(|e| PynError::Storage(format!("random source: {e}")))?;
         let ciphertext = self
             .cipher
-            .encrypt(
-                &nonce_of(&nonce),
-                Payload {
-                    msg: secret.as_bytes(),
-                    aad: AAD,
-                },
-            )
-            .map_err(|_| PynError::Storage("could not encrypt a webhook secret".into()))?;
+            .encrypt(&nonce_of(&nonce), Payload { msg: data, aad })
+            .map_err(|_| PynError::Storage("could not encrypt a secret".into()))?;
         let mut stored = nonce.to_vec();
         stored.extend_from_slice(&ciphertext);
-        Ok(NewSecret {
-            secret: stored,
-            encrypted: true,
-            key_id: Some(self.key_id.clone()),
-        })
+        Ok(stored)
+    }
+
+    pub(crate) fn open_bytes(&self, stored: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+        if stored.len() <= NONCE_BYTES {
+            return Err(PynError::Storage("a stored secret is truncated".into()));
+        }
+        let (nonce, ciphertext) = stored.split_at(NONCE_BYTES);
+        self.cipher
+            .decrypt(
+                &nonce_of(nonce),
+                Payload {
+                    msg: ciphertext,
+                    aad,
+                },
+            )
+            .map_err(|_| PynError::Storage("a stored secret could not be decrypted".into()))
     }
 }
 

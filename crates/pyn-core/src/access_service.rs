@@ -36,9 +36,10 @@ use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
 use crate::store::MetadataStore;
+use crate::two_factor::{FactorRecord, FactorRemoval};
 use crate::types::{AccountId, MAX_LABEL_BYTES, validate_label};
 use crate::types::{RepoId, UserId};
-use crate::webhook::{EventDraft, WebhookStore};
+use crate::webhook::{EventDraft, NewSecret, WebhookStore};
 
 /// Server-wide events (account approvals and disables) are recorded in the audit store under this id, which
 /// no repository can have.
@@ -56,6 +57,7 @@ mod repo_policy;
 mod self_service;
 mod setup;
 mod teams;
+mod two_factor;
 mod webhooks;
 
 pub use deletion::ACCOUNT_DELETION_ACTOR;
@@ -67,6 +69,7 @@ pub use recovery::{AdminRecovery, HOST_RECOVERY_ACTOR};
 pub use self_service::{AccountRename, MAX_ACCOUNT_EMAILS};
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
+pub use two_factor::{TotpConfirmed, TotpEnrolment, TwoFactorStatus};
 pub use webhooks::{
     CreateWebhook, DeliveryPage, IssuedSecret, WebhookDetail, WebhookSecretInfo, WebhookSettings,
 };
@@ -528,6 +531,71 @@ pub trait AccessStore: Send + Sync {
         address: &str,
         keep_verified: bool,
     ) -> Result<EmailRemove>;
+
+    /// The account's second factors, pending ones included, oldest first.
+    async fn factors_of(&self, user: &UserId) -> Result<Vec<FactorRecord>>;
+
+    /// Stores a pending factor, replacing any other pending one of the account.
+    async fn create_factor(&self, factor: FactorRecord) -> Result<()>;
+
+    /// Marks a pending factor confirmed; false when it is not the account's pending factor.
+    async fn confirm_factor(&self, user: &UserId, id: &str, now: DateTime<Utc>) -> Result<bool>;
+
+    /// Removes a factor. When no confirmed one is left, the account's recovery codes, attempt state and fresh checks go
+    /// too, in the same step.
+    async fn remove_factor(&self, user: &UserId, id: &str) -> Result<FactorRemoval>;
+
+    /// Records `step` as the latest accepted one of the factor; false when it is not newer than the recorded one.
+    async fn accept_factor_step(&self, user: &UserId, id: &str, step: i64) -> Result<bool>;
+
+    /// Replaces the account's recovery codes with these hashes.
+    async fn replace_recovery_codes(
+        &self,
+        user: &UserId,
+        hashes: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+
+    /// Spends a recovery code; false when the account has no unused code with this hash.
+    async fn use_recovery_code(
+        &self,
+        user: &UserId,
+        hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool>;
+
+    async fn unused_recovery_codes(&self, user: &UserId) -> Result<usize>;
+
+    /// Counts a factor attempt before it is checked (see `two_factor::count_attempt`); `Err(until)` while a delay runs.
+    async fn count_factor_attempt(
+        &self,
+        user: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<std::result::Result<(), DateTime<Utc>>>;
+
+    /// Forgets the account's failed attempts after a success.
+    async fn clear_factor_attempts(&self, user: &UserId) -> Result<()>;
+
+    /// Notes that the credential named by `credential` (a session or sign-in token) passed a second factor until `until`.
+    async fn mark_fresh(
+        &self,
+        credential: &str,
+        user: &UserId,
+        until: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+
+    async fn fresh_until(&self, credential: &str) -> Result<Option<DateTime<Utc>>>;
+
+    /// Removes every factor, recovery code, attempt state and fresh check of the account; returns the confirmed
+    /// factors removed.
+    async fn clear_two_factor(&self, user: &UserId) -> Result<usize>;
+
+    /// Rewrites every stored seed through `reseal` in one atomic step, failing without a change when it fails.
+    async fn reseal_factor_seeds(
+        &self,
+        reseal: &(dyn for<'a> Fn(&'a FactorRecord) -> Result<NewSecret> + Send + Sync),
+    ) -> Result<u64>;
 
     /// Renames an account that is not an organization, with its memberships, tokens, keys, sessions and the other
     /// records that name it, and notes the old name's span. `NameTaken` changes nothing.
@@ -2106,17 +2174,21 @@ impl AccessService {
     }
 
     /// Checks a password and returns a token for every repository the user can reach, capped by their roles at
-    /// use time, that expires after the configured number of days.
+    /// use time, that expires after the configured number of days. An account with a second factor needs
+    /// `login_with`.
     pub async fn login(
         &self,
         username: &str,
         password: &str,
         client: Option<&str>,
     ) -> Result<(TokenRecord, String)> {
-        let user = self.verify_sign_in(username, password, client).await?;
+        self.login_with(username, password, None, client).await
+    }
+
+    async fn issue_sign_in_token(&self, user: &UserId) -> Result<(TokenRecord, String)> {
         let expires = self.clock.now() + Duration::days(self.config.session_days);
         self.issue_token(
-            &user,
+            user,
             IssuedToken {
                 name: "sign-in",
                 description: None,
@@ -2138,8 +2210,8 @@ impl AccessService {
         password: &str,
         client: Option<&str>,
     ) -> Result<(SessionRecord, String)> {
-        let user = self.verify_sign_in(username, password, client).await?;
-        self.open_session(user).await
+        self.start_session_with(username, password, None, client)
+            .await
     }
 
     async fn open_session(&self, user: UserId) -> Result<(SessionRecord, String)> {
@@ -2551,6 +2623,32 @@ impl AccessService {
         Ok(user)
     }
 
+    /// Checks the actor's current password against `hash`: five wrong guesses per window, counted before the check
+    /// and cleared by a right one.
+    async fn check_current_password(
+        &self,
+        actor: &Identity,
+        hash: &str,
+        current: Option<&str>,
+    ) -> Result<()> {
+        let key = format!(
+            "password:account:{}",
+            bounded_key(&actor.user.as_str().to_lowercase())
+        );
+        self.count_limited(&key, self.config.limits.sign_in_per_account, SIGN_IN_WINDOW)
+            .await?;
+        let ok = match current {
+            Some(current) => self.passwords.verify(current, hash).await,
+            None => false,
+        };
+        if !ok {
+            return Err(PynError::Unauthenticated(
+                "the current password is wrong".into(),
+            ));
+        }
+        self.limits.reset(&key).await
+    }
+
     /// Changes the actor's own password, ends their other sessions (keeping `keep_session`, a cookie) and
     /// their sign-in tokens. An existing password must be given; with none yet, only a web session may set one.
     pub async fn change_password(
@@ -2563,22 +2661,7 @@ impl AccessService {
         actor.require_full_scope()?;
         account::validate_password(new)?;
         if let Some(hash) = self.store.password_hash(&actor.user).await? {
-            let key = format!(
-                "password:account:{}",
-                bounded_key(&actor.user.as_str().to_lowercase())
-            );
-            self.count_limited(&key, self.config.limits.sign_in_per_account, SIGN_IN_WINDOW)
-                .await?;
-            let ok = match current {
-                Some(current) => self.passwords.verify(current, &hash).await,
-                None => false,
-            };
-            if !ok {
-                return Err(PynError::Unauthenticated(
-                    "the current password is wrong".into(),
-                ));
-            }
-            self.limits.reset(&key).await?;
+            self.check_current_password(actor, &hash, current).await?;
         } else if !matches!(actor.credential, Credential::Session) {
             return Err(PynError::Unauthenticated(
                 "a first password can be set only from a signed-in web session".into(),
