@@ -1124,7 +1124,7 @@ async fn missing_objects(
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/objects/assemble", params(RepoAddress), request_body = api::AssembleObjectRequest, responses(
     (status = 200, body = api::PutObjectResponse, description = "the blob id of the chunks' concatenation, ready to check in"),
-    (status = 400, body = api::ErrorBody, description = "invalid_request for a malformed hash, an oversized chunk or too many chunks; object_missing when a chunk was not uploaded"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request for an empty list, a malformed hash, an oversized chunk or too many chunks; object_missing when a chunk was not uploaded"),
     (status = 413, body = api::ErrorBody, description = "object_too_large"),
 ))]
 async fn assemble_object(

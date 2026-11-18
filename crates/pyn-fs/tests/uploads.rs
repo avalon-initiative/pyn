@@ -277,3 +277,11 @@ async fn racing_puts_of_the_same_bytes_report_one_creator() {
     assert_eq!(creators, 1);
     assert!(temp_files(&root).is_empty());
 }
+
+#[tokio::test]
+async fn assembling_no_chunks_is_refused_and_stores_nothing() {
+    let rig = rig(100, true).await;
+    let err = rig.svc.assemble(&[], None).await.unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "{err:?}");
+    assert_eq!(object_files(&rig.root), 0);
+}

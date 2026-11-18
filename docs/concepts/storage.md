@@ -48,7 +48,7 @@ Over HTTP a client can send a large file as chunks (decision #76: plain HTTP, no
 3. `PUT .../objects/chunk` each missing chunk (at most 4 MiB); the response is its raw SHA-256 key. Whole objects go to
    `PUT .../objects` instead and get their blob id.
 4. `POST .../objects/assemble` with the ordered chunk digests, each of which the repository must know (else
-   `400 object_missing`). The server sums the chunk lengths for the blob header,
+   `400 object_missing`); an empty list is `400 invalid_request` (an empty file is uploaded as a blob with `PUT .../objects`). The server sums the chunk lengths for the blob header,
    reads the chunks, computes the blob id of their concatenation (the client cannot claim one), stores the manifest, and
    returns that id to use in a commit. The CLI also hashes the file itself while cutting it and checks the two agree.
 

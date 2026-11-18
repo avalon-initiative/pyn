@@ -5055,6 +5055,23 @@ async fn assembling_needs_chunks_uploaded_to_the_same_repository() {
 }
 
 #[tokio::test]
+async fn assembling_an_empty_chunk_list_is_refused() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let r = send(
+        &app,
+        "POST",
+        "/v1/repos/alice/game/objects/assemble",
+        &alice,
+        Some(serde_json::json!({"chunks": []})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "invalid_request");
+}
+
+#[tokio::test]
 async fn capabilities_say_the_server_takes_pushed_commits() {
     let app = router(state_with(false, RegistrationMode::Open).await);
     let r = app

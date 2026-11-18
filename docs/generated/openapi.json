@@ -7522,7 +7522,7 @@
             }
           },
           "400": {
-            "description": "invalid_request for a malformed hash, an oversized chunk or too many chunks; object_missing when a chunk was not uploaded",
+            "description": "invalid_request for an empty list, a malformed hash, an oversized chunk or too many chunks; object_missing when a chunk was not uploaded",
             "content": {
               "application/json": {
                 "schema": {

@@ -88,8 +88,12 @@ impl RepoService {
     }
 
     /// Joins chunks this repository knows into one object and records it; an unknown chunk is `ObjectMissing`.
+    /// An empty list is `InvalidRequest`: an empty object is uploaded as a blob.
     pub async fn assemble(&self, chunks: &[ObjectId], max: Option<u64>) -> Result<ObjectId> {
         self.ensure_writable().await?;
+        if chunks.is_empty() {
+            return Err(PynError::InvalidRequest("no chunks to assemble".into()));
+        }
         if let Some(c) = self.meta.unknown_objects(&self.repo, chunks).await?.first() {
             return Err(PynError::ObjectMissing(c.to_string()));
         }
