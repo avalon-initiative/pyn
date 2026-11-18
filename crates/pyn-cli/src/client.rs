@@ -65,6 +65,17 @@ impl Api {
         Ok(reply)
     }
 
+    /// Like `send`, for a sensitive action: on `403 fresh_check_required` it asks for a second-factor code and tries once more.
+    pub fn send_sensitive(&self, call: Call) -> Result<Reply> {
+        match self.send(call.clone()) {
+            Err(e) if crate::two_factor::is_fresh_required(&e) => {
+                crate::two_factor::fresh_check(self)?;
+                self.send(call)
+            }
+            other => other,
+        }
+    }
+
     /// Fails with an upgrade hint unless the server advertises support for local commits.
     pub fn require_local_commits(&self) -> Result<()> {
         let reply = self
@@ -124,10 +135,16 @@ pub fn ok(resp: Reply) -> Result<Reply> {
         return Ok(resp);
     }
     let status = resp.status;
+    let retry_after = resp.header("retry-after").map(str::to_string);
     match resp.json::<api::ErrorBody>() {
         Ok(e) => {
             let mut message =
                 crate::sanitize::text(&crate::time::localize(&e.message)).into_owned();
+            if status == 429
+                && let Some(wait) = &retry_after
+            {
+                message.push_str(&format!(" (try again in {}s)", crate::sanitize::text(wait)));
+            }
             if e.code == "account_pending_deletion" {
                 message.push_str(" (run `pyn account restore`)");
             }

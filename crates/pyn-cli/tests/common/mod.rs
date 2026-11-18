@@ -63,6 +63,11 @@ pub fn start_with_clock(clock: Arc<ManualClock>) -> Env {
     build_with(true, &[], None, clock)
 }
 
+/// A server with these accounts registered whose clock only moves when `clock` is advanced.
+pub fn start_with_accounts_and_clock(names: &[&str], clock: Arc<ManualClock>) -> Env {
+    build_with(false, names, None, clock)
+}
+
 /// A server with no repositories whose lease clock only moves when `clock` is advanced.
 pub fn start_empty_with_clock(clock: Arc<ManualClock>) -> Env {
     build_with(false, &[], None, clock)

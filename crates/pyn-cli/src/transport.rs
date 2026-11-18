@@ -22,6 +22,7 @@ pub enum Auth {
 }
 
 /// One request to the server's API, independent of how it travels.
+#[derive(Clone)]
 pub struct Call {
     pub method: Method,
     pub path: String,
