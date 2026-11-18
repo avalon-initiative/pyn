@@ -76,7 +76,7 @@ hex) that names the key without revealing it. An invalid value stops the server 
 database it protects.
 
 Changing `PYN_SECRET_KEY` alone does not re-encrypt existing secrets; one stored under a different key cannot be read.
-`pyn-server rotate-secret-key` re-encrypts every stored secret under a new key in one transaction, and a lost key is
+`pyn-server rotate-secret-key` re-encrypts every stored secret (and the [two-factor](access.md#two-factor-authentication) seeds that share the key) under a new key, the secrets in one transaction, and a lost key is
 recovered by rotating each webhook's secret (see [recovery](../deployment.md#lost-secret-key)). Secrets created while no key
 was set stay plaintext until that command runs.
 

@@ -20,7 +20,7 @@ use utoipa::openapi::extensions::Extensions;
 use crate::{
     AppState, access_api, admin_api, branch_api, caller, deletion_api, freeze_api, lfs_api,
     limits_api, merge_api, oidc_api, org_api, profile_api, push_api, repo_api, repo_policy_api,
-    self_service_api, session_api, setup_api, team_api, webhook_api,
+    self_service_api, session_api, setup_api, team_api, two_factor_api, webhook_api,
 };
 
 const fn need(resource: TokenResource, level: GrantLevel) -> GrantNeed {
@@ -372,6 +372,36 @@ fn table() -> Vec<Entry> {
             "/v1/me/password",
             Reach::FullScope,
             access_api::change_password,
+        ),
+        get(
+            "/v1/me/two-factor",
+            Reach::FullScope,
+            two_factor_api::two_factor_status,
+        ),
+        post(
+            "/v1/me/two-factor/totp",
+            Reach::FullScope,
+            two_factor_api::begin_totp,
+        ),
+        post(
+            "/v1/me/two-factor/totp/{id}/confirm",
+            Reach::FullScope,
+            two_factor_api::confirm_totp,
+        ),
+        post(
+            "/v1/me/two-factor/recovery-codes",
+            Reach::FullScope,
+            two_factor_api::recovery_codes,
+        ),
+        post(
+            "/v1/me/two-factor/verify",
+            Reach::FullScope,
+            two_factor_api::verify_second_factor,
+        ),
+        delete(
+            "/v1/me/two-factor/{id}",
+            Reach::FullScope,
+            two_factor_api::remove_factor,
         ),
         get(
             "/v1/me/emails",

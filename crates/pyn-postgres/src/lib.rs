@@ -38,6 +38,7 @@ mod history_migration;
 mod profile;
 mod self_service;
 mod tus;
+mod two_factor;
 mod webhook;
 
 /// Which clock judges lease expiry and rate-limit windows.

@@ -3,16 +3,17 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
+use pyn_core::two_factor::{FactorRecord, FactorRemoval};
 use pyn_core::{
     AccessMode, AccessStore, AccountDeletion, AccountDisable, AccountEmail, AccountId, AccountKind,
     AccountPurge, AccountRecord, AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule,
     CreationScope, CreationSubject, DeletionSchedule, EmailAdd, EmailRemove, EventDraft,
     ExternalCreate, ExternalIdentity, GrantLevel, IdentityUnlink, InvitationAccept,
     InvitationCreate, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent, MemberCreation,
-    NameReservation, NewAccount, NewExternalAccount, OidcFlow, OrgDeleteMark, OrgInvitation,
-    OrgMemberChange, OrgProfile, OrgRole, Permission, PrimaryChange, Profile, ProfileFields,
-    ProfileVisibility, PynError, RateLimitStore, RateState, RegistrationMode, RenameOutcome,
-    RepoAccess, RepoId, RepoPolicy, Result, Role, RoleDefinitions, ServerSettings,
+    NameReservation, NewAccount, NewExternalAccount, NewSecret, OidcFlow, OrgDeleteMark,
+    OrgInvitation, OrgMemberChange, OrgProfile, OrgRole, Permission, PrimaryChange, Profile,
+    ProfileFields, ProfileVisibility, PynError, RateLimitStore, RateState, RegistrationMode,
+    RenameOutcome, RepoAccess, RepoId, RepoPolicy, Result, Role, RoleDefinitions, ServerSettings,
     ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind,
     TeamId, TeamRecord, TokenId, TokenRecord, TokenResource, UserId, VerificationRecord,
 };
@@ -2361,6 +2362,85 @@ impl AccessStore for PgMetadataStore {
         .await
         .map_err(db)?;
         rows.iter().map(account_from).collect()
+    }
+
+    async fn factors_of(&self, user: &UserId) -> Result<Vec<FactorRecord>> {
+        self.factors_rows(user).await
+    }
+
+    async fn create_factor(&self, factor: FactorRecord) -> Result<()> {
+        self.create_factor_row(&factor).await
+    }
+
+    async fn confirm_factor(&self, user: &UserId, id: &str, now: DateTime<Utc>) -> Result<bool> {
+        self.confirm_factor_row(user, id, now).await
+    }
+
+    async fn remove_factor(&self, user: &UserId, id: &str) -> Result<FactorRemoval> {
+        self.remove_factor_row(user, id).await
+    }
+
+    async fn accept_factor_step(&self, user: &UserId, id: &str, step: i64) -> Result<bool> {
+        self.accept_step_row(user, id, step).await
+    }
+
+    async fn replace_recovery_codes(
+        &self,
+        user: &UserId,
+        hashes: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.replace_codes_rows(user, hashes, now).await
+    }
+
+    async fn use_recovery_code(
+        &self,
+        user: &UserId,
+        hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.use_code_row(user, hash, now).await
+    }
+
+    async fn unused_recovery_codes(&self, user: &UserId) -> Result<usize> {
+        self.unused_codes_count(user).await
+    }
+
+    async fn count_factor_attempt(
+        &self,
+        user: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<std::result::Result<(), DateTime<Utc>>> {
+        self.count_attempt_row(user, now).await
+    }
+
+    async fn clear_factor_attempts(&self, user: &UserId) -> Result<()> {
+        self.clear_attempt_row(user).await
+    }
+
+    async fn mark_fresh(
+        &self,
+        credential: &str,
+        user: &UserId,
+        until: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.mark_fresh_row(credential, user, until, now).await
+    }
+
+    async fn fresh_until(&self, credential: &str) -> Result<Option<DateTime<Utc>>> {
+        self.fresh_until_row(credential).await
+    }
+
+    async fn clear_two_factor(&self, user: &UserId) -> Result<usize> {
+        self.clear_two_factor_rows(user).await
+    }
+
+    async fn reseal_factor_seeds(
+        &self,
+        reseal: &(dyn for<'a> Fn(&'a FactorRecord) -> Result<NewSecret> + Send + Sync),
+    ) -> Result<u64> {
+        self.reseal_seed_rows(reseal).await
     }
 
     async fn purge_account_with_events(

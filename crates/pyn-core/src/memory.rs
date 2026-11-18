@@ -40,6 +40,7 @@ use crate::repo_policy::{
 use crate::rules::{Mode, PathFilter};
 use crate::store::{MetadataStore, UploadReservation};
 use crate::tree::HeadCounts;
+use crate::two_factor::{FactorRecord, FactorRemoval};
 use crate::types::{
     AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, Person, PushedCommit, RepoId,
     RepoPath, Revision, RevisionId, TusCancel, TusClaim, TusSession, UserId,
@@ -51,6 +52,7 @@ use crate::webhook::{
 };
 
 mod self_service;
+mod two_factor;
 
 type Key = (RepoId, RepoPath);
 
@@ -2068,6 +2070,7 @@ struct AccessState {
     name_reservations: BTreeMap<String, NameReservation>,
     emails: Vec<self_service::EmailRow>,
     spans: Vec<crate::account_self::NameSpan>,
+    two_factor: two_factor::TwoFactorState,
 }
 
 impl AccessState {
@@ -2944,6 +2947,132 @@ impl AccessStore for MemoryAccessStore {
             .remove_email(user, address, keep_verified))
     }
 
+    async fn factors_of(&self, user: &UserId) -> Result<Vec<FactorRecord>> {
+        Ok(self.state.lock().unwrap().two_factor.factors_of(user))
+    }
+
+    async fn create_factor(&self, factor: FactorRecord) -> Result<()> {
+        self.state.lock().unwrap().two_factor.create_factor(factor);
+        Ok(())
+    }
+
+    async fn confirm_factor(&self, user: &UserId, id: &str, now: DateTime<Utc>) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .confirm_factor(user, id, now))
+    }
+
+    async fn remove_factor(&self, user: &UserId, id: &str) -> Result<FactorRemoval> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .remove_factor(user, id))
+    }
+
+    async fn accept_factor_step(&self, user: &UserId, id: &str, step: i64) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .accept_factor_step(user, id, step))
+    }
+
+    async fn replace_recovery_codes(
+        &self,
+        user: &UserId,
+        hashes: &[String],
+        _now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .two_factor
+            .replace_recovery_codes(user, hashes);
+        Ok(())
+    }
+
+    async fn use_recovery_code(
+        &self,
+        user: &UserId,
+        hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .use_recovery_code(user, hash, now))
+    }
+
+    async fn unused_recovery_codes(&self, user: &UserId) -> Result<usize> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .unused_recovery_codes(user))
+    }
+
+    async fn count_factor_attempt(
+        &self,
+        user: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<std::result::Result<(), DateTime<Utc>>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .count_attempt(user, now))
+    }
+
+    async fn clear_factor_attempts(&self, user: &UserId) -> Result<()> {
+        self.state.lock().unwrap().two_factor.clear_attempts(user);
+        Ok(())
+    }
+
+    async fn mark_fresh(
+        &self,
+        credential: &str,
+        user: &UserId,
+        until: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .two_factor
+            .mark_fresh(credential, user, until, now);
+        Ok(())
+    }
+
+    async fn fresh_until(&self, credential: &str) -> Result<Option<DateTime<Utc>>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .fresh_until(credential))
+    }
+
+    async fn clear_two_factor(&self, user: &UserId) -> Result<usize> {
+        Ok(self.state.lock().unwrap().two_factor.forget(user))
+    }
+
+    async fn reseal_factor_seeds(
+        &self,
+        reseal: &(dyn for<'a> Fn(&'a FactorRecord) -> Result<NewSecret> + Send + Sync),
+    ) -> Result<u64> {
+        self.state.lock().unwrap().two_factor.reseal(reseal)
+    }
+
     async fn rename_account(
         &self,
         user: &UserId,
@@ -3435,6 +3564,7 @@ impl AccessStore for MemoryAccessStore {
             .retain(|(_, s, _), _| *s != CreationSubject::User(user.clone()));
         st.tokens.retain(|_, t| &t.user != user);
         st.sessions.retain(|_, s| &s.user != user);
+        st.two_factor.forget(user);
         st.identities.retain(|i| &i.user != user);
         st.oidc_flows
             .retain(|_, f| f.link_user.as_ref() != Some(user));

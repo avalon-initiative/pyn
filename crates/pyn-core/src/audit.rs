@@ -79,6 +79,11 @@ pub enum AuditAction {
     EmailVerified,
     EmailPrimaryChanged,
     EmailRemoved,
+    TwoFactorAdded,
+    TwoFactorRemoved,
+    RecoveryCodesRegenerated,
+    RecoveryCodeUsed,
+    TwoFactorReset,
     OwnerLimitsChanged,
     RepoStorageCapChanged,
     OwnerFrozen,
@@ -103,7 +108,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 73] = [
+    pub const ALL: [AuditAction; 78] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -156,6 +161,11 @@ impl AuditAction {
         AuditAction::EmailVerified,
         AuditAction::EmailPrimaryChanged,
         AuditAction::EmailRemoved,
+        AuditAction::TwoFactorAdded,
+        AuditAction::TwoFactorRemoved,
+        AuditAction::RecoveryCodesRegenerated,
+        AuditAction::RecoveryCodeUsed,
+        AuditAction::TwoFactorReset,
         AuditAction::OwnerLimitsChanged,
         AuditAction::RepoStorageCapChanged,
         AuditAction::OwnerFrozen,
@@ -233,6 +243,11 @@ impl AuditAction {
             Self::EmailVerified => "email_verified",
             Self::EmailPrimaryChanged => "email_primary_changed",
             Self::EmailRemoved => "email_removed",
+            Self::TwoFactorAdded => "two_factor_added",
+            Self::TwoFactorRemoved => "two_factor_removed",
+            Self::RecoveryCodesRegenerated => "recovery_codes_regenerated",
+            Self::RecoveryCodeUsed => "recovery_code_used",
+            Self::TwoFactorReset => "two_factor_reset",
             Self::OwnerLimitsChanged => "owner_limits_changed",
             Self::RepoStorageCapChanged => "repo_storage_cap_changed",
             Self::OwnerFrozen => "owner_frozen",

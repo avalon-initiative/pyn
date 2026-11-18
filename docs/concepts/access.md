@@ -232,6 +232,70 @@ sign in yet (`email_not_verified`, `approval_pending`, `account_disabled`, all 4
 A server can also sign people in through an external OpenID Connect provider, and turn password sign-in off (server
 administrators keep it); see [signing in with an external provider](external-sign-in.md).
 
+An account can add a second step to password sign-in; see [two-factor authentication](#two-factor-authentication).
+
+## Two-factor authentication
+
+An account can require a second factor at password sign-in (decision #1097). Today that is an authenticator app (a time-based
+one-time password, RFC 6238: SHA-1, six digits, 30 seconds) plus single-use recovery codes; security keys and passkeys are a
+later addition. It is opt-in. Nothing here needs email or a paid service.
+
+**Turning it on.** `POST /v1/me/two-factor/totp {label?, password}` starts an enrolment and returns the seed (`secret`, in
+base32, and an `otpauth://` `uri` for a QR code) once; an account that has a password must send it. Nothing changes until
+`POST /v1/me/two-factor/totp/{id}/confirm {code}` proves the app shows the right code. Starting again replaces an unconfirmed
+enrolment. The account's first confirmed factor also returns **ten recovery codes**, shown only then: they are stored as
+hashes, each works once, and `POST /v1/me/two-factor/recovery-codes` replaces all ten with a new set (the old ones stop
+working). An account may hold up to five factors, each with its own name. `GET /v1/me/two-factor` lists the confirmed factors
+and how many recovery codes are left, never the seed or a code. `DELETE /v1/me/two-factor/{id}` removes a factor; removing the
+last one turns two-factor authentication off and drops the recovery codes.
+
+**Signing in.** `POST /v1/login` and `POST /v1/session` take an optional `code`: the app's six digits, or a recovery code
+(`xxxxx-xxxxx`, case and the dash do not matter). For an account with a factor, a right password without a code answers `401
+second_factor_required` (a wrong password still gets the one generic `401`, so this reveals nothing to someone without the
+password), and a wrong code `401 second_factor_invalid`. A client asks for the code and sends the request again. An app code
+works once: the server remembers the latest time step it accepted and accepts one step of clock drift either way. Signing in
+with a recovery code is recorded in the server audit log. [External sign-in](external-sign-in.md) brings its own second
+factor and is not challenged, and neither are tokens or SSH keys: they are credentials for automation. Provisional: `pyn login` does not ask for the code yet, so on the command line an account with a factor uses a token made in the web app (after a fresh check) until it does.
+
+**Fresh check (sudo mode).** An account that has a factor must pass it again, recently, before a sensitive action:
+changing the password or the factors (adding, removing, new recovery codes), creating or revoking a token, adding or removing
+an SSH key, and scheduling the account's deletion. (Administrator access sessions will use the same check.) `POST
+/v1/me/two-factor/verify {code}` takes an app code or a recovery code and keeps those actions open for 15 minutes on the
+credential that sent it, a session or a sign-in token (the window belongs to that credential, not to the account), and answers
+`{fresh_until}`. A sign-in that passed the second factor starts with the window open. Without it the action answers `403
+fresh_check_required` and changes nothing. An account with no factor is never asked. A fine-grained token is not challenged
+(decision #1097 leaves automation alone), but it can only be created by a credential that passed the check, and it never
+reaches the factor routes, which are [full-scope](#full-scope-credentials) only like the password.
+
+**Limits on attempts.** Every code check, at sign-in, at `confirm` and at `verify`, counts against the account, whichever factor
+or recovery code it targets, and is counted before it is checked. The first four wrong attempts wait for nothing; from the
+fifth on the next attempt waits 30 seconds, then 60, doubling up to an hour (`429 too_many_attempts` with `Retry-After`). The
+delay locks the attempt, not the account: the password, tokens and SSH keys keep working, and a right code during the delay
+is refused too. A success clears the count, and so does 24 hours without attempts. This is on top of the password limits
+under [accounts and signing in](#accounts-and-signing-in).
+
+**Seeds at rest.** A seed has to be readable to check a code, so it cannot be hashed. With `PYN_SECRET_KEY` set it is stored
+encrypted with AES-256-GCM (the same key as webhook secrets, with its own context), so a copy of the database alone does not
+leak the seeds; unset, it is stored as plaintext and the server warns at start. `pyn-server rotate-secret-key` re-encrypts the
+seeds with the webhook secrets. A seed encrypted under a key the server no longer has cannot check codes (a recovery code still
+signs in): see [Lost secret key](../deployment.md#lost-secret-key).
+
+**Recovery without email.** A recovery code signs in; so does any other registered factor. `pyn-server recover-admin` on the host
+also removes the account's factors, which is how an administrator who lost both the device and the codes gets back in. Resetting
+another account's factors as an administrator is a separate step.
+
+Audit actions in the server log (`GET /v1/admin/audit`): `two_factor_added`, `two_factor_removed`,
+`recovery_codes_regenerated`, `recovery_code_used`.
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/me/two-factor` | `{enabled, factors: [{id, kind, label, created_at}], recovery_codes_left}` |
+| `POST /v1/me/two-factor/totp` | `{label?, password?}` gives `201 {id, secret, uri}`; `401` for a missing or wrong password, `403 fresh_check_required` when a factor exists |
+| `POST /v1/me/two-factor/totp/{id}/confirm` | `{code}` gives `{factor, recovery_codes?, fresh_until}`; `recovery_codes` only with the first factor. `401 second_factor_invalid`, `404 factor_not_found`, `429` |
+| `DELETE /v1/me/two-factor/{id}` | `204`; `403 fresh_check_required`, `404 factor_not_found` |
+| `POST /v1/me/two-factor/recovery-codes` | `{recovery_codes}`, ten new ones shown once; `400` when two-factor authentication is off, `403 fresh_check_required` |
+| `POST /v1/me/two-factor/verify` | `{code}` gives `{fresh_until}`; `400` when it is off, `401 second_factor_invalid`, `429` |
+
 ## SSH keys
 
 SSH keys are how people sign in from the command line and, when the SSH transport arrives, how clone and push authenticate,
@@ -344,6 +408,7 @@ is off) the account waits as `pending_approval` until a server administrator app
 | failed sign-ins per user name | 5 per 15 minutes | `PYN_RATE_SIGN_IN_ACCOUNT` |
 | failed sign-ins per client address | 30 per 15 minutes | `PYN_RATE_SIGN_IN_CLIENT` |
 | wrong current passwords in `PUT /v1/me/password`, per account | 5 per 15 minutes | `PYN_RATE_SIGN_IN_ACCOUNT` |
+| second-factor code attempts, per account | the fifth attempt on starts a delay of 30 seconds that doubles up to an hour | fixed, see [two-factor authentication](#two-factor-authentication) |
 | sign-up and resend attempts per client address | 10 per hour | `PYN_RATE_REGISTER_CLIENT` |
 | verification emails per recipient address | 3 per hour | `PYN_RATE_MAIL_PER_EMAIL` |
 | signed-out people directory requests (`GET /v1/users`) per client address | 60 per minute | `PYN_RATE_PEOPLE_CLIENT` |
@@ -368,7 +433,7 @@ recorded with who and whom in the audit log. A disabled account cannot sign in, 
 and SSH keys stop working (403 `account_disabled`) until it is enabled; its email address stays reserved until the account is [deleted](#deleting-an-account), which happens on its own after
 `PYN_DISABLED_ACCOUNT_RETENTION_DAYS` (default 90). Administrators
 cannot disable themselves. Approvals, disables and enables are recorded with the actor and reason in a server-wide audit
-log, read at `GET /v1/admin/audit`. The server warns once at start when only one active administrator exists, `GET /v1/admin/settings` reports it, and `pyn setup` and the installer suggest adding a second one. Recovery codes are deliberately not offered (decision #968: host control is the only recovery path). If none is
+log, read at `GET /v1/admin/audit`. The server warns once at start when only one active administrator exists, `GET /v1/admin/settings` reports it, and `pyn setup` and the installer suggest adding a second one. An administrator's own sign-in has no emailed or self-service recovery beyond the account's [recovery codes](#two-factor-authentication) (decision #968: host control is the only recovery path). If none is
 reachable, `pyn-server recover-admin <username>` run on the host creates or repairs one; it needs host control and has no
 API route ([recovery](../deployment.md#lost-administrator)).
 
@@ -388,10 +453,9 @@ is off, or on but nothing is delivered.
 | `POST /v1/register` | `{username, password, email?, invite?}` gives `201 {user, status}`; `status` is `active`, `pending_verification` or `pending_approval` |
 | `POST /v1/register/verify` | `{token}` gives `200 {user, status}`; `400 invalid_verification` for an unknown, used or expired link |
 | `POST /v1/register/resend` | `{email}` gives `202`, always |
-| `POST /v1/login`, `POST /v1/session` | `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password; an account scheduled for deletion by its owner signs in, with a credential that reaches only the deletion routes |
+| `POST /v1/login`, `POST /v1/session` | `{username, password, code?}`; `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password; `401` `second_factor_required` or `second_factor_invalid` for an account with a [second factor](#two-factor-authentication); an account scheduled for deletion by its owner signs in, with a credential that reaches only the deletion routes |
 | `GET /v1/me/emails`, `POST /v1/me/emails {address}`, `POST /v1/me/emails/{address}/resend`, `PUT /v1/me/emails/{address}/primary`, `DELETE /v1/me/emails/{address}` | [your addresses](#your-email-addresses); `POST` gives `201` with the pending address |
 | `PUT /v1/me/username` | `{username, password}` gives `200 {old_name, new_name, repositories}`; see [changing your username](#changing-your-username) |
-| `POST /v1/login`, `POST /v1/session` | `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password |
 | `GET /v1/me` | `{id, user, admin}` |
 | `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{id, user, email, email_verified, status, disabled_at, disabled_reason, purge_at, admin, created_at}`; `purge_at` is the scheduled deletion time, as in `GET /v1/account/deletion`, or null |
 | `GET /v1/admin/settings` | `{account_deletion: {window_days, disabled_retention_days}, administrators: {active, single}}`: the effective deletion window and disabled-account retention, read-only (set by the environment variables below), and the count of active administrators; `single` is true when exactly one exists, so a client can warn |
@@ -404,7 +468,7 @@ is off, or on but nothing is delivered.
 | `PUT /v1/admin/access` | `{access_mode}`: the [server access mode](#server-access-mode) now in force; administrators only, never a service credential |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
 | `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_deletion_scheduled`, `account_deletion_restored`, `account_deleted`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `two_factor_added`, `two_factor_removed`, `recovery_codes_regenerated`, `recovery_code_used`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
 
 On the command line (server administrators; each listing is an aligned table with the name last):
 
@@ -568,7 +632,7 @@ the server log with the method and path of the request. Every other error keeps 
 
 Account management is limited to a full-scope credential: a web session or a sign-in token from `pyn login`. A fine-grained
 token is never full-scope, even one for every repository holding every grant. It covers tokens (create, list, revoke), the
-password, linking or unlinking an external identity, creating an account with `POST /v1/repos/{owner}/{name}/users`, and creating an invitation. A fine-grained token is refused with `403 forbidden`; it keeps working for its own scope. SSH keys, the profile and avatar, and the
+password, [two-factor](#two-factor-authentication) factors, linking or unlinking an external identity, creating an account with `POST /v1/repos/{owner}/{name}/users`, and creating an invitation. A fine-grained token is refused with `403 forbidden`; it keeps working for its own scope. SSH keys, the profile and avatar, and the
 organization routes of the [organization and account permissions](#tokens) are the exception: a token holding the matching grant reaches them. A sign-in token cannot create a token that
 outlives it: the new token's expiry is capped at its own (so `never` from a sign-in token lasts as long as the sign-in does), and a
 web session may create any token its owner could.

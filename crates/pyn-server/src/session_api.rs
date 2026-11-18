@@ -119,7 +119,7 @@ pub(crate) async fn csrf_guard(State(s): State<AppState>, req: Request, next: Ne
 
 #[utoipa::path(post, path = "/v1/session", request_body = api::LoginRequest, responses(
     (status = 200, body = api::SessionInfo, description = "sets the HttpOnly session cookie"),
-    (status = 401, body = api::ErrorBody, description = "unauthenticated"),
+    (status = 401, body = api::ErrorBody, description = "unauthenticated; or, after a right password, second_factor_required (the account has a second factor and no code was sent) or second_factor_invalid"),
     (status = 403, body = api::ErrorBody, description = "right password, but the account cannot sign in: email_not_verified, approval_pending or account_disabled; or origin_not_allowed when the Origin (or Referer) is neither the public URL nor an allowed origin"),
     (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
 ))]
@@ -131,7 +131,12 @@ pub(crate) async fn sign_in(
 ) -> ApiResult<Response> {
     let (record, cookie) = s
         .access
-        .start_session(&req.username, &req.password, client.as_deref())
+        .start_session_with(
+            &req.username,
+            &req.password,
+            req.code.as_deref(),
+            client.as_deref(),
+        )
         .await?;
     let max_age = s.access.session_lifetime().num_seconds();
     let mut res = Json(info(&record)).into_response();

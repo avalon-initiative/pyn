@@ -1514,6 +1514,10 @@ pub struct DisableAccountRequest {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    /// The authenticator-app code (or a recovery code) of an account with a second factor. Without it such an
+    /// account gets `401 second_factor_required` after a right password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1521,6 +1525,74 @@ pub struct ChangePasswordRequest {
     /// Required when the account already has a password.
     pub current: Option<String>,
     pub new: String,
+}
+
+/// A second factor the account has turned on.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TwoFactorFactor {
+    pub id: String,
+    /// `totp` (an authenticator app).
+    pub kind: String,
+    pub label: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The caller's second-factor state.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TwoFactorStatus {
+    /// Whether the account has a confirmed factor, so sign-in asks for a code.
+    pub enabled: bool,
+    pub factors: Vec<TwoFactorFactor>,
+    pub recovery_codes_left: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct BeginTotpRequest {
+    /// A name for the app, such as `phone`. Defaults to `Authenticator app`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The current password. Required to turn two-factor authentication on for an account that has a password; an
+    /// account that already has a factor needs a fresh check instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+/// A pending authenticator-app enrolment. The seed is shown once; the factor counts only after `confirm`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TotpEnrolment {
+    pub id: String,
+    /// The seed in base32, for typing into an app.
+    pub secret: String,
+    /// The `otpauth://` URI to show as a QR code.
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CodeRequest {
+    /// Six digits from the authenticator app, or a recovery code where the route says so.
+    pub code: String,
+}
+
+/// A factor that is now on.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TotpConfirmed {
+    pub factor: TwoFactorFactor,
+    /// Ten single-use recovery codes, shown only now, and only with the account's first factor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_codes: Option<Vec<String>>,
+    pub fresh_until: DateTime<Utc>,
+}
+
+/// New recovery codes, shown once. The old ones no longer work.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RecoveryCodes {
+    pub recovery_codes: Vec<String>,
+}
+
+/// Until when the calling credential may do sensitive actions without another second-factor check.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FreshCheck {
+    pub fresh_until: DateTime<Utc>,
 }
 
 /// One address an account holds. Only the account's owner ever sees these.

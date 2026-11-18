@@ -35,7 +35,9 @@ pub mod rules;
 pub mod service;
 pub mod store;
 pub mod stranded;
+pub mod totp;
 pub mod tree;
+pub mod two_factor;
 pub mod types;
 pub mod webhook;
 pub mod webhook_secret;
@@ -60,8 +62,8 @@ pub use access_service::{
     TeamDetail, TokenExpiry, generate_setup_token,
 };
 pub use access_service::{
-    AdminRecovery, CreateWebhook, DeliveryPage, HOST_RECOVERY_ACTOR, IssuedSecret, WebhookDetail,
-    WebhookSecretInfo, WebhookSettings,
+    AdminRecovery, CreateWebhook, DeliveryPage, HOST_RECOVERY_ACTOR, IssuedSecret, TotpConfirmed,
+    TotpEnrolment, TwoFactorStatus, WebhookDetail, WebhookSecretInfo, WebhookSettings,
 };
 pub use account_self::{
     AccountEmail, EmailAdd, EmailRemove, NameSpan, PrimaryChange, RenameOutcome,
@@ -128,6 +130,7 @@ pub use service::{
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};
 pub use tree::{EntryKind, EntryMode, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry};
+pub use two_factor::{FactorKind, FactorRecord, FactorRemoval, rotate_seed_key};
 pub use types::{
     AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, MAX_CHANGESET_ITEMS,
     MAX_COMMIT_CHANGES, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_PATH_BYTES,

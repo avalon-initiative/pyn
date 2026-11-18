@@ -201,10 +201,10 @@ fn webhook_settings() -> anyhow::Result<WebhookSettings> {
     match &secret_key {
         Some(key) => tracing::info!(
             key_id = key.key_id(),
-            "webhook secrets are encrypted at rest"
+            "webhook secrets and two-factor seeds are encrypted at rest"
         ),
         None => tracing::warn!(
-            "PYN_SECRET_KEY is not set: webhook signing secrets are stored unencrypted"
+            "PYN_SECRET_KEY is not set: webhook signing secrets and two-factor seeds are stored unencrypted"
         ),
     }
     Ok(WebhookSettings {

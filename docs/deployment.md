@@ -319,7 +319,7 @@ container has `pyn-server` but no `pyn` command; sign in afterwards from any com
 
 The command creates `alice` as an administrator, or, if the account exists, enables it, completes its sign-up, grants the
 administrator flag and sets a new password. Without `--password-stdin` it generates a strong password and prints it once on
-standard output (messages go to standard error). The account's sessions and tokens end; its SSH keys and linked external
+standard output (messages go to standard error). The account's sessions and tokens end, and so do its [two-factor](concepts/access.md#two-factor-authentication) factors and recovery codes, so a lost authenticator cannot keep the administrator out; its SSH keys and linked external
 identities are left as they are. Other accounts are not touched. When the administrator who left may still hold credentials, recover into a new account name instead of reusing theirs, then disable the old account once you can sign in: recovery does not touch an account's SSH keys or linked identities. It refuses an organization name, the in-memory store (no
 `PYN_DATABASE_URL`), and a server that has not run [first-run setup](concepts/access.md#first-run-setup) yet.
 
@@ -331,10 +331,9 @@ not need this; the installer and `pyn setup` suggest it, and `GET /v1/admin/sett
 
 ### Lost secret key
 
-`PYN_SECRET_KEY` encrypts one thing: the signing secrets of [webhooks](concepts/webhooks.md#encryption-at-rest), at rest in
-the database. Losing it loses only those secrets; accounts, passwords, tokens, history and files do not depend on it. Without
-the key the server still starts, but deliveries to webhooks whose secrets were encrypted fail until they are replaced. To
-recover: set a new `PYN_SECRET_KEY` (`openssl rand -hex 32`), then for each webhook run `pyn admin webhook rotate <id>`
+`PYN_SECRET_KEY` encrypts two things at rest in the database: the signing secrets of [webhooks](concepts/webhooks.md#encryption-at-rest) and the seeds of [two-factor](concepts/access.md#two-factor-authentication) authenticator apps. Losing it loses only those; accounts, passwords, tokens, history and files do not depend on it. Without
+the key the server still starts, but deliveries to webhooks whose secrets were encrypted fail until they are replaced, and an account whose authenticator seed was encrypted cannot sign in with an app code (its recovery codes still work, and `recover-admin` clears an administrator's factors). To
+recover the webhooks: set a new `PYN_SECRET_KEY` (`openssl rand -hex 32`), then for each webhook run `pyn admin webhook rotate <id>`
 (or use the web app), which stores a new secret under the new key; hand it to the receiver and retire the unreadable one
 (`pyn admin webhook retire`). Deleting and re-creating the webhook works too.
 
@@ -349,8 +348,8 @@ sed -i "s/^PYN_SECRET_KEY=.*/PYN_SECRET_KEY=$new/" .env && docker compose up --d
 ```
 
 Store the new key in your secret store as well. The command
-re-encrypts every stored secret, retired ones and plaintext ones included, in one database transaction: either all are
-rewritten or, if any cannot be decrypted with the current key, none, and it says so. Run it once; afterwards the old key no
+re-encrypts every stored webhook secret and two-factor seed, retired ones and plaintext ones included, (the seeds first, then the webhook secrets, each kind in one database transaction): either all of a kind are
+rewritten or, if any cannot be decrypted with the current key, none, and it says so; a wrong current key therefore changes nothing. Run it once; afterwards the old key no
 longer opens anything.
 
 ### Lost database password

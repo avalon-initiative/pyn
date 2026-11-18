@@ -1938,6 +1938,7 @@ fn run(cli: Cli) -> Result<()> {
             let api = backend.pyn_server("login")?;
             let password = credentials::read_password("Password: ", password_stdin)?;
             let body = api::LoginRequest {
+                code: None,
                 username: username.clone(),
                 password,
             };

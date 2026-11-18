@@ -52,6 +52,7 @@ mod session_api;
 mod setup_api;
 mod team_api;
 pub mod tus_sweep;
+mod two_factor_api;
 mod webhook_api;
 pub mod webhook_delivery;
 
@@ -112,6 +113,12 @@ struct RepoAddress {
         self_service_api::set_primary_email,
         self_service_api::delete_email,
         self_service_api::rename_account,
+        two_factor_api::two_factor_status,
+        two_factor_api::begin_totp,
+        two_factor_api::confirm_totp,
+        two_factor_api::remove_factor,
+        two_factor_api::recovery_codes,
+        two_factor_api::verify_second_factor,
         access_api::add_key,
         access_api::list_keys,
         access_api::delete_key,
@@ -333,6 +340,14 @@ struct RepoAddress {
         api::ChangePasswordRequest,
         api::AccountEmail,
         api::AddEmailRequest,
+        api::TwoFactorFactor,
+        api::TwoFactorStatus,
+        api::BeginTotpRequest,
+        api::TotpEnrolment,
+        api::CodeRequest,
+        api::TotpConfirmed,
+        api::RecoveryCodes,
+        api::FreshCheck,
         api::RenameRequest,
         api::Renamed,
         api::AddUserRequest,
@@ -558,6 +573,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::NotRepoMember(_)
         | PynError::ExternalNotLinked
         | PynError::PasswordSignInDisabled
+        | PynError::FreshCheckRequired
         | PynError::CsrfFailed
         | PynError::OriginNotAllowed => StatusCode::FORBIDDEN,
         PynError::PushUnsupported(_) | PynError::DigestMismatch { .. } => {
@@ -571,9 +587,10 @@ fn status_for(e: &PynError) -> StatusCode {
         }
         PynError::UnsupportedImage(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
-        PynError::Unauthenticated(_) | PynError::ExternalSignInFailed(_) => {
-            StatusCode::UNAUTHORIZED
-        }
+        PynError::Unauthenticated(_)
+        | PynError::SecondFactorRequired
+        | PynError::SecondFactorInvalid
+        | PynError::ExternalSignInFailed(_) => StatusCode::UNAUTHORIZED,
         PynError::ExternalProviderUnavailable(_) => StatusCode::BAD_GATEWAY,
         PynError::TokenNotFound(_)
         | PynError::ServiceCredentialNotFound(_)
@@ -584,6 +601,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::EmailNotFound
         | PynError::AvatarNotFound(_)
         | PynError::KeyNotFound(_)
+        | PynError::FactorNotFound(_)
         | PynError::OidcNotConfigured
         | PynError::ExternalIdentityNotFound(_)
         | PynError::RepoNotFound(_)
