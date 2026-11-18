@@ -52,6 +52,20 @@ impl Pair {
         }
     }
 
+    /// Old mtimes keep entries from being racily clean, so the outcome never depends on the second boundary.
+    fn age_files(&self) {
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        for repo in [&self.oracle, &self.ours] {
+            for path in tree(repo).keys() {
+                let file = fs::File::options()
+                    .write(true)
+                    .open(repo.join(path))
+                    .unwrap();
+                file.set_modified(when).unwrap();
+            }
+        }
+    }
+
     fn each(&self, args: &[&str]) {
         for repo in [&self.oracle, &self.ours] {
             run(repo, args);
@@ -199,6 +213,7 @@ fn committed_crlf(format: &str, config: &str, rules: &str) -> Pair {
     p.put("lf.txt", b"p\nq\n");
     p.put("dir/c.txt", b"m\r\nn\r\n");
     p.put("keep.bin", b"\x00\r\n\x01\r\n");
+    p.age_files();
     p.both(&["add", "-A"]);
     p.both(&["commit", "-q", "-m", "base"]);
     p.put(".gitattributes", rules.as_bytes());
