@@ -522,15 +522,27 @@ collaborator works with a sign-in token or an organization-owned repository.
 the account belongs to, whoever owns it, with every permission, and stay [full-scope credentials](#full-scope-credentials).
 
 ```bash
-pyn token create ci --permissions read,checkin --repos alice/game --expires-days 30
+pyn token create ci --permissions contents:write,locks:write --repos alice/game --expires-days 30
+pyn token create teams --permissions org_teams:write,org_members:read --owner acme --expires 2027-06-30
+pyn token create keys --permissions account_ssh_keys:write --never
 pyn token list
 pyn token revoke <id>
 ```
 
-`pyn token create` maps `--permissions` onto the closest grants (read: contents read; checkin, restore: contents write; lock:
-locks write; force_unlock: locks admin; edit_policy: policy write; manage_users: members write; manage_roles: administration
-write; view_audit: audit read) and takes the owner from `--repos`; `--never` removes the expiry. The API takes the grants
-directly:
+`pyn token create` takes the choices above as flags, and a token cannot be edited afterwards:
+
+| Flag | Meaning |
+| --- | --- |
+| `--permissions` | comma-separated `resource:level` grants, such as `contents:write`, `locks:admin`, `org_members:read` or `account_ssh_keys:write` (required) |
+| `--owner` | the resource owner: your own account by default, or an organization you belong to; taken from `--repos` when those are given |
+| `--access` | `public`, `all` or `selected`. Without it, `selected` when `--repos` is given or a repository resource is granted, `public` otherwise |
+| `--repos` | the repositories (`owner/name`, one owner) of a `selected` token; the current repository by default |
+| `--expires-days`, `--expires`, `--never` | expire after N days, at the end of a UTC date (`YYYY-MM-DD`), or not at all; 30 days when none is given |
+
+The CLI checks the grammar (resources, levels, the access and owner fit, the expiry) to fail early with a clear message; the server
+checks everything again and is the authority, including what the creator may grant. `pyn token list` shows each token's owner,
+expiry, repository access (`selected:` then its repositories) and grants, and the secret is printed once, when it is created. The API takes the
+grants directly:
 
 ```json
 POST /v1/tokens

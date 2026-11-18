@@ -204,7 +204,7 @@ fn granting_is_capped_by_the_actors_own_permissions() {
             "create",
             "narrow",
             "--permissions",
-            "read,manage_users",
+            "contents:read,members:write",
             "--repos",
             "acme/game",
         ],

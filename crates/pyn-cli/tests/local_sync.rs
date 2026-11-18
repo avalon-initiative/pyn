@@ -558,7 +558,7 @@ fn a_policy_commit_from_someone_without_the_policy_permission_is_refused() {
             "create",
             "narrow",
             "--permissions",
-            "read,lock,checkin",
+            "contents:write,locks:write",
             "--repos",
             "alice/game",
         ],
