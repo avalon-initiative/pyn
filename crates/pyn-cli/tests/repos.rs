@@ -226,7 +226,7 @@ fn tokens_are_made_for_the_current_or_named_repositories() {
     let token = env.ok(
         &home,
         "alice",
-        &["token", "create", "ci", "--permissions", "read"],
+        &["token", "create", "ci", "--permissions", "contents:read"],
     );
     assert!(token.trim().starts_with("pyn_"), "{token}");
 
@@ -237,7 +237,7 @@ fn tokens_are_made_for_the_current_or_named_repositories() {
     let none = bare.fails(
         &bare.dir("home"),
         "alice",
-        &["token", "create", "ci", "--permissions", "read"],
+        &["token", "create", "ci", "--permissions", "contents:read"],
     );
     assert!(none.contains("--repos"), "{none}");
 }

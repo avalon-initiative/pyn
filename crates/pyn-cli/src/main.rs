@@ -66,6 +66,7 @@ mod stranded;
 mod sync;
 mod table;
 mod time;
+mod token_args;
 mod transfer;
 mod transport;
 mod unsupported;
@@ -998,18 +999,27 @@ enum PolicyCommand {
 
 #[derive(Subcommand)]
 enum TokenCommand {
-    /// Create a token. It is shown once.
+    /// Create a token. It is shown once, and cannot be changed afterwards.
     Create {
         name: String,
-        /// Comma-separated permissions, for example read,lock,checkin.
+        /// Comma-separated resource:level grants, for example contents:write,locks:admin, org_members:read or account_ssh_keys:write. Repository resources: metadata, contents, locks, policy, members, administration, audit. Organization: org_members, org_teams, org_administration, org_audit. Account: account_profile, account_ssh_keys, account_locks. Levels: read, write, and admin for locks.
         #[arg(long, value_delimiter = ',', required = true)]
         permissions: Vec<String>,
-        /// Comma-separated repositories (owner/name) the token is valid for; the current repository by default.
+        /// The resource owner: your account (the default) or an organization you belong to; taken from --repos when those are given.
+        #[arg(long)]
+        owner: Option<String>,
+        /// Repository access: public, all (every repository of the owner) or selected. Selected when --repos is given, or when permissions name repository resources; public otherwise.
+        #[arg(long)]
+        access: Option<String>,
+        /// Comma-separated repositories (owner/name) of a selected token; the current repository by default.
         #[arg(long, value_delimiter = ',')]
         repos: Vec<String>,
         /// Expire the token after this many days; 30 by default.
-        #[arg(long, conflicts_with = "never")]
+        #[arg(long, conflicts_with_all = ["never", "expires"])]
         expires_days: Option<i64>,
+        /// Expire the token at the end of this date (YYYY-MM-DD, UTC).
+        #[arg(long, conflicts_with = "never")]
+        expires: Option<String>,
         /// Never expire the token.
         #[arg(long)]
         never: bool,
@@ -4152,82 +4162,41 @@ fn invitation_command(api: &Api, cmd: InvitationCommand) -> Result<()> {
     Ok(())
 }
 
-/// The one account that owns every repository named, which becomes the token's resource owner.
-fn token_owner(repos: &[String]) -> Result<String> {
-    let mut owners = repos.iter().map(|r| r.split_once('/').map(|(o, _)| o));
-    let first = owners
-        .next()
-        .flatten()
-        .context("repositories are owner/name")?;
-    for owner in owners {
-        anyhow::ensure!(
-            owner == Some(first),
-            "a token covers the repositories of one owner; make one token per owner"
-        );
-    }
-    Ok(first.to_string())
-}
-
-/// The closest resource and level for each internal permission name.
-fn token_permissions(names: &[String]) -> Result<Vec<api::TokenPermission>> {
-    let mut levels: std::collections::BTreeMap<&str, u8> = std::collections::BTreeMap::new();
-    for name in names {
-        let (resource, level) = match name.as_str() {
-            "read" => ("contents", 1),
-            "checkin" | "restore" => ("contents", 2),
-            "lock" => ("locks", 2),
-            "force_unlock" => ("locks", 3),
-            "edit_policy" => ("policy", 2),
-            "manage_users" => ("members", 2),
-            "manage_roles" => ("administration", 2),
-            "view_audit" => ("audit", 1),
-            other => anyhow::bail!("unknown permission {other:?}"),
-        };
-        let held = levels.entry(resource).or_default();
-        *held = (*held).max(level);
-    }
-    if levels.contains_key("contents") {
-        levels.entry("locks").or_insert(1);
-    }
-    Ok(levels
-        .into_iter()
-        .map(|(resource, level)| api::TokenPermission {
-            resource: resource.to_string(),
-            level: ["read", "read", "write", "admin"][level as usize].to_string(),
-        })
-        .collect())
-}
-
 fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
     match cmd {
         TokenCommand::Create {
             name,
             permissions,
+            owner,
+            access,
             repos,
             expires_days,
+            expires,
             never,
         } => {
-            let repos = if repos.is_empty() {
-                vec![api.repo.clone().context(if api.on_git {
-                        "this is a git repository, so name the repositories the token is for with --repos owner/name"
-                    } else {
-                        "name the repositories the token is for with --repos owner/name"
-                    })?]
-            } else {
-                repos
-            };
-            let owner = token_owner(&repos)?;
+            let permissions = token_args::permissions(&permissions)?;
+            let (repository_access, owner) = token_args::access(
+                access.as_deref(),
+                repos,
+                owner,
+                &permissions,
+                api.repo.as_deref().ok_or(if api.on_git {
+                    "this is a git repository, so name the repositories the token is for with --repos owner/name"
+                } else {
+                    "name the repositories the token is for with --repos owner/name"
+                }),
+            )?;
+            token_args::check_owner_kind(owner.as_deref(), &permissions)?;
+            let (expires_at, never) =
+                token_args::expiry(expires_days, expires.as_deref(), never, chrono::Utc::now())?;
             let body = api::CreateTokenRequest {
                 name,
                 description: None,
-                owner: Some(owner),
-                expires_at: expires_days.map(|d| chrono::Utc::now() + chrono::Duration::days(d)),
+                owner,
+                expires_at,
                 never,
-                repository_access: api::RepositoryAccess {
-                    mode: "selected".into(),
-                    repos,
-                },
-                permissions: token_permissions(&permissions)?,
+                repository_access,
+                permissions,
             };
             let made: api::CreatedToken = api
                 .send(api.request(Method::POST, "/v1/tokens").json(&body))?
@@ -4252,10 +4221,19 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
                     } else {
                         "active"
                     };
+                    let access = match (t.sign_in, t.repository_access.mode.as_str()) {
+                        (true, _) => "full-scope".to_string(),
+                        (_, "selected") => {
+                            format!("selected:{}", t.repository_access.repos.join(","))
+                        }
+                        (_, mode) => mode.to_string(),
+                    };
                     vec![
                         t.id.to_string(),
                         state.to_string(),
+                        t.owner,
                         t.expires_at.map_or("never".to_string(), time::local),
+                        access,
                         t.name,
                         t.permissions
                             .iter()
@@ -4266,7 +4244,15 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
                 })
                 .collect();
             table::show(
-                &["ID", "STATE", "EXPIRES", "NAME", "PERMISSIONS"],
+                &[
+                    "ID",
+                    "STATE",
+                    "OWNER",
+                    "EXPIRES",
+                    "ACCESS",
+                    "NAME",
+                    "PERMISSIONS",
+                ],
                 &rows,
                 "no tokens",
             );

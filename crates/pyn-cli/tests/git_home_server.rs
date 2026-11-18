@@ -96,7 +96,7 @@ fn account_and_server_commands_run_inside_a_git_repository() {
             "create",
             "ci",
             "--permissions",
-            "read",
+            "contents:read",
             "--repos",
             "alice/game",
         ],
@@ -198,7 +198,7 @@ fn repository_commands_without_a_repository_ask_for_one_on_a_git_home() {
         vec!["role", "list"],
         vec!["invite", "list"],
         vec!["invite", "create"],
-        vec!["token", "create", "ci", "--permissions", "read"],
+        vec!["token", "create", "ci", "--permissions", "contents:read"],
     ] {
         let err = env.fails(&repo.main, "alice", &args);
         assert!(!err.contains("needs a pyn server"), "{args:?}: {err}");
