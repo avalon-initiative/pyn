@@ -193,6 +193,35 @@ impl Identity {
         }
     }
 
+    /// An organization route: a full-scope credential, or a token owned by `org` that holds the need. The creator's
+    /// organization role still caps what the token does there.
+    pub fn require_org_grant(&self, org: &UserId, need: GrantNeed) -> Result<()> {
+        self.require_owner_grant(org, need)
+    }
+
+    /// An account route: a full-scope credential, or a token owned by the account itself that holds the need.
+    pub fn require_account_grant(&self, need: GrantNeed) -> Result<()> {
+        self.require_owner_grant(&self.user, need)
+    }
+
+    fn require_owner_grant(&self, owner: &UserId, need: GrantNeed) -> Result<()> {
+        match &self.credential {
+            Credential::Token(t)
+                if !t.sign_in && (&t.owner != owner || self.require_grant(need).is_err()) =>
+            {
+                self.require_full_scope()
+            }
+            Credential::Service(_) => self.require_full_scope(),
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether a token owned by the account holds the account grant `need`.
+    pub fn holds_account_grant(&self, need: GrantNeed) -> bool {
+        matches!(&self.credential, Credential::Token(t) if !t.sign_in && t.owner == self.user)
+            && self.require_grant(need).is_ok()
+    }
+
     /// Account-management operations need a full-scope credential.
     pub fn require_full_scope(&self) -> Result<()> {
         if self.is_full_scope() {
@@ -335,7 +364,8 @@ impl TokenRecord {
     }
 }
 
-/// What a fine-grained token may touch, per the permission catalog.
+/// What a fine-grained token may touch, per the permission catalog. The organization and account resources carry
+/// their category in the wire name so they never clash with the repository ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenResource {
@@ -346,9 +376,25 @@ pub enum TokenResource {
     Members,
     Administration,
     Audit,
+    OrgMembers,
+    OrgTeams,
+    OrgAdministration,
+    OrgAudit,
+    AccountProfile,
+    AccountSshKeys,
+    AccountLocks,
+}
+
+/// What a resource's grant applies to: the repositories of the token's owner, the owner organization, or the account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantScope {
+    Repository,
+    Organization,
+    Account,
 }
 
 impl TokenResource {
+    /// The repository resources; a sign-in token's grants are these at their top level.
     pub const ALL: [TokenResource; 7] = [
         Self::Metadata,
         Self::Contents,
@@ -359,6 +405,27 @@ impl TokenResource {
         Self::Audit,
     ];
 
+    pub const ORGANIZATION: [TokenResource; 4] = [
+        Self::OrgMembers,
+        Self::OrgTeams,
+        Self::OrgAdministration,
+        Self::OrgAudit,
+    ];
+
+    pub const ACCOUNT: [TokenResource; 3] = [
+        Self::AccountProfile,
+        Self::AccountSshKeys,
+        Self::AccountLocks,
+    ];
+
+    /// Every resource of every category.
+    pub fn every() -> impl Iterator<Item = TokenResource> {
+        Self::ALL
+            .into_iter()
+            .chain(Self::ORGANIZATION)
+            .chain(Self::ACCOUNT)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Metadata => "metadata",
@@ -368,23 +435,50 @@ impl TokenResource {
             Self::Members => "members",
             Self::Administration => "administration",
             Self::Audit => "audit",
+            Self::OrgMembers => "org_members",
+            Self::OrgTeams => "org_teams",
+            Self::OrgAdministration => "org_administration",
+            Self::OrgAudit => "org_audit",
+            Self::AccountProfile => "account_profile",
+            Self::AccountSshKeys => "account_ssh_keys",
+            Self::AccountLocks => "account_locks",
         }
     }
 
-    /// The lowest level the catalog offers: policy has no read level.
+    pub fn scope(self) -> GrantScope {
+        match self {
+            Self::OrgMembers | Self::OrgTeams | Self::OrgAdministration | Self::OrgAudit => {
+                GrantScope::Organization
+            }
+            Self::AccountProfile | Self::AccountSshKeys | Self::AccountLocks => GrantScope::Account,
+            _ => GrantScope::Repository,
+        }
+    }
+
+    /// The lowest level the catalog offers: policy and the account profile have no read level.
     pub fn min_level(self) -> GrantLevel {
         match self {
-            Self::Policy => GrantLevel::Write,
+            Self::Policy | Self::AccountProfile => GrantLevel::Write,
             _ => GrantLevel::Read,
         }
     }
 
-    /// The highest level the catalog offers: `admin` for locks, `write` for most, `read` for metadata and audit.
+    /// The highest level the catalog offers: `admin` for locks, read for the logs and lists that have no write
+    /// (metadata, audit, organization audit, account locks), `write` for the rest.
     pub fn max_level(self) -> GrantLevel {
         match self {
-            Self::Metadata | Self::Audit => GrantLevel::Read,
+            Self::Metadata | Self::Audit | Self::OrgAudit | Self::AccountLocks => GrantLevel::Read,
             Self::Locks => GrantLevel::Admin,
             _ => GrantLevel::Write,
+        }
+    }
+
+    /// The organization role the operations of an organization grant need today: members and teams may be listed
+    /// by any member, everything else (writes, invitations, the audit log, the creation policy) is for owners.
+    pub fn org_role_needed(self, level: GrantLevel) -> OrgRole {
+        match (self, level) {
+            (Self::OrgMembers | Self::OrgTeams, GrantLevel::Read) => OrgRole::Member,
+            _ => OrgRole::Owner,
         }
     }
 }
@@ -392,8 +486,7 @@ impl TokenResource {
 impl FromStr for TokenResource {
     type Err = PynError;
     fn from_str(s: &str) -> Result<Self> {
-        Self::ALL
-            .into_iter()
+        Self::every()
             .find(|r| r.as_str() == s)
             .ok_or_else(|| PynError::InvalidRequest(format!("unknown token resource {s:?}")))
     }
@@ -463,6 +556,23 @@ impl GrantNeed {
         self.via
             .or_else(|| grant_delta(self.resource, self.level).first().copied())
     }
+}
+
+/// The needs of the organization and account operations; routes declare the same ones and core re-checks them.
+pub mod needs {
+    use super::{GrantLevel::*, GrantNeed, TokenResource::*};
+
+    pub const ORG_MEMBERS_READ: GrantNeed = GrantNeed::new(OrgMembers, Read);
+    pub const ORG_MEMBERS_WRITE: GrantNeed = GrantNeed::new(OrgMembers, Write);
+    pub const ORG_TEAMS_READ: GrantNeed = GrantNeed::new(OrgTeams, Read);
+    pub const ORG_TEAMS_WRITE: GrantNeed = GrantNeed::new(OrgTeams, Write);
+    pub const ORG_ADMINISTRATION_READ: GrantNeed = GrantNeed::new(OrgAdministration, Read);
+    pub const ORG_ADMINISTRATION_WRITE: GrantNeed = GrantNeed::new(OrgAdministration, Write);
+    pub const ORG_AUDIT_READ: GrantNeed = GrantNeed::new(OrgAudit, Read);
+    pub const ACCOUNT_PROFILE_WRITE: GrantNeed = GrantNeed::new(AccountProfile, Write);
+    pub const ACCOUNT_SSH_KEYS_READ: GrantNeed = GrantNeed::new(AccountSshKeys, Read);
+    pub const ACCOUNT_SSH_KEYS_WRITE: GrantNeed = GrantNeed::new(AccountSshKeys, Write);
+    pub const ACCOUNT_LOCKS_READ: GrantNeed = GrantNeed::new(AccountLocks, Read);
 }
 
 /// Which repositories of its owner a token reaches.
@@ -538,6 +648,14 @@ pub fn permissions_of(grants: &BTreeMap<TokenResource, GrantLevel>) -> BTreeSet<
             TokenResource::Audit => {
                 out.insert(ViewAudit);
             }
+            // Organization and account grants add no repository permission.
+            TokenResource::OrgMembers
+            | TokenResource::OrgTeams
+            | TokenResource::OrgAdministration
+            | TokenResource::OrgAudit
+            | TokenResource::AccountProfile
+            | TokenResource::AccountSshKeys
+            | TokenResource::AccountLocks => {}
         }
     }
     out
@@ -1676,5 +1794,81 @@ mod tests {
             credential: Credential::Session,
         };
         assert!(session.require_grant(GrantNeed::new(Audit, Read)).is_ok());
+    }
+
+    #[test]
+    fn organization_and_account_resources_have_their_own_names_and_add_no_repository_permission() {
+        let names: BTreeSet<_> = TokenResource::every().map(TokenResource::as_str).collect();
+        assert_eq!(names.len(), TokenResource::every().count(), "names clash");
+        for r in TokenResource::every() {
+            assert_eq!(r.as_str().parse::<TokenResource>().unwrap(), r);
+            let owner_scoped = r.scope() != GrantScope::Repository;
+            assert_eq!(
+                r.as_str().starts_with("org_") || r.as_str().starts_with("account_"),
+                owner_scoped
+            );
+            if owner_scoped {
+                for level in [GrantLevel::Read, GrantLevel::Write] {
+                    assert!(permissions_of(&BTreeMap::from([(r, level)])).is_empty());
+                }
+            }
+        }
+        assert_eq!(TokenResource::OrgAudit.max_level(), GrantLevel::Read);
+        assert_eq!(TokenResource::AccountLocks.max_level(), GrantLevel::Read);
+        assert_eq!(TokenResource::OrgTeams.max_level(), GrantLevel::Write);
+        assert_eq!(
+            TokenRecord::full_grants().len(),
+            TokenResource::ALL.len(),
+            "a sign-in token's grants stay the repository ones"
+        );
+    }
+
+    #[test]
+    fn an_owner_grant_needs_the_matching_owner() {
+        use GrantLevel::*;
+        use TokenResource::*;
+        let token = |owner: &str, grants: &[(TokenResource, GrantLevel)]| Identity {
+            user: UserId::new("alice"),
+            credential: Credential::Token(TokenRecord {
+                id: TokenId("t".into()),
+                user: UserId::new("alice"),
+                name: "t".into(),
+                description: None,
+                secret_hash: String::new(),
+                owner: UserId::new(owner),
+                repo_access: RepoAccess::Public,
+                repos: Vec::new(),
+                grants: grants.iter().copied().collect(),
+                created_at: Utc::now(),
+                expires_at: None,
+                revoked_at: None,
+                last_used_at: None,
+                sign_in: false,
+            }),
+        };
+        let (acme, beta) = (UserId::new("acme"), UserId::new("beta"));
+        let need = GrantNeed::new(OrgMembers, Write);
+        let who = token("acme", &[(OrgMembers, Write)]);
+        assert!(who.require_org_grant(&acme, need).is_ok());
+        assert!(who.require_org_grant(&beta, need).is_err());
+        assert!(
+            who.require_account_grant(GrantNeed::new(AccountProfile, Write))
+                .is_err()
+        );
+        assert!(
+            token("acme", &[(OrgMembers, Read)])
+                .require_org_grant(&acme, need)
+                .is_err()
+        );
+        let own = token("alice", &[(AccountSshKeys, Write)]);
+        assert!(
+            own.require_account_grant(GrantNeed::new(AccountSshKeys, Read))
+                .is_ok()
+        );
+        assert!(
+            own.require_account_grant(GrantNeed::new(AccountProfile, Write))
+                .is_err()
+        );
+        assert!(own.require_org_grant(&acme, need).is_err());
     }
 }

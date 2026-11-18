@@ -13,7 +13,7 @@ use pyn_core::{
 use pyn_proto as api;
 use serde::Deserialize;
 
-use crate::caller::{AnyCaller, FullScopeCaller};
+use crate::caller::{AccountCaller, AnyCaller, FullScopeCaller};
 use crate::client::Client;
 use crate::{ApiResult, AppState, open_visible};
 
@@ -79,9 +79,9 @@ pub(crate) async fn me(
 
 #[utoipa::path(post, path = "/v1/tokens", request_body = api::CreateTokenRequest, responses(
     (status = 200, body = api::CreatedToken),
-    (status = 400, body = api::ErrorBody, description = "invalid_request: an unknown resource, level or access mode, a level above the resource's top one, a selected repository the owner does not own, or both expires_at and never"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request: an unknown resource, level or access mode, a level above the resource's top one, a selected repository the owner does not own, an organization permission for an owner that is not an organization, an account permission for an owner that is not the caller's own account, a repository permission with public repository access, or both expires_at and never"),
     (status = 403, body = api::ErrorBody, description = "forbidden: a grant adds nothing the caller holds in a selected repository"),
-    (status = 403, body = api::ErrorBody, description = "not_org_member: the owner is an organization the caller is not in"),
+    (status = 403, body = api::ErrorBody, description = "not_org_member: the owner is an organization the caller is not in; not_org_owner: an organization grant that needs an owner (every write, invitations, audit log, creation policy) from a caller who is only a member"),
     (status = 404, body = api::ErrorBody, description = "repo_not_found"),
 ))]
 pub(crate) async fn create_token(
@@ -306,7 +306,7 @@ pub(crate) struct KeysQuery {
 ))]
 pub(crate) async fn add_key(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    AccountCaller(who): AccountCaller,
     Json(req): Json<api::AddKeyRequest>,
 ) -> ApiResult<Json<api::SshKeyInfo>> {
     let key = s
@@ -318,10 +318,11 @@ pub(crate) async fn add_key(
 
 #[utoipa::path(get, path = "/v1/keys",
     params(("user" = Option<String>, Query, description = "another user's keys; needs manage_users")),
-    responses((status = 200, body = Vec<api::SshKeyInfo>)))]
+    responses((status = 200, body = Vec<api::SshKeyInfo>),
+              (status = 403, body = api::ErrorBody, description = "a token owned by the account lists only its own keys")))]
 pub(crate) async fn list_keys(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    AccountCaller(who): AccountCaller,
     Query(q): Query<KeysQuery>,
 ) -> ApiResult<Json<Vec<api::SshKeyInfo>>> {
     let user = q.user.map_or_else(|| who.user.clone(), UserId::new);
@@ -332,10 +333,11 @@ pub(crate) async fn list_keys(
 #[utoipa::path(delete, path = "/v1/keys/{id}",
     params(("id" = String, Path, description = "the key's id"),
            ("user" = Option<String>, Query, description = "another user's key; needs manage_users")),
-    responses((status = 204), (status = 404, body = api::ErrorBody, description = "key_not_found")))]
+    responses((status = 204), (status = 403, body = api::ErrorBody, description = "a token owned by the account removes only its own keys"),
+              (status = 404, body = api::ErrorBody, description = "key_not_found")))]
 pub(crate) async fn delete_key(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    AccountCaller(who): AccountCaller,
     Path(id): Path<String>,
     Query(q): Query<KeysQuery>,
 ) -> ApiResult<StatusCode> {

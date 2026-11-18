@@ -40,7 +40,7 @@ impl AccessService {
     }
 
     async fn require_policy_admin(&self, actor: &Identity, org: &UserId) -> Result<()> {
-        actor.require_namespace_management()?;
+        actor.require_org_grant(org, ORG_ADMINISTRATION_WRITE)?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
         self.ensure_owner_writable(org).await
@@ -48,7 +48,7 @@ impl AccessService {
 
     /// The organization's repository-creation policy. Owners only.
     pub async fn repo_policy(&self, actor: &Identity, org: &UserId) -> Result<RepoPolicy> {
-        actor.require_full_scope()?;
+        actor.require_org_grant(org, ORG_ADMINISTRATION_READ)?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
         self.store.repo_policy(org).await

@@ -1908,9 +1908,19 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "a token owned by the account lists only its own keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "account_scoped:account_ssh_keys:read"
       },
       "post": {
         "tags": [
@@ -1958,7 +1968,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "account_scoped:account_ssh_keys:write"
       }
     },
     "/v1/keys/{id}": {
@@ -1989,6 +1999,16 @@
         ],
         "responses": {
           "204": {},
+          "403": {
+            "description": "a token owned by the account removes only its own keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "key_not_found",
             "content": {
@@ -2000,7 +2020,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "account_scoped:account_ssh_keys:write"
       }
     },
     "/v1/login": {
@@ -2143,7 +2163,7 @@
             }
           },
           "403": {
-            "description": "a token that is not full-scope",
+            "description": "a token without the account grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -2183,7 +2203,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "account_scoped:account_profile:write"
       },
       "delete": {
         "tags": [
@@ -2211,7 +2231,7 @@
             }
           },
           "403": {
-            "description": "a token that is not full-scope",
+            "description": "a token without the account grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -2221,7 +2241,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "account_scoped:account_profile:write"
       }
     },
     "/v1/me/emails": {
@@ -2827,7 +2847,7 @@
             }
           },
           "403": {
-            "description": "a token that is not full-scope",
+            "description": "a token without the account grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -2837,7 +2857,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "account_scoped:account_profile:write"
       }
     },
     "/v1/me/username": {
@@ -3284,7 +3304,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_administration:write"
       }
     },
     "/v1/orgs/{org}/audit": {
@@ -3336,7 +3356,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token that is not full-scope",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -3356,7 +3376,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "org_scoped:org_audit:read"
       }
     },
     "/v1/orgs/{org}/avatar": {
@@ -3463,7 +3483,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token that is not full-scope",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -3523,7 +3543,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "org_scoped:org_administration:write"
       },
       "delete": {
         "tags": [
@@ -3553,7 +3573,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token that is not full-scope",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -3583,7 +3603,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "org_scoped:org_administration:write"
       }
     },
     "/v1/orgs/{org}/invitations": {
@@ -3618,7 +3638,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token that is not full-scope",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -3638,7 +3658,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "org_scoped:org_members:write"
       }
     },
     "/v1/orgs/{org}/invitations/{user}": {
@@ -3672,7 +3692,7 @@
             "description": "the invitation is withdrawn"
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -3692,7 +3712,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_members:write"
       }
     },
     "/v1/orgs/{org}/members": {
@@ -3727,7 +3747,7 @@
             }
           },
           "403": {
-            "description": "not_org_member, or a token that is not full-scope",
+            "description": "not_org_member, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -3747,7 +3767,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "org_scoped:org_members:read"
       },
       "post": {
         "tags": [
@@ -3807,7 +3827,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -3837,7 +3857,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_members:write"
       }
     },
     "/v1/orgs/{org}/members/{user}": {
@@ -3871,7 +3891,7 @@
             "description": "also deletes their direct roles on the organization's repositories; a member may remove themselves"
           },
           "403": {
-            "description": "not_org_owner (removing someone else), or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner (removing someone else), or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -3901,7 +3921,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_members:write"
       },
       "patch": {
         "tags": [
@@ -3959,7 +3979,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -3989,7 +4009,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_members:write"
       }
     },
     "/v1/orgs/{org}/profile": {
@@ -4081,7 +4101,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token that is not full-scope",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4111,7 +4131,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "org_scoped:org_administration:write"
       }
     },
     "/v1/orgs/{org}/repo-policy": {
@@ -4142,7 +4162,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token that is not full-scope",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4162,7 +4182,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "org_scoped:org_administration:read"
       },
       "put": {
         "tags": [
@@ -4212,7 +4232,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4232,7 +4252,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_administration:write"
       }
     },
     "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}": {
@@ -4309,7 +4329,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4339,7 +4359,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_administration:write"
       },
       "delete": {
         "tags": [
@@ -4397,7 +4417,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4417,7 +4437,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_administration:write"
       }
     },
     "/v1/orgs/{org}/teams": {
@@ -4452,7 +4472,7 @@
             }
           },
           "403": {
-            "description": "not_org_member, or a token that is not full-scope",
+            "description": "not_org_member, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4472,7 +4492,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "org_scoped:org_teams:read"
       },
       "post": {
         "tags": [
@@ -4521,7 +4541,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4551,7 +4571,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_teams:write"
       }
     },
     "/v1/orgs/{org}/teams/{team}": {
@@ -4592,7 +4612,7 @@
             }
           },
           "403": {
-            "description": "not_org_member, or a token that is not full-scope",
+            "description": "not_org_member, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4612,7 +4632,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "org_scoped:org_teams:read"
       },
       "delete": {
         "tags": [
@@ -4644,7 +4664,7 @@
             "description": "also removes the team's members and its roles on repositories"
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4664,7 +4684,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_teams:write"
       },
       "patch": {
         "tags": [
@@ -4722,7 +4742,7 @@
             }
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4742,7 +4762,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_teams:write"
       }
     },
     "/v1/orgs/{org}/teams/{team}/members/{user}": {
@@ -4785,7 +4805,7 @@
             "description": "adding someone already in the team changes nothing"
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4815,7 +4835,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_teams:write"
       },
       "delete": {
         "tags": [
@@ -4856,7 +4876,7 @@
             "description": "ends the access the person had through the team"
           },
           "403": {
-            "description": "not_org_owner, or a token without manage_roles or limited to repositories",
+            "description": "not_org_owner, or a token without the organization grant",
             "content": {
               "application/json": {
                 "schema": {
@@ -4876,7 +4896,7 @@
             }
           }
         },
-        "x-pyn-reach": "namespace"
+        "x-pyn-reach": "org_scoped:org_teams:write"
       }
     },
     "/v1/owners/{owner}/freeze": {
@@ -9254,7 +9274,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: an unknown resource, level or access mode, a level above the resource's top one, a selected repository the owner does not own, or both expires_at and never",
+            "description": "invalid_request: an unknown resource, level or access mode, a level above the resource's top one, a selected repository the owner does not own, an organization permission for an owner that is not an organization, an account permission for an owner that is not the caller's own account, a repository permission with public repository access, or both expires_at and never",
             "content": {
               "application/json": {
                 "schema": {
@@ -9264,7 +9284,7 @@
             }
           },
           "403": {
-            "description": "not_org_member: the owner is an organization the caller is not in",
+            "description": "not_org_member: the owner is an organization the caller is not in; not_org_owner: an organization grant that needs an owner (every write, invitations, audit log, creation policy) from a caller who is only a member",
             "content": {
               "application/json": {
                 "schema": {
@@ -10797,7 +10817,7 @@
             "items": {
               "$ref": "#/components/schemas/TokenPermission"
             },
-            "description": "Metadata read is implied for `all` and `selected`; none are allowed with `public`."
+            "description": "Metadata read is implied for `all` and `selected`, which need at least one repository permission; `public`\ntakes no repository permissions. Organization and account permissions go with any repository access."
           },
           "repository_access": {
             "$ref": "#/components/schemas/RepositoryAccess"
@@ -14650,11 +14670,11 @@
         "properties": {
           "level": {
             "type": "string",
-            "description": "`read` or `write` (write includes read); `admin` for `locks` only (includes write)."
+            "description": "`read` or `write` (write includes read); `admin` for `locks` only (includes write). `org_audit` and\n`account_locks` take `read` only."
           },
           "resource": {
             "type": "string",
-            "description": "`metadata`, `contents`, `locks`, `policy`, `members`, `administration` or `audit`."
+            "description": "Repository permissions: `metadata`, `contents`, `locks`, `policy`, `members`, `administration` or `audit`.\nOrganization permissions, for an organization owner: `org_members`, `org_teams`, `org_administration` or\n`org_audit`. Account permissions, for the caller's own account as owner: `account_profile`,\n`account_ssh_keys` or `account_locks`."
           }
         }
       },

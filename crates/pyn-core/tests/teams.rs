@@ -215,30 +215,32 @@ async fn removing_an_organization_member_logs_the_teams_they_left() {
 }
 
 #[tokio::test]
-async fn team_management_needs_an_owner_and_an_unscoped_token_with_manage_roles() {
+async fn team_management_needs_an_owner_and_never_a_personal_token() {
     let w = setup().await;
     let acme = user("acme");
-    let narrow = token_for("alice", &[Permission::Read]);
-    assert!(matches!(
-        w.access
-            .create_team(&narrow, &acme, "art", None, None)
-            .await,
-        Err(PynError::Forbidden(Permission::ManageRoles))
-    ));
+    for held in [Permission::Read, Permission::ManageRoles] {
+        let personal = token_for("alice", &[held]);
+        assert!(matches!(
+            w.access
+                .create_team(&personal, &acme, "art", None, None)
+                .await,
+            Err(PynError::Forbidden(_))
+        ));
+    }
     assert!(matches!(
         w.access
             .create_team(&session("bob"), &acme, "art", None, None)
             .await,
         Err(PynError::NotOrgOwner(_))
     ));
-    let wide = token_for("alice", &[Permission::ManageRoles]);
+    let alice = session("alice");
     w.access
-        .create_team(&wide, &acme, "art", None, None)
+        .create_team(&alice, &acme, "art", None, None)
         .await
         .unwrap();
     assert!(matches!(
         w.access
-            .add_team_member(&wide, &acme, "art", &user("nobody"))
+            .add_team_member(&alice, &acme, "art", &user("nobody"))
             .await,
         Err(PynError::UserNotOrgMember { .. })
     ));

@@ -4,9 +4,10 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 
+use crate::access::needs::*;
 use crate::access::{
-    AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, GrantLevel, Identity,
-    InvitationAccept, InvitationCreate, InviteId, InviteRecord, NewAccount,
+    AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, GrantLevel, GrantNeed,
+    GrantScope, Identity, InvitationAccept, InvitationCreate, InviteId, InviteRecord, NewAccount,
     ORG_DELETE_MARK_SECONDS, OrgCreation, OrgInvitation, OrgMemberAdd, OrgRole, Permission,
     Principal, RegistrationMode, RepoAccess, Role, RoleDefinitions, RoleSource, ServerSettings,
     ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
@@ -1388,6 +1389,7 @@ impl AccessService {
         actor.require_full_scope()?;
         self.require_token_owner(actor, &req.owner).await?;
         let grants = Self::token_grants(&req)?;
+        self.require_scope_owner(actor, &req.owner, &grants).await?;
         if req.repo_access == RepoAccess::Selected {
             self.require_owned(&req.owner, &req.repos).await?;
         }
@@ -1457,6 +1459,43 @@ impl AccessService {
                 && !delta.iter().any(|p| held.has(*p))
             {
                 return Err(PynError::Forbidden(*first));
+            }
+        }
+        Ok(())
+    }
+
+    /// Organization grants need an organization as owner, account grants the creator's own account. The creator
+    /// must hold the organization role each organization grant needs; the rest is cut off at use time.
+    async fn require_scope_owner(
+        &self,
+        actor: &Identity,
+        owner: &UserId,
+        grants: &BTreeMap<TokenResource, GrantLevel>,
+    ) -> Result<()> {
+        let is_org = self.is_org(owner).await?;
+        for (resource, level) in grants {
+            match resource.scope() {
+                GrantScope::Repository => {}
+                GrantScope::Organization if !is_org => {
+                    return Err(PynError::InvalidRequest(format!(
+                        "{} is an organization permission: the resource owner must be an organization",
+                        resource.as_str()
+                    )));
+                }
+                GrantScope::Organization => {
+                    let needed = resource.org_role_needed(*level);
+                    let held = self.store.org_role(owner, &actor.user).await?;
+                    if needed == OrgRole::Owner && held != Some(OrgRole::Owner) {
+                        return Err(PynError::NotOrgOwner(owner.to_string()));
+                    }
+                }
+                GrantScope::Account if is_org || owner != &actor.user => {
+                    return Err(PynError::InvalidRequest(format!(
+                        "{} is an account permission: the resource owner must be the account itself",
+                        resource.as_str()
+                    )));
+                }
+                GrantScope::Account => {}
             }
         }
         Ok(())
@@ -1538,7 +1577,8 @@ impl AccessService {
     }
 
     /// The request's grants normalised: each within its resource's top level, metadata read present exactly when
-    /// the token reaches repositories beyond the public ones.
+    /// the token reaches repositories beyond the public ones. Repository grants need such access; organization and
+    /// account grants do not.
     fn token_grants(req: &NewToken) -> Result<BTreeMap<TokenResource, GrantLevel>> {
         let mut grants = req.grants.clone();
         for (resource, level) in &grants {
@@ -1559,9 +1599,11 @@ impl AccessService {
         }
         match req.repo_access {
             RepoAccess::Public => {
-                if !grants.is_empty() || !req.repos.is_empty() {
+                if grants.keys().any(|r| r.scope() == GrantScope::Repository)
+                    || !req.repos.is_empty()
+                {
                     return Err(PynError::InvalidRequest(
-                        "a token for public repositories takes no permissions or repositories"
+                        "a token for public repositories takes no repository permissions or repositories"
                             .into(),
                     ));
                 }
@@ -1578,9 +1620,13 @@ impl AccessService {
                     ));
                 }
                 grants.insert(TokenResource::Metadata, GrantLevel::Read);
-                if grants.len() < 2 {
+                let repository = grants
+                    .keys()
+                    .filter(|r| r.scope() == GrantScope::Repository)
+                    .count();
+                if repository < 2 {
                     return Err(PynError::InvalidRequest(
-                        "a token needs at least one permission".into(),
+                        "a token for repositories needs at least one repository permission".into(),
                     ));
                 }
             }
@@ -2649,7 +2695,7 @@ impl AccessService {
         title: Option<&str>,
         key: &str,
     ) -> Result<SshKeyRecord> {
-        actor.require_full_scope()?;
+        actor.require_account_grant(ACCOUNT_SSH_KEYS_WRITE)?;
         let parsed = ssh::parse(key)?;
         let derived = |text: &str| {
             let mut out = String::new();
@@ -2687,18 +2733,41 @@ impl AccessService {
         Ok(record)
     }
 
+    /// A token owned by the account reaches only the account's own keys; other credentials follow `require_manages`.
+    async fn require_key_access(
+        &self,
+        actor: &Identity,
+        target: &UserId,
+        need: GrantNeed,
+    ) -> Result<()> {
+        match &actor.credential {
+            Credential::Token(t)
+                if !t.sign_in && t.owner == actor.user && actor.require_grant(need).is_ok() =>
+            {
+                if &actor.user == target {
+                    Ok(())
+                } else {
+                    Err(PynError::Forbidden(Permission::ManageUsers))
+                }
+            }
+            _ => self.require_manages(actor, target).await,
+        }
+    }
+
     /// The actor's own keys; another user's need `manage_users` in a repository that user belongs to.
     pub async fn list_ssh_keys(
         &self,
         actor: &Identity,
         user: &UserId,
     ) -> Result<Vec<SshKeyRecord>> {
-        self.require_manages(actor, user).await?;
+        self.require_key_access(actor, user, ACCOUNT_SSH_KEYS_READ)
+            .await?;
         self.store.list_ssh_keys(user).await
     }
 
     pub async fn delete_ssh_key(&self, actor: &Identity, user: &UserId, id: &str) -> Result<()> {
-        self.require_manages(actor, user).await?;
+        self.require_key_access(actor, user, ACCOUNT_SSH_KEYS_WRITE)
+            .await?;
         if self.store.delete_ssh_key(user, id).await? {
             Ok(())
         } else {

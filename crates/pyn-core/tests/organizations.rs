@@ -703,15 +703,17 @@ async fn owners_add_existing_accounts_and_nobody_else_does() {
         .add_org_member(&weak, &acme, &user("dave"), OrgRole::Member)
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, PynError::Forbidden(Permission::ManageRoles)),
-        "{err}"
-    );
+    assert!(matches!(err, PynError::Forbidden(_)), "{err}");
     let managing = token_for("alice", &[Permission::ManageRoles]);
-    w.access
+    let err = w
+        .access
         .add_org_member(&managing, &acme, &user("dave"), OrgRole::Member)
         .await
-        .unwrap();
+        .unwrap_err();
+    assert!(
+        matches!(err, PynError::Forbidden(_)),
+        "a personal token with administration write is not an organization token: {err}"
+    );
 }
 
 #[tokio::test]

@@ -114,7 +114,7 @@ impl AccessService {
         fields: ProfileFields,
         visibility: Option<ProfileVisibility>,
     ) -> Result<Profile> {
-        actor.require_full_scope()?;
+        actor.require_account_grant(ACCOUNT_PROFILE_WRITE)?;
         let fields = fields.validated()?;
         self.account_id(&actor.user).await?;
         self.store
@@ -130,7 +130,7 @@ impl AccessService {
 
     /// Records or clears the actor's avatar; the bytes are already stored.
     pub async fn update_avatar(&self, actor: &Identity, avatar: Option<Avatar>) -> Result<Profile> {
-        actor.require_full_scope()?;
+        actor.require_account_grant(ACCOUNT_PROFILE_WRITE)?;
         self.account_id(&actor.user).await?;
         self.count_limited(
             &format!(
@@ -198,9 +198,9 @@ impl AccessService {
         self.store.org_profile(org).await
     }
 
-    /// The checks for editing an organization's profile: full scope, an owner, and not frozen.
+    /// The checks for editing an organization's profile: a credential for the organization, an owner, and not frozen.
     pub async fn require_org_edit(&self, actor: &Identity, org: &UserId) -> Result<()> {
-        actor.require_full_scope()?;
+        actor.require_org_grant(org, ORG_ADMINISTRATION_WRITE)?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
         self.ensure_owner_writable(org).await

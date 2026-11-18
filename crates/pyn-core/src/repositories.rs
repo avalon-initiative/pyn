@@ -603,7 +603,17 @@ impl Repositories {
     }
 
     /// The caller's live locks in every repository they can read and the credential covers, ordered by address then path.
+    /// A token owned by the account with `account_locks` read covers every repository its creator can read.
     pub async fn locks_of(&self, who: &Identity) -> Result<Vec<(RepoRecord, Lock)>> {
+        let creator = Identity {
+            user: who.user.clone(),
+            credential: Credential::Session,
+        };
+        let who = if who.holds_account_grant(crate::access::needs::ACCOUNT_LOCKS_READ) {
+            &creator
+        } else {
+            who
+        };
         let mut out = Vec::new();
         let mut readable: HashMap<crate::RepoId, Option<RepoRecord>> = HashMap::new();
         for (id, lock) in self.meta.list_locks_of(&who.user, self.clock.now()).await? {

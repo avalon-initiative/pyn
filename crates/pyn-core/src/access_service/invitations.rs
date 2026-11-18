@@ -19,7 +19,7 @@ impl AccessService {
         user: &UserId,
         role: OrgRole,
     ) -> Result<OrgAdd> {
-        actor.require_namespace_management()?;
+        actor.require_org_grant(org, ORG_MEMBERS_WRITE)?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
         self.ensure_owner_writable(org).await?;
@@ -111,7 +111,7 @@ impl AccessService {
         actor: &Identity,
         org: &UserId,
     ) -> Result<Vec<OrgInvitation>> {
-        actor.require_full_scope()?;
+        actor.require_org_grant(org, ORG_MEMBERS_WRITE)?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
         self.expire_org_invitations(Some(org), None).await?;
@@ -132,7 +132,7 @@ impl AccessService {
         org: &UserId,
         user: &UserId,
     ) -> Result<()> {
-        actor.require_namespace_management()?;
+        actor.require_org_grant(org, ORG_MEMBERS_WRITE)?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
         self.ensure_owner_writable(org).await?;

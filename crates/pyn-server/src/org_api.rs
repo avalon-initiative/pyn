@@ -10,7 +10,7 @@ use pyn_core::{AccountRecord, AuditQuery, OrgAdd, OrgInvitation, OrgRole, UserId
 use pyn_proto as api;
 use serde::Deserialize;
 
-use crate::caller::{AnyCaller, FullScopeCaller, NamespaceCaller};
+use crate::caller::{AnyCaller, FullScopeCaller, NamespaceCaller, OrgCaller};
 use crate::{ApiResult, AppState};
 
 pub(crate) fn org_info(org: AccountRecord, role: Option<OrgRole>) -> api::OrgInfo {
@@ -90,7 +90,7 @@ pub(crate) async fn get_org(
               (status = 409, body = api::ErrorBody, description = "org_not_empty: it still owns repositories; org_deleting: another delete of it is in flight")))]
 pub(crate) async fn delete_org(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path(name): Path<String>,
 ) -> ApiResult<StatusCode> {
     s.access.delete_org(&who, &UserId::new(name)).await?;
@@ -108,11 +108,11 @@ pub(crate) struct OrgAuditParams {
            ("before" = Option<i64>, Query, description = "events older than this id"),
            ("limit" = Option<usize>, Query, description = "page size, default 50, max 500")),
     responses((status = 200, body = api::AuditPage, description = "organization events (created, deleted, member added, removed or changed), newest first"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn org_audit(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    OrgCaller(who): OrgCaller,
     Path(name): Path<String>,
     Query(q): Query<OrgAuditParams>,
 ) -> ApiResult<Json<api::AuditPage>> {
@@ -141,11 +141,11 @@ pub(crate) async fn org_audit(
 #[utoipa::path(get, path = "/v1/orgs/{org}/members", operation_id = "org_list_members",
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 200, body = Vec<api::OrgMember>, description = "ordered by user name; any member may list"),
-              (status = 403, body = api::ErrorBody, description = "not_org_member, or a token that is not full-scope"),
+              (status = 403, body = api::ErrorBody, description = "not_org_member, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn list_members(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    OrgCaller(who): OrgCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<Vec<api::OrgMember>>> {
     let members = s.access.org_members(&who, &UserId::new(org)).await?;
@@ -168,12 +168,12 @@ fn member_info((user, role): (UserId, OrgRole)) -> api::OrgMember {
     responses((status = 202, body = api::OrgInvitation, description = "invited: the user becomes a member when they accept"),
               (status = 201, body = api::OrgMember, description = "added without an invitation: only a server administrator, and only when the server's org member add setting is `direct`"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: bad role, or the name is an organization"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found, or user_not_found"),
               (status = 409, body = api::ErrorBody, description = "already_org_member, or already_invited")))]
 pub(crate) async fn add_member(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path(org): Path<String>,
     Json(req): Json<api::AddOrgMemberRequest>,
 ) -> ApiResult<Response> {
@@ -206,11 +206,11 @@ fn invitation_info(i: OrgInvitation) -> api::OrgInvitation {
 #[utoipa::path(get, path = "/v1/orgs/{org}/invitations",
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 200, body = Vec<api::OrgInvitation>, description = "pending invitations ordered by user name; expired ones are gone"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn list_invitations(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    OrgCaller(who): OrgCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<Vec<api::OrgInvitation>>> {
     let found = s.access.org_invitations(&who, &UserId::new(org)).await?;
@@ -221,11 +221,11 @@ pub(crate) async fn list_invitations(
     params(("org" = String, Path, description = "the organization's name"),
            ("user" = String, Path, description = "the invited user's name")),
     responses((status = 204, description = "the invitation is withdrawn"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found, or org_invitation_not_found")))]
 pub(crate) async fn cancel_invitation(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path((org, user)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     s.access
@@ -292,12 +292,12 @@ fn parse_role(role: &str) -> Result<OrgRole, pyn_core::PynError> {
     request_body = api::SetOrgRoleRequest,
     responses((status = 200, body = api::OrgMember),
               (status = 400, body = api::ErrorBody, description = "invalid_request: bad role"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found, or org_member_not_found"),
               (status = 409, body = api::ErrorBody, description = "last_org_owner: the only owner cannot be demoted")))]
 pub(crate) async fn set_member_role(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path((org, user)): Path<(String, String)>,
     Json(req): Json<api::SetOrgRoleRequest>,
 ) -> ApiResult<Json<api::OrgMember>> {
@@ -313,12 +313,12 @@ pub(crate) async fn set_member_role(
     params(("org" = String, Path, description = "the organization's name"),
            ("user" = String, Path, description = "the member's user name")),
     responses((status = 204, description = "also deletes their direct roles on the organization's repositories; a member may remove themselves"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner (removing someone else), or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner (removing someone else), or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found, or org_member_not_found"),
               (status = 409, body = api::ErrorBody, description = "last_org_owner: the only owner cannot leave")))]
 pub(crate) async fn remove_member(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path((org, user)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     s.access

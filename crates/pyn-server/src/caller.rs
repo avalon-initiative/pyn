@@ -9,7 +9,7 @@ use axum::http::request::Parts;
 use pyn_core::repositories::OpenRepo;
 use pyn_core::{
     AccessMode, Credential, GrantLevel, GrantNeed, Identity, Principal, PynError, SessionRecord,
-    Visibility,
+    UserId, Visibility,
 };
 use pyn_proto as api;
 
@@ -208,6 +208,48 @@ impl FromRequestParts<AppState> for NamespaceCaller {
             }
             other => Err(mismatch("NamespaceCaller", other)),
         }
+    }
+}
+
+/// The caller of a route declared `org_scoped`, with the grant for the organization in the
+/// path already checked.
+pub(crate) struct OrgCaller(pub(crate) Identity);
+
+impl FromRequestParts<AppState> for OrgCaller {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
+        let reach = declared(parts);
+        let Reach::OrgScoped(need) = reach else {
+            return Err(mismatch("OrgCaller", reach));
+        };
+        let who = identify(s, &parts.headers).await?;
+        let Path(params) = Path::<HashMap<String, String>>::from_request_parts(parts, s)
+            .await
+            .map_err(|_| {
+                PynError::InvalidRequest("an organization route without an organization".into())
+            })?;
+        let org = UserId::new(params.get("org").cloned().unwrap_or_default());
+        who.require_org_grant(&org, need)
+            .map_err(|_| PynError::GrantRequired(need))?;
+        Ok(Self(who))
+    }
+}
+
+/// The caller of a route declared `account_scoped`, with the grant already checked.
+pub(crate) struct AccountCaller(pub(crate) Identity);
+
+impl FromRequestParts<AppState> for AccountCaller {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
+        let Reach::AccountScoped(need) = declared(parts) else {
+            return Err(mismatch("AccountCaller", declared(parts)));
+        };
+        let who = identify(s, &parts.headers).await?;
+        who.require_account_grant(need)
+            .map_err(|_| PynError::GrantRequired(need))?;
+        Ok(Self(who))
     }
 }
 

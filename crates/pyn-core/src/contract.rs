@@ -8302,8 +8302,23 @@ pub async fn tokens_keep_their_owner_repository_access_and_grants(store: Access)
         grants: Default::default(),
         ..token("bbbbbbbbbbbb", "alice", 2)
     };
+    let owned = TokenRecord {
+        repo_access: RepoAccess::Public,
+        owner: user("acme"),
+        grants: [
+            (OrgMembers, Write),
+            (OrgTeams, Read),
+            (OrgAdministration, Write),
+            (OrgAudit, Read),
+            (AccountProfile, Write),
+            (AccountSshKeys, Read),
+            (AccountLocks, Read),
+        ]
+        .into(),
+        ..token("dddddddddddd", "alice", 4)
+    };
     let sign_in = crate::fixtures::sign_in_record("cccccccccccc", "alice", at(3));
-    for record in [&all, &public, &sign_in] {
+    for record in [&all, &public, &owned, &sign_in] {
         store.create_token(record.clone()).await.unwrap();
         let got = store.get_token(&record.id).await.unwrap().unwrap();
         assert_eq!(&got, record);

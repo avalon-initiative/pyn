@@ -11,7 +11,7 @@ use pyn_core::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility, Py
 use pyn_proto as api;
 use serde::Deserialize;
 
-use crate::caller::{AnyCaller, FullScopeCaller, OptionalCaller};
+use crate::caller::{AccountCaller, AnyCaller, OptionalCaller, OrgCaller};
 use crate::client::Client;
 use crate::{ApiResult, AppState, FileContent};
 
@@ -141,10 +141,10 @@ pub(crate) async fn list_people(
     responses((status = 200, body = api::Profile, description = "the stored profile"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: a field is too long, has control characters, or a link is not an http(s) URL"),
               (status = 401, body = api::ErrorBody),
-              (status = 403, body = api::ErrorBody, description = "a token that is not full-scope")))]
+              (status = 403, body = api::ErrorBody, description = "a token without the account grant")))]
 pub(crate) async fn update_profile(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    AccountCaller(who): AccountCaller,
     Json(req): Json<api::UpdateProfileRequest>,
 ) -> ApiResult<Json<api::Profile>> {
     let fields = ProfileFields {
@@ -188,14 +188,14 @@ async fn avatar_bytes(headers: &HeaderMap, body: Body) -> Result<Vec<u8>, PynErr
     responses((status = 200, body = api::Profile, description = "the profile with the new `avatar_url`"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: an empty body"),
               (status = 401, body = api::ErrorBody),
-              (status = 403, body = api::ErrorBody, description = "a token that is not full-scope"),
+              (status = 403, body = api::ErrorBody, description = "a token without the account grant"),
               (status = 413, body = api::ErrorBody, description = "object_too_large: over 1 MiB"),
               (status = 415, body = api::ErrorBody, description = "unsupported_image: not a png, jpeg or webp"),
               (status = 429, body = api::ErrorBody, description = "too_many_attempts: too many avatar changes in an hour")))]
 pub(crate) async fn put_avatar(
     State(s): State<AppState>,
     headers: HeaderMap,
-    FullScopeCaller(who): FullScopeCaller,
+    AccountCaller(who): AccountCaller,
     body: Body,
 ) -> ApiResult<Json<api::Profile>> {
     let bytes = avatar_bytes(&headers, body).await?;
@@ -206,10 +206,10 @@ pub(crate) async fn put_avatar(
 #[utoipa::path(delete, path = "/v1/me/avatar",
     responses((status = 200, body = api::Profile, description = "the profile without an avatar; removing none is not an error"),
               (status = 401, body = api::ErrorBody),
-              (status = 403, body = api::ErrorBody, description = "a token that is not full-scope")))]
+              (status = 403, body = api::ErrorBody, description = "a token without the account grant")))]
 pub(crate) async fn delete_avatar(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    AccountCaller(who): AccountCaller,
 ) -> ApiResult<Json<api::Profile>> {
     let saved = profiles(&s).remove_avatar(&who).await?;
     Ok(Json(profile_dto(&who.user, saved, true)))
@@ -311,12 +311,12 @@ pub(crate) async fn get_org_profile(
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 200, body = api::OrgProfile, description = "the stored profile"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: the description is too long or has control characters"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found"),
               (status = 409, body = api::ErrorBody, description = "owner_frozen")))]
 pub(crate) async fn update_org_profile(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    OrgCaller(who): OrgCaller,
     Path(org): Path<String>,
     Json(req): Json<api::UpdateOrgProfileRequest>,
 ) -> ApiResult<Json<api::OrgProfile>> {
@@ -333,7 +333,7 @@ pub(crate) async fn update_org_profile(
     request_body(content = inline(FileContent), content_type = "image/png", description = "the image bytes (png, jpeg or webp, at most 1 MiB); the type is judged from the bytes, not the `Content-Type` header"),
     responses((status = 200, body = api::OrgProfile, description = "the profile with the new `avatar_url`"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: an empty body"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found"),
               (status = 409, body = api::ErrorBody, description = "owner_frozen"),
               (status = 413, body = api::ErrorBody, description = "object_too_large: over 1 MiB"),
@@ -342,7 +342,7 @@ pub(crate) async fn update_org_profile(
 pub(crate) async fn put_org_avatar(
     State(s): State<AppState>,
     headers: HeaderMap,
-    FullScopeCaller(who): FullScopeCaller,
+    OrgCaller(who): OrgCaller,
     Path(org): Path<String>,
     body: Body,
 ) -> ApiResult<Json<api::OrgProfile>> {
@@ -354,12 +354,12 @@ pub(crate) async fn put_org_avatar(
 #[utoipa::path(delete, path = "/v1/orgs/{org}/avatar",
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 200, body = api::OrgProfile, description = "the profile without an avatar; removing none is not an error"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found"),
               (status = 409, body = api::ErrorBody, description = "owner_frozen")))]
 pub(crate) async fn delete_org_avatar(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    OrgCaller(who): OrgCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<api::OrgProfile>> {
     let saved = profiles(&s).remove_org_avatar(&who, &org).await?;

@@ -182,9 +182,11 @@ fn expected(mode: AccessMode, reach: Reach, kind: Kind) -> Expect {
         Reach::OptionalSignIn => hit(user || kind == Kind::SignedOut),
         Reach::Session => hit(kind == Kind::Session),
         Reach::AnyCredential => hit(user),
-        Reach::FullScope | Reach::FullScopePending | Reach::Namespace => {
-            hit(matches!(kind, Kind::Session | Kind::Full | Kind::Admin))
-        }
+        Reach::FullScope
+        | Reach::FullScopePending
+        | Reach::Namespace
+        | Reach::OrgScoped(_)
+        | Reach::AccountScoped(_) => hit(matches!(kind, Kind::Session | Kind::Full | Kind::Admin)),
         Reach::AdminOnly => hit(kind == Kind::Admin),
         Reach::Service(_) => hit(matches!(kind, Kind::Admin | Kind::ServiceAll)),
         Reach::FullScopeOrService(_) => hit(matches!(
@@ -712,6 +714,8 @@ fn the_table_uses_every_reach_kind() {
         "full_scope",
         "full_scope_pending",
         "namespace",
+        "org_scoped",
+        "account_scoped",
         "admin_only",
         "service",
         "full_scope_or_service",
@@ -1070,4 +1074,359 @@ fn every_repository_route_declares_the_resource_and_level_of_the_catalog() {
         "a route is pinned twice"
     );
     assert_eq!(declared, pinned);
+}
+
+/// The organization and account routes with the resource and level each declares, written out apart from the table.
+/// Reads of an organization's or account's public view stay open to any credential and are not listed.
+const ORGANIZATION_AND_ACCOUNT_ROUTES: &[(&str, &str, &str)] = &[
+    ("GET", "/v1/keys", "account_scoped:account_ssh_keys:read"),
+    ("POST", "/v1/keys", "account_scoped:account_ssh_keys:write"),
+    (
+        "DELETE",
+        "/v1/keys/{id}",
+        "account_scoped:account_ssh_keys:write",
+    ),
+    (
+        "PUT",
+        "/v1/me/profile",
+        "account_scoped:account_profile:write",
+    ),
+    (
+        "PUT",
+        "/v1/me/avatar",
+        "account_scoped:account_profile:write",
+    ),
+    (
+        "DELETE",
+        "/v1/me/avatar",
+        "account_scoped:account_profile:write",
+    ),
+    (
+        "PUT",
+        "/v1/orgs/{org}/profile",
+        "org_scoped:org_administration:write",
+    ),
+    (
+        "PUT",
+        "/v1/orgs/{org}/avatar",
+        "org_scoped:org_administration:write",
+    ),
+    (
+        "DELETE",
+        "/v1/orgs/{org}/avatar",
+        "org_scoped:org_administration:write",
+    ),
+    (
+        "DELETE",
+        "/v1/orgs/{org}",
+        "org_scoped:org_administration:write",
+    ),
+    ("GET", "/v1/orgs/{org}/audit", "org_scoped:org_audit:read"),
+    (
+        "GET",
+        "/v1/orgs/{org}/members",
+        "org_scoped:org_members:read",
+    ),
+    (
+        "POST",
+        "/v1/orgs/{org}/members",
+        "org_scoped:org_members:write",
+    ),
+    (
+        "GET",
+        "/v1/orgs/{org}/invitations",
+        "org_scoped:org_members:write",
+    ),
+    (
+        "DELETE",
+        "/v1/orgs/{org}/invitations/{user}",
+        "org_scoped:org_members:write",
+    ),
+    (
+        "PATCH",
+        "/v1/orgs/{org}/members/{user}",
+        "org_scoped:org_members:write",
+    ),
+    (
+        "DELETE",
+        "/v1/orgs/{org}/members/{user}",
+        "org_scoped:org_members:write",
+    ),
+    (
+        "GET",
+        "/v1/orgs/{org}/repo-policy",
+        "org_scoped:org_administration:read",
+    ),
+    (
+        "PUT",
+        "/v1/orgs/{org}/repo-policy",
+        "org_scoped:org_administration:write",
+    ),
+    (
+        "PUT",
+        "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
+        "org_scoped:org_administration:write",
+    ),
+    (
+        "DELETE",
+        "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
+        "org_scoped:org_administration:write",
+    ),
+    ("GET", "/v1/orgs/{org}/teams", "org_scoped:org_teams:read"),
+    ("POST", "/v1/orgs/{org}/teams", "org_scoped:org_teams:write"),
+    (
+        "GET",
+        "/v1/orgs/{org}/teams/{team}",
+        "org_scoped:org_teams:read",
+    ),
+    (
+        "PATCH",
+        "/v1/orgs/{org}/teams/{team}",
+        "org_scoped:org_teams:write",
+    ),
+    (
+        "DELETE",
+        "/v1/orgs/{org}/teams/{team}",
+        "org_scoped:org_teams:write",
+    ),
+    (
+        "PUT",
+        "/v1/orgs/{org}/teams/{team}/members/{user}",
+        "org_scoped:org_teams:write",
+    ),
+    (
+        "DELETE",
+        "/v1/orgs/{org}/teams/{team}/members/{user}",
+        "org_scoped:org_teams:write",
+    ),
+];
+
+fn owner_need(reach: Reach) -> Option<GrantNeed> {
+    match reach {
+        Reach::OrgScoped(n) | Reach::AccountScoped(n) => Some(n),
+        _ => None,
+    }
+}
+
+#[test]
+fn every_organization_and_account_route_declares_the_resource_and_level_of_the_catalog() {
+    let declared: BTreeMap<(String, String), String> = declarations()
+        .into_iter()
+        .filter(|d| owner_need(d.reach).is_some())
+        .map(|d| ((d.method.to_string(), d.path.to_string()), d.reach.label()))
+        .collect();
+    let pinned: BTreeMap<(String, String), String> = ORGANIZATION_AND_ACCOUNT_ROUTES
+        .iter()
+        .map(|(m, p, l)| ((m.to_string(), p.to_string()), l.to_string()))
+        .collect();
+    assert_eq!(pinned.len(), ORGANIZATION_AND_ACCOUNT_ROUTES.len());
+    assert_eq!(declared, pinned);
+    for (_, need) in declared
+        .keys()
+        .zip(declarations().iter().filter_map(|d| owner_need(d.reach)))
+    {
+        assert_ne!(need.resource.scope(), pyn_core::GrantScope::Repository);
+    }
+}
+
+/// A server with alice (repositories game, open and other; the organizations acme and beta, both hers) and a fine-grained
+/// token of hers for `owner` with repository access `public` (`all` when a grant is a repository one) holding exactly `grants`, made through the token API.
+async fn owner_world(owner: &str, grants: &[(TokenResource, GrantLevel)]) -> (Router, Cred) {
+    let st = state(AccessMode::Private);
+    let alice = UserId::new("alice");
+    let as_alice = Identity {
+        user: alice.clone(),
+        credential: Credential::Session,
+    };
+    let app = router(st.clone());
+    let password_body = json!({"username": "alice", "password": PASSWORD}).to_string();
+    let r = send(
+        &app,
+        &Cred::SignedOut,
+        &Method::POST,
+        "/v1/register",
+        Some(password_body.clone()),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    for name in ["game", "open", "other"] {
+        st.repos
+            .create(&as_alice, &alice, name, Some(Visibility::Private), None)
+            .await
+            .unwrap();
+    }
+    for org in ["acme", "beta"] {
+        st.access.create_org(&as_alice, org).await.unwrap();
+    }
+    let r = send(
+        &app,
+        &Cred::SignedOut,
+        &Method::POST,
+        "/v1/login",
+        Some(password_body),
+        &[],
+    )
+    .await;
+    let full = Cred::token(
+        &serde_json::from_slice::<api::CreatedToken>(&r.body)
+            .unwrap()
+            .token,
+    );
+    let permissions: Vec<_> = grants
+        .iter()
+        .map(|(r, l)| json!({"resource": r.as_str(), "level": l.as_str()}))
+        .collect();
+    let repository = grants
+        .iter()
+        .any(|(r, _)| r.scope() == pyn_core::GrantScope::Repository);
+    let mode = if repository { "all" } else { "public" };
+    let body = json!({
+        "name": "owned",
+        "owner": owner,
+        "repository_access": {"mode": mode, "repos": []},
+        "permissions": permissions,
+    });
+    let r = send(
+        &app,
+        &full,
+        &Method::POST,
+        "/v1/tokens",
+        Some(body.to_string()),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{owner} {grants:?}: {}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let token = serde_json::from_slice::<api::CreatedToken>(&r.body)
+        .unwrap()
+        .token;
+    (app, Cred::token(&token))
+}
+
+/// Every other resource of the category at its top level, and the declared one one level short (absent for a read).
+fn lacking_owner_grants(need: GrantNeed) -> Vec<(TokenResource, GrantLevel)> {
+    let category = match need.resource.scope() {
+        pyn_core::GrantScope::Organization => TokenResource::ORGANIZATION.to_vec(),
+        _ => TokenResource::ACCOUNT.to_vec(),
+    };
+    let mut grants: Vec<_> = category
+        .into_iter()
+        .filter(|r| *r != need.resource)
+        .map(|r| (r, r.max_level()))
+        .collect();
+    if need.level == GrantLevel::Write && need.resource.min_level() == GrantLevel::Read {
+        grants.push((need.resource, GrantLevel::Read));
+    }
+    grants
+}
+
+/// For every organization and account route a token holding exactly the declared grant reaches it, one holding every
+/// other grant of its category does not, nor one owned by another organization or account, nor a repository token.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_organization_or_account_token_reaches_exactly_what_its_grants_declare() {
+    let mut failures = Vec::new();
+    let mut calls = 0;
+    for d in declarations() {
+        let Some(need) = owner_need(d.reach) else {
+            continue;
+        };
+        let org_route = need.resource.scope() == pyn_core::GrantScope::Organization;
+        let owner = if org_route { "acme" } else { "alice" };
+        let uri = fill(d.path, "game");
+        let body = body_for(&d.method, d.path);
+        let headers = headers_for(d.path);
+        let label = |who: &str| format!("{} {} as {who} ({})", d.method, d.path, d.reach.label());
+        let describe = |r: &Reply| format!("{} {}", r.status, String::from_utf8_lossy(&r.body));
+
+        let (app, cred) = owner_world(owner, &[(need.resource, need.level)]).await;
+        let r = send(&app, &cred, &d.method, &uri, body.clone(), &headers).await;
+        calls += 1;
+        if r.status.is_server_error() || r.refused(false) {
+            failures.push(format!(
+                "{}: expected to reach it, got {}",
+                label("the exact grant"),
+                describe(&r)
+            ));
+        }
+
+        let (app, cred) = owner_world(owner, &lacking_owner_grants(need)).await;
+        let r = send(&app, &cred, &d.method, &uri, body.clone(), &headers).await;
+        calls += 1;
+        if r.status != StatusCode::FORBIDDEN || r.code().as_deref() != Some("forbidden") {
+            failures.push(format!(
+                "{}: expected a 403 forbidden, got {}",
+                label("every other grant of its category"),
+                describe(&r)
+            ));
+        }
+
+        let (other_owner, other_grants) = if org_route {
+            ("beta", vec![(need.resource, need.level)])
+        } else {
+            (
+                "acme",
+                TokenResource::ORGANIZATION
+                    .map(|r| (r, r.max_level()))
+                    .to_vec(),
+            )
+        };
+        let (app, cred) = owner_world(other_owner, &other_grants).await;
+        let r = send(&app, &cred, &d.method, &uri, body.clone(), &headers).await;
+        calls += 1;
+        if r.status != StatusCode::FORBIDDEN || r.code().as_deref() != Some("forbidden") {
+            failures.push(format!(
+                "{}: expected a 403 forbidden, got {}",
+                label("a token owned by another organization or account"),
+                describe(&r)
+            ));
+        }
+
+        if org_route {
+            let personal = [
+                (TokenResource::Contents, GrantLevel::Read),
+                (TokenResource::Administration, GrantLevel::Write),
+            ];
+            let (app, cred) = owner_world("alice", &personal).await;
+            let r = send(&app, &cred, &d.method, &uri, body.clone(), &headers).await;
+            calls += 1;
+            if r.status != StatusCode::FORBIDDEN || r.code().as_deref() != Some("forbidden") {
+                failures.push(format!(
+                    "{}: expected a 403 forbidden, got {}",
+                    label("a personal token with administration write"),
+                    describe(&r)
+                ));
+            }
+        }
+
+        let (app, cred) = fine_world(
+            &TokenResource::ALL
+                .into_iter()
+                .filter(|r| *r != TokenResource::Metadata)
+                .map(|r| (r, r.max_level()))
+                .collect::<Vec<_>>(),
+            "game",
+        )
+        .await;
+        let r = send(&app, &cred, &d.method, &uri, body, &headers).await;
+        calls += 1;
+        if r.status != StatusCode::FORBIDDEN || r.code().as_deref() != Some("forbidden") {
+            failures.push(format!(
+                "{}: expected a 403 forbidden, got {}",
+                label("a repository-only token"),
+                describe(&r)
+            ));
+        }
+    }
+    assert!(calls >= 100, "the matrix ran {calls} calls");
+    assert!(
+        failures.is_empty(),
+        "{} mismatches:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

@@ -71,7 +71,7 @@ impl Profiles<'_> {
     /// Stores the avatar bytes under their SHA-256 and makes them the actor's avatar. Replaced bytes stay in the
     /// store: it is shared and content-addressed, so another record may use the same object.
     pub async fn set_avatar(&self, actor: &Identity, bytes: Vec<u8>) -> Result<Profile> {
-        actor.require_full_scope()?;
+        actor.require_account_grant(crate::access::needs::ACCOUNT_PROFILE_WRITE)?;
         let avatar = self.store_avatar(bytes).await?;
         self.access.update_avatar(actor, Some(avatar)).await
     }
