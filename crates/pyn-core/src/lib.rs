@@ -24,6 +24,7 @@ pub mod memory;
 pub mod merge;
 pub mod object;
 pub mod oidc;
+pub mod org_settings;
 pub mod passwords;
 pub mod profile;
 pub mod profiles;
@@ -104,6 +105,7 @@ pub use oidc::{
     AuthorizationRequest, CodeExchange, ExternalClaims, ExternalCreate, ExternalIdentity,
     IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider, pkce_challenge,
 };
+pub use org_settings::{OrgSettings, ReadOnlyDefault, ReadOnlySource};
 pub use passwords::{InlinePasswords, PasswordWorker};
 pub use profile::{Avatar, ImageKind, OrgProfile, Profile, ProfileFields, ProfileVisibility};
 pub use profiles::{Profiles, PublicProfile};

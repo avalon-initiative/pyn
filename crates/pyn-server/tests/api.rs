@@ -2692,6 +2692,45 @@ async fn the_lock_limit_is_set_at_creation_overridden_by_the_policy_file_and_enf
     );
 }
 
+#[tokio::test]
+async fn the_read_only_default_follows_the_policy_file_and_is_validated() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let made = create_repo(&app, &alice, "game").await;
+    assert_eq!(
+        (made.exclusive_read_only, made.exclusive_read_only_source),
+        (true, api::ReadOnlySource::Default)
+    );
+    let put_policy = |text: &'static str| {
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            let content = put_blob(&app, "game", &alice, text).await;
+            send(
+                &app,
+                "POST",
+                "/v1/repos/alice/game/checkin",
+                &alice,
+                Some(serde_json::json!({
+                    "path": ".pyn/pyn.toml", "content": content, "base_revision": null, "message": "m"
+                })),
+            )
+            .await
+        }
+    };
+    let r = put_policy("[meta]\nexclusive_read_only = \"off\"\n").await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "invalid_rules");
+
+    let r = put_policy("[meta]\nexclusive_read_only = false\n").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let info: api::RepoInfo =
+        body_json(send(&app, "GET", "/v1/repos/alice/game", &alice, None).await).await;
+    assert_eq!(
+        (info.exclusive_read_only, info.exclusive_read_only_source),
+        (false, api::ReadOnlySource::Repository)
+    );
+}
+
 fn anonymous_get(uri: &str) -> Request<Body> {
     Request::get(uri).body(Body::empty()).unwrap()
 }

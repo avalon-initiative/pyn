@@ -7,6 +7,7 @@ which are `shared` (concurrent edits; merged, see [merging](merging.md) and [git
 [meta]
 default = "exclusive"            # what an unlisted path is; "exclusive" if this is omitted
 max_locks_per_user = 5           # optional: locks one user may hold at once (1 to 10000)
+exclusive_read_only = true       # optional: exclusive files are read-only in a work tree until locked (default true)
 
 [exclusive]
 paths = [
@@ -49,6 +50,25 @@ The file wins over the setting: while it sets a limit, the setting cannot be cha
 `invalid_request`) and the repository reports `max_locks_set_by_policy`, so a settings page shows the value read-only.
 Remove the key from the file and the setting applies again. Changing the limit in the file takes effect with the revision
 and releases nothing: a user already over a lowered limit keeps their locks and cannot take new ones until they are under it.
+
+## Read-only default
+
+`meta.exclusive_read_only` says whether an exclusive file is made read-only in a work tree until its lock is held. It is a
+courtesy: anyone can `chmod` the file, and the server still publishes an exclusive path only for the account that holds its
+lock ([workspace](workspace.md#working-in-a-workspace)). Turn it off when the tools a team uses write their files
+themselves, or when the check at publish time is enough. It must be `true` or `false`; any other value is `invalid_rules`.
+
+Where the default comes from, first match wins:
+
+1. `meta.exclusive_read_only` in the repository's `.pyn/pyn.toml`;
+2. the owning organization's `exclusive_read_only` setting, for a repository an organization owns
+   ([repositories](repositories.md#organization-settings));
+3. on.
+
+The setting travels with the file, so a repository started locally and pushed to an empty server repository carries its
+choice with the first push. A repository reports the value in force as `exclusive_read_only`, and which of the three decided
+it as `exclusive_read_only_source` (`repository`, `organization` or `default`). The setting changes only the permission bit
+on the files in a work tree; modes, locks and what the server accepts are unchanged.
 
 ## Entries
 

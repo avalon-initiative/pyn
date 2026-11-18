@@ -529,7 +529,7 @@ they never clash with the repository resources of the same topic.
 | --- | --- | --- |
 | `org_members` | list members | list invitations; invite, change a role, remove a member, cancel an invitation |
 | `org_teams` | list and get teams | create, edit and delete teams, add and remove their members |
-| `org_administration` | read the repository-creation policy | edit the profile and avatar, change the creation policy and its rules, delete the organization |
+| `org_administration` | read the repository-creation policy and the organization's repository settings | edit the profile and avatar, change the creation policy and its rules, change the repository settings, delete the organization |
 | `org_audit` | read the organization audit log | (none) |
 
 **Account permissions** are for a token whose resource owner is the creator's own account. Their names carry an `account_` prefix.
@@ -767,8 +767,8 @@ creator's role alone, as before.
 | `org_members:write` | `GET /v1/orgs/{org}/invitations`, `POST /v1/orgs/{org}/members`, `PATCH` and `DELETE /v1/orgs/{org}/members/{user}`, `DELETE /v1/orgs/{org}/invitations/{user}` |
 | `org_teams:read` | `GET /v1/orgs/{org}/teams`, `GET /v1/orgs/{org}/teams/{team}` |
 | `org_teams:write` | create, `PATCH` and `DELETE` a team, `PUT` and `DELETE` a team member |
-| `org_administration:read` | `GET /v1/orgs/{org}/repo-policy` |
-| `org_administration:write` | `PUT /v1/orgs/{org}/profile`, `PUT` and `DELETE /v1/orgs/{org}/avatar`, `DELETE /v1/orgs/{org}`, `PUT /v1/orgs/{org}/repo-policy`, `PUT` and `DELETE` its `rules/{effect}/{kind}/{subject}` |
+| `org_administration:read` | `GET /v1/orgs/{org}/repo-policy`, `GET /v1/orgs/{org}/settings` |
+| `org_administration:write` | `PUT /v1/orgs/{org}/profile`, `PUT` and `DELETE /v1/orgs/{org}/avatar`, `DELETE /v1/orgs/{org}`, `PUT /v1/orgs/{org}/repo-policy`, `PUT` and `DELETE` its `rules/{effect}/{kind}/{subject}`, `PUT /v1/orgs/{org}/settings` |
 | `org_audit:read` | `GET /v1/orgs/{org}/audit` |
 | `account_profile:write` | `PUT /v1/me/profile`, `PUT` and `DELETE /v1/me/avatar` |
 | `account_ssh_keys:read` | `GET /v1/keys` |

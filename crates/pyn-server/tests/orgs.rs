@@ -403,6 +403,7 @@ async fn openapi_documents_the_organization_routes() {
         "/v1/orgs/{org}/members/{user}",
         "/v1/orgs/{org}/repo-policy",
         "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
+        "/v1/orgs/{org}/settings",
         "/v1/me/orgs",
     ] {
         assert!(doc["paths"].get(path).is_some(), "{path}");
@@ -788,6 +789,66 @@ async fn an_organization_being_deleted_refuses_new_repositories_and_a_second_del
 async fn create_in_acme(app: &Router, who: &str, name: &str, visibility: &str) -> Reply {
     let body = json!({"owner": "acme", "name": name, "visibility": visibility});
     call(app, who, "POST", "/v1/repos", Some(body)).await
+}
+
+#[tokio::test]
+async fn the_organization_read_only_default_is_owner_only_and_reaches_its_repositories() {
+    let app = server(OrgCreation::Anyone).await;
+    let (alice, bob) = (token_for(&app, "alice").await, token_for(&app, "bob").await);
+    create_org(&app, &alice, "acme").await;
+    join(&app, &alice, "acme", "bob", &bob, "member").await;
+    let settings = "/v1/orgs/acme/settings";
+    let repo_info = |name: &'static str| {
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            call(&app, &alice, "GET", &format!("/v1/repos/acme/{name}"), None)
+                .await
+                .json::<api::RepoInfo>()
+        }
+    };
+
+    let r = call(&app, &alice, "GET", settings, None).await;
+    assert_eq!(r.json::<api::OrgSettingsInfo>().exclusive_read_only, None);
+    for method in ["GET", "PUT"] {
+        let r = call(&app, &bob, method, settings, Some(json!({}))).await;
+        assert_eq!(code(&r), (403, "not_org_owner".into()), "{method}");
+    }
+    let r = call(&app, &alice, "GET", "/v1/orgs/nope/settings", None).await;
+    assert_eq!(code(&r), (404, "org_not_found".into()));
+
+    assert_eq!(
+        create_in_acme(&app, &alice, "game", "private").await.status,
+        StatusCode::CREATED
+    );
+    let info = repo_info("game").await;
+    assert_eq!(
+        (info.exclusive_read_only, info.exclusive_read_only_source),
+        (true, api::ReadOnlySource::Default)
+    );
+
+    let r = call(
+        &app,
+        &alice,
+        "PUT",
+        settings,
+        Some(json!({"exclusive_read_only": false})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        r.json::<api::OrgSettingsInfo>().exclusive_read_only,
+        Some(false)
+    );
+    let info = repo_info("game").await;
+    assert_eq!(
+        (info.exclusive_read_only, info.exclusive_read_only_source),
+        (false, api::ReadOnlySource::Organization),
+        "an existing repository follows the organization's setting"
+    );
+
+    let r = call(&app, &alice, "PUT", settings, Some(json!({}))).await;
+    assert_eq!(r.json::<api::OrgSettingsInfo>().exclusive_read_only, None);
+    assert!(repo_info("game").await.exclusive_read_only, "cleared");
 }
 
 #[tokio::test]

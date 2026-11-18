@@ -7395,6 +7395,113 @@ pub async fn creation_rules_are_validated_audited_and_dropped_with_their_subject
     );
 }
 
+pub async fn organization_settings_are_owner_only_audited_and_dropped_with_the_organization(
+    store: Access,
+) {
+    use crate::org_settings::{OrgSettings, ReadOnlyDefault, ReadOnlySource};
+    let w = CreationWorld::new(store).await;
+    let (acme, alice, bob) = (user("acme"), session("alice"), session("bob"));
+    let off = OrgSettings {
+        exclusive_read_only: Some(false),
+    };
+
+    assert_eq!(
+        w.access.org_settings(&alice, &acme).await.unwrap(),
+        OrgSettings::default(),
+        "nothing is set at first"
+    );
+    for err in [
+        w.access.org_settings(&bob, &acme).await.unwrap_err(),
+        w.access
+            .set_org_settings(&bob, &acme, off)
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(matches!(err, PynError::NotOrgOwner(_)), "{err}");
+    }
+    let err = w
+        .access
+        .set_org_settings(&alice, &user("nobody"), off)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "org_not_found");
+    assert_eq!(
+        w.access.org_settings(&alice, &acme).await.unwrap(),
+        OrgSettings::default(),
+        "a refused change stores nothing"
+    );
+
+    w.access.set_org_settings(&alice, &acme, off).await.unwrap();
+    w.access.set_org_settings(&alice, &acme, off).await.unwrap();
+    assert_eq!(w.access.org_settings(&alice, &acme).await.unwrap(), off);
+    assert_eq!(w.store.org_settings(&acme).await.unwrap(), off);
+
+    let resolved = |file| w.access.read_only_default(&acme, file);
+    assert_eq!(
+        resolved(None).await.unwrap(),
+        ReadOnlyDefault {
+            enabled: false,
+            source: ReadOnlySource::Organization
+        }
+    );
+    assert_eq!(
+        resolved(Some(true)).await.unwrap(),
+        ReadOnlyDefault {
+            enabled: true,
+            source: ReadOnlySource::Repository
+        },
+        "the repository's policy file beats the organization"
+    );
+
+    w.access
+        .set_org_settings(&alice, &acme, OrgSettings::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        resolved(None).await.unwrap(),
+        ReadOnlyDefault {
+            enabled: true,
+            source: ReadOnlySource::Default
+        },
+        "clearing the setting falls back to the built-in default"
+    );
+
+    w.access.set_org_settings(&alice, &acme, off).await.unwrap();
+    let log = w
+        .audit
+        .list(
+            &AuditScope::Org(acme.clone()),
+            &AuditQuery {
+                limit: 100,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let notes: Vec<_> = log
+        .iter()
+        .rev()
+        .filter(|e| e.action == AuditAction::OrgSettingChanged)
+        .map(|e| e.detail.as_str())
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            "exclusive_read_only: unset -> false",
+            "exclusive_read_only: false -> unset",
+            "exclusive_read_only: unset -> false",
+        ],
+        "an unchanged value records nothing"
+    );
+
+    w.access.delete_org(&alice, &acme).await.unwrap();
+    assert_eq!(
+        w.store.org_settings(&acme).await.unwrap(),
+        OrgSettings::default(),
+        "deleting the organization drops its settings"
+    );
+}
+
 pub async fn organization_members_stop_at_the_cap(store: Access) {
     org_with_members(&store, "acme", "alice", &[]).await;
     let (acme, bob, carol) = (user("acme"), user("bob"), user("carol"));
@@ -8928,6 +9035,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_manager_sees_and_revokes_only_tokens_within_the_repositories_they_manage);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_repository_creation_resolves_owner_base_and_rules);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; creation_rules_are_validated_audited_and_dropped_with_their_subject);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_settings_are_owner_only_audited_and_dropped_with_the_organization);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_members_stop_at_the_cap);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; racing_member_adds_cannot_exceed_the_cap);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; owner_limits_are_patched_listed_and_dropped_with_an_organization);

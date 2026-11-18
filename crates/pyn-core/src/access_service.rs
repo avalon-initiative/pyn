@@ -29,6 +29,7 @@ use crate::memory::{MemoryRateLimitStore, MemoryWebhookStore};
 use crate::oidc::{
     ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow, OidcProvider,
 };
+use crate::org_settings::OrgSettings;
 use crate::passwords::{InlinePasswords, PasswordWorker};
 use crate::profile::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility};
 use crate::ratelimit::RateLimitStore;
@@ -50,6 +51,7 @@ mod external;
 mod freeze;
 mod invitations;
 mod limits;
+mod org_settings;
 mod organizations;
 mod profile;
 mod recovery;
@@ -338,6 +340,12 @@ pub trait AccessStore: Send + Sync {
 
     /// The repositories where one of the user's teams holds a role, ordered by id.
     async fn team_repos_of(&self, user: &UserId) -> Result<Vec<RepoId>>;
+
+    /// The organization's repository defaults; nothing set when none were stored.
+    async fn org_settings(&self, org: &UserId) -> Result<OrgSettings>;
+
+    /// Stores the organization's repository defaults, returning the previous ones.
+    async fn set_org_settings(&self, org: &UserId, settings: OrgSettings) -> Result<OrgSettings>;
 
     /// The organization's repository-creation policy; the default when none was set.
     async fn repo_policy(&self, org: &UserId) -> Result<RepoPolicy>;

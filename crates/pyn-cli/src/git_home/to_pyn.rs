@@ -836,7 +836,7 @@ fn finish(
             let file = ws.abs(&entry.path);
             match std::fs::read(&file) {
                 Ok(bytes) if hash_of(&bytes) == hash => {
-                    set_read_only(&file, sync::wants_read_only(&entry, &me))?;
+                    set_read_only(&file, sync::wants_read_only(&ws, &entry, &me))?;
                 }
                 _ => differ += 1,
             }
