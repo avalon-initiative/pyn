@@ -50,7 +50,8 @@ async fn server() -> Router {
         audit,
         access.clone(),
         clock,
-        Rules::from_toml("[meta]\ndefault = \"shared\"\n").unwrap(),
+        Rules::from_toml("[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n")
+            .unwrap(),
     ));
     router(AppState {
         repos,
@@ -666,4 +667,417 @@ async fn a_token_holding_only_locks_read_lists_locks_and_reads_no_contents() {
             "{uri}"
         );
     }
+}
+
+const ED1: &str = include_str!("../../pyn-core/tests/fixtures/keys/ed1.pub");
+
+fn owned(owner: &str, grants: &[(&str, &str)]) -> Value {
+    body(owner, "public", &[], grants)
+}
+
+#[tokio::test]
+async fn organization_and_account_grants_need_the_matching_owner() {
+    let w = world().await;
+    let r = create(&w.app, &w.alice, owned("acme", &[("org_members", "write")])).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let info = r.json::<api::CreatedToken>().info;
+    assert_eq!(info.owner, "acme");
+    assert_eq!(info.repository_access.mode, "public");
+    let grants: Vec<_> = info
+        .permissions
+        .iter()
+        .map(|p| (p.resource.as_str(), p.level.as_str()))
+        .collect();
+    assert_eq!(
+        grants,
+        [("org_members", "write")],
+        "no metadata without repositories"
+    );
+
+    let ok = [
+        owned(
+            "alice",
+            &[("account_ssh_keys", "write"), ("account_locks", "read")],
+        ),
+        owned("acme", &[("org_teams", "read"), ("org_audit", "read")]),
+        body(
+            "acme",
+            "all",
+            &[],
+            &[("contents", "write"), ("org_teams", "read")],
+        ),
+        body(
+            "alice",
+            "selected",
+            &["alice/game"],
+            &[("locks", "write"), ("account_profile", "write")],
+        ),
+    ];
+    for (n, req) in ok.into_iter().enumerate() {
+        let r = create(&w.app, &w.alice, req).await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "{n}: {}",
+            String::from_utf8_lossy(&r.body)
+        );
+    }
+
+    let bad = [
+        owned("alice", &[("org_members", "read")]),
+        owned("alice", &[("org_audit", "read")]),
+        owned("acme", &[("account_profile", "write")]),
+        owned("acme", &[("account_ssh_keys", "read")]),
+        owned("acme", &[("account_locks", "read")]),
+        owned("acme", &[("contents", "read")]),
+        owned("alice", &[("locks", "read"), ("account_locks", "read")]),
+        owned("acme", &[("org_audit", "write")]),
+        owned("alice", &[("account_profile", "read")]),
+        owned("alice", &[("account_locks", "write")]),
+        owned("acme", &[("org_members", "admin")]),
+        body("acme", "all", &[], &[("org_teams", "read")]),
+        body(
+            "alice",
+            "selected",
+            &["alice/game"],
+            &[("account_ssh_keys", "read")],
+        ),
+    ];
+    for (n, req) in bad.into_iter().enumerate() {
+        let r = create(&w.app, &w.alice, req).await;
+        assert!(
+            r.is(StatusCode::BAD_REQUEST, "invalid_request"),
+            "{n}: {} {}",
+            r.status,
+            String::from_utf8_lossy(&r.body)
+        );
+    }
+    let carol = account(&w.app, "carol").await;
+    let r = create(&w.app, &carol, owned("acme", &[("org_members", "read")])).await;
+    assert!(
+        r.is(StatusCode::FORBIDDEN, "not_org_member"),
+        "an account outside the organization cannot make it a token"
+    );
+    let r = create(
+        &w.app,
+        &w.alice,
+        owned("carol", &[("account_profile", "write")]),
+    )
+    .await;
+    assert!(r.is(StatusCode::FORBIDDEN, "not_org_member"));
+}
+
+#[tokio::test]
+async fn a_member_without_owner_rights_cannot_mint_owner_grants() {
+    let w = world().await;
+    for grant in [
+        ("org_members", "write"),
+        ("org_teams", "write"),
+        ("org_administration", "write"),
+        ("org_administration", "read"),
+        ("org_audit", "read"),
+    ] {
+        let r = create(&w.app, &w.bob, owned("acme", &[grant])).await;
+        assert!(r.is(StatusCode::FORBIDDEN, "not_org_owner"), "{grant:?}");
+        let r = create(&w.app, &w.alice, owned("acme", &[grant])).await;
+        assert_eq!(r.status, StatusCode::OK, "an owner may mint {grant:?}");
+    }
+    for grant in [("org_members", "read"), ("org_teams", "read")] {
+        let r = create(&w.app, &w.bob, owned("acme", &[grant])).await;
+        assert_eq!(r.status, StatusCode::OK, "a member may mint {grant:?}");
+    }
+    let r = create(
+        &w.app,
+        &w.bob,
+        owned("bob", &[("account_profile", "write")]),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn an_organization_token_acts_with_its_grants_and_its_creators_current_role() {
+    let w = world().await;
+    let r = send(
+        &w.app,
+        &w.alice,
+        "PATCH",
+        "/v1/orgs/acme/members/bob",
+        Some(json!({"role": "owner"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let grants = [("org_teams", "write"), ("org_members", "read")];
+    let token = create(&w.app, &w.bob, owned("acme", &grants))
+        .await
+        .json::<api::CreatedToken>()
+        .token;
+    let team = |slug: &str| Some(json!({"slug": slug}));
+    let r = send(&w.app, &token, "POST", "/v1/orgs/acme/teams", team("ops")).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    for uri in ["/v1/orgs/acme/members", "/v1/orgs/acme/teams"] {
+        assert_eq!(
+            status(&w.app, &token, "GET", uri).await,
+            StatusCode::OK,
+            "{uri}"
+        );
+    }
+    for (method, uri) in [
+        ("GET", "/v1/orgs/acme/audit"),
+        ("GET", "/v1/orgs/acme/repo-policy"),
+        ("DELETE", "/v1/orgs/acme/members/bob"),
+        ("DELETE", "/v1/orgs/acme"),
+        ("GET", "/v1/orgs/acme2/members"),
+    ] {
+        assert_eq!(
+            status(&w.app, &token, method, uri).await,
+            StatusCode::FORBIDDEN,
+            "{method} {uri}: a grant it does not hold"
+        );
+    }
+
+    let r = send(
+        &w.app,
+        &w.alice,
+        "PATCH",
+        "/v1/orgs/acme/members/bob",
+        Some(json!({"role": "member"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = send(&w.app, &token, "POST", "/v1/orgs/acme/teams", team("qa")).await;
+    assert!(
+        r.is(StatusCode::FORBIDDEN, "not_org_owner"),
+        "demotion narrows the token"
+    );
+    assert_eq!(
+        status(&w.app, &token, "GET", "/v1/orgs/acme/members").await,
+        StatusCode::OK,
+        "a member may still list"
+    );
+}
+
+#[tokio::test]
+async fn a_token_owned_by_one_organization_does_not_reach_another() {
+    let w = world().await;
+    let r = send(
+        &w.app,
+        &w.alice,
+        "POST",
+        "/v1/orgs",
+        Some(json!({"name": "beta"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let token = create(&w.app, &w.alice, owned("beta", &[("org_members", "write")]))
+        .await
+        .json::<api::CreatedToken>()
+        .token;
+    assert_eq!(
+        status(&w.app, &token, "GET", "/v1/orgs/beta/members").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(&w.app, &token, "GET", "/v1/orgs/acme/members").await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn an_account_token_edits_its_own_account_and_never_reaches_credentials() {
+    let w = world().await;
+    let grants = [
+        ("account_profile", "write"),
+        ("account_ssh_keys", "write"),
+        ("account_locks", "read"),
+    ];
+    let token = create(&w.app, &w.alice, owned("alice", &grants))
+        .await
+        .json::<api::CreatedToken>()
+        .token;
+    let t = token.as_str();
+    let r = send(
+        &w.app,
+        t,
+        "PUT",
+        "/v1/me/profile",
+        Some(json!({"bio": "hi", "links": []})),
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let r = send(&w.app, t, "POST", "/v1/keys", Some(json!({"key": ED1}))).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let key = r.json::<api::SshKeyInfo>();
+    let r = send(&w.app, t, "GET", "/v1/keys", None).await;
+    assert_eq!(r.json::<Vec<api::SshKeyInfo>>().len(), 1);
+    assert_eq!(
+        status(&w.app, t, "GET", "/v1/keys?user=bob").await,
+        StatusCode::FORBIDDEN,
+        "another account's keys stay out of reach"
+    );
+    assert_eq!(
+        status(
+            &w.app,
+            t,
+            "DELETE",
+            &format!("/v1/keys/{}?user=bob", key.id)
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(&w.app, t, "DELETE", &format!("/v1/keys/{}", key.id)).await,
+        StatusCode::NO_CONTENT
+    );
+
+    for (method, uri) in [
+        ("GET", "/v1/tokens"),
+        ("POST", "/v1/tokens"),
+        ("DELETE", "/v1/tokens/ghost"),
+        ("PUT", "/v1/me/password"),
+        ("GET", "/v1/me/identities"),
+        ("DELETE", "/v1/me/identities/ghost"),
+        ("POST", "/v1/oidc/link"),
+        ("PUT", "/v1/me/username"),
+        ("GET", "/v1/me/emails"),
+        ("POST", "/v1/account/deletion"),
+        ("GET", "/v1/orgs"),
+        ("POST", "/v1/orgs"),
+        ("POST", "/v1/repos"),
+        ("GET", "/v1/me/invitations"),
+        ("GET", "/v1/admin/audit"),
+        ("GET", "/v1/admin/users"),
+    ] {
+        let status = send(&w.app, t, method, uri, Some(json!({}))).await.status;
+        assert!(
+            status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED,
+            "{method} {uri}: {status}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn account_locks_lists_the_creators_locks_across_repositories() {
+    let w = world().await;
+    let r = send(
+        &w.app,
+        &w.alice,
+        "POST",
+        "/v1/repos/alice/game/checkout",
+        Some(json!({"path": "Content/held.umap"})),
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let listed = |token: String| {
+        let app = w.app.clone();
+        async move {
+            let r = send(&app, &token, "GET", "/v1/me/locks", None).await;
+            assert_eq!(r.status, StatusCode::OK);
+            r.json::<Vec<api::MyLock>>().len()
+        }
+    };
+    let lobby = create(
+        &w.app,
+        &w.alice,
+        body("alice", "selected", &["alice/lobby"], &[("locks", "read")]),
+    )
+    .await
+    .json::<api::CreatedToken>()
+    .token;
+    assert_eq!(
+        listed(lobby).await,
+        0,
+        "a repository token sees its repositories only"
+    );
+    let account = create(
+        &w.app,
+        &w.alice,
+        owned("alice", &[("account_locks", "read")]),
+    )
+    .await
+    .json::<api::CreatedToken>()
+    .token;
+    assert_eq!(listed(account.clone()).await, 1);
+    let held = send(
+        &w.app,
+        &w.alice,
+        "POST",
+        "/v1/repos/alice/game/release",
+        Some(json!({"path": "Content/held.umap"})),
+    )
+    .await;
+    assert_eq!(held.status, StatusCode::NO_CONTENT);
+    assert_eq!(listed(account).await, 0);
+}
+
+#[tokio::test]
+async fn a_personal_token_with_repository_administration_write_reaches_no_organization_route() {
+    let w = world().await;
+    let admin = create(
+        &w.app,
+        &w.alice,
+        body(
+            "alice",
+            "all",
+            &[],
+            &[("contents", "read"), ("administration", "write")],
+        ),
+    )
+    .await
+    .json::<api::CreatedToken>()
+    .token;
+    let rule = "/v1/orgs/acme/repo-policy/rules/allow/user/bob";
+    for (method, uri) in [
+        ("DELETE", "/v1/orgs/acme"),
+        ("POST", "/v1/orgs/acme/members"),
+        ("PATCH", "/v1/orgs/acme/members/bob"),
+        ("DELETE", "/v1/orgs/acme/members/bob"),
+        ("GET", "/v1/orgs/acme/invitations"),
+        ("DELETE", "/v1/orgs/acme/invitations/bob"),
+        ("GET", "/v1/orgs/acme/members"),
+        ("GET", "/v1/orgs/acme/audit"),
+        ("GET", "/v1/orgs/acme/repo-policy"),
+        ("PUT", "/v1/orgs/acme/repo-policy"),
+        ("PUT", rule),
+        ("DELETE", rule),
+        ("GET", "/v1/orgs/acme/teams"),
+        ("POST", "/v1/orgs/acme/teams"),
+        ("GET", "/v1/orgs/acme/teams/x"),
+        ("PATCH", "/v1/orgs/acme/teams/x"),
+        ("DELETE", "/v1/orgs/acme/teams/x"),
+        ("PUT", "/v1/orgs/acme/teams/x/members/bob"),
+        ("DELETE", "/v1/orgs/acme/teams/x/members/bob"),
+        ("PUT", "/v1/orgs/acme/profile"),
+    ] {
+        let r = send(&w.app, &admin, method, uri, Some(json!({}))).await;
+        assert!(r.is(StatusCode::FORBIDDEN, "forbidden"), "{method} {uri}");
+    }
+    let r = send(
+        &w.app,
+        &admin,
+        "POST",
+        "/v1/orgs",
+        Some(json!({"name": "beta"})),
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "creating an organization keeps its reach"
+    );
 }

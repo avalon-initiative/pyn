@@ -437,14 +437,14 @@ on a new repository, make a new token. It is shown once when created; only a has
 | Choice | Values |
 | --- | --- |
 | Name, description | a label; the description is optional |
-| Resource owner | the creator's own account, or an organization the creator belongs to (`403 not_org_member` otherwise). The token acts only on repositories that owner owns |
+| Resource owner | the creator's own account, or an organization the creator belongs to (`403 not_org_member` otherwise). The token acts only on what that owner owns: its repositories, and the organization or account itself |
 | Expiry | an `expires_at` date, `never: true`, or neither, which means 30 days. Both together is `400 invalid_request` |
 | Repository access | `public` (no repository beyond the public ones every token can read), `all` (every repository the owner has now and later) or `selected` (the listed `repos`, each owned by the owner) |
-| Permissions | a list of `{resource, level}` |
+| Permissions | a list of `{resource, level}`: repository, organization and account resources, each only where the owner fits (see below) |
 
-**Permissions** apply to the token's repositories. Each is `read` or `write` (write includes read); `locks` also has `admin`
+**Repository permissions** apply to the token's repositories. Each is `read` or `write` (write includes read); `locks` also has `admin`
 (includes write); `policy` has no read level (`400 invalid_request`). Metadata read is required with `all` or `selected` and is added
-when left out; `public` takes no permissions.
+when left out; `public` takes no repository permissions (`400 invalid_request`), and `all` or `selected` need at least one beyond metadata.
 
 | Resource | Read | Write | Admin | Internal permissions |
 | --- | --- | --- | --- | --- |
@@ -457,6 +457,46 @@ when left out; `public` takes no permissions.
 | `audit` | read the repository audit log | (none) | | view_audit |
 
 Which resource and level each repository route needs is in [repository routes](#repository-routes).
+
+**Organization permissions** are for a token whose resource owner is an organization. Their wire names carry an `org_` prefix so
+they never clash with the repository resources of the same topic.
+
+| Resource | Read | Write |
+| --- | --- | --- |
+| `org_members` | list members | list invitations; invite, change a role, remove a member, cancel an invitation |
+| `org_teams` | list and get teams | create, edit and delete teams, add and remove their members |
+| `org_administration` | read the repository-creation policy | edit the profile and avatar, change the creation policy and its rules, delete the organization |
+| `org_audit` | read the organization audit log | (none) |
+
+**Account permissions** are for a token whose resource owner is the creator's own account. Their names carry an `account_` prefix.
+
+| Resource | Read | Write |
+| --- | --- | --- |
+| `account_profile` | (none) | edit the profile and avatar |
+| `account_ssh_keys` | list the account's keys | add and remove its keys |
+| `account_locks` | list one's locks across repositories (`GET /v1/me/locks`) | (none) |
+
+Creation rules for these, all with existing error codes:
+
+- Organization resources are accepted only when the owner is an organization the creator belongs to, account resources only when
+  the owner is the creator's own account (`400 invalid_request` otherwise). Repository resources need repository access `all` or
+  `selected`; organization and account resources go with any repository access, `public` included, and then no metadata read is added.
+- `org_audit` and `account_locks` take `read` only; `account_profile` takes `write` only (`read` is `400 invalid_request`, as for `policy`); every other one takes `read` or `write` (`400 invalid_request` for a higher level).
+- An organization grant must add something the creator holds in that organization. Listing members or teams (`read` of `org_members` or
+  `org_teams`) is open to any member; everything else (every write, `org_administration` read, `org_audit` read) needs an owner, so a
+  member who is not an owner is refused (`403 not_org_owner`). Listing invitations is owner-only in the core and so needs
+  `org_members` write; `org_members` read lists members only. An account grant is always held by its own account.
+
+At use time an organization token acts with the intersection of its grants and its creator's current organization role, as a
+repository token does with the repository role: demoting an owner to member makes an `org_teams` write token answer `403 not_org_owner`
+on its next use, while reads that a member may make keep working. A token owned by one organization, or by an account, is refused on
+another owner's routes (`403 forbidden`). `account_ssh_keys` reaches the account's own keys only, never another member's through
+`manage_users`. `account_locks` read lists the creator's locks in every repository the creator can read, not only a token's
+repositories, which is what the permission is for; a repository token keeps seeing its own repositories' locks.
+
+A token never gets, whatever it holds: creating or revoking tokens, the password, external identities, two-factor factors, account
+deletion, the hidden fields of the people directory, server administration, and creating an organization (that keeps the `namespace`
+reach). Those routes stay `full_scope`, `admin_only` or `namespace`.
 
 The server turns the grants into the nine [permissions](#permissions-and-roles) with one mapping and keeps the grants as the
 record of what the token may do. A token authenticates with the **intersection** of those permissions and its creator's
@@ -515,8 +555,9 @@ the server log with the method and path of the request. Every other error keeps 
 ## Full-scope credentials
 
 Account management is limited to a full-scope credential: a web session or a sign-in token from `pyn login`. A fine-grained
-token is never full-scope, even one for every repository holding every grant. It covers SSH keys (add, list, remove), tokens (create, list, revoke), the
-password, linking or unlinking an external identity, creating an account with `POST /v1/repos/{owner}/{name}/users`, and creating an invitation. A fine-grained token is refused with `403 forbidden`; it keeps working for its own scope. A sign-in token cannot create a token that
+token is never full-scope, even one for every repository holding every grant. It covers tokens (create, list, revoke), the
+password, linking or unlinking an external identity, creating an account with `POST /v1/repos/{owner}/{name}/users`, and creating an invitation. A fine-grained token is refused with `403 forbidden`; it keeps working for its own scope. SSH keys, the profile and avatar, and the
+organization routes of the [organization and account permissions](#tokens) are the exception: a token holding the matching grant reaches them. A sign-in token cannot create a token that
 outlives it: the new token's expiry is capped at its own (so `never` from a sign-in token lasts as long as the sign-in does), and a
 web session may create any token its owner could.
 
@@ -531,8 +572,8 @@ token does not name (as for a stranger), the `role` on `GET /v1/orgs/{org}` is a
 succeeds), and `GET /v1/me/locks` lists only locks in the token's repositories.
 
 The organization-wide reads need the same credential, because they expose data beyond one repository: the organization list
-(`GET /v1/orgs`, `GET /v1/me/orgs`), members, audit log, teams and the repository-creation policy. A narrower token or a service
-credential is refused (`403`). A team's `repos` hold only repositories the caller could open (public ones, or any in which they hold a
+(`GET /v1/orgs`, `GET /v1/me/orgs`), and members, audit log, teams and the repository-creation policy, which a token owned by the
+organization reaches only with the matching `org_*` read grant. Any other token or a service credential is refused (`403`). A team's `repos` hold only repositories the caller could open (public ones, or any in which they hold a
 role), so a member never learns the name of a private repository they cannot see.
 
 The owner-level reads of [limits, usage and freeze](limits.md#seeing-limits-and-usage) (`GET /v1/owners/{owner}/limits`,
@@ -591,6 +632,8 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `full_scope` | a session, a full-scope token or the development identity |
 | `full_scope_pending` | `full_scope`, also while the account is scheduled for deletion |
 | `namespace` | full scope, or a token of the caller's own account for all repositories holding `administration` write |
+| `org_scoped:<resource>:<level>` | a full-scope credential, or a token owned by the organization in the path holding the organization resource at the level; the creator's organization role still applies (see [organization and account routes](#organization-and-account-routes)). A personal token with repository `administration` write no longer reaches these routes |
+| `account_scoped:<resource>:<level>` | a full-scope credential, or a token owned by the caller's own account holding the account resource at the level |
 | `admin_only` | a server administrator; service credentials are refused |
 | `service:<scope>` | a server administrator, or a service credential holding the scope |
 | `full_scope_or_service:<scope>` | a full-scope user (the core limits it to its own owner), or a service credential holding the scope |
@@ -633,6 +676,35 @@ The listings under `members:write` and the usage breakdown are guarded at the wr
 and administration read grants nothing yet. A token holding contents read also holds locks read, so a read-only token keeps
 listing locks; a token holding only locks read lists locks and reads no files, tree or history. Policy offers write only: the
 rules are `.pyn/pyn.toml`, read with `contents:read`.
+
+### Organization and account routes
+
+An `org_scoped` or `account_scoped` route declares the organization or account resource and level it needs.
+The extractor checks the token's owner (the organization named in the path, or the caller's own account) and the grant, and the core
+repeats it before the role checks, so a token of another owner or without the grant is refused with `403 forbidden` ("the token needs
+write access to org_members"). A session, the development identity and a sign-in token have no grants and are decided by the
+creator's role alone, as before.
+
+| Resource and level | Routes |
+| --- | --- |
+| `org_members:read` | `GET /v1/orgs/{org}/members` |
+| `org_members:write` | `GET /v1/orgs/{org}/invitations`, `POST /v1/orgs/{org}/members`, `PATCH` and `DELETE /v1/orgs/{org}/members/{user}`, `DELETE /v1/orgs/{org}/invitations/{user}` |
+| `org_teams:read` | `GET /v1/orgs/{org}/teams`, `GET /v1/orgs/{org}/teams/{team}` |
+| `org_teams:write` | create, `PATCH` and `DELETE` a team, `PUT` and `DELETE` a team member |
+| `org_administration:read` | `GET /v1/orgs/{org}/repo-policy` |
+| `org_administration:write` | `PUT /v1/orgs/{org}/profile`, `PUT` and `DELETE /v1/orgs/{org}/avatar`, `DELETE /v1/orgs/{org}`, `PUT /v1/orgs/{org}/repo-policy`, `PUT` and `DELETE` its `rules/{effect}/{kind}/{subject}` |
+| `org_audit:read` | `GET /v1/orgs/{org}/audit` |
+| `account_profile:write` | `PUT /v1/me/profile`, `PUT` and `DELETE /v1/me/avatar` |
+| `account_ssh_keys:read` | `GET /v1/keys` |
+| `account_ssh_keys:write` | `POST /v1/keys`, `DELETE /v1/keys/{id}` |
+
+The organization write routes used to accept a personal token for all repositories holding repository `administration` write
+(`namespace`). They now need an organization-owned token with the matching organization grant (decision #1120), so such
+a personal token gets `403 forbidden` on them. `GET /v1/orgs/{org}/profile`, `GET /v1/orgs/{org}/avatar` and `GET /v1/orgs/{org}` stay as
+they were (any credential, the public view; the caller's `role` only for a full-scope credential). `GET /v1/me/locks` stays
+`any_credential`: a repository token lists the locks in its repositories, and a token holding `account_locks` read lists the creator's
+locks everywhere. Accepting an organization invitation, declining one, listing one's own invitations and organizations, and creating
+an organization are not organization permissions and keep their `full_scope` and `namespace` reaches.
 
 A repository-scoped token reaches only `open`, `public`, `optional_sign_in` (the people directory among them), `any_credential` and the repository kinds; a service
 credential reaches only `open`, `public` (on a `public` server), the `service` kinds and `full_scope_or_service`. `crates/pyn-server/tests/reach.rs` checks that the table and the

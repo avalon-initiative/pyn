@@ -59,7 +59,7 @@ impl AccessService {
 
     /// The organization's teams, ordered by slug. Any member of the organization may list them.
     pub async fn teams(&self, actor: &Identity, org: &UserId) -> Result<Vec<TeamDetail>> {
-        actor.require_full_scope()?;
+        actor.require_org_grant(org, ORG_TEAMS_READ)?;
         self.org(org).await?;
         if self.store.org_role(org, &actor.user).await?.is_none() {
             return Err(PynError::NotOrgMember(org.to_string()));
@@ -72,7 +72,7 @@ impl AccessService {
     }
 
     pub async fn team(&self, actor: &Identity, org: &UserId, slug: &str) -> Result<TeamDetail> {
-        actor.require_full_scope()?;
+        actor.require_org_grant(org, ORG_TEAMS_READ)?;
         self.org(org).await?;
         if self.store.org_role(org, &actor.user).await?.is_none() {
             return Err(PynError::NotOrgMember(org.to_string()));
@@ -82,7 +82,7 @@ impl AccessService {
     }
 
     async fn require_team_admin(&self, actor: &Identity, org: &UserId) -> Result<()> {
-        actor.require_namespace_management()?;
+        actor.require_org_grant(org, ORG_TEAMS_WRITE)?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
         self.ensure_owner_writable(org).await

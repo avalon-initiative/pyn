@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use pyn_core::{Role, TeamDetail, UserId};
 use pyn_proto as api;
 
-use crate::caller::{FullScopeCaller, NamespaceCaller, RepoCaller};
+use crate::caller::{OrgCaller, RepoCaller};
 use crate::{ApiResult, AppState, RepoAddress};
 
 fn team_info(d: TeamDetail) -> api::TeamInfo {
@@ -33,11 +33,11 @@ fn team_info(d: TeamDetail) -> api::TeamInfo {
 #[utoipa::path(get, path = "/v1/orgs/{org}/teams",
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 200, body = Vec<api::TeamInfo>, description = "ordered by slug; any member of the organization may list; repositories the caller cannot open are left out"),
-              (status = 403, body = api::ErrorBody, description = "not_org_member, or a token that is not full-scope"),
+              (status = 403, body = api::ErrorBody, description = "not_org_member, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn list_teams(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    OrgCaller(who): OrgCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<Vec<api::TeamInfo>>> {
     let teams = s.access.teams(&who, &UserId::new(org)).await?;
@@ -49,12 +49,12 @@ pub(crate) async fn list_teams(
     request_body = api::CreateTeamRequest,
     responses((status = 201, body = api::TeamInfo),
               (status = 400, body = api::ErrorBody, description = "invalid_request: bad slug, name or description"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found"),
               (status = 409, body = api::ErrorBody, description = "team_exists")))]
 pub(crate) async fn create_team(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path(org): Path<String>,
     Json(req): Json<api::CreateTeamRequest>,
 ) -> ApiResult<(StatusCode, Json<api::TeamInfo>)> {
@@ -75,11 +75,11 @@ pub(crate) async fn create_team(
     params(("org" = String, Path, description = "the organization's name"),
            ("team" = String, Path, description = "the team's slug")),
     responses((status = 200, body = api::TeamInfo, description = "repositories the caller cannot open are left out"),
-              (status = 403, body = api::ErrorBody, description = "not_org_member, or a token that is not full-scope"),
+              (status = 403, body = api::ErrorBody, description = "not_org_member, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found or team_not_found")))]
 pub(crate) async fn get_team(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    OrgCaller(who): OrgCaller,
     Path((org, team)): Path<(String, String)>,
 ) -> ApiResult<Json<api::TeamInfo>> {
     let team = s.access.team(&who, &UserId::new(org), &team).await?;
@@ -92,11 +92,11 @@ pub(crate) async fn get_team(
     request_body = api::UpdateTeamRequest,
     responses((status = 200, body = api::TeamInfo),
               (status = 400, body = api::ErrorBody, description = "invalid_request: bad name or description"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found or team_not_found")))]
 pub(crate) async fn update_team(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path((org, team)): Path<(String, String)>,
     Json(req): Json<api::UpdateTeamRequest>,
 ) -> ApiResult<Json<api::TeamInfo>> {
@@ -117,11 +117,11 @@ pub(crate) async fn update_team(
     params(("org" = String, Path, description = "the organization's name"),
            ("team" = String, Path, description = "the team's slug")),
     responses((status = 204, description = "also removes the team's members and its roles on repositories"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found or team_not_found")))]
 pub(crate) async fn delete_team(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path((org, team)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     s.access.delete_team(&who, &UserId::new(org), &team).await?;
@@ -133,12 +133,12 @@ pub(crate) async fn delete_team(
            ("team" = String, Path, description = "the team's slug"),
            ("user" = String, Path, description = "an organization member's user name")),
     responses((status = 204, description = "adding someone already in the team changes nothing"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found or team_not_found"),
               (status = 409, body = api::ErrorBody, description = "user_not_org_member: add them to the organization first")))]
 pub(crate) async fn add_team_member(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path((org, team, user)): Path<(String, String, String)>,
 ) -> ApiResult<StatusCode> {
     s.access
@@ -152,11 +152,11 @@ pub(crate) async fn add_team_member(
            ("team" = String, Path, description = "the team's slug"),
            ("user" = String, Path, description = "the member's user name")),
     responses((status = 204, description = "ends the access the person had through the team"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found, team_not_found or team_member_not_found")))]
 pub(crate) async fn remove_team_member(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path((org, team, user)): Path<(String, String, String)>,
 ) -> ApiResult<StatusCode> {
     s.access

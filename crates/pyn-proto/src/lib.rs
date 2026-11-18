@@ -1085,9 +1085,13 @@ fn present<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
 /// One permission of a fine-grained token: a resource at a level.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TokenPermission {
-    /// `metadata`, `contents`, `locks`, `policy`, `members`, `administration` or `audit`.
+    /// Repository permissions: `metadata`, `contents`, `locks`, `policy`, `members`, `administration` or `audit`.
+    /// Organization permissions, for an organization owner: `org_members`, `org_teams`, `org_administration` or
+    /// `org_audit`. Account permissions, for the caller's own account as owner: `account_profile`,
+    /// `account_ssh_keys` or `account_locks`.
     pub resource: String,
-    /// `read` or `write` (write includes read); `admin` for `locks` only (includes write).
+    /// `read` or `write` (write includes read); `admin` for `locks` only (includes write). `org_audit` and
+    /// `account_locks` take `read` only.
     pub level: String,
 }
 
@@ -1114,7 +1118,8 @@ pub struct CreateTokenRequest {
     #[serde(default)]
     pub never: bool,
     pub repository_access: RepositoryAccess,
-    /// Metadata read is implied for `all` and `selected`; none are allowed with `public`.
+    /// Metadata read is implied for `all` and `selected`, which need at least one repository permission; `public`
+    /// takes no repository permissions. Organization and account permissions go with any repository access.
     pub permissions: Vec<TokenPermission>,
 }
 

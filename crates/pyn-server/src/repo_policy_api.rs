@@ -11,7 +11,7 @@ use pyn_core::{
 };
 use pyn_proto as api;
 
-use crate::caller::{FullScopeCaller, NamespaceCaller};
+use crate::caller::OrgCaller;
 use crate::{ApiResult, AppState};
 
 fn rule_info(rule: CreationRule) -> api::CreationRuleInfo {
@@ -37,11 +37,11 @@ fn subject(kind: &str, name: &str) -> pyn_core::Result<CreationSubject> {
 #[utoipa::path(get, path = "/v1/orgs/{org}/repo-policy",
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 200, body = api::RepoPolicyInfo),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token that is not full-scope"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn get_repo_policy(
     State(s): State<AppState>,
-    FullScopeCaller(who): FullScopeCaller,
+    OrgCaller(who): OrgCaller,
     Path(org): Path<String>,
 ) -> ApiResult<Json<api::RepoPolicyInfo>> {
     let policy = s.access.repo_policy(&who, &UserId::new(org)).await?;
@@ -53,11 +53,11 @@ pub(crate) async fn get_repo_policy(
     request_body = api::SetRepoPolicyRequest,
     responses((status = 200, body = api::RepoPolicyInfo, description = "the policy after the change; rules are untouched"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: member_creation is not none, private or both"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found")))]
 pub(crate) async fn set_repo_policy(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path(org): Path<String>,
     Json(req): Json<api::SetRepoPolicyRequest>,
 ) -> ApiResult<Json<api::RepoPolicyInfo>> {
@@ -77,12 +77,12 @@ pub(crate) async fn set_repo_policy(
     request_body = api::SetCreationRuleRequest,
     responses((status = 200, body = api::CreationRuleInfo, description = "adds the rule or replaces its scope"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: bad effect, kind, subject or scope, or a deny for the owner role"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found or team_not_found"),
               (status = 409, body = api::ErrorBody, description = "user_not_org_member")))]
 pub(crate) async fn set_creation_rule(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path((org, effect, kind, name)): Path<(String, String, String, String)>,
     Json(req): Json<api::SetCreationRuleRequest>,
 ) -> ApiResult<Json<api::CreationRuleInfo>> {
@@ -105,11 +105,11 @@ pub(crate) async fn set_creation_rule(
            ("subject" = String, Path, description = "a team slug, a user name, or owner or member")),
     responses((status = 204, description = "rule removed"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: bad effect, kind or subject"),
-              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without manage_roles or limited to repositories"),
+              (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found or creation_rule_not_found")))]
 pub(crate) async fn remove_creation_rule(
     State(s): State<AppState>,
-    NamespaceCaller(who): NamespaceCaller,
+    OrgCaller(who): OrgCaller,
     Path((org, effect, kind, name)): Path<(String, String, String, String)>,
 ) -> ApiResult<StatusCode> {
     s.access

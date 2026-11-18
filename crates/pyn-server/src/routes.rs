@@ -53,6 +53,12 @@ pub enum Reach {
     Service(ServiceScope),
     /// A full-scope user (the core then limits it to its own owner), or a service credential holding the scope.
     FullScopeOrService(ServiceScope),
+    /// A full-scope credential, or a token owned by the organization in the path that holds the organization
+    /// resource at the level. The creator's organization role still applies.
+    OrgScoped(GrantNeed),
+    /// A full-scope credential, or a token owned by the caller's own account that holds the account resource at
+    /// the level.
+    AccountScoped(GrantNeed),
     /// A signed-in credential holding the resource at the level in the named repository: a token through its grants, any
     /// other credential through the role permissions `permissions_of` derives for them.
     RepoScoped(GrantNeed),
@@ -87,6 +93,8 @@ impl Reach {
             Self::AdminOnly => "admin_only".into(),
             Self::Service(s) => format!("service:{}", s.as_str()),
             Self::FullScopeOrService(s) => format!("full_scope_or_service:{}", s.as_str()),
+            Self::OrgScoped(n) => format!("org_scoped:{}", n.label()),
+            Self::AccountScoped(n) => format!("account_scoped:{}", n.label()),
             Self::RepoScoped(n) => format!("repo_scoped:{}", n.label()),
             Self::PublicRepoRead(n) => format!("public_repo_read:{}", n.label()),
             Self::PublicLfsRead(n) => format!("public_lfs_read:{}", n.label()),
@@ -395,19 +403,35 @@ fn table() -> Vec<Entry> {
             Reach::FullScope,
             self_service_api::rename_account,
         ),
-        get("/v1/keys", Reach::FullScope, access_api::list_keys),
-        post("/v1/keys", Reach::FullScope, access_api::add_key),
-        delete("/v1/keys/{id}", Reach::FullScope, access_api::delete_key),
+        get(
+            "/v1/keys",
+            Reach::AccountScoped(need(AccountSshKeys, Read)),
+            access_api::list_keys,
+        ),
+        post(
+            "/v1/keys",
+            Reach::AccountScoped(need(AccountSshKeys, Write)),
+            access_api::add_key,
+        ),
+        delete(
+            "/v1/keys/{id}",
+            Reach::AccountScoped(need(AccountSshKeys, Write)),
+            access_api::delete_key,
+        ),
         get("/v1/me", Reach::AnyCredential, access_api::me),
         put(
             "/v1/me/profile",
-            Reach::FullScope,
+            Reach::AccountScoped(need(AccountProfile, Write)),
             profile_api::update_profile,
         ),
-        put("/v1/me/avatar", Reach::FullScope, profile_api::put_avatar),
+        put(
+            "/v1/me/avatar",
+            Reach::AccountScoped(need(AccountProfile, Write)),
+            profile_api::put_avatar,
+        ),
         delete(
             "/v1/me/avatar",
-            Reach::FullScope,
+            Reach::AccountScoped(need(AccountProfile, Write)),
             profile_api::delete_avatar,
         ),
         get("/v1/users", Reach::OptionalSignIn, profile_api::list_people),
@@ -428,7 +452,7 @@ fn table() -> Vec<Entry> {
         ),
         put(
             "/v1/orgs/{org}/profile",
-            Reach::FullScope,
+            Reach::OrgScoped(need(OrgAdministration, Write)),
             profile_api::update_org_profile,
         ),
         get(
@@ -438,12 +462,12 @@ fn table() -> Vec<Entry> {
         ),
         put(
             "/v1/orgs/{org}/avatar",
-            Reach::FullScope,
+            Reach::OrgScoped(need(OrgAdministration, Write)),
             profile_api::put_org_avatar,
         ),
         delete(
             "/v1/orgs/{org}/avatar",
-            Reach::FullScope,
+            Reach::OrgScoped(need(OrgAdministration, Write)),
             profile_api::delete_org_avatar,
         ),
         get("/v1/me/locks", Reach::AnyCredential, repo_api::my_locks),
@@ -457,26 +481,34 @@ fn table() -> Vec<Entry> {
         get("/v1/orgs", Reach::FullScope, org_api::list_orgs),
         post("/v1/orgs", Reach::Namespace, org_api::create_org),
         get("/v1/orgs/{org}", Reach::AnyCredential, org_api::get_org),
-        delete("/v1/orgs/{org}", Reach::Namespace, org_api::delete_org),
-        get("/v1/orgs/{org}/audit", Reach::FullScope, org_api::org_audit),
+        delete(
+            "/v1/orgs/{org}",
+            Reach::OrgScoped(need(OrgAdministration, Write)),
+            org_api::delete_org,
+        ),
+        get(
+            "/v1/orgs/{org}/audit",
+            Reach::OrgScoped(need(OrgAudit, Read)),
+            org_api::org_audit,
+        ),
         get(
             "/v1/orgs/{org}/members",
-            Reach::FullScope,
+            Reach::OrgScoped(need(OrgMembers, Read)),
             org_api::list_members,
         ),
         post(
             "/v1/orgs/{org}/members",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgMembers, Write)),
             org_api::add_member,
         ),
         get(
             "/v1/orgs/{org}/invitations",
-            Reach::FullScope,
+            Reach::OrgScoped(need(OrgMembers, Write)),
             org_api::list_invitations,
         ),
         delete(
             "/v1/orgs/{org}/invitations/{user}",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgMembers, Write)),
             org_api::cancel_invitation,
         ),
         get(
@@ -496,67 +528,67 @@ fn table() -> Vec<Entry> {
         ),
         patch(
             "/v1/orgs/{org}/members/{user}",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgMembers, Write)),
             org_api::set_member_role,
         ),
         delete(
             "/v1/orgs/{org}/members/{user}",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgMembers, Write)),
             org_api::remove_member,
         ),
         get(
             "/v1/orgs/{org}/repo-policy",
-            Reach::FullScope,
+            Reach::OrgScoped(need(OrgAdministration, Read)),
             repo_policy_api::get_repo_policy,
         ),
         put(
             "/v1/orgs/{org}/repo-policy",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgAdministration, Write)),
             repo_policy_api::set_repo_policy,
         ),
         put(
             "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgAdministration, Write)),
             repo_policy_api::set_creation_rule,
         ),
         delete(
             "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgAdministration, Write)),
             repo_policy_api::remove_creation_rule,
         ),
         get(
             "/v1/orgs/{org}/teams",
-            Reach::FullScope,
+            Reach::OrgScoped(need(OrgTeams, Read)),
             team_api::list_teams,
         ),
         post(
             "/v1/orgs/{org}/teams",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgTeams, Write)),
             team_api::create_team,
         ),
         get(
             "/v1/orgs/{org}/teams/{team}",
-            Reach::FullScope,
+            Reach::OrgScoped(need(OrgTeams, Read)),
             team_api::get_team,
         ),
         patch(
             "/v1/orgs/{org}/teams/{team}",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgTeams, Write)),
             team_api::update_team,
         ),
         delete(
             "/v1/orgs/{org}/teams/{team}",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgTeams, Write)),
             team_api::delete_team,
         ),
         put(
             "/v1/orgs/{org}/teams/{team}/members/{user}",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgTeams, Write)),
             team_api::add_team_member,
         ),
         delete(
             "/v1/orgs/{org}/teams/{team}/members/{user}",
-            Reach::Namespace,
+            Reach::OrgScoped(need(OrgTeams, Write)),
             team_api::remove_team_member,
         ),
         get("/v1/me/orgs", Reach::FullScope, org_api::my_orgs),

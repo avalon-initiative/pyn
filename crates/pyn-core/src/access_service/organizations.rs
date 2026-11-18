@@ -161,7 +161,7 @@ impl AccessService {
     /// Deletes an organization that owns no repositories. Owners only; its audit log stays.
     /// A fresh mark from another delete refuses with `OrgDeleting`; a stale one is taken over.
     pub async fn delete_org(&self, actor: &Identity, name: &UserId) -> Result<()> {
-        actor.require_namespace_management()?;
+        actor.require_org_grant(name, ORG_ADMINISTRATION_WRITE)?;
         self.org(name).await?;
         self.require_org_owner(name, &actor.user).await?;
         self.ensure_owner_writable(name).await?;
@@ -218,7 +218,7 @@ impl AccessService {
         name: &UserId,
         query: &AuditQuery,
     ) -> Result<Vec<AuditEvent>> {
-        actor.require_full_scope()?;
+        actor.require_org_grant(name, ORG_AUDIT_READ)?;
         self.org(name).await?;
         self.require_org_owner(name, &actor.user).await?;
         match &self.audit {
@@ -236,7 +236,7 @@ impl AccessService {
         actor: &Identity,
         org: &UserId,
     ) -> Result<Vec<(UserId, OrgRole)>> {
-        actor.require_full_scope()?;
+        actor.require_org_grant(org, ORG_MEMBERS_READ)?;
         self.org(org).await?;
         if self.store.org_role(org, &actor.user).await?.is_none() {
             return Err(PynError::NotOrgMember(org.to_string()));
@@ -252,7 +252,7 @@ impl AccessService {
         user: &UserId,
         role: OrgRole,
     ) -> Result<()> {
-        actor.require_namespace_management()?;
+        actor.require_org_grant(org, ORG_MEMBERS_WRITE)?;
         self.org(org).await?;
         self.require_org_owner(org, &actor.user).await?;
         self.ensure_owner_writable(org).await?;
@@ -278,7 +278,7 @@ impl AccessService {
         org: &UserId,
         user: &UserId,
     ) -> Result<()> {
-        actor.require_namespace_management()?;
+        actor.require_org_grant(org, ORG_MEMBERS_WRITE)?;
         self.org(org).await?;
         if actor.user != *user {
             self.require_org_owner(org, &actor.user).await?;

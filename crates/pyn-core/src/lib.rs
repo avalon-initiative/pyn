@@ -45,7 +45,7 @@ pub mod webhook_url;
 pub use access::fixtures;
 pub use access::{
     AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, GrantLevel, GrantNeed,
-    Identity, InvitationAccept, InvitationCreate, InviteId, InviteRecord, NewAccount,
+    GrantScope, Identity, InvitationAccept, InvitationCreate, InviteId, InviteRecord, NewAccount,
     ORG_DELETE_MARK_SECONDS, OrgCreation, OrgInvitation, OrgMemberAdd, OrgRole, Permission,
     Principal, RegistrationMode, RepoAccess, Role, RoleDefinitions, RoleSource, ServerSettings,
     ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
