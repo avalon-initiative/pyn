@@ -5,8 +5,6 @@
 
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
-#[path = "../../pyn-gittransport/tests/common/script.rs"]
-mod script;
 
 use std::fs;
 use std::path::{Path, PathBuf};

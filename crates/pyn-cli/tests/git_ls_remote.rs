@@ -3,8 +3,6 @@
 
 #[path = "../../pyn-gittransport/tests/common/gitsrv.rs"]
 mod gitsrv;
-#[path = "../../pyn-gittransport/tests/common/script.rs"]
-mod script;
 
 use std::path::Path;
 use std::process::{Command, Output};

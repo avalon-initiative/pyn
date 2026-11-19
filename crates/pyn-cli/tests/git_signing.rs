@@ -53,8 +53,7 @@ fn set_env(c: &mut Command, root: &Path, log: &Path) {
 
 fn script(root: &Path, name: &str, body: &str) -> PathBuf {
     let path = root.join(name);
-    fs::write(&path, body).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    script::write_script(&path, body.strip_prefix("#!/bin/sh\n").unwrap_or(body));
     path
 }
 
