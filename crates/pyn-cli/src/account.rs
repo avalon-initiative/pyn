@@ -207,7 +207,7 @@ fn delete(api: &Api, password_stdin: bool) -> Result<()> {
     let password = credentials::read_password("Password: ", password_stdin)?;
     let body = api::DeleteOwnAccountRequest { password };
     let done: api::AccountDeletionStatus = api
-        .send(
+        .send_sensitive(
             api.request(Method::POST, "/v1/account/deletion")
                 .json(&body),
         )?

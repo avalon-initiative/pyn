@@ -69,6 +69,7 @@ mod time;
 mod token_args;
 mod transfer;
 mod transport;
+mod two_factor;
 mod unsupported;
 mod userconfig;
 mod verify;
@@ -1937,14 +1938,7 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let api = backend.pyn_server("login")?;
             let password = credentials::read_password("Password: ", password_stdin)?;
-            let body = api::LoginRequest {
-                code: None,
-                username: username.clone(),
-                password,
-            };
-            let made: api::CreatedToken = api
-                .send(api.anonymous(Method::POST, "/v1/login").json(&body))?
-                .json()?;
+            let made = two_factor::login(api, &username, &password)?;
             credentials::save(
                 &api.base,
                 credentials::Entry {
@@ -2013,7 +2007,7 @@ fn run(cli: Cli) -> Result<()> {
                 current: Some(current),
                 new,
             };
-            api.send(api.request(Method::PUT, "/v1/me/password").json(&body))?;
+            api.send_sensitive(api.request(Method::PUT, "/v1/me/password").json(&body))?;
             println!("password changed");
             report_ended_sign_in(api)?;
         }
@@ -2025,7 +2019,7 @@ fn run(cli: Cli) -> Result<()> {
                 .with_context(|| format!("reading {}", file.display()))?;
             let body = api::AddKeyRequest { title, key };
             let added: api::SshKeyInfo = api
-                .send(api.request(Method::POST, "/v1/keys").json(&body))?
+                .send_sensitive(api.request(Method::POST, "/v1/keys").json(&body))?
                 .json()?;
             println!(
                 "added {} ({}) as {}",
@@ -2058,7 +2052,7 @@ fn run(cli: Cli) -> Result<()> {
             if let Some(user) = &for_user {
                 req = req.query(&[("user", user)]);
             }
-            api.send(req)?;
+            api.send_sensitive(req)?;
             println!("removed {id}");
         }
         Command::Invite(InviteCommand::Create { role, hours }) => {
@@ -4200,7 +4194,7 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
                 permissions,
             };
             let made: api::CreatedToken = api
-                .send(api.request(Method::POST, "/v1/tokens").json(&body))?
+                .send_sensitive(api.request(Method::POST, "/v1/tokens").json(&body))?
                 .json()?;
             println!("{}", made.token);
             eprintln!(
@@ -4259,7 +4253,7 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
             );
         }
         TokenCommand::Revoke { id } => {
-            api.send(api.request(Method::DELETE, &format!("/v1/tokens/{id}")))?;
+            api.send_sensitive(api.request(Method::DELETE, &format!("/v1/tokens/{id}")))?;
             println!("revoked {id}");
         }
     }
