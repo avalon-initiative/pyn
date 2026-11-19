@@ -41,6 +41,11 @@ pub(crate) async fn two_factor_status(
         enabled: !status.factors.is_empty(),
         factors: status.factors.iter().map(factor_dto).collect(),
         recovery_codes_left: status.recovery_codes_left,
+        required: s
+            .access
+            .unmet_two_factor_requirement(&who.user)
+            .await?
+            .map(|r| crate::requirements_api::required_dto(&r, s.access.two_factor_enforced(&r))),
     }))
 }
 

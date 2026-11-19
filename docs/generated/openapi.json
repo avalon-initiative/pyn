@@ -813,6 +813,86 @@
         "x-pyn-reach": "service:manage_accounts"
       }
     },
+    "/v1/admin/two-factor": {
+      "get": {
+        "tags": [
+          "requirements_api"
+        ],
+        "operationId": "get_server_requirement",
+        "responses": {
+          "200": {
+            "description": "whether every account must hold a second factor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorSetting"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required: also for any service credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
+      },
+      "put": {
+        "tags": [
+          "requirements_api"
+        ],
+        "operationId": "set_server_requirement",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetTwoFactorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the requirement now in force; the same one again changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorSetting"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a grace period over 90 days",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or fresh_check_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
+      }
+    },
     "/v1/admin/users": {
       "get": {
         "tags": [
@@ -1273,6 +1353,61 @@
           }
         },
         "x-pyn-reach": "service:manage_accounts"
+      }
+    },
+    "/v1/admin/users/{user}/two-factor/reset": {
+      "post": {
+        "tags": [
+          "requirements_api"
+        ],
+        "operationId": "reset_two_factor",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's user name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "every second factor and recovery code removed, the reset audited and a `two_factor_reset` notice left for the account"
+          },
+          "400": {
+            "description": "invalid_request: the account is an administrator, whose factors are reset on the host",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or fresh_check_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
       }
     },
     "/v1/admin/webhooks": {
@@ -2725,6 +2860,65 @@
         "x-pyn-reach": "any_credential"
       }
     },
+    "/v1/me/notices": {
+      "get": {
+        "tags": [
+          "requirements_api"
+        ],
+        "operationId": "notices",
+        "responses": {
+          "200": {
+            "description": "the account's notices, oldest first; also answers while a second factor is required and missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Notice"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope_enrolment"
+      }
+    },
+    "/v1/me/notices/{id}": {
+      "delete": {
+        "tags": [
+          "requirements_api"
+        ],
+        "operationId": "dismiss_notice",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the notice",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "dismissed"
+          },
+          "404": {
+            "description": "notice_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope_enrolment"
+      }
+    },
     "/v1/me/orgs": {
       "get": {
         "tags": [
@@ -2898,7 +3092,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "full_scope_enrolment"
       }
     },
     "/v1/me/two-factor/recovery-codes": {
@@ -3000,7 +3194,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "full_scope_enrolment"
       }
     },
     "/v1/me/two-factor/totp/{id}/confirm": {
@@ -3072,7 +3266,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "full_scope_enrolment"
       }
     },
     "/v1/me/two-factor/verify": {
@@ -3178,7 +3372,7 @@
             }
           }
         },
-        "x-pyn-reach": "full_scope"
+        "x-pyn-reach": "full_scope_enrolment"
       }
     },
     "/v1/me/username": {
@@ -5218,6 +5412,127 @@
           }
         },
         "x-pyn-reach": "org_scoped:org_teams:write"
+      }
+    },
+    "/v1/orgs/{org}/two-factor": {
+      "get": {
+        "tags": [
+          "requirements_api"
+        ],
+        "operationId": "get_org_requirement",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorSetting"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token without the organization grant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "org_scoped:org_administration:read"
+      },
+      "put": {
+        "tags": [
+          "requirements_api"
+        ],
+        "operationId": "set_org_requirement",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetTwoFactorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the requirement now in force; the same one again changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoFactorSetting"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a grace period over 90 days",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, a token without the organization grant, or fresh_check_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "org_scoped:org_administration:write"
       }
     },
     "/v1/owners/{owner}/freeze": {
@@ -9907,6 +10222,17 @@
             "$ref": "#/components/schemas/Profile",
             "description": "The account's profile; the email address is never part of it."
           },
+          "two_factor_required": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TwoFactorRequired",
+                "description": "A second factor the account must still set up, with its deadline: the client's cue to nag. Absent when none is\nrequired or the account has one, and for a credential that is not full-scope."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "user": {
             "type": "string"
           }
@@ -12651,6 +12977,32 @@
           }
         }
       },
+      "Notice": {
+        "type": "object",
+        "description": "A message for the account, shown by the web app until dismissed.",
+        "required": [
+          "id",
+          "kind",
+          "detail",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`two_factor_reset`: an administrator reset the account's second factors."
+          }
+        }
+      },
       "OidcLink": {
         "type": "object",
         "description": "Where to send the browser to link the provider to the signed-in account.",
@@ -14611,6 +14963,26 @@
           }
         }
       },
+      "SetTwoFactorRequest": {
+        "type": "object",
+        "required": [
+          "required"
+        ],
+        "properties": {
+          "grace_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "0 to 90 days, default 7. Setting the same requirement again changes nothing; a different grace period starts\nthe clock again.",
+            "minimum": 0
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      },
       "SetupCompleted": {
         "type": "object",
         "required": [
@@ -15222,6 +15594,66 @@
           }
         }
       },
+      "TwoFactorRequired": {
+        "type": "object",
+        "description": "A requirement that the account hold a second factor, and what happens at the deadline.",
+        "required": [
+          "by",
+          "deadline",
+          "enforced"
+        ],
+        "properties": {
+          "by": {
+            "type": "string",
+            "description": "`server` (an administrator requires it of everyone) or `organization`."
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date-time",
+            "description": "From this moment the account can only set up a second factor (`403 two_factor_enrolment_required`)."
+          },
+          "enforced": {
+            "type": "boolean",
+            "description": "True once the deadline has passed."
+          },
+          "organization": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The organization that requires it, when `by` is `organization`."
+          }
+        }
+      },
+      "TwoFactorSetting": {
+        "type": "object",
+        "description": "Whether second factors are required, and the grace period.",
+        "required": [
+          "required"
+        ],
+        "properties": {
+          "grace_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days an account without a factor keeps full access after `since` (or after it was created).",
+            "minimum": 0
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the requirement was set; absent when none is."
+          }
+        }
+      },
       "TwoFactorStatus": {
         "type": "object",
         "description": "The caller's second-factor state.",
@@ -15244,6 +15676,17 @@
           "recovery_codes_left": {
             "type": "integer",
             "minimum": 0
+          },
+          "required": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TwoFactorRequired",
+                "description": "What still requires the account to enrol (see `Account.two_factor_required`)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

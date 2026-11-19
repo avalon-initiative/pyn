@@ -36,7 +36,7 @@ use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
 use crate::store::MetadataStore;
-use crate::two_factor::{FactorRecord, FactorRemoval};
+use crate::two_factor::{FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy};
 use crate::types::{AccountId, MAX_LABEL_BYTES, validate_label};
 use crate::types::{RepoId, UserId};
 use crate::webhook::{EventDraft, NewSecret, WebhookStore};
@@ -54,6 +54,7 @@ mod organizations;
 mod profile;
 mod recovery;
 mod repo_policy;
+mod requirements;
 mod self_service;
 mod setup;
 mod teams;
@@ -851,6 +852,29 @@ pub trait AccessStore: Send + Sync {
 
     /// Stores the access mode. False while the server is uninitialised (no settings row).
     async fn set_access_mode(&self, mode: AccessMode) -> Result<bool>;
+
+    /// Stores the server-wide second-factor requirement (`None` lifts it). False while the server is uninitialised.
+    async fn set_server_two_factor(&self, policy: Option<TwoFactorPolicy>) -> Result<bool>;
+
+    async fn org_two_factor(&self, org: &UserId) -> Result<Option<TwoFactorPolicy>>;
+
+    /// Sets or lifts an organization's requirement; returns the one it replaced.
+    async fn set_org_two_factor(
+        &self,
+        org: &UserId,
+        policy: Option<TwoFactorPolicy>,
+    ) -> Result<Option<TwoFactorPolicy>>;
+
+    /// The requirements of the organizations `user` belongs to.
+    async fn member_two_factor(&self, user: &UserId) -> Result<Vec<(UserId, TwoFactorPolicy)>>;
+
+    async fn add_notice(&self, notice: NoticeRecord) -> Result<()>;
+
+    /// The account's notices, oldest first.
+    async fn notices_of(&self, user: &UserId) -> Result<Vec<NoticeRecord>>;
+
+    /// Removes one of the account's notices; false when it has none by that id.
+    async fn dismiss_notice(&self, user: &UserId, id: &str) -> Result<bool>;
 }
 
 /// How many events one key may cause in a window before further ones are refused.

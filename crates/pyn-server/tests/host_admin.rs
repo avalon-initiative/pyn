@@ -99,6 +99,7 @@ async fn set_up(store: &PgMetadataStore) {
         public_url: None,
         registration: None,
         access_mode: pyn_core::AccessMode::Private,
+        two_factor: None,
     };
     assert!(store.complete_setup(admin, settings).await.unwrap());
 }

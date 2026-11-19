@@ -130,7 +130,10 @@ pub use service::{
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};
 pub use tree::{EntryKind, EntryMode, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry};
-pub use two_factor::{FactorKind, FactorRecord, FactorRemoval, rotate_seed_key};
+pub use two_factor::{
+    FactorKind, FactorRecord, FactorRemoval, MAX_GRACE_DAYS, NOTICE_TWO_FACTOR_RESET, NoticeRecord,
+    RequiredBy, Requirement, TwoFactorPolicy, rotate_seed_key,
+};
 pub use types::{
     AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, MAX_CHANGESET_ITEMS,
     MAX_COMMIT_CHANGES, MAX_LABEL_BYTES, MAX_MESSAGE_BYTES, MAX_PATH_BYTES,

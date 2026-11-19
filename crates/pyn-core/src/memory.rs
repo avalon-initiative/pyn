@@ -40,7 +40,7 @@ use crate::repo_policy::{
 use crate::rules::{Mode, PathFilter};
 use crate::store::{MetadataStore, UploadReservation};
 use crate::tree::HeadCounts;
-use crate::two_factor::{FactorRecord, FactorRemoval};
+use crate::two_factor::{FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy};
 use crate::types::{
     AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, Person, PushedCommit, RepoId,
     RepoPath, Revision, RevisionId, TusCancel, TusClaim, TusSession, UserId,
@@ -2389,6 +2389,7 @@ impl AccessStore for MemoryAccessStore {
         st.team_roles.retain(|(_, o, _), _| o != org);
         st.member_creation.remove(org);
         st.creation_rules.retain(|(o, _, _), _| o != org);
+        st.two_factor.forget_org(org);
         Ok(true)
     }
 
@@ -3564,7 +3565,7 @@ impl AccessStore for MemoryAccessStore {
             .retain(|(_, s, _), _| *s != CreationSubject::User(user.clone()));
         st.tokens.retain(|_, t| &t.user != user);
         st.sessions.retain(|_, s| &s.user != user);
-        st.two_factor.forget(user);
+        st.two_factor.forget_account(user);
         st.identities.retain(|i| &i.user != user);
         st.oidc_flows
             .retain(|_, f| f.link_user.as_ref() != Some(user));
@@ -3654,6 +3655,58 @@ impl AccessStore for MemoryAccessStore {
     async fn set_access_mode(&self, mode: AccessMode) -> Result<bool> {
         let mut st = self.state.lock().unwrap();
         Ok(st.settings.as_mut().map(|s| s.access_mode = mode).is_some())
+    }
+
+    async fn set_server_two_factor(&self, policy: Option<TwoFactorPolicy>) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st
+            .settings
+            .as_mut()
+            .map(|s| s.two_factor = policy)
+            .is_some())
+    }
+
+    async fn org_two_factor(&self, org: &UserId) -> Result<Option<TwoFactorPolicy>> {
+        Ok(self.state.lock().unwrap().two_factor.org_policy(org))
+    }
+
+    async fn set_org_two_factor(
+        &self,
+        org: &UserId,
+        policy: Option<TwoFactorPolicy>,
+    ) -> Result<Option<TwoFactorPolicy>> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st.two_factor.set_org_policy(org, policy))
+    }
+
+    async fn member_two_factor(&self, user: &UserId) -> Result<Vec<(UserId, TwoFactorPolicy)>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .org_roles
+            .keys()
+            .filter(|(_, u)| u == user)
+            .filter_map(|(o, _)| st.two_factor.org_policy(o).map(|p| (o.clone(), p)))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
+    async fn add_notice(&self, notice: NoticeRecord) -> Result<()> {
+        self.state.lock().unwrap().two_factor.add_notice(notice);
+        Ok(())
+    }
+
+    async fn notices_of(&self, user: &UserId) -> Result<Vec<NoticeRecord>> {
+        Ok(self.state.lock().unwrap().two_factor.notices_of(user))
+    }
+
+    async fn dismiss_notice(&self, user: &UserId, id: &str) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .dismiss_notice(user, id))
     }
 
     async fn set_password_hash(&self, user: &UserId, hash: &str) -> Result<()> {

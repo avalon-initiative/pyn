@@ -46,6 +46,7 @@ mod push_api;
 mod repo_api;
 mod repo_policy_api;
 pub mod request_limits;
+mod requirements_api;
 pub mod routes;
 mod self_service_api;
 mod session_api;
@@ -119,6 +120,13 @@ struct RepoAddress {
         two_factor_api::remove_factor,
         two_factor_api::recovery_codes,
         two_factor_api::verify_second_factor,
+        requirements_api::notices,
+        requirements_api::dismiss_notice,
+        requirements_api::get_server_requirement,
+        requirements_api::set_server_requirement,
+        requirements_api::reset_two_factor,
+        requirements_api::get_org_requirement,
+        requirements_api::set_org_requirement,
         access_api::add_key,
         access_api::list_keys,
         access_api::delete_key,
@@ -342,6 +350,10 @@ struct RepoAddress {
         api::AddEmailRequest,
         api::TwoFactorFactor,
         api::TwoFactorStatus,
+        api::TwoFactorRequired,
+        api::TwoFactorSetting,
+        api::SetTwoFactorRequest,
+        api::Notice,
         api::BeginTotpRequest,
         api::TotpEnrolment,
         api::CodeRequest,
@@ -574,6 +586,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::ExternalNotLinked
         | PynError::PasswordSignInDisabled
         | PynError::FreshCheckRequired
+        | PynError::TwoFactorEnrolmentRequired
         | PynError::CsrfFailed
         | PynError::OriginNotAllowed => StatusCode::FORBIDDEN,
         PynError::PushUnsupported(_) | PynError::DigestMismatch { .. } => {
@@ -602,6 +615,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::AvatarNotFound(_)
         | PynError::KeyNotFound(_)
         | PynError::FactorNotFound(_)
+        | PynError::NoticeNotFound(_)
         | PynError::OidcNotConfigured
         | PynError::ExternalIdentityNotFound(_)
         | PynError::RepoNotFound(_)

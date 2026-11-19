@@ -58,6 +58,68 @@ pub struct FactorRecord {
     pub last_step: Option<i64>,
 }
 
+/// The longest grace period an administrator or organization owner may set.
+pub const MAX_GRACE_DAYS: u32 = 90;
+/// The grace period when none is given.
+pub const DEFAULT_GRACE_DAYS: u32 = 7;
+
+/// A requirement that accounts hold a second factor, with the time it was set and the grace period after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TwoFactorPolicy {
+    pub since: DateTime<Utc>,
+    pub grace_days: u32,
+}
+
+impl TwoFactorPolicy {
+    /// When an account without a factor is shut out: the grace period runs from the later of the policy and the account.
+    pub fn deadline(&self, account_created: DateTime<Utc>) -> DateTime<Utc> {
+        self.since.max(account_created) + Duration::days(i64::from(self.grace_days))
+    }
+}
+
+pub fn validate_grace_days(days: Option<u32>) -> Result<u32> {
+    match days.unwrap_or(DEFAULT_GRACE_DAYS) {
+        d if d <= MAX_GRACE_DAYS => Ok(d),
+        _ => Err(PynError::InvalidRequest(format!(
+            "the grace period is at most {MAX_GRACE_DAYS} days"
+        ))),
+    }
+}
+
+/// What requires an account to hold a second factor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequiredBy {
+    Server,
+    Org(UserId),
+}
+
+/// A requirement that applies to an account and the deadline for meeting it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Requirement {
+    pub by: RequiredBy,
+    pub deadline: DateTime<Utc>,
+}
+
+impl Requirement {
+    /// Whether the account may no longer do anything but enrol.
+    pub fn enforced(&self, now: DateTime<Utc>) -> bool {
+        now >= self.deadline
+    }
+}
+
+/// A message for an account that its web app shows until dismissed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoticeRecord {
+    pub id: String,
+    pub user: UserId,
+    pub kind: String,
+    pub detail: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// An administrator reset the account's second factors.
+pub const NOTICE_TWO_FACTOR_RESET: &str = "two_factor_reset";
+
 /// The outcome of removing a factor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FactorRemoval {

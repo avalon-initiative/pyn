@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use pyn_core::two_factor::{FactorRecord, FactorRemoval};
+use pyn_core::two_factor::{FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy};
 use pyn_core::{
     AccessMode, AccessStore, AccountDeletion, AccountDisable, AccountEmail, AccountId, AccountKind,
     AccountPurge, AccountRecord, AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule,
@@ -2540,7 +2540,7 @@ impl AccessStore for PgMetadataStore {
 
     async fn server_settings(&self) -> Result<Option<ServerSettings>> {
         let row = sqlx::query(
-            "SELECT initialised_at, server_name, public_url, registration, access_mode FROM server_settings",
+            "SELECT initialised_at, server_name, public_url, registration, access_mode, two_factor_since, two_factor_grace_days FROM server_settings",
         )
         .fetch_optional(&self.pool)
         .await
@@ -2555,6 +2555,7 @@ impl AccessStore for PgMetadataStore {
                     .map(|m| RegistrationMode::from_str(&m))
                     .transpose()?,
                 access_mode: AccessMode::from_str(&row.get::<String, _>("access_mode"))?,
+                two_factor: crate::two_factor::server_two_factor(&row),
             })
         })
         .transpose()
@@ -2568,14 +2569,16 @@ impl AccessStore for PgMetadataStore {
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         let claimed = sqlx::query(
-            "INSERT INTO server_settings (initialised_at, server_name, public_url, registration, access_mode)
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (singleton) DO NOTHING",
+            "INSERT INTO server_settings (initialised_at, server_name, public_url, registration, access_mode, two_factor_since, two_factor_grace_days)
+             VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (singleton) DO NOTHING",
         )
         .bind(settings.initialised_at)
         .bind(settings.server_name)
         .bind(settings.public_url)
         .bind(settings.registration.map(RegistrationMode::as_str))
         .bind(settings.access_mode.as_str())
+        .bind(settings.two_factor.map(|p| p.since))
+        .bind(settings.two_factor.map(|p| p.grace_days as i32))
         .execute(&mut *tx)
         .await
         .map_err(db)?;
@@ -2610,6 +2613,38 @@ impl AccessStore for PgMetadataStore {
             .await
             .map_err(db)?;
         Ok(done.rows_affected() > 0)
+    }
+
+    async fn set_server_two_factor(&self, policy: Option<TwoFactorPolicy>) -> Result<bool> {
+        self.set_server_two_factor_row(policy).await
+    }
+
+    async fn org_two_factor(&self, org: &UserId) -> Result<Option<TwoFactorPolicy>> {
+        self.org_two_factor_row(org).await
+    }
+
+    async fn set_org_two_factor(
+        &self,
+        org: &UserId,
+        policy: Option<TwoFactorPolicy>,
+    ) -> Result<Option<TwoFactorPolicy>> {
+        self.set_org_two_factor_row(org, policy).await
+    }
+
+    async fn member_two_factor(&self, user: &UserId) -> Result<Vec<(UserId, TwoFactorPolicy)>> {
+        self.member_two_factor_rows(user).await
+    }
+
+    async fn add_notice(&self, notice: NoticeRecord) -> Result<()> {
+        self.add_notice_row(notice).await
+    }
+
+    async fn notices_of(&self, user: &UserId) -> Result<Vec<NoticeRecord>> {
+        self.notices_rows(user).await
+    }
+
+    async fn dismiss_notice(&self, user: &UserId, id: &str) -> Result<bool> {
+        self.dismiss_notice_row(user, id).await
     }
 }
 

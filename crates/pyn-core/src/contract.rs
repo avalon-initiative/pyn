@@ -6004,6 +6004,7 @@ pub async fn setup_stores_the_administrators_id(store: Access) {
         public_url: None,
         registration: None,
         access_mode: AccessMode::Private,
+        two_factor: None,
     };
     assert!(store.complete_setup(admin, settings).await.unwrap());
     assert_eq!(store.account(&user("root")).await.unwrap().unwrap().id, id);
@@ -6017,6 +6018,7 @@ pub async fn setup_runs_once_and_creates_the_administrator_with_its_settings(sto
         public_url: Some("https://pyn.example".into()),
         registration: Some(RegistrationMode::Closed),
         access_mode: AccessMode::Public,
+        two_factor: None,
     };
     let mut admin = new_account("root", "root@example.org", 0);
     admin.signup = SignupStage::Complete;
@@ -6041,6 +6043,7 @@ pub async fn setup_runs_once_and_creates_the_administrator_with_its_settings(sto
         public_url: None,
         registration: None,
         access_mode: AccessMode::Private,
+        two_factor: None,
     };
     let mut second = new_account("second", "second@example.org", 1);
     second.signup = SignupStage::Complete;
@@ -6066,6 +6069,7 @@ pub async fn the_access_mode_is_stored_with_setup_and_changes_after_it(store: Ac
         public_url: None,
         registration: None,
         access_mode: AccessMode::Private,
+        two_factor: None,
     };
     assert!(
         store
@@ -6089,6 +6093,7 @@ pub async fn a_setup_that_fails_leaves_the_server_uninitialised(store: Access) {
         public_url: None,
         registration: None,
         access_mode: AccessMode::Private,
+        two_factor: None,
     };
     let err = store
         .complete_setup(new_account("root", "root@example.org", 1), settings)
@@ -8874,6 +8879,9 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_fresh_check_belongs_to_one_credential_and_expired_ones_are_swept);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; clearing_two_factor_removes_everything_and_counts_the_confirmed_factors);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; resealing_rewrites_every_seed_or_none);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_server_requirement_is_stored_with_the_settings);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; an_organization_requirement_is_its_own_and_reaches_only_its_members);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; notices_are_listed_oldest_first_dismissed_once_and_follow_the_account);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_rename_keeps_the_factors_and_a_purge_removes_them);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; added_addresses_are_unique_pending_until_verified_and_the_primary_must_be_verified);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_address_promotes_a_verified_one_and_can_keep_the_last);

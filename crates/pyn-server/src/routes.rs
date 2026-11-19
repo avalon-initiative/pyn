@@ -20,7 +20,8 @@ use utoipa::openapi::extensions::Extensions;
 use crate::{
     AppState, access_api, admin_api, branch_api, caller, deletion_api, freeze_api, lfs_api,
     limits_api, merge_api, oidc_api, org_api, profile_api, push_api, repo_api, repo_policy_api,
-    self_service_api, session_api, setup_api, team_api, two_factor_api, webhook_api,
+    requirements_api, self_service_api, session_api, setup_api, team_api, two_factor_api,
+    webhook_api,
 };
 
 const fn need(resource: TokenResource, level: GrantLevel) -> GrantNeed {
@@ -45,6 +46,8 @@ pub enum Reach {
     FullScope,
     /// Full scope, and also an account scheduled for deletion (the routes that restore it).
     FullScopePending,
+    /// Full scope, and also an account that must set up a second factor and has not (the enrolment routes).
+    FullScopeEnrolment,
     /// Full scope, or an unscoped token holding `manage_roles`.
     Namespace,
     /// A server administrator on a full-scope credential; service credentials are refused.
@@ -89,6 +92,7 @@ impl Reach {
             Self::AnyCredential => "any_credential".into(),
             Self::FullScope => "full_scope".into(),
             Self::FullScopePending => "full_scope_pending".into(),
+            Self::FullScopeEnrolment => "full_scope_enrolment".into(),
             Self::Namespace => "namespace".into(),
             Self::AdminOnly => "admin_only".into(),
             Self::Service(s) => format!("service:{}", s.as_str()),
@@ -375,17 +379,17 @@ fn table() -> Vec<Entry> {
         ),
         get(
             "/v1/me/two-factor",
-            Reach::FullScope,
+            Reach::FullScopeEnrolment,
             two_factor_api::two_factor_status,
         ),
         post(
             "/v1/me/two-factor/totp",
-            Reach::FullScope,
+            Reach::FullScopeEnrolment,
             two_factor_api::begin_totp,
         ),
         post(
             "/v1/me/two-factor/totp/{id}/confirm",
-            Reach::FullScope,
+            Reach::FullScopeEnrolment,
             two_factor_api::confirm_totp,
         ),
         post(
@@ -400,8 +404,43 @@ fn table() -> Vec<Entry> {
         ),
         delete(
             "/v1/me/two-factor/{id}",
-            Reach::FullScope,
+            Reach::FullScopeEnrolment,
             two_factor_api::remove_factor,
+        ),
+        get(
+            "/v1/me/notices",
+            Reach::FullScopeEnrolment,
+            requirements_api::notices,
+        ),
+        delete(
+            "/v1/me/notices/{id}",
+            Reach::FullScopeEnrolment,
+            requirements_api::dismiss_notice,
+        ),
+        get(
+            "/v1/admin/two-factor",
+            Reach::AdminOnly,
+            requirements_api::get_server_requirement,
+        ),
+        put(
+            "/v1/admin/two-factor",
+            Reach::AdminOnly,
+            requirements_api::set_server_requirement,
+        ),
+        post(
+            "/v1/admin/users/{user}/two-factor/reset",
+            Reach::AdminOnly,
+            requirements_api::reset_two_factor,
+        ),
+        get(
+            "/v1/orgs/{org}/two-factor",
+            Reach::OrgScoped(need(OrgAdministration, Read)),
+            requirements_api::get_org_requirement,
+        ),
+        put(
+            "/v1/orgs/{org}/two-factor",
+            Reach::OrgScoped(need(OrgAdministration, Write)),
+            requirements_api::set_org_requirement,
         ),
         get(
             "/v1/me/emails",

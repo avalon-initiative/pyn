@@ -88,7 +88,7 @@ people act on its behalf, and a request that names an organization as the signed
   roles in other repositories are untouched. Team memberships go the same way, which ends the access they gave.
 - **Audit.** Organization events (`org_created`, `org_deleted`, `org_member_added` (a direct add), `org_member_removed`,
   `org_member_role_changed`, `org_member_invited`, `org_invitation_accepted`, `org_invitation_declined`,
-  `org_invitation_cancelled`, `org_invitation_expired` (the organization is its actor; written when the expiry is next seen), the team events and the creation-policy events below) go to a separate organization log, readable by its owners at
+  `org_invitation_cancelled`, `org_invitation_expired` (the organization is its actor; written when the expiry is next seen), the team events, the creation-policy events below and `org_two_factor_requirement_changed`, see [requiring two-factor authentication](access.md#requiring-two-factor-authentication)) go to a separate organization log, readable by its owners at
   `GET /v1/orgs/{org}/audit`. They are not in the server log. A removal records which repositories lost the member's
   direct access and which teams they left. Team grants and revocations are also recorded in the target repository's log.
 
