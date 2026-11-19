@@ -1488,6 +1488,8 @@ pub struct ServerSettings {
     /// Overrides the configured registration mode.
     pub registration: Option<RegistrationMode>,
     pub access_mode: AccessMode,
+    /// Set while every account must hold a second factor.
+    pub two_factor: Option<crate::two_factor::TwoFactorPolicy>,
 }
 
 /// A pending email check. Only a hash of its token is kept.

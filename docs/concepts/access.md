@@ -238,7 +238,7 @@ An account can add a second step to password sign-in; see [two-factor authentica
 
 An account can require a second factor at password sign-in (decision #1097). Today that is an authenticator app (a time-based
 one-time password, RFC 6238: SHA-1, six digits, 30 seconds) plus single-use recovery codes; security keys and passkeys are a
-later addition. It is opt-in. Nothing here needs email or a paid service.
+later addition. It is opt-in until a [server administrator or an organization owner requires it](#requiring-two-factor-authentication). Nothing here needs email or a paid service.
 
 **Turning it on.** `POST /v1/me/two-factor/totp {label?, password}` starts an enrolment and returns the seed (`secret`, in
 base32, and an `otpauth://` `uri` for a QR code) once; an account that has a password must send it. Nothing changes until
@@ -255,7 +255,7 @@ second_factor_required` (a wrong password still gets the one generic `401`, so t
 password), and a wrong code `401 second_factor_invalid`. A client asks for the code and sends the request again. An app code
 works once: the server remembers the latest time step it accepted and accepts one step of clock drift either way. Signing in
 with a recovery code is recorded in the server audit log. [External sign-in](external-sign-in.md) brings its own second
-factor and is not challenged, and neither are tokens or SSH keys: they are credentials for automation.
+factor and is not challenged, and neither are tokens or SSH keys: they are credentials for automation, except that a sign-in token (what `pyn login` makes) counts as a sign-in and is held to a [requirement](#requiring-two-factor-authentication) like a session.
 
 `pyn login` asks for the code after the password when the server answers `second_factor_required`, and asks again (up to three codes) after `second_factor_invalid`. The prompt takes one line from standard input, so a script that already pipes the password with `--password-stdin` sends the code as the next line; there is no code flag or environment variable, as a code would show in the process list, and unattended use should sign in with a token instead. A `429 too_many_attempts` is reported with its `Retry-After` wait. Passkeys are not supported by the CLI yet.
 
@@ -284,19 +284,55 @@ signs in): see [Lost secret key](../deployment.md#lost-secret-key).
 
 **Recovery without email.** A recovery code signs in; so does any other registered factor. `pyn-server recover-admin` on the host
 also removes the account's factors, which is how an administrator who lost both the device and the codes gets back in. Resetting
-another account's factors as an administrator is a separate step.
+another account's factors as an administrator is a [reset](#requiring-two-factor-authentication), which does not apply to an administrator's account.
 
 Audit actions in the server log (`GET /v1/admin/audit`): `two_factor_added`, `two_factor_removed`,
-`recovery_codes_regenerated`, `recovery_code_used`.
+`recovery_codes_regenerated`, `recovery_code_used`, `two_factor_reset`, `server_two_factor_requirement_changed`; an organization's requirement changes are
+`org_two_factor_requirement_changed` in its [organization log](repositories.md#organizations).
 
 | Route | Notes |
 | --- | --- |
-| `GET /v1/me/two-factor` | `{enabled, factors: [{id, kind, label, created_at}], recovery_codes_left}` |
+| `GET /v1/me/two-factor` | `{enabled, factors: [{id, kind, label, created_at}], recovery_codes_left, required?}`; `required` is the [requirement](#requiring-two-factor-authentication) still unmet |
 | `POST /v1/me/two-factor/totp` | `{label?, password?}` gives `201 {id, secret, uri}`; `401` for a missing or wrong password, `403 fresh_check_required` when a factor exists |
 | `POST /v1/me/two-factor/totp/{id}/confirm` | `{code}` gives `{factor, recovery_codes?, fresh_until}`; `recovery_codes` only with the first factor. `401 second_factor_invalid`, `404 factor_not_found`, `429` |
 | `DELETE /v1/me/two-factor/{id}` | `204`; `403 fresh_check_required`, `404 factor_not_found` |
 | `POST /v1/me/two-factor/recovery-codes` | `{recovery_codes}`, ten new ones shown once; `400` when two-factor authentication is off, `403 fresh_check_required` |
 | `POST /v1/me/two-factor/verify` | `{code}` gives `{fresh_until}`; `400` when it is off, `401 second_factor_invalid`, `429` |
+
+### Requiring two-factor authentication
+
+A server administrator can require a second factor of every account, and an organization owner of the organization's members
+(decision #1097). Both come with a **grace period** of 0 to 90 days (default 7).
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/admin/two-factor`, `PUT /v1/admin/two-factor` | `{required, since?, grace_days?}`; `PUT {required, grace_days?}` sets or lifts the server-wide requirement. Administrators only, never a service credential; `403 fresh_check_required` for an administrator who has a factor and no fresh check |
+| `GET /v1/orgs/{org}/two-factor`, `PUT /v1/orgs/{org}/two-factor` | the same for one organization: `org_administration` read and write, and the creator must be an owner of that organization (`403 not_org_owner` otherwise, so an owner of another organization or a plain member is refused) |
+| `POST /v1/admin/users/{user}/two-factor/reset` | `204`; removes every factor and recovery code of the account. Administrators only; `400 invalid_request` for an administrator's account (use `recover-admin` on the host), `404 user_not_found` |
+| `GET /v1/me/notices`, `DELETE /v1/me/notices/{id}` | the account's notices, oldest first `[{id, kind, detail, created_at}]`, and dismissing one (`404 notice_not_found`) |
+
+**Grace and enforcement.** The grace period runs from the later of the moment the requirement was set and the account's
+creation, so a new account always gets its full grace. An account with several requirements (the server's and its
+organizations') is held to the earliest deadline. Setting the same requirement again changes nothing; a different grace period
+starts the clock again. Until the deadline the account works as before, and the API says what is due: `GET /v1/me` carries
+`two_factor_required: {by: "server"|"organization", organization?, deadline, enforced: false}` and so does `required` in `GET
+/v1/me/two-factor`, so a client can nag. From the deadline `enforced` is true and an account that holds no factor can reach
+only the **enrolment routes** (reach `full_scope_enrolment`): `GET /v1/me/two-factor`, `POST /v1/me/two-factor/totp`, `POST
+/v1/me/two-factor/totp/{id}/confirm`, `DELETE /v1/me/two-factor/{id}` (to cancel a pending enrolment), `GET /v1/me/notices`, `DELETE
+/v1/me/notices/{id}` and `GET`/`DELETE /v1/session`. Everything else answers `403 two_factor_enrolment_required` until it
+confirms a factor; the requirement is met as soon as it holds one. Lifting the requirement, or leaving the organization, lifts the block.
+An administrator is held to a server-wide requirement like anyone, so enrol before the deadline; if none can, `recover-admin`
+on the host remains the way back in.
+
+**Who is held to it.** Sessions and sign-in tokens (what `pyn login` makes), which are people signing in. Other tokens, SSH
+keys and service credentials are automation and are not challenged (decision #1097): they keep working after the deadline, and
+cannot be made or revoked by a blocked account because token creation is not an enrolment route.
+
+**Reset.** An administrator resets an account that lost its device and recovery codes. The reset removes the factors and
+recovery codes (sessions and tokens stay), is recorded as `two_factor_reset` in the server audit log, and leaves the account a
+notice (`kind: "two_factor_reset"`, naming the administrator) that its web app shows until dismissed; there is no email. A reset
+does not lift a requirement: an account that must have a factor, past its deadline, signs in and can only enrol again.
+
 
 ## SSH keys
 
@@ -468,9 +504,10 @@ is off, or on but nothing is delivered.
 | `GET /v1/account/deletion`, `POST /v1/account/deletion`, `POST /v1/account/deletion/restore` | the signed-in account's own deletion: status, schedule (`{password}`) and restore; they also answer for a pending account |
 | `PUT /v1/admin/users/{user}/admin` | grants the flag; the updated account. `400 invalid_request` if the account is not active; granting again changes nothing |
 | `PUT /v1/admin/access` | `{access_mode}`: the [server access mode](#server-access-mode) now in force; administrators only, never a service credential |
+| `GET`/`PUT /v1/admin/two-factor`, `POST /v1/admin/users/{user}/two-factor/reset` | [requiring two-factor authentication](#requiring-two-factor-authentication) and an administrator's reset of an account's factors |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
 | `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_deletion_scheduled`, `account_deletion_restored`, `account_deleted`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `two_factor_added`, `two_factor_removed`, `recovery_codes_regenerated`, `recovery_code_used`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `two_factor_added`, `two_factor_removed`, `recovery_codes_regenerated`, `recovery_code_used`, `two_factor_reset`, `server_two_factor_requirement_changed`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
 
 On the command line (server administrators; each listing is an aligned table with the name last):
 
@@ -531,7 +568,7 @@ they never clash with the repository resources of the same topic.
 | --- | --- | --- |
 | `org_members` | list members | list invitations; invite, change a role, remove a member, cancel an invitation |
 | `org_teams` | list and get teams | create, edit and delete teams, add and remove their members |
-| `org_administration` | read the repository-creation policy and the organization's repository settings | edit the profile and avatar, change the creation policy and its rules, change the repository settings, delete the organization |
+| `org_administration` | read the repository-creation policy, the organization's repository settings and the [two-factor requirement](#requiring-two-factor-authentication) | edit the profile and avatar, change the creation policy and its rules, change the repository settings and the two-factor requirement, delete the organization |
 | `org_audit` | read the organization audit log | (none) |
 
 **Account permissions** are for a token whose resource owner is the creator's own account. Their names carry an `account_` prefix.
@@ -709,6 +746,7 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `any_credential` | any user credential; the response narrows to the credential's scope |
 | `full_scope` | a session, a full-scope token or the development identity |
 | `full_scope_pending` | `full_scope`, also while the account is scheduled for deletion |
+| `full_scope_enrolment` | `full_scope`, also an account that must set up a [second factor](#requiring-two-factor-authentication) and has not (the enrolment routes); every other kind refuses such an account with `403 two_factor_enrolment_required` |
 | `namespace` | full scope, or a token of the caller's own account for all repositories holding `administration` write |
 | `org_scoped:<resource>:<level>` | a full-scope credential, or a token owned by the organization in the path holding the organization resource at the level; the creator's organization role still applies (see [organization and account routes](#organization-and-account-routes)). A personal token with repository `administration` write no longer reaches these routes |
 | `account_scoped:<resource>:<level>` | a full-scope credential, or a token owned by the caller's own account holding the account resource at the level |
@@ -769,8 +807,8 @@ creator's role alone, as before.
 | `org_members:write` | `GET /v1/orgs/{org}/invitations`, `POST /v1/orgs/{org}/members`, `PATCH` and `DELETE /v1/orgs/{org}/members/{user}`, `DELETE /v1/orgs/{org}/invitations/{user}` |
 | `org_teams:read` | `GET /v1/orgs/{org}/teams`, `GET /v1/orgs/{org}/teams/{team}` |
 | `org_teams:write` | create, `PATCH` and `DELETE` a team, `PUT` and `DELETE` a team member |
-| `org_administration:read` | `GET /v1/orgs/{org}/repo-policy`, `GET /v1/orgs/{org}/settings` |
-| `org_administration:write` | `PUT /v1/orgs/{org}/profile`, `PUT` and `DELETE /v1/orgs/{org}/avatar`, `DELETE /v1/orgs/{org}`, `PUT /v1/orgs/{org}/repo-policy`, `PUT` and `DELETE` its `rules/{effect}/{kind}/{subject}`, `PUT /v1/orgs/{org}/settings` |
+| `org_administration:read` | `GET /v1/orgs/{org}/repo-policy`, `GET /v1/orgs/{org}/settings`, `GET /v1/orgs/{org}/two-factor` |
+| `org_administration:write` | `PUT /v1/orgs/{org}/profile`, `PUT` and `DELETE /v1/orgs/{org}/avatar`, `DELETE /v1/orgs/{org}`, `PUT /v1/orgs/{org}/repo-policy`, `PUT` and `DELETE` its `rules/{effect}/{kind}/{subject}`, `PUT /v1/orgs/{org}/settings`, `PUT /v1/orgs/{org}/two-factor` |
 | `org_audit:read` | `GET /v1/orgs/{org}/audit` |
 | `account_profile:write` | `PUT /v1/me/profile`, `PUT` and `DELETE /v1/me/avatar` |
 | `account_ssh_keys:read` | `GET /v1/keys` |

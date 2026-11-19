@@ -36,7 +36,8 @@ pub(crate) fn uses_non_cookie_credential(state: &AppState, headers: &HeaderMap) 
                 .is_some_and(|v| v.to_str().is_ok()))
 }
 
-/// Names the account behind a bearer token, the dev header or a session cookie. A service credential is refused.
+/// Names the account behind a bearer token, the dev header or a session cookie. A service credential is refused, and
+/// so is an account that must set up a second factor and has not.
 async fn identify(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
     let who = identify_admin(state, headers).await?;
     if matches!(who.credential, Credential::Service(_)) {
@@ -47,6 +48,21 @@ async fn identify(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> 
 
 /// Like `identify`, but a service credential is accepted too.
 async fn identify_admin(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
+    let who = authenticate(state, headers).await?;
+    state.access.enforce_two_factor(&who).await?;
+    Ok(who)
+}
+
+/// Like `identify`, but an account that must set up a second factor is accepted: the enrolment routes need it.
+async fn identify_enrolling(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
+    let who = authenticate(state, headers).await?;
+    if matches!(who.credential, Credential::Service(_)) {
+        return Err(PynError::ServiceCredentialNotAllowed.into());
+    }
+    Ok(who)
+}
+
+async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
     let dev_user = headers
         .get(api::DEV_USER_HEADER)
         .and_then(|v| v.to_str().ok());
@@ -176,7 +192,7 @@ impl FromRequestParts<AppState> for OptionalCaller {
     }
 }
 
-/// The caller of a route declared `full_scope` or `full_scope_pending`.
+/// The caller of a route declared `full_scope`, `full_scope_pending` or `full_scope_enrolment`.
 pub(crate) struct FullScopeCaller(pub(crate) Identity);
 
 impl FromRequestParts<AppState> for FullScopeCaller {
@@ -186,6 +202,7 @@ impl FromRequestParts<AppState> for FullScopeCaller {
         let who = match declared(parts) {
             Reach::FullScope => identify(s, &parts.headers).await?,
             Reach::FullScopePending => identify_pending_ok(s, &parts.headers).await?,
+            Reach::FullScopeEnrolment => identify_enrolling(s, &parts.headers).await?,
             other => return Err(mismatch("FullScopeCaller", other)),
         };
         who.require_full_scope()?;

@@ -42,7 +42,7 @@ impl AccessService {
         }
     }
 
-    async fn confirmed_factors(&self, user: &UserId) -> Result<Vec<FactorRecord>> {
+    pub(super) async fn confirmed_factors(&self, user: &UserId) -> Result<Vec<FactorRecord>> {
         let mut factors = self.store.factors_of(user).await?;
         factors.retain(|f| f.confirmed_at.is_some());
         Ok(factors)
@@ -69,7 +69,7 @@ impl AccessService {
         {
             return Ok(());
         }
-        if self.confirmed_factors(&who.user).await?.is_empty() {
+        if !self.has_second_factor(&who.user).await? {
             return Ok(());
         }
         let key = Self::fresh_key(who, cookie).ok_or(PynError::FreshCheckRequired)?;
@@ -127,7 +127,7 @@ impl AccessService {
 
     /// Passes a sign-in's second step. `Ok(false)` when the account has no factor, so nothing was asked.
     async fn sign_in_second_factor(&self, user: &UserId, code: Option<&str>) -> Result<bool> {
-        if self.confirmed_factors(user).await?.is_empty() {
+        if !self.has_second_factor(user).await? {
             return Ok(false);
         }
         let code = code.ok_or(PynError::SecondFactorRequired)?;
@@ -309,7 +309,7 @@ impl AccessService {
     ) -> Result<Vec<String>> {
         actor.require_full_scope()?;
         self.existing_account(&actor.user).await?;
-        if self.confirmed_factors(&actor.user).await?.is_empty() {
+        if !self.has_second_factor(&actor.user).await? {
             return Err(PynError::InvalidRequest(
                 "two-factor authentication is not on for this account".into(),
             ));
@@ -360,7 +360,7 @@ impl AccessService {
     ) -> Result<DateTime<Utc>> {
         actor.require_full_scope()?;
         self.existing_account(&actor.user).await?;
-        if self.confirmed_factors(&actor.user).await?.is_empty() {
+        if !self.has_second_factor(&actor.user).await? {
             return Err(PynError::InvalidRequest(
                 "two-factor authentication is not on for this account".into(),
             ));

@@ -24,6 +24,7 @@ pub(super) struct SetupState {
     read_at: Mutex<Option<DateTime<Utc>>>,
     /// Set by an administrator on a server that never ran setup (nothing to store it in).
     unstored_access: Mutex<Option<AccessMode>>,
+    unstored_two_factor: Mutex<Option<TwoFactorPolicy>>,
 }
 
 impl SetupState {
@@ -34,6 +35,16 @@ impl SetupState {
     fn set_access(&self, mode: AccessMode) {
         if let Some(settings) = self.settings.lock().unwrap().as_mut() {
             settings.access_mode = mode;
+        }
+    }
+
+    fn set_two_factor(&self, policy: Option<TwoFactorPolicy>) -> bool {
+        match self.settings.lock().unwrap().as_mut() {
+            Some(settings) => {
+                settings.two_factor = policy;
+                true
+            }
+            None => false,
         }
     }
 
@@ -205,6 +216,7 @@ impl AccessService {
             public_url: clean_public_url(request.public_url)?,
             registration: Some(request.registration),
             access_mode: request.access_mode.unwrap_or(self.config.access_mode),
+            two_factor: None,
         };
         let password_hash = self.passwords.hash(request.password).await?;
         let admin = NewAccount {
@@ -280,5 +292,54 @@ impl AccessService {
         )
         .await?;
         Ok(mode)
+    }
+}
+
+impl AccessService {
+    /// The server-wide second-factor requirement, if an administrator set one.
+    pub fn server_two_factor(&self) -> Option<TwoFactorPolicy> {
+        match self.setup.settings() {
+            Some(settings) => settings.two_factor,
+            None => *self.setup.unstored_two_factor.lock().unwrap(),
+        }
+    }
+
+    /// Requires a second factor of every account, or lifts the requirement (`None`). Accounts without one get
+    /// `grace_days` (default 7) before they may only enrol. Server administrators only.
+    pub async fn set_server_two_factor(
+        &self,
+        actor: &Identity,
+        required: bool,
+        grace_days: Option<u32>,
+    ) -> Result<Option<TwoFactorPolicy>> {
+        self.require_server_admin(actor).await?;
+        let grace = crate::two_factor::validate_grace_days(grace_days)?;
+        let previous = self.server_two_factor();
+        let policy = required.then(|| TwoFactorPolicy {
+            since: self.clock.now(),
+            grace_days: grace,
+        });
+        if previous.is_some() == required && previous.is_none_or(|p| p.grace_days == grace) {
+            return Ok(previous);
+        }
+        if self.store.set_server_two_factor(policy).await? {
+            self.setup.set_two_factor(policy);
+        } else {
+            *self.setup.unstored_two_factor.lock().unwrap() = policy;
+        }
+        let detail = match policy {
+            Some(p) => format!(
+                "two-factor authentication required of every account, grace {} days",
+                p.grace_days
+            ),
+            None => "two-factor authentication no longer required of every account".to_string(),
+        };
+        self.record_server(
+            &actor.user,
+            AuditAction::ServerTwoFactorRequirementChanged,
+            detail,
+        )
+        .await?;
+        Ok(policy)
     }
 }

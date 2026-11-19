@@ -184,6 +184,7 @@ fn expected(mode: AccessMode, reach: Reach, kind: Kind) -> Expect {
         Reach::AnyCredential => hit(user),
         Reach::FullScope
         | Reach::FullScopePending
+        | Reach::FullScopeEnrolment
         | Reach::Namespace
         | Reach::OrgScoped(_)
         | Reach::AccountScoped(_) => hit(matches!(kind, Kind::Session | Kind::Full | Kind::Admin)),
@@ -713,6 +714,7 @@ fn the_table_uses_every_reach_kind() {
         "any_credential",
         "full_scope",
         "full_scope_pending",
+        "full_scope_enrolment",
         "namespace",
         "org_scoped",
         "account_scoped",
@@ -1180,6 +1182,16 @@ const ORGANIZATION_AND_ACCOUNT_ROUTES: &[(&str, &str, &str)] = &[
     (
         "DELETE",
         "/v1/orgs/{org}/repo-policy/rules/{effect}/{kind}/{subject}",
+        "org_scoped:org_administration:write",
+    ),
+    (
+        "GET",
+        "/v1/orgs/{org}/two-factor",
+        "org_scoped:org_administration:read",
+    ),
+    (
+        "PUT",
+        "/v1/orgs/{org}/two-factor",
         "org_scoped:org_administration:write",
     ),
     ("GET", "/v1/orgs/{org}/teams", "org_scoped:org_teams:read"),

@@ -222,8 +222,12 @@ pub enum PynError {
     SecondFactorInvalid,
     #[error("confirm with a second factor first")]
     FreshCheckRequired,
+    #[error("this account must set up two-factor authentication before it can continue")]
+    TwoFactorEnrolmentRequired,
     #[error("no such factor {0}")]
     FactorNotFound(String),
+    #[error("no such notice {0}")]
+    NoticeNotFound(String),
     #[error("the request is missing a valid CSRF token")]
     CsrfFailed,
     #[error("the request's origin is not allowed")]
@@ -414,7 +418,9 @@ impl PynError {
             Self::SecondFactorRequired => "second_factor_required",
             Self::SecondFactorInvalid => "second_factor_invalid",
             Self::FreshCheckRequired => "fresh_check_required",
+            Self::TwoFactorEnrolmentRequired => "two_factor_enrolment_required",
             Self::FactorNotFound(_) => "factor_not_found",
+            Self::NoticeNotFound(_) => "notice_not_found",
             Self::CsrfFailed => "csrf_failed",
             Self::OriginNotAllowed => "origin_not_allowed",
             Self::Forbidden(_) | Self::GrantRequired(_) => "forbidden",

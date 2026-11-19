@@ -559,6 +559,7 @@ async fn disabling_an_account_ends_its_access_and_enabling_restores_it() {
                 visibility: Some(api::ProfileVisibility::default()),
                 ..Default::default()
             },
+            two_factor_required: None,
         }
     );
 

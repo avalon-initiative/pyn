@@ -1,7 +1,10 @@
 //! Second factors in PostgreSQL: factors, recovery codes, attempt state and fresh checks.
 
 use chrono::{DateTime, Utc};
-use pyn_core::two_factor::{AttemptState, FactorKind, FactorRecord, FactorRemoval, count_attempt};
+use pyn_core::two_factor::{
+    AttemptState, FactorKind, FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy,
+    count_attempt,
+};
 use pyn_core::{NewSecret, PynError, Result, UserId};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -28,7 +31,147 @@ fn factor_from(row: &PgRow) -> Result<FactorRecord> {
     })
 }
 
+fn policy_from(since: DateTime<Utc>, grace_days: i32) -> TwoFactorPolicy {
+    TwoFactorPolicy {
+        since,
+        grace_days: grace_days.max(0) as u32,
+    }
+}
+
+/// The server's requirement in a `server_settings` row.
+pub(crate) fn server_two_factor(row: &PgRow) -> Option<TwoFactorPolicy> {
+    let since: Option<DateTime<Utc>> = row.get("two_factor_since");
+    let days: Option<i32> = row.get("two_factor_grace_days");
+    since.zip(days).map(|(s, d)| policy_from(s, d))
+}
+
 impl PgMetadataStore {
+    pub(crate) async fn set_server_two_factor_row(
+        &self,
+        policy: Option<TwoFactorPolicy>,
+    ) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE server_settings SET two_factor_since = $1, two_factor_grace_days = $2",
+        )
+        .bind(policy.map(|p| p.since))
+        .bind(policy.map(|p| p.grace_days as i32))
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    pub(crate) async fn org_two_factor_row(&self, org: &UserId) -> Result<Option<TwoFactorPolicy>> {
+        let row = sqlx::query("SELECT since, grace_days FROM org_two_factor WHERE org = $1")
+            .bind(org.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(row.map(|r| policy_from(r.get("since"), r.get("grace_days"))))
+    }
+
+    pub(crate) async fn set_org_two_factor_row(
+        &self,
+        org: &UserId,
+        policy: Option<TwoFactorPolicy>,
+    ) -> Result<Option<TwoFactorPolicy>> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let old =
+            sqlx::query("SELECT since, grace_days FROM org_two_factor WHERE org = $1 FOR UPDATE")
+                .bind(org.as_str())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?
+                .map(|r| policy_from(r.get("since"), r.get("grace_days")));
+        match policy {
+            Some(p) => sqlx::query(
+                "INSERT INTO org_two_factor (org, since, grace_days) VALUES ($1, $2, $3)
+                 ON CONFLICT (org) DO UPDATE SET since = EXCLUDED.since, grace_days = EXCLUDED.grace_days",
+            )
+            .bind(org.as_str())
+            .bind(p.since)
+            .bind(p.grace_days as i32)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?,
+            None => sqlx::query("DELETE FROM org_two_factor WHERE org = $1")
+                .bind(org.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?,
+        };
+        tx.commit().await.map_err(db)?;
+        Ok(old)
+    }
+
+    pub(crate) async fn member_two_factor_rows(
+        &self,
+        user: &UserId,
+    ) -> Result<Vec<(UserId, TwoFactorPolicy)>> {
+        let rows = sqlx::query(
+            "SELECT t.org, t.since, t.grace_days FROM org_two_factor t
+             JOIN org_members m ON m.org = t.org WHERE m.user_id = $1 ORDER BY t.org",
+        )
+        .bind(user.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                (
+                    UserId::new(r.get::<String, _>("org")),
+                    policy_from(r.get("since"), r.get("grace_days")),
+                )
+            })
+            .collect())
+    }
+
+    pub(crate) async fn add_notice_row(&self, notice: NoticeRecord) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO account_notices (id, user_id, kind, detail, created_at) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(&notice.id)
+        .bind(notice.user.as_str())
+        .bind(&notice.kind)
+        .bind(&notice.detail)
+        .bind(notice.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    pub(crate) async fn notices_rows(&self, user: &UserId) -> Result<Vec<NoticeRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, kind, detail, created_at FROM account_notices WHERE user_id = $1 ORDER BY created_at, id",
+        )
+        .bind(user.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .iter()
+            .map(|r| NoticeRecord {
+                id: r.get("id"),
+                user: user.clone(),
+                kind: r.get("kind"),
+                detail: r.get("detail"),
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    pub(crate) async fn dismiss_notice_row(&self, user: &UserId, id: &str) -> Result<bool> {
+        let done = sqlx::query("DELETE FROM account_notices WHERE user_id = $1 AND id = $2")
+            .bind(user.as_str())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
     pub(crate) async fn factors_rows(&self, user: &UserId) -> Result<Vec<FactorRecord>> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {FACTOR} FROM account_factors WHERE user_id = $1 ORDER BY created_at, id"

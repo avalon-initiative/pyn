@@ -1,7 +1,9 @@
 //! The in-memory side of second factors: factors, recovery codes, attempt state and fresh checks.
 
 use super::*;
-use crate::two_factor::{AttemptState, FactorRecord, FactorRemoval, count_attempt};
+use crate::two_factor::{
+    AttemptState, FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy, count_attempt,
+};
 
 #[derive(Default)]
 pub(super) struct TwoFactorState {
@@ -10,6 +12,8 @@ pub(super) struct TwoFactorState {
     codes: Vec<(UserId, String, Option<DateTime<Utc>>)>,
     attempts: HashMap<UserId, AttemptState>,
     fresh: HashMap<String, (UserId, DateTime<Utc>)>,
+    org_policies: HashMap<UserId, TwoFactorPolicy>,
+    notices: Vec<NoticeRecord>,
 }
 
 impl TwoFactorState {
@@ -22,6 +26,7 @@ impl TwoFactorState {
         self.factors.iter_mut().for_each(|f| swap(&mut f.user));
         self.codes.iter_mut().for_each(|c| swap(&mut c.0));
         self.fresh.values_mut().for_each(|f| swap(&mut f.0));
+        self.notices.iter_mut().for_each(|n| swap(&mut n.user));
         if let Some(state) = self.attempts.remove(old) {
             self.attempts.insert(new.clone(), state);
         }
@@ -38,6 +43,55 @@ impl TwoFactorState {
         self.attempts.remove(user);
         self.fresh.retain(|_, f| &f.0 != user);
         confirmed
+    }
+
+    pub(super) fn forget_account(&mut self, user: &UserId) {
+        self.forget(user);
+        self.notices.retain(|n| &n.user != user);
+    }
+
+    pub(super) fn forget_org(&mut self, org: &UserId) {
+        self.org_policies.remove(org);
+    }
+
+    pub(super) fn org_policy(&self, org: &UserId) -> Option<TwoFactorPolicy> {
+        self.org_policies.get(org).copied()
+    }
+
+    pub(super) fn set_org_policy(
+        &mut self,
+        org: &UserId,
+        policy: Option<TwoFactorPolicy>,
+    ) -> Option<TwoFactorPolicy> {
+        match policy {
+            Some(p) => self.org_policies.insert(org.clone(), p),
+            None => self.org_policies.remove(org),
+        }
+    }
+
+    pub(super) fn add_notice(&mut self, notice: NoticeRecord) {
+        self.notices.push(notice);
+    }
+
+    pub(super) fn notices_of(&self, user: &UserId) -> Vec<NoticeRecord> {
+        let mut out: Vec<_> = self
+            .notices
+            .iter()
+            .filter(|n| &n.user == user)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        out
+    }
+
+    pub(super) fn dismiss_notice(&mut self, user: &UserId, id: &str) -> bool {
+        let before = self.notices.len();
+        self.notices.retain(|n| !(&n.user == user && n.id == id));
+        self.notices.len() != before
     }
 
     pub(super) fn factors_of(&self, user: &UserId) -> Vec<FactorRecord> {

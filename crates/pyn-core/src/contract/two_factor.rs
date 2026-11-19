@@ -2,9 +2,12 @@
 
 use super::{Access, at, new_account, user};
 use crate::access::SignupStage;
+use crate::access::{AccessMode, ServerSettings};
 use crate::account_self::RenameOutcome;
 use crate::deletion::AccountPurge;
-use crate::two_factor::{FREE_ATTEMPTS, FactorKind, FactorRecord, FactorRemoval};
+use crate::two_factor::{
+    FREE_ATTEMPTS, FactorKind, FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy,
+};
 use crate::{NewSecret, PynError, UserId};
 use chrono::Duration;
 
@@ -397,4 +400,187 @@ pub async fn a_rename_keeps_the_factors_and_a_purge_removes_them(store: Access) 
         AccountPurge::Purged(_)
     ));
     assert!(store.factors_of(&user("alicia")).await.unwrap().is_empty());
+}
+
+fn policy(minute: i64, grace_days: u32) -> TwoFactorPolicy {
+    TwoFactorPolicy {
+        since: at(minute),
+        grace_days,
+    }
+}
+
+pub async fn the_server_requirement_is_stored_with_the_settings(store: Access) {
+    assert!(
+        !store
+            .set_server_two_factor(Some(policy(1, 7)))
+            .await
+            .unwrap()
+    );
+    let mut admin = new_account("root", "root@example.org", 0);
+    admin.signup = SignupStage::Complete;
+    let settings = ServerSettings {
+        initialised_at: at(0),
+        server_name: None,
+        public_url: None,
+        registration: None,
+        access_mode: AccessMode::Private,
+        two_factor: Some(policy(0, 3)),
+    };
+    assert!(store.complete_setup(admin, settings).await.unwrap());
+    let read = || async { store.server_settings().await.unwrap().unwrap().two_factor };
+    assert_eq!(read().await, Some(policy(0, 3)));
+
+    assert!(
+        store
+            .set_server_two_factor(Some(policy(5, 0)))
+            .await
+            .unwrap()
+    );
+    assert_eq!(read().await, Some(policy(5, 0)));
+    assert!(store.set_server_two_factor(None).await.unwrap());
+    assert_eq!(read().await, None);
+}
+
+pub async fn an_organization_requirement_is_its_own_and_reaches_only_its_members(store: Access) {
+    for name in ["alice", "bob", "carol"] {
+        active(&store, name).await;
+    }
+    for (org, owner) in [("acme", "alice"), ("globex", "bob")] {
+        assert!(
+            store
+                .create_org(&user(org), &user(owner), at(1))
+                .await
+                .unwrap()
+        );
+    }
+    assert!(
+        store
+            .add_org_member(&user("acme"), &user("carol"), crate::OrgRole::Member)
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.org_two_factor(&user("acme")).await.unwrap(), None);
+
+    assert_eq!(
+        store
+            .set_org_two_factor(&user("acme"), Some(policy(2, 7)))
+            .await
+            .unwrap(),
+        None
+    );
+    store
+        .set_org_two_factor(&user("globex"), Some(policy(3, 1)))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.org_two_factor(&user("acme")).await.unwrap(),
+        Some(policy(2, 7))
+    );
+    assert_eq!(
+        store.member_two_factor(&user("carol")).await.unwrap(),
+        vec![(user("acme"), policy(2, 7))]
+    );
+    assert_eq!(
+        store.member_two_factor(&user("alice")).await.unwrap(),
+        vec![(user("acme"), policy(2, 7))]
+    );
+    assert_eq!(
+        store.member_two_factor(&user("bob")).await.unwrap(),
+        vec![(user("globex"), policy(3, 1))]
+    );
+
+    assert_eq!(
+        store
+            .set_org_two_factor(&user("acme"), Some(policy(4, 30)))
+            .await
+            .unwrap(),
+        Some(policy(2, 7))
+    );
+    assert_eq!(
+        store.set_org_two_factor(&user("acme"), None).await.unwrap(),
+        Some(policy(4, 30))
+    );
+    assert!(
+        store
+            .member_two_factor(&user("carol"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    assert!(
+        store
+            .delete_org_with_events(&user("globex"), &[])
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.org_two_factor(&user("globex")).await.unwrap(), None);
+    assert!(
+        store
+            .member_two_factor(&user("bob"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+fn notice(id: &str, owner: &str, minute: i64) -> NoticeRecord {
+    NoticeRecord {
+        id: id.into(),
+        user: user(owner),
+        kind: "two_factor_reset".into(),
+        detail: format!("{id} detail"),
+        created_at: at(minute),
+    }
+}
+
+pub async fn notices_are_listed_oldest_first_dismissed_once_and_follow_the_account(store: Access) {
+    active(&store, "alice").await;
+    active(&store, "bob").await;
+    store.add_notice(notice("n2", "alice", 2)).await.unwrap();
+    store.add_notice(notice("n1", "alice", 1)).await.unwrap();
+    store.add_notice(notice("n3", "bob", 1)).await.unwrap();
+    let ids = |list: Vec<NoticeRecord>| list.into_iter().map(|n| n.id).collect::<Vec<_>>();
+    assert_eq!(
+        ids(store.notices_of(&user("alice")).await.unwrap()),
+        ["n1", "n2"]
+    );
+
+    assert!(!store.dismiss_notice(&user("bob"), "n1").await.unwrap());
+    assert!(store.dismiss_notice(&user("alice"), "n1").await.unwrap());
+    assert!(!store.dismiss_notice(&user("alice"), "n1").await.unwrap());
+
+    store.clear_two_factor(&user("alice")).await.unwrap();
+    assert_eq!(
+        ids(store.notices_of(&user("alice")).await.unwrap()),
+        ["n2"],
+        "clearing factors keeps the notice that says so"
+    );
+
+    assert!(matches!(
+        store
+            .rename_account(&user("alice"), &user("alicia"), at(5), &[])
+            .await
+            .unwrap(),
+        RenameOutcome::Renamed { .. }
+    ));
+    assert!(store.notices_of(&user("alice")).await.unwrap().is_empty());
+    assert_eq!(
+        ids(store.notices_of(&user("alicia")).await.unwrap()),
+        ["n2"]
+    );
+
+    store
+        .set_disabled(&user("alicia"), Some((at(7), None)))
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .purge_account_with_events(&user("alicia"), at(8), at(9_000), &[])
+            .await
+            .unwrap(),
+        AccountPurge::Purged(_)
+    ));
+    assert!(store.notices_of(&user("alicia")).await.unwrap().is_empty());
+    assert_eq!(ids(store.notices_of(&user("bob")).await.unwrap()), ["n3"]);
 }

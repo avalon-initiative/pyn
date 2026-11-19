@@ -335,6 +335,12 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
                 Some(json!({"member_creation": "both"})),
             ),
             case(
+                "set_org_requirement",
+                "PUT",
+                format!("{base}/two-factor"),
+                Some(json!({"required": true})),
+            ),
+            case(
                 "set_creation_rule",
                 "PUT",
                 format!("{base}/repo-policy/rules/allow/role/member"),
@@ -458,6 +464,9 @@ const EXEMPT: &[(&str, &str)] = &[
     ("recovery_codes", "credentials stay manageable"),
     ("remove_factor", "credentials stay manageable"),
     ("verify_second_factor", "credentials stay manageable"),
+    ("reset_two_factor", "credentials stay manageable"),
+    ("set_server_requirement", "server administration"),
+    ("dismiss_notice", "contact details stay manageable"),
     ("add_email", "contact details stay manageable"),
     ("resend_email", "contact details stay manageable"),
     ("set_primary_email", "contact details stay manageable"),

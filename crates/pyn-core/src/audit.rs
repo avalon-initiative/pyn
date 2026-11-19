@@ -85,6 +85,8 @@ pub enum AuditAction {
     RecoveryCodesRegenerated,
     RecoveryCodeUsed,
     TwoFactorReset,
+    ServerTwoFactorRequirementChanged,
+    OrgTwoFactorRequirementChanged,
     OwnerLimitsChanged,
     RepoStorageCapChanged,
     OwnerFrozen,
@@ -109,7 +111,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 79] = [
+    pub const ALL: [AuditAction; 81] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -168,6 +170,8 @@ impl AuditAction {
         AuditAction::RecoveryCodesRegenerated,
         AuditAction::RecoveryCodeUsed,
         AuditAction::TwoFactorReset,
+        AuditAction::ServerTwoFactorRequirementChanged,
+        AuditAction::OrgTwoFactorRequirementChanged,
         AuditAction::OwnerLimitsChanged,
         AuditAction::RepoStorageCapChanged,
         AuditAction::OwnerFrozen,
@@ -251,6 +255,8 @@ impl AuditAction {
             Self::RecoveryCodesRegenerated => "recovery_codes_regenerated",
             Self::RecoveryCodeUsed => "recovery_code_used",
             Self::TwoFactorReset => "two_factor_reset",
+            Self::ServerTwoFactorRequirementChanged => "server_two_factor_requirement_changed",
+            Self::OrgTwoFactorRequirementChanged => "org_two_factor_requirement_changed",
             Self::OwnerLimitsChanged => "owner_limits_changed",
             Self::RepoStorageCapChanged => "repo_storage_cap_changed",
             Self::OwnerFrozen => "owner_frozen",

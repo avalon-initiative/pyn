@@ -680,6 +680,55 @@ pub struct Account {
     /// The account's profile; the email address is never part of it.
     #[serde(default)]
     pub profile: Profile,
+    /// A second factor the account must still set up, with its deadline: the client's cue to nag. Absent when none is
+    /// required or the account has one, and for a credential that is not full-scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub two_factor_required: Option<TwoFactorRequired>,
+}
+
+/// A requirement that the account hold a second factor, and what happens at the deadline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TwoFactorRequired {
+    /// `server` (an administrator requires it of everyone) or `organization`.
+    pub by: String,
+    /// The organization that requires it, when `by` is `organization`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+    /// From this moment the account can only set up a second factor (`403 two_factor_enrolment_required`).
+    pub deadline: DateTime<Utc>,
+    /// True once the deadline has passed.
+    pub enforced: bool,
+}
+
+/// Whether second factors are required, and the grace period.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TwoFactorSetting {
+    pub required: bool,
+    /// When the requirement was set; absent when none is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<DateTime<Utc>>,
+    /// Days an account without a factor keeps full access after `since` (or after it was created).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_days: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetTwoFactorRequest {
+    pub required: bool,
+    /// 0 to 90 days, default 7. Setting the same requirement again changes nothing; a different grace period starts
+    /// the clock again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_days: Option<u32>,
+}
+
+/// A message for the account, shown by the web app until dismissed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Notice {
+    pub id: String,
+    /// `two_factor_reset`: an administrator reset the account's second factors.
+    pub kind: String,
+    pub detail: String,
+    pub created_at: DateTime<Utc>,
 }
 
 /// The optional, user-edited part of an account: what others see on its profile page.
@@ -1581,6 +1630,9 @@ pub struct TwoFactorStatus {
     pub enabled: bool,
     pub factors: Vec<TwoFactorFactor>,
     pub recovery_codes_left: usize,
+    /// What still requires the account to enrol (see `Account.two_factor_required`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<TwoFactorRequired>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]

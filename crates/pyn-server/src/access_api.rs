@@ -75,6 +75,16 @@ pub(crate) async fn me(
             s.access.profile_for(&who).await?,
             full,
         ),
+        two_factor_required: match full {
+            true => s
+                .access
+                .unmet_two_factor_requirement(&who.user)
+                .await?
+                .map(|r| {
+                    crate::requirements_api::required_dto(&r, s.access.two_factor_enforced(&r))
+                }),
+            false => None,
+        },
     }))
 }
 

@@ -130,6 +130,7 @@ async fn a_failed_event_append_rolls_the_change_back() {
                 public_url: None,
                 registration: None,
                 access_mode: pyn_core::AccessMode::Private,
+                two_factor: None,
             },
             &[bad()],
         )
