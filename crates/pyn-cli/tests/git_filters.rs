@@ -175,6 +175,21 @@ impl Pair {
         assert_eq!(got.1, want.1, "{what}: diff");
     }
 
+    /// Old mtimes make every entry stat-dirty, so both tools compare content and the outcome never depends on
+    /// whether a second boundary fell between writing a file and writing the index.
+    fn age_files(&self) {
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        self.each(|repo| {
+            for path in tree(repo).keys() {
+                let file = fs::File::options()
+                    .write(true)
+                    .open(repo.join(path))
+                    .unwrap();
+                file.set_modified(when).unwrap();
+            }
+        });
+    }
+
     fn each(&self, f: impl Fn(&Path)) {
         f(&self.oracle);
         f(&self.ours);
@@ -429,6 +444,7 @@ fn filters_run_before_and_after_line_ending_conversion() {
     });
     p.both(&["restore", "."]);
     p.same_tree("restore");
+    p.age_files();
     p.same_status("status");
 }
 

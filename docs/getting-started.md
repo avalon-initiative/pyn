@@ -71,7 +71,7 @@ sudo bash install.sh --yes --shape server --method docker --version 0.1.2 --publ
 The script prints only its own status lines: the output of the tools it runs (curl, apt, tar, systemctl and so on) is captured and shown only if a step fails, with the command and its exit status. Pulling images and installing packages stream as an indented block.
 
 Running it again on an existing install is an upgrade: `.env` (or `pyn.env`) and every secret are kept, only the version
-moves after you confirm it (Docker: `PYN_VERSION`; native: the binary is replaced and the service restarted), and it says
+moves after you confirm it (Docker: `PYN_SERVER_VERSION` for the server and `PYN_WEB_VERSION` for the web app, each on its own; native: the binary is replaced and the service restarted), and it says
 what changed. With a reused env file every existing value is kept, only missing required settings are filled (secrets are
 generated, never overwritten), and any that are still missing are reported before anything starts. It never drops a
 database and never prints a secret other than the setup token. A world-readable env file is warned about; one you own is
@@ -144,10 +144,13 @@ curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/d
 curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/.env.example -o .env
 ```
 
-Fill in the generated secrets and the version (the version is the tag without its suffix, as in step 1):
+Fill in the generated secrets and the two versions (a version is the tag without its suffix, as in step 1). The server and the
+web app are versioned separately, so `PYN_WEB_VERSION` is the latest release of [pyn-web](https://github.com/avalon-initiative/pyn-web/releases),
+which need not equal the server's (see [compatibility](deployment.md#compatibility)):
 
 ```bash
-sed -i "s/^PYN_VERSION=.*/PYN_VERSION=v0.0.2/" .env
+sed -i "s/^PYN_SERVER_VERSION=.*/PYN_SERVER_VERSION=v0.0.2/" .env
+sed -i "s/^PYN_WEB_VERSION=.*/PYN_WEB_VERSION=v0.0.3/" .env
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" .env
 sed -i "s/^PYN_SECRET_KEY=.*/PYN_SECRET_KEY=$(openssl rand -hex 32)/" .env
 ```
@@ -189,14 +192,14 @@ curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/d
 curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/.env.web.example -o .env
 ```
 
-**Server only.** Fill in `PYN_VERSION`, `POSTGRES_PASSWORD` and `PYN_SECRET_KEY` as above. `PYN_PUBLIC_URL` is the
+**Server only.** Fill in `PYN_SERVER_VERSION`, `POSTGRES_PASSWORD` and `PYN_SECRET_KEY` as above. `PYN_PUBLIC_URL` is the
 server's own address, for example `http://192.168.1.20:7878` (the API listens on port 7878; set `PYN_SERVER_PUBLISH=0.0.0.0:7878`
 to reach it from other computers). Setup (step 5) then happens with the `pyn` command instead of the browser, and step 7
 points `pyn` at this address:
 `PYN_SETUP_TOKEN="<token>" pyn --server http://192.168.1.20:7878 setup admin --public-url http://192.168.1.20:7878`.
 A web app can be added later: run the web-only file elsewhere (next paragraph).
 
-**Web app only.** Fill in `PYN_VERSION` and `PYN_API_URL`, the address of the server this web app talks to (for example
+**Web app only.** Fill in `PYN_WEB_VERSION` and `PYN_API_URL`, the address of the server this web app talks to (for example
 `https://pyn.example.com`). There is no database and no secret; `docker compose up --detach --wait` starts just the web
 app, on `127.0.0.1:8080` unless `PYN_WEB_PUBLISH` says otherwise. Signing in checks the origin the browser loaded the page
 from, so the server must be told this web app's address: set `PYN_ALLOWED_ORIGINS` on the remote server to it, with the
