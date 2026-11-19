@@ -6,6 +6,8 @@ mod cbor;
 mod client_data;
 mod error;
 mod key;
+#[cfg(any(test, feature = "software"))]
+pub mod software;
 
 use ciborium::value::Value;
 use client_data::Ceremony;

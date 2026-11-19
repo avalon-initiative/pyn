@@ -2,12 +2,15 @@
 
 use super::*;
 use crate::two_factor::{
-    AttemptState, FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy, count_attempt,
+    AttemptState, ChallengeRecord, FactorRecord, FactorRemoval, NoticeRecord, PasskeyRecord,
+    TwoFactorPolicy, count_attempt,
 };
 
 #[derive(Default)]
 pub(super) struct TwoFactorState {
     factors: Vec<FactorRecord>,
+    passkeys: Vec<PasskeyRecord>,
+    challenges: Vec<ChallengeRecord>,
     /// (account, hash, spent at)
     codes: Vec<(UserId, String, Option<DateTime<Utc>>)>,
     attempts: HashMap<UserId, AttemptState>,
@@ -24,6 +27,11 @@ impl TwoFactorState {
             }
         };
         self.factors.iter_mut().for_each(|f| swap(&mut f.user));
+        self.passkeys.iter_mut().for_each(|p| swap(&mut p.user));
+        self.challenges
+            .iter_mut()
+            .filter_map(|c| c.user.as_mut())
+            .for_each(swap);
         self.codes.iter_mut().for_each(|c| swap(&mut c.0));
         self.fresh.values_mut().for_each(|f| swap(&mut f.0));
         self.notices.iter_mut().for_each(|n| swap(&mut n.user));
@@ -37,8 +45,11 @@ impl TwoFactorState {
             .factors
             .iter()
             .filter(|f| &f.user == user && f.confirmed_at.is_some())
-            .count();
+            .count()
+            + self.passkeys.iter().filter(|p| &p.user == user).count();
         self.factors.retain(|f| &f.user != user);
+        self.passkeys.retain(|p| &p.user != user);
+        self.challenges.retain(|c| c.user.as_ref() != Some(user));
         self.codes.retain(|c| &c.0 != user);
         self.attempts.remove(user);
         self.fresh.retain(|_, f| &f.0 != user);
@@ -135,16 +146,127 @@ impl TwoFactorState {
         if self.factors.len() == before {
             return FactorRemoval::NotFound;
         }
-        let left = self
-            .factors
-            .iter()
-            .any(|f| &f.user == user && f.confirmed_at.is_some());
+        let left = self.second_factor_left(user);
         if !left {
             self.forget(user);
         }
         FactorRemoval::Removed {
             second_factor_left: left,
         }
+    }
+
+    fn second_factor_left(&self, user: &UserId) -> bool {
+        self.factors
+            .iter()
+            .any(|f| &f.user == user && f.confirmed_at.is_some())
+            || self.passkeys.iter().any(|p| &p.user == user)
+    }
+
+    pub(super) fn passkeys_of(&self, user: &UserId) -> Vec<PasskeyRecord> {
+        let mut out: Vec<_> = self
+            .passkeys
+            .iter()
+            .filter(|p| &p.user == user)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        out
+    }
+
+    pub(super) fn passkey_by_credential(&self, credential_id: &[u8]) -> Option<PasskeyRecord> {
+        self.passkeys
+            .iter()
+            .find(|p| p.credential_id == credential_id)
+            .cloned()
+    }
+
+    pub(super) fn create_passkey(&mut self, passkey: PasskeyRecord) -> bool {
+        if self
+            .passkeys
+            .iter()
+            .any(|p| p.credential_id == passkey.credential_id)
+        {
+            return false;
+        }
+        self.passkeys.push(passkey);
+        true
+    }
+
+    pub(super) fn rename_passkey(&mut self, user: &UserId, id: &str, name: &str) -> bool {
+        match self
+            .passkeys
+            .iter_mut()
+            .find(|p| &p.user == user && p.id == id)
+        {
+            Some(p) => {
+                p.name = name.to_string();
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(super) fn remove_passkey(&mut self, user: &UserId, id: &str) -> FactorRemoval {
+        let before = self.passkeys.len();
+        self.passkeys.retain(|p| !(&p.user == user && p.id == id));
+        if self.passkeys.len() == before {
+            return FactorRemoval::NotFound;
+        }
+        let left = self.second_factor_left(user);
+        if !left {
+            self.forget(user);
+        }
+        FactorRemoval::Removed {
+            second_factor_left: left,
+        }
+    }
+
+    pub(super) fn record_passkey_use(
+        &mut self,
+        user: &UserId,
+        id: &str,
+        previous: u32,
+        sign_count: u32,
+        backup_state: bool,
+        now: DateTime<Utc>,
+    ) -> bool {
+        match self
+            .passkeys
+            .iter_mut()
+            .find(|p| &p.user == user && p.id == id && p.sign_count == previous)
+        {
+            Some(p) => {
+                p.sign_count = sign_count;
+                p.backup_state = backup_state;
+                p.last_used_at = Some(now);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(super) fn put_challenge(&mut self, challenge: ChallengeRecord, now: DateTime<Utc>) {
+        self.challenges.retain(|c| {
+            c.expires_at > now
+                && !(challenge.user.is_some()
+                    && c.user == challenge.user
+                    && c.purpose == challenge.purpose)
+        });
+        self.challenges.push(challenge);
+    }
+
+    pub(super) fn take_challenge(
+        &mut self,
+        id: &str,
+        now: DateTime<Utc>,
+    ) -> Option<ChallengeRecord> {
+        let at = self.challenges.iter().position(|c| c.id == id)?;
+        let taken = self.challenges.remove(at);
+        (taken.expires_at > now).then_some(taken)
     }
 
     pub(super) fn accept_factor_step(&mut self, user: &UserId, id: &str, step: i64) -> bool {

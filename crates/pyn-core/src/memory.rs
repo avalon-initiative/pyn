@@ -41,7 +41,9 @@ use crate::repo_policy::{
 use crate::rules::{Mode, PathFilter};
 use crate::store::{MetadataStore, UploadReservation};
 use crate::tree::HeadCounts;
-use crate::two_factor::{FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy};
+use crate::two_factor::{
+    ChallengeRecord, FactorRecord, FactorRemoval, NoticeRecord, PasskeyRecord, TwoFactorPolicy,
+};
 use crate::types::{
     AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, Person, PushedCommit, RepoId,
     RepoPath, Revision, RevisionId, TusCancel, TusClaim, TusSession, UserId,
@@ -3077,6 +3079,87 @@ impl AccessStore for MemoryAccessStore {
             .unwrap()
             .two_factor
             .fresh_until(credential))
+    }
+
+    async fn passkeys_of(&self, user: &UserId) -> Result<Vec<PasskeyRecord>> {
+        Ok(self.state.lock().unwrap().two_factor.passkeys_of(user))
+    }
+
+    async fn passkey_by_credential(&self, credential_id: &[u8]) -> Result<Option<PasskeyRecord>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .passkey_by_credential(credential_id))
+    }
+
+    async fn create_passkey(&self, passkey: PasskeyRecord) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .create_passkey(passkey))
+    }
+
+    async fn rename_passkey(&self, user: &UserId, id: &str, name: &str) -> Result<bool> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .rename_passkey(user, id, name))
+    }
+
+    async fn remove_passkey(&self, user: &UserId, id: &str) -> Result<FactorRemoval> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .remove_passkey(user, id))
+    }
+
+    async fn record_passkey_use(
+        &self,
+        user: &UserId,
+        id: &str,
+        previous: u32,
+        sign_count: u32,
+        backup_state: bool,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        Ok(self.state.lock().unwrap().two_factor.record_passkey_use(
+            user,
+            id,
+            previous,
+            sign_count,
+            backup_state,
+            now,
+        ))
+    }
+
+    async fn put_challenge(&self, challenge: ChallengeRecord, now: DateTime<Utc>) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .two_factor
+            .put_challenge(challenge, now);
+        Ok(())
+    }
+
+    async fn take_challenge(
+        &self,
+        id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ChallengeRecord>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .two_factor
+            .take_challenge(id, now))
     }
 
     async fn clear_two_factor(&self, user: &UserId) -> Result<usize> {

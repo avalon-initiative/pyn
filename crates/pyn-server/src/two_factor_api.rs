@@ -38,8 +38,14 @@ pub(crate) async fn two_factor_status(
 ) -> ApiResult<Json<api::TwoFactorStatus>> {
     let status = s.access.two_factor_status(&who).await?;
     Ok(Json(api::TwoFactorStatus {
-        enabled: !status.factors.is_empty(),
+        enabled: !status.factors.is_empty() || !status.passkeys.is_empty(),
         factors: status.factors.iter().map(factor_dto).collect(),
+        passkeys: status
+            .passkeys
+            .iter()
+            .map(crate::passkeys_api::passkey_dto)
+            .collect(),
+        passkeys_available: s.access.passkeys_available(),
         recovery_codes_left: status.recovery_codes_left,
         required: s
             .access

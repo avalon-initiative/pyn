@@ -454,6 +454,9 @@ async fn main() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("PYN_ALLOWED_ORIGINS: {e}"))?,
             Err(_) => Vec::new(),
         },
+        webauthn_rp_id: std::env::var("PYN_WEBAUTHN_RP_ID")
+            .ok()
+            .filter(|id| !id.trim().is_empty()),
         verification_ttl: defaults.verification_ttl,
         org_creation: match std::env::var("PYN_ORG_CREATION") {
             Ok(mode) => mode.parse()?,
@@ -557,6 +560,17 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(warning) = pyn_server::insecure_cookie_warning(&addr, &access.public_url()) {
         tracing::warn!("{warning}");
+    }
+    if !access.passkeys_available() {
+        tracing::info!(
+            "passkeys are off: PYN_PUBLIC_URL ({}) needs a host name over https (or localhost){}",
+            access.public_url(),
+            if std::env::var_os("PYN_WEBAUTHN_RP_ID").is_some() {
+                ", and PYN_WEBAUTHN_RP_ID must be a parent domain of that host"
+            } else {
+                ""
+            }
+        );
     }
     for warning in access.startup_warnings() {
         tracing::warn!("{warning}");

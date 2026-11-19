@@ -85,6 +85,9 @@ pub enum AuditAction {
     RecoveryCodesRegenerated,
     RecoveryCodeUsed,
     TwoFactorReset,
+    PasskeyAdded,
+    PasskeyRemoved,
+    PasskeyCloneSuspected,
     ServerTwoFactorRequirementChanged,
     OrgTwoFactorRequirementChanged,
     OwnerLimitsChanged,
@@ -111,7 +114,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 81] = [
+    pub const ALL: [AuditAction; 84] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -170,6 +173,9 @@ impl AuditAction {
         AuditAction::RecoveryCodesRegenerated,
         AuditAction::RecoveryCodeUsed,
         AuditAction::TwoFactorReset,
+        AuditAction::PasskeyAdded,
+        AuditAction::PasskeyRemoved,
+        AuditAction::PasskeyCloneSuspected,
         AuditAction::ServerTwoFactorRequirementChanged,
         AuditAction::OrgTwoFactorRequirementChanged,
         AuditAction::OwnerLimitsChanged,
@@ -255,6 +261,9 @@ impl AuditAction {
             Self::RecoveryCodesRegenerated => "recovery_codes_regenerated",
             Self::RecoveryCodeUsed => "recovery_code_used",
             Self::TwoFactorReset => "two_factor_reset",
+            Self::PasskeyAdded => "passkey_added",
+            Self::PasskeyRemoved => "passkey_removed",
+            Self::PasskeyCloneSuspected => "passkey_clone_suspected",
             Self::ServerTwoFactorRequirementChanged => "server_two_factor_requirement_changed",
             Self::OrgTwoFactorRequirementChanged => "org_two_factor_requirement_changed",
             Self::OwnerLimitsChanged => "owner_limits_changed",

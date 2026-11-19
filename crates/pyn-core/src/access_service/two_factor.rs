@@ -3,7 +3,7 @@
 use super::*;
 use crate::totp;
 use crate::two_factor::{
-    self, FRESH_MINUTES, FactorKind, FactorRecord, FactorRemoval, MAX_FACTORS,
+    self, FRESH_MINUTES, FactorKind, FactorRecord, FactorRemoval, MAX_FACTORS, PasskeyRecord,
 };
 
 /// What an authenticator-app enrolment hands back: the seed to show once.
@@ -20,6 +20,7 @@ pub struct TotpEnrolment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TwoFactorStatus {
     pub factors: Vec<FactorRecord>,
+    pub passkeys: Vec<PasskeyRecord>,
     pub recovery_codes_left: usize,
 }
 
@@ -48,7 +49,7 @@ impl AccessService {
         Ok(factors)
     }
 
-    async fn mark_credential_fresh(
+    pub(super) async fn mark_credential_fresh(
         &self,
         who: &Identity,
         cookie: Option<&str>,
@@ -182,8 +183,25 @@ impl AccessService {
         self.existing_account(&actor.user).await?;
         Ok(TwoFactorStatus {
             factors: self.confirmed_factors(&actor.user).await?,
+            passkeys: self.passkeys(&actor.user).await?,
             recovery_codes_left: self.store.unused_recovery_codes(&actor.user).await?,
         })
+    }
+
+    /// What enrolling a factor asks: the password while the account has no second factor, a fresh check once it has one.
+    pub(super) async fn require_enrolment_proof(
+        &self,
+        actor: &Identity,
+        cookie: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<()> {
+        if self.has_second_factor(&actor.user).await? {
+            return self.require_fresh(actor, cookie).await;
+        }
+        if let Some(hash) = self.store.password_hash(&actor.user).await? {
+            self.check_current_password(actor, &hash, password).await?;
+        }
+        Ok(())
     }
 
     /// Starts an authenticator-app enrolment. An account that has a factor needs a fresh check; one that has none
@@ -197,14 +215,9 @@ impl AccessService {
     ) -> Result<TotpEnrolment> {
         actor.require_full_scope()?;
         self.existing_account(&actor.user).await?;
+        self.require_enrolment_proof(actor, cookie, password)
+            .await?;
         let confirmed = self.confirmed_factors(&actor.user).await?;
-        if confirmed.is_empty() {
-            if let Some(hash) = self.store.password_hash(&actor.user).await? {
-                self.check_current_password(actor, &hash, password).await?;
-            }
-        } else {
-            self.require_fresh(actor, cookie).await?;
-        }
         if confirmed.len() >= MAX_FACTORS {
             return Err(PynError::InvalidRequest(format!(
                 "an account holds at most {MAX_FACTORS} second factors"
@@ -256,7 +269,7 @@ impl AccessService {
             .iter()
             .find(|f| f.id == id && f.confirmed_at.is_none())
             .ok_or_else(|| PynError::FactorNotFound(id.to_string()))?;
-        let first = !factors.iter().any(|f| f.confirmed_at.is_some());
+        let first = !self.has_second_factor(user).await?;
         let now = self.clock.now();
         if let Err(until) = self.store.count_factor_attempt(user, now).await? {
             return Err(two_factor::too_many(until, now));
@@ -289,7 +302,7 @@ impl AccessService {
         })
     }
 
-    async fn new_recovery_codes(&self, user: &UserId) -> Result<Vec<String>> {
+    pub(super) async fn new_recovery_codes(&self, user: &UserId) -> Result<Vec<String>> {
         let codes = two_factor::generate_recovery_codes()?;
         let hashes: Vec<String> = codes
             .iter()

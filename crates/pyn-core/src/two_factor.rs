@@ -58,6 +58,67 @@ pub struct FactorRecord {
     pub last_step: Option<i64>,
 }
 
+/// An account holds at most this many passkeys and security keys.
+pub const MAX_PASSKEYS: usize = 10;
+/// How long a passkey ceremony's challenge stays valid.
+pub const CHALLENGE_MINUTES: i64 = 5;
+
+/// A registered passkey or security key. It is a second factor and, with user verification, a sign-in on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasskeyRecord {
+    pub id: String,
+    pub user: UserId,
+    pub name: String,
+    pub credential_id: Vec<u8>,
+    /// The COSE_Key as the authenticator encoded it.
+    pub public_key: Vec<u8>,
+    /// The `user.id` handed to the authenticator, the same for every passkey of an account.
+    pub user_handle: Vec<u8>,
+    pub sign_count: u32,
+    pub transports: Vec<String>,
+    pub backup_eligible: bool,
+    pub backup_state: bool,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+/// What a stored challenge was issued for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChallengePurpose {
+    Register,
+    SignIn,
+    Verify,
+}
+
+impl ChallengePurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Register => "register",
+            Self::SignIn => "sign_in",
+            Self::Verify => "verify",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "register" => Some(Self::Register),
+            "sign_in" => Some(Self::SignIn),
+            "verify" => Some(Self::Verify),
+            _ => None,
+        }
+    }
+}
+
+/// A challenge the server issued and has not yet seen answered. `user` is unset for a sign-in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChallengeRecord {
+    pub id: String,
+    pub user: Option<UserId>,
+    pub purpose: ChallengePurpose,
+    pub challenge: Vec<u8>,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// The longest grace period an administrator or organization owner may set.
 pub const MAX_GRACE_DAYS: u32 = 90;
 /// The grace period when none is given.
@@ -119,6 +180,8 @@ pub struct NoticeRecord {
 
 /// An administrator reset the account's second factors.
 pub const NOTICE_TWO_FACTOR_RESET: &str = "two_factor_reset";
+/// A passkey reported a signature counter that did not increase, so it may have been cloned.
+pub const NOTICE_PASSKEY_CLONE_SUSPECTED: &str = "passkey_clone_suspected";
 
 /// The outcome of removing a factor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -19,9 +19,9 @@ use utoipa::openapi::extensions::Extensions;
 
 use crate::{
     AppState, access_api, admin_api, branch_api, caller, deletion_api, freeze_api, lfs_api,
-    limits_api, merge_api, oidc_api, org_api, org_settings_api, profile_api, push_api, repo_api,
-    repo_policy_api, requirements_api, self_service_api, session_api, setup_api, team_api,
-    two_factor_api, webhook_api,
+    limits_api, merge_api, oidc_api, org_api, org_settings_api, passkeys_api, profile_api,
+    push_api, repo_api, repo_policy_api, requirements_api, self_service_api, session_api,
+    setup_api, team_api, two_factor_api, webhook_api,
 };
 
 const fn need(resource: TokenResource, level: GrantLevel) -> GrantNeed {
@@ -354,6 +354,16 @@ fn table() -> Vec<Entry> {
         get("/v1/session", Reach::Session, session_api::current),
         post("/v1/session", Reach::Open, session_api::sign_in),
         delete("/v1/session", Reach::Open, session_api::sign_out),
+        post(
+            "/v1/session/passkey/begin",
+            Reach::Open,
+            passkeys_api::begin_sign_in,
+        ),
+        post(
+            "/v1/session/passkey/finish",
+            Reach::Open,
+            passkeys_api::finish_sign_in,
+        ),
         get(
             "/v1/sign-in-options",
             Reach::Open,
@@ -406,6 +416,41 @@ fn table() -> Vec<Entry> {
             "/v1/me/two-factor/{id}",
             Reach::FullScopeEnrolment,
             two_factor_api::remove_factor,
+        ),
+        get(
+            "/v1/me/passkeys",
+            Reach::FullScopeEnrolment,
+            passkeys_api::list_passkeys,
+        ),
+        post(
+            "/v1/me/passkeys/register/begin",
+            Reach::FullScopeEnrolment,
+            passkeys_api::begin_registration,
+        ),
+        post(
+            "/v1/me/passkeys/register/finish",
+            Reach::FullScopeEnrolment,
+            passkeys_api::finish_registration,
+        ),
+        post(
+            "/v1/me/passkeys/verify/begin",
+            Reach::FullScope,
+            passkeys_api::begin_verify,
+        ),
+        post(
+            "/v1/me/passkeys/verify/finish",
+            Reach::FullScope,
+            passkeys_api::finish_verify,
+        ),
+        patch(
+            "/v1/me/passkeys/{id}",
+            Reach::FullScopeEnrolment,
+            passkeys_api::rename_passkey,
+        ),
+        delete(
+            "/v1/me/passkeys/{id}",
+            Reach::FullScopeEnrolment,
+            passkeys_api::remove_passkey,
         ),
         get(
             "/v1/me/notices",

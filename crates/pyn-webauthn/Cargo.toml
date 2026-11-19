@@ -5,6 +5,9 @@ edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+software = []
+
 [dependencies]
 base64 = "0.23.1"
 ciborium = "0.2.2"

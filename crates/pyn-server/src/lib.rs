@@ -41,6 +41,7 @@ mod oidc_api;
 mod org_api;
 mod org_settings_api;
 pub mod origin;
+mod passkeys_api;
 pub mod passwords;
 mod profile_api;
 mod push_api;
@@ -121,6 +122,15 @@ struct RepoAddress {
         two_factor_api::remove_factor,
         two_factor_api::recovery_codes,
         two_factor_api::verify_second_factor,
+        passkeys_api::list_passkeys,
+        passkeys_api::begin_registration,
+        passkeys_api::finish_registration,
+        passkeys_api::rename_passkey,
+        passkeys_api::remove_passkey,
+        passkeys_api::begin_verify,
+        passkeys_api::finish_verify,
+        passkeys_api::begin_sign_in,
+        passkeys_api::finish_sign_in,
         requirements_api::notices,
         requirements_api::dismiss_notice,
         requirements_api::get_server_requirement,
@@ -352,6 +362,26 @@ struct RepoAddress {
         api::AccountEmail,
         api::AddEmailRequest,
         api::TwoFactorFactor,
+        api::Passkey,
+        api::BeginPasskeyRequest,
+        api::PasskeyDescriptor,
+        api::PasskeyRp,
+        api::PasskeyUser,
+        api::PasskeyParam,
+        api::PasskeySelection,
+        api::PasskeyCreationOptions,
+        api::PasskeyRegistrationBegun,
+        api::PasskeyRequestOptions,
+        api::PasskeyAuthenticationBegun,
+        api::PasskeyAttestationResponse,
+        api::PasskeyAttestationCredential,
+        api::RegisterPasskeyRequest,
+        api::PasskeyAssertionResponse,
+        api::PasskeyAssertionCredential,
+        api::PasskeyAssertionRequest,
+        api::BeginPasskeySignInRequest,
+        api::RenamePasskeyRequest,
+        api::PasskeyRegistered,
         api::TwoFactorStatus,
         api::TwoFactorRequired,
         api::TwoFactorSetting,
@@ -605,10 +635,12 @@ fn status_for(e: &PynError) -> StatusCode {
             StatusCode::PAYLOAD_TOO_LARGE
         }
         PynError::UnsupportedImage(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        PynError::PasskeysUnavailable => StatusCode::NOT_IMPLEMENTED,
         PynError::NotInitialised => StatusCode::SERVICE_UNAVAILABLE,
         PynError::Unauthenticated(_)
         | PynError::SecondFactorRequired
         | PynError::SecondFactorInvalid
+        | PynError::PasskeyInvalid(_)
         | PynError::ExternalSignInFailed(_) => StatusCode::UNAUTHORIZED,
         PynError::ExternalProviderUnavailable(_) => StatusCode::BAD_GATEWAY,
         PynError::TokenNotFound(_)
@@ -621,6 +653,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::AvatarNotFound(_)
         | PynError::KeyNotFound(_)
         | PynError::FactorNotFound(_)
+        | PynError::PasskeyNotFound(_)
         | PynError::NoticeNotFound(_)
         | PynError::OidcNotConfigured
         | PynError::ExternalIdentityNotFound(_)
@@ -837,9 +870,10 @@ async fn health() -> &'static str {
 }
 
 #[utoipa::path(get, path = "/v1/capabilities", responses((status = 200, body = api::ServerCapabilities)))]
-async fn capabilities() -> Json<api::ServerCapabilities> {
+async fn capabilities(State(s): State<AppState>) -> Json<api::ServerCapabilities> {
     Json(api::ServerCapabilities {
         local_commits: true,
+        passkeys: s.access.passkeys_available(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         revision: option_env!("PYN_REVISION")
             .filter(|r| !r.is_empty())
