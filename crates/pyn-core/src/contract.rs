@@ -8986,6 +8986,11 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_fresh_check_belongs_to_one_credential_and_expired_ones_are_swept);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; clearing_two_factor_removes_everything_and_counts_the_confirmed_factors);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; resealing_rewrites_every_seed_or_none);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; passkeys_are_unique_by_credential_renamed_by_their_owner_and_listed_oldest_first);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_passkey_use_is_recorded_once_per_counter_value);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_passkey_counts_as_a_second_factor_when_the_last_one_is_removed);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; clearing_two_factor_counts_and_removes_passkeys_too);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_challenge_is_taken_once_expires_and_is_replaced_per_account_and_purpose);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_server_requirement_is_stored_with_the_settings);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; an_organization_requirement_is_its_own_and_reaches_only_its_members);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; notices_are_listed_oldest_first_dismissed_once_and_follow_the_account);

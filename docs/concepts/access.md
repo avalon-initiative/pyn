@@ -237,8 +237,8 @@ An account can add a second step to password sign-in; see [two-factor authentica
 ## Two-factor authentication
 
 An account can require a second factor at password sign-in (decision #1097). Today that is an authenticator app (a time-based
-one-time password, RFC 6238: SHA-1, six digits, 30 seconds) plus single-use recovery codes; security keys and passkeys are a
-later addition. It is opt-in until a [server administrator or an organization owner requires it](#requiring-two-factor-authentication). Nothing here needs email or a paid service.
+one-time password, RFC 6238: SHA-1, six digits, 30 seconds), a [passkey or security key](#passkeys-and-security-keys) (WebAuthn),
+and single-use recovery codes. It is opt-in until a [server administrator or an organization owner requires it](#requiring-two-factor-authentication). Nothing here needs email or a paid service.
 
 **Turning it on.** `POST /v1/me/two-factor/totp {label?, password}` starts an enrolment and returns the seed (`secret`, in
 base32, and an `otpauth://` `uri` for a QR code) once; an account that has a password must send it. Nothing changes until
@@ -257,7 +257,7 @@ works once: the server remembers the latest time step it accepted and accepts on
 with a recovery code is recorded in the server audit log. [External sign-in](external-sign-in.md) brings its own second
 factor and is not challenged, and neither are tokens or SSH keys: they are credentials for automation, except that a sign-in token (what `pyn login` makes) counts as a sign-in and is held to a [requirement](#requiring-two-factor-authentication) like a session.
 
-`pyn login` asks for the code after the password when the server answers `second_factor_required`, and asks again (up to three codes) after `second_factor_invalid`. The prompt takes one line from standard input, so a script that already pipes the password with `--password-stdin` sends the code as the next line; there is no code flag or environment variable, as a code would show in the process list, and unattended use should sign in with a token instead. A `429 too_many_attempts` is reported with its `Retry-After` wait. Passkeys are not supported by the CLI yet.
+`pyn login` asks for the code after the password when the server answers `second_factor_required`, and asks again (up to three codes) after `second_factor_invalid`. The prompt takes one line from standard input, so a script that already pipes the password with `--password-stdin` sends the code as the next line; there is no code flag or environment variable, as a code would show in the process list, and unattended use should sign in with a token instead. A `429 too_many_attempts` is reported with its `Retry-After` wait. Passkeys are a browser ceremony and the CLI does not run one: an account whose only second factor is a passkey signs in on the CLI with a recovery code.
 
 **Fresh check (sudo mode).** An account that has a factor must pass it again, recently, before a sensitive action:
 changing the password or the factors (adding, removing, new recovery codes), creating or revoking a token, adding or removing
@@ -287,17 +287,69 @@ also removes the account's factors, which is how an administrator who lost both 
 another account's factors as an administrator is a [reset](#requiring-two-factor-authentication), which does not apply to an administrator's account.
 
 Audit actions in the server log (`GET /v1/admin/audit`): `two_factor_added`, `two_factor_removed`,
-`recovery_codes_regenerated`, `recovery_code_used`, `two_factor_reset`, `server_two_factor_requirement_changed`; an organization's requirement changes are
+`recovery_codes_regenerated`, `recovery_code_used`, `two_factor_reset`, `passkey_added`, `passkey_removed`, `passkey_clone_suspected`, `server_two_factor_requirement_changed`; an organization's requirement changes are
 `org_two_factor_requirement_changed` in its [organization log](repositories.md#organizations).
 
 | Route | Notes |
 | --- | --- |
-| `GET /v1/me/two-factor` | `{enabled, factors: [{id, kind, label, created_at}], recovery_codes_left, required?}`; `required` is the [requirement](#requiring-two-factor-authentication) still unmet |
+| `GET /v1/me/two-factor` | `{enabled, factors: [{id, kind, label, created_at}], passkeys: [Passkey], passkeys_available, recovery_codes_left, required?}`; `enabled` is true with a factor or a passkey; `required` is the [requirement](#requiring-two-factor-authentication) still unmet |
 | `POST /v1/me/two-factor/totp` | `{label?, password?}` gives `201 {id, secret, uri}`; `401` for a missing or wrong password, `403 fresh_check_required` when a factor exists |
 | `POST /v1/me/two-factor/totp/{id}/confirm` | `{code}` gives `{factor, recovery_codes?, fresh_until}`; `recovery_codes` only with the first factor. `401 second_factor_invalid`, `404 factor_not_found`, `429` |
 | `DELETE /v1/me/two-factor/{id}` | `204`; `403 fresh_check_required`, `404 factor_not_found` |
 | `POST /v1/me/two-factor/recovery-codes` | `{recovery_codes}`, ten new ones shown once; `400` when two-factor authentication is off, `403 fresh_check_required` |
 | `POST /v1/me/two-factor/verify` | `{code}` gives `{fresh_until}`; `400` when it is off, `401 second_factor_invalid`, `429` |
+
+### Passkeys and security keys
+
+A passkey or security key (WebAuthn, decision #1127, built in house in `pyn-webauthn`: no OpenSSL, `none` attestation only,
+ES256 and EdDSA keys) is a second factor and, because the authenticator checks the person (PIN or biometrics), a sign-in that
+needs no password. An account may hold up to ten, each with a name, the time it was added and last used, the transports the
+browser reported, the signature counter and whether the passkey is synced (`backup_eligible`, `backup_state`). A passkey counts
+wherever a second factor counts: `has_second_factor` is the one place the [requirements](#requiring-two-factor-authentication),
+the fresh check and the recovery codes ask, so a passkey meets a requirement and the account's first one (like its first
+authenticator app) brings the ten recovery codes.
+
+**The relying party is the server's public address.** WebAuthn binds a credential to a relying-party id and an origin, so the
+server derives them from `PYN_PUBLIC_URL` (or the address recorded at setup): the id is its host, the allowed origin its
+origin, and each `PYN_ALLOWED_ORIGINS` entry inside the id's scope (the host or a subdomain of it) is allowed too.
+`PYN_WEBAUTHN_RP_ID` may widen the id to a parent domain of that host (`git.example.com` served as `example.com`). Changing the
+host or the id later orphans every registered passkey, so choose it before people register. A server whose public address has
+no usable host (empty, an IP address, or `http://` other than `localhost`) offers authenticator apps only: `GET /v1/capabilities`,
+`GET /v1/sign-in-options` and `GET /v1/me/two-factor` report `passkeys: false` / `passkeys_available: false`, and every
+ceremony route answers `501 passkeys_unavailable`. Listing, renaming and removing still work, and the passkeys an account already
+holds still count as a second factor, so a changed address never turns two-factor authentication off.
+
+**Ceremonies.** Each is two calls around one browser call, and the bodies are the WebAuthn JSON forms (`credential.toJSON()` of
+the browser's result goes in `credential` as it is; binary fields are base64url). `begin` returns a `ceremony` id and `public_key`
+options; `finish` takes the `ceremony` back. A challenge is random, good for one `finish` and for five minutes, and spent whatever
+the outcome (`401 passkey_invalid` when it is unknown, used, expired or issued for another purpose or account). The server
+asks for user verification and a discoverable credential at every ceremony, and refuses an authenticator that did not verify
+the person.
+
+**Counter.** An authenticator whose counter did not increase, while either value is non-zero, may be a copy: the sign-in or check is
+refused with `passkey_invalid`, the stored counter is left as it was, the server log records `passkey_clone_suspected` and the
+account gets a [notice](#requiring-two-factor-authentication) (`passkey_clone_suspected`) so it can remove the passkey. Authenticators
+that keep no counter (always zero, typical of synced passkeys) are accepted.
+
+**Removing.** `DELETE /v1/me/passkeys/{id}` needs a fresh check like removing any factor. Removing the last second factor turns
+two-factor authentication off and drops the recovery codes; an account under a requirement is then held to it again once its
+grace period is over. An account that has only passkeys passes the fresh check with a passkey (`verify`), with a recovery code,
+or by signing in with a passkey, which opens the window. Password sign-in with only a passkey as the second factor answers
+`second_factor_required` and accepts a recovery code; sign in with the passkey instead.
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/me/passkeys` | `[{id, name, created_at, last_used_at, transports, sign_count, backup_eligible, backup_state}]`, oldest first; never a key or a credential id |
+| `POST /v1/me/passkeys/register/begin` | `{password?}` gives `{ceremony, public_key: {rp, user, challenge, pubKeyCredParams, timeout, excludeCredentials, authenticatorSelection, attestation}, expires_at}` (`PublicKeyCredentialCreationOptionsJSON`). The password is needed while the account has no second factor, a fresh check once it has one: `401`, `403 fresh_check_required`; `400` at ten passkeys; `501 passkeys_unavailable` |
+| `POST /v1/me/passkeys/register/finish` | `{ceremony, name?, credential}` gives `201 {passkey, recovery_codes?, fresh_until}`; `recovery_codes` only with the account's first second factor. `401 passkey_invalid` (also an authenticator already registered), `501` |
+| `PATCH /v1/me/passkeys/{id}` | `{name}` gives the passkey; `404 passkey_not_found` |
+| `DELETE /v1/me/passkeys/{id}` | `204`; `403 fresh_check_required`, `404 passkey_not_found` |
+| `POST /v1/me/passkeys/verify/begin`, `.../verify/finish` | the fresh check with a passkey: `begin` gives `{ceremony, public_key}` (`PublicKeyCredentialRequestOptionsJSON`, the account's passkeys in `allowCredentials`; `400` when it has none), `finish {ceremony, credential}` gives `{fresh_until}`; `401 passkey_invalid`, `429` (the same delay as codes) |
+| `POST /v1/session/passkey/begin` | open; `{username?}` gives `{ceremony, public_key, expires_at}`. With a name the account's passkeys are offered; without one (or with an unknown name) `allowCredentials` is empty and the browser offers a discoverable passkey. Same origin check as sign-in |
+| `POST /v1/session/passkey/finish` | open; `{ceremony, credential}` signs in as `POST /v1/session` does (cookie and `SessionInfo`) with the fresh window open. `401 passkey_invalid`, `403` for an account that cannot sign in or a foreign origin, `429` (the client's sign-in limit), `501` |
+
+Registration, rename and removal are on the [enrolment routes](#requiring-two-factor-authentication) (`full_scope_enrolment`);
+`verify` is `full_scope`. Passkeys are not available to tokens, only full-scope credentials, like the other factors.
 
 ### Requiring two-factor authentication
 
@@ -318,7 +370,7 @@ starts the clock again. Until the deadline the account works as before, and the 
 `two_factor_required: {by: "server"|"organization", organization?, deadline, enforced: false}` and so does `required` in `GET
 /v1/me/two-factor`, so a client can nag. From the deadline `enforced` is true and an account that holds no factor can reach
 only the **enrolment routes** (reach `full_scope_enrolment`): `GET /v1/me/two-factor`, `POST /v1/me/two-factor/totp`, `POST
-/v1/me/two-factor/totp/{id}/confirm`, `DELETE /v1/me/two-factor/{id}` (to cancel a pending enrolment), `GET /v1/me/notices`, `DELETE
+/v1/me/two-factor/totp/{id}/confirm`, `DELETE /v1/me/two-factor/{id}` (to cancel a pending enrolment), the `/v1/me/passkeys` routes (list, register, rename, remove), `GET /v1/me/notices`, `DELETE
 /v1/me/notices/{id}` and `GET`/`DELETE /v1/session`. Everything else answers `403 two_factor_enrolment_required` until it
 confirms a factor; the requirement is met as soon as it holds one. Lifting the requirement, or leaving the organization, lifts the block.
 An administrator is held to a server-wide requirement like anyone, so enrol before the deadline; if none can, `recover-admin`
@@ -507,7 +559,7 @@ is off, or on but nothing is delivered.
 | `GET`/`PUT /v1/admin/two-factor`, `POST /v1/admin/users/{user}/two-factor/reset` | [requiring two-factor authentication](#requiring-two-factor-authentication) and an administrator's reset of an account's factors |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
 | `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_deletion_scheduled`, `account_deletion_restored`, `account_deleted`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `two_factor_added`, `two_factor_removed`, `recovery_codes_regenerated`, `recovery_code_used`, `two_factor_reset`, `server_two_factor_requirement_changed`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `two_factor_added`, `two_factor_removed`, `recovery_codes_regenerated`, `recovery_code_used`, `two_factor_reset`, `passkey_added`, `passkey_removed`, `passkey_clone_suspected`, `server_two_factor_requirement_changed`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
 
 On the command line (server administrators; each listing is an aligned table with the name last):
 

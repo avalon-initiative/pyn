@@ -1469,6 +1469,10 @@ pub struct AuditPage {
 pub struct ServerCapabilities {
     /// The server accepts pushed commits and serves fetches (`/push`, `/fetch`), so a client may keep commits locally.
     pub local_commits: bool,
+    /// The server can register and sign in with passkeys: it has a public address WebAuthn accepts (a host name over
+    /// https, or localhost). Without it, only authenticator apps are offered.
+    #[serde(default)]
+    pub passkeys: bool,
     /// The server's release version; empty when an older server did not report one.
     #[serde(default)]
     #[schema(required = true)]
@@ -1626,9 +1630,15 @@ pub struct TwoFactorFactor {
 /// The caller's second-factor state.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TwoFactorStatus {
-    /// Whether the account has a confirmed factor, so sign-in asks for a code.
+    /// Whether the account has a confirmed factor or a passkey, so sign-in asks for a second step.
     pub enabled: bool,
     pub factors: Vec<TwoFactorFactor>,
+    /// Passkeys and security keys; each one also counts as a second factor, so `enabled` is true when there is one.
+    #[serde(default)]
+    pub passkeys: Vec<Passkey>,
+    /// Whether this server can register passkeys (see `ServerCapabilities.passkeys`).
+    #[serde(default)]
+    pub passkeys_available: bool,
     pub recovery_codes_left: usize,
     /// What still requires the account to enrol (see `Account.two_factor_required`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1681,6 +1691,212 @@ pub struct RecoveryCodes {
 /// Until when the calling credential may do sensitive actions without another second-factor check.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FreshCheck {
+    pub fresh_until: DateTime<Utc>,
+}
+
+/// A passkey or security key the account has registered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Passkey {
+    pub id: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// How the authenticator reaches the browser (`usb`, `nfc`, `ble`, `internal`, `hybrid`), as the browser reported.
+    pub transports: Vec<String>,
+    /// The signature counter last seen; 0 for authenticators that keep none.
+    pub sign_count: u32,
+    /// The passkey can be synced to other devices.
+    pub backup_eligible: bool,
+    /// The passkey is currently synced or backed up.
+    pub backup_state: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct BeginPasskeyRequest {
+    /// The current password. Required to add the account's first second factor when it has a password; an account that
+    /// already has a factor needs a fresh check instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+/// A WebAuthn credential descriptor (`PublicKeyCredentialDescriptorJSON`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PasskeyDescriptor {
+    /// Always `public-key`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The credential id, base64url.
+    pub id: String,
+    pub transports: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyRp {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyUser {
+    /// base64url
+    pub id: String,
+    pub name: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyParam {
+    /// Always `public-key`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// COSE algorithm: -7 (ES256) or -8 (EdDSA).
+    pub alg: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeySelection {
+    /// `required`: a discoverable credential, so a passkey can sign in without a user name.
+    pub resident_key: String,
+    /// `required`: the authenticator checks the person (PIN, biometrics).
+    pub user_verification: String,
+}
+
+/// `PublicKeyCredentialCreationOptionsJSON`: pass it to `PublicKeyCredential.parseCreationOptionsFromJSON` or
+/// decode the base64url fields for `navigator.credentials.create`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyCreationOptions {
+    pub rp: PasskeyRp,
+    pub user: PasskeyUser,
+    /// base64url
+    pub challenge: String,
+    pub pub_key_cred_params: Vec<PasskeyParam>,
+    /// Milliseconds.
+    pub timeout: u64,
+    pub exclude_credentials: Vec<PasskeyDescriptor>,
+    pub authenticator_selection: PasskeySelection,
+    /// Always `none`.
+    pub attestation: String,
+}
+
+/// A registration ceremony to run in the browser; answer it with `RegisterPasskeyRequest` before `expires_at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PasskeyRegistrationBegun {
+    /// Send back with the answer. Single use.
+    pub ceremony: String,
+    pub public_key: PasskeyCreationOptions,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// `PublicKeyCredentialRequestOptionsJSON`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyRequestOptions {
+    /// base64url
+    pub challenge: String,
+    pub timeout: u64,
+    pub rp_id: String,
+    /// Empty lets the browser offer any discoverable passkey for this server.
+    pub allow_credentials: Vec<PasskeyDescriptor>,
+    /// Always `required`.
+    pub user_verification: String,
+}
+
+/// An authentication ceremony to run in the browser (`navigator.credentials.get`); answer it with
+/// `PasskeyAssertionRequest` before `expires_at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PasskeyAuthenticationBegun {
+    /// Send back with the answer. Single use.
+    pub ceremony: String,
+    pub public_key: PasskeyRequestOptions,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// The authenticator's registration response (`AuthenticatorAttestationResponseJSON`), as `credential.toJSON()` yields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyAttestationResponse {
+    /// base64url
+    #[serde(rename = "clientDataJSON")]
+    pub client_data_json: String,
+    /// base64url
+    pub attestation_object: String,
+    #[serde(default)]
+    pub transports: Vec<String>,
+}
+
+/// `RegistrationResponseJSON`; fields beyond these are accepted and ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyAttestationCredential {
+    pub id: String,
+    pub response: PasskeyAttestationResponse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RegisterPasskeyRequest {
+    pub ceremony: String,
+    /// A name for the passkey, such as `laptop`. Defaults to `Passkey`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub credential: PasskeyAttestationCredential,
+}
+
+/// The authenticator's authentication response (`AuthenticatorAssertionResponseJSON`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyAssertionResponse {
+    /// base64url
+    #[serde(rename = "clientDataJSON")]
+    pub client_data_json: String,
+    /// base64url
+    pub authenticator_data: String,
+    /// base64url
+    pub signature: String,
+    /// base64url; absent for a credential that is not discoverable.
+    #[serde(default)]
+    pub user_handle: Option<String>,
+}
+
+/// `AuthenticationResponseJSON`; fields beyond these are accepted and ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyAssertionCredential {
+    /// The credential id, base64url.
+    pub id: String,
+    pub response: PasskeyAssertionResponse,
+}
+
+/// An authentication answer, for a passkey sign-in or a fresh check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PasskeyAssertionRequest {
+    pub ceremony: String,
+    pub credential: PasskeyAssertionCredential,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct BeginPasskeySignInRequest {
+    /// Offer this account's passkeys to the browser. Without it the browser picks a discoverable passkey.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RenamePasskeyRequest {
+    pub name: String,
+}
+
+/// A passkey that is now on.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PasskeyRegistered {
+    pub passkey: Passkey,
+    /// Ten single-use recovery codes, shown only now, and only with the account's first second factor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_codes: Option<Vec<String>>,
     pub fresh_until: DateTime<Utc>,
 }
 
@@ -1817,6 +2033,10 @@ pub const OIDC_BINDING_COOKIE: &str = "pyn_oidc";
 pub struct SignInOptions {
     /// Whether anyone may sign in with a password. When false, server administrators still can.
     pub password: bool,
+    /// Whether a passkey can sign in (`POST /v1/session/passkey/begin`); false when the server has no public address
+    /// WebAuthn accepts.
+    #[serde(default)]
+    pub passkeys: bool,
     /// The configured external provider; null when the server has none.
     pub external: Option<ExternalProviderInfo>,
 }
@@ -2082,6 +2302,7 @@ mod tests {
     fn capabilities_revision_is_null_without_one() {
         let c = ServerCapabilities {
             local_commits: true,
+            passkeys: false,
             version: "0.1.2".into(),
             revision: None,
         };

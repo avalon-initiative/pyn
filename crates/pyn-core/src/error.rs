@@ -226,6 +226,14 @@ pub enum PynError {
     TwoFactorEnrolmentRequired,
     #[error("no such factor {0}")]
     FactorNotFound(String),
+    #[error("no such passkey {0}")]
+    PasskeyNotFound(String),
+    #[error(
+        "this server has no public address usable for passkeys; set PYN_PUBLIC_URL to an https:// address with a host name"
+    )]
+    PasskeysUnavailable,
+    #[error("the passkey was not accepted: {0}")]
+    PasskeyInvalid(String),
     #[error("no such notice {0}")]
     NoticeNotFound(String),
     #[error("the request is missing a valid CSRF token")]
@@ -420,6 +428,9 @@ impl PynError {
             Self::FreshCheckRequired => "fresh_check_required",
             Self::TwoFactorEnrolmentRequired => "two_factor_enrolment_required",
             Self::FactorNotFound(_) => "factor_not_found",
+            Self::PasskeyNotFound(_) => "passkey_not_found",
+            Self::PasskeysUnavailable => "passkeys_unavailable",
+            Self::PasskeyInvalid(_) => "passkey_invalid",
             Self::NoticeNotFound(_) => "notice_not_found",
             Self::CsrfFailed => "csrf_failed",
             Self::OriginNotAllowed => "origin_not_allowed",

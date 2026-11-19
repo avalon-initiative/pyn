@@ -51,6 +51,7 @@ fn identity_info(i: ExternalIdentity) -> api::ExternalIdentityInfo {
 pub(crate) async fn sign_in_options(State(s): State<AppState>) -> Json<api::SignInOptions> {
     Json(api::SignInOptions {
         password: s.access.password_sign_in_enabled(),
+        passkeys: s.access.passkeys_available(),
         external: s.access.oidc_name().map(|name| api::ExternalProviderInfo {
             name: name.to_string(),
             sign_in_url: "/v1/oidc/authorize".into(),

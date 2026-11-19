@@ -29,6 +29,7 @@ pub mod passwords;
 pub mod profile;
 pub mod profiles;
 pub mod ratelimit;
+pub mod relying_party;
 pub mod repo;
 pub mod repo_policy;
 pub mod repositories;
@@ -59,6 +60,7 @@ pub use access_service::{
     ACCOUNT_DELETION_ACTOR, AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke,
     DEFAULT_TOKEN_DAYS, ExternalPolicy, ExternalSignIn, MAX_INVITE_HOURS, NewToken, OidcBegin,
     OidcFinish, OidcStart, OrgAdd, OrgDeleteMark, OrgMemberChange, OwnerFreezeState, OwnerLimits,
+    PasskeyAssertion, PasskeyAttestation, PasskeyCreation, PasskeyRegistered, PasskeyRequest,
     RateLimits, Registration, RepoMember, SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp,
     TeamDetail, TokenExpiry, generate_setup_token,
 };
@@ -133,8 +135,9 @@ pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};
 pub use tree::{EntryKind, EntryMode, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry};
 pub use two_factor::{
-    FactorKind, FactorRecord, FactorRemoval, MAX_GRACE_DAYS, NOTICE_TWO_FACTOR_RESET, NoticeRecord,
-    RequiredBy, Requirement, TwoFactorPolicy, rotate_seed_key,
+    ChallengePurpose, ChallengeRecord, FactorKind, FactorRecord, FactorRemoval, MAX_GRACE_DAYS,
+    MAX_PASSKEYS, NOTICE_PASSKEY_CLONE_SUSPECTED, NOTICE_TWO_FACTOR_RESET, NoticeRecord,
+    PasskeyRecord, RequiredBy, Requirement, TwoFactorPolicy, rotate_seed_key,
 };
 pub use types::{
     AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, MAX_CHANGESET_ITEMS,

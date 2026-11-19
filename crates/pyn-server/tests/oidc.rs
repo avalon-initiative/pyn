@@ -236,6 +236,7 @@ async fn sign_in_options_name_the_provider() {
         r.json::<api::SignInOptions>(),
         api::SignInOptions {
             password: true,
+            passkeys: true,
             external: Some(api::ExternalProviderInfo {
                 name: "Acme SSO".into(),
                 sign_in_url: "/v1/oidc/authorize".into(),
@@ -256,6 +257,7 @@ async fn a_server_without_a_provider_is_unchanged() {
         options,
         api::SignInOptions {
             password: true,
+            passkeys: true,
             external: None
         }
     );

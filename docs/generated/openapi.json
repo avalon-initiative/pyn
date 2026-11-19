@@ -2962,6 +2962,368 @@
         "x-pyn-reach": "full_scope"
       }
     },
+    "/v1/me/passkeys": {
+      "get": {
+        "tags": [
+          "passkeys_api"
+        ],
+        "operationId": "list_passkeys",
+        "responses": {
+          "200": {
+            "description": "the account's passkeys, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Passkey"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope_enrolment"
+      }
+    },
+    "/v1/me/passkeys/register/begin": {
+      "post": {
+        "tags": [
+          "passkeys_api"
+        ],
+        "operationId": "begin_registration",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BeginPasskeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "run `navigator.credentials.create` with `public_key`, then post the result to `register/finish`; the ceremony is single use and expires in five minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyRegistrationBegun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the account holds the most passkeys it may",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthenticated: the password is wrong or missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "fresh_check_required: the account already has a second factor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "passkeys_unavailable: the server has no public address WebAuthn accepts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope_enrolment"
+      }
+    },
+    "/v1/me/passkeys/register/finish": {
+      "post": {
+        "tags": [
+          "passkeys_api"
+        ],
+        "operationId": "finish_registration",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterPasskeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "the passkey is on; the account's first second factor also gets its recovery codes, shown only now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyRegistered"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "passkey_invalid: the answer failed verification, the ceremony expired or was used, the authenticator did not verify the person, or it is already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "passkeys_unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope_enrolment"
+      }
+    },
+    "/v1/me/passkeys/verify/begin": {
+      "post": {
+        "tags": [
+          "passkeys_api"
+        ],
+        "operationId": "begin_verify",
+        "responses": {
+          "200": {
+            "description": "run `navigator.credentials.get` with `public_key`, then post the result to `verify/finish`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyAuthenticationBegun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the account has no passkey",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "passkeys_unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      }
+    },
+    "/v1/me/passkeys/verify/finish": {
+      "post": {
+        "tags": [
+          "passkeys_api"
+        ],
+        "operationId": "finish_verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasskeyAssertionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "sensitive actions stay open on this credential until `fresh_until`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FreshCheck"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "passkey_invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts; Retry-After says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "passkeys_unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      }
+    },
+    "/v1/me/passkeys/{id}": {
+      "delete": {
+        "tags": [
+          "passkeys_api"
+        ],
+        "operationId": "remove_passkey",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "a passkey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "removed; removing the last second factor turns two-factor authentication off and drops the recovery codes"
+          },
+          "403": {
+            "description": "fresh_check_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "passkey_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope_enrolment"
+      },
+      "patch": {
+        "tags": [
+          "passkeys_api"
+        ],
+        "operationId": "rename_passkey",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "a passkey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenamePasskeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Passkey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the name is empty or too long",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "passkey_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope_enrolment"
+      }
+    },
     "/v1/me/password": {
       "put": {
         "tags": [
@@ -9854,6 +10216,138 @@
         "x-pyn-reach": "open"
       }
     },
+    "/v1/session/passkey/begin": {
+      "post": {
+        "tags": [
+          "passkeys_api"
+        ],
+        "operationId": "begin_sign_in",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BeginPasskeySignInRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "run `navigator.credentials.get` with `public_key`, then post the result to `/v1/session/passkey/finish`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyAuthenticationBegun"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_not_allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "passkeys_unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "open"
+      }
+    },
+    "/v1/session/passkey/finish": {
+      "post": {
+        "tags": [
+          "passkeys_api"
+        ],
+        "operationId": "finish_sign_in",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasskeyAssertionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "sets the HttpOnly session cookie; the passkey stood for the password and the second factor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "passkey_invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "the account cannot sign in: email_not_verified, approval_pending or account_disabled; or origin_not_allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "passkeys_unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "open"
+      }
+    },
     "/v1/setup": {
       "get": {
         "tags": [
@@ -11041,6 +11535,30 @@
             ],
             "format": "int64",
             "description": "Pass as `before` to fetch the next, older page; null on the last page."
+          }
+        }
+      },
+      "BeginPasskeyRequest": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The current password. Required to add the account's first second factor when it has a password; an account that\nalready has a factor needs a fresh check instead."
+          }
+        }
+      },
+      "BeginPasskeySignInRequest": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Offer this account's passkeys to the browser. Without it the browser picks a discoverable passkey."
           }
         }
       },
@@ -13552,6 +14070,415 @@
           }
         }
       },
+      "Passkey": {
+        "type": "object",
+        "description": "A passkey or security key the account has registered.",
+        "required": [
+          "id",
+          "name",
+          "created_at",
+          "transports",
+          "sign_count",
+          "backup_eligible",
+          "backup_state"
+        ],
+        "properties": {
+          "backup_eligible": {
+            "type": "boolean",
+            "description": "The passkey can be synced to other devices."
+          },
+          "backup_state": {
+            "type": "boolean",
+            "description": "The passkey is currently synced or backed up."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sign_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The signature counter last seen; 0 for authenticators that keep none.",
+            "minimum": 0
+          },
+          "transports": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "How the authenticator reaches the browser (`usb`, `nfc`, `ble`, `internal`, `hybrid`), as the browser reported."
+          }
+        }
+      },
+      "PasskeyAssertionCredential": {
+        "type": "object",
+        "description": "`AuthenticationResponseJSON`; fields beyond these are accepted and ignored.",
+        "required": [
+          "id",
+          "response"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The credential id, base64url."
+          },
+          "response": {
+            "$ref": "#/components/schemas/PasskeyAssertionResponse"
+          }
+        }
+      },
+      "PasskeyAssertionRequest": {
+        "type": "object",
+        "description": "An authentication answer, for a passkey sign-in or a fresh check.",
+        "required": [
+          "ceremony",
+          "credential"
+        ],
+        "properties": {
+          "ceremony": {
+            "type": "string"
+          },
+          "credential": {
+            "$ref": "#/components/schemas/PasskeyAssertionCredential"
+          }
+        }
+      },
+      "PasskeyAssertionResponse": {
+        "type": "object",
+        "description": "The authenticator's authentication response (`AuthenticatorAssertionResponseJSON`).",
+        "required": [
+          "clientDataJSON",
+          "authenticatorData",
+          "signature"
+        ],
+        "properties": {
+          "authenticatorData": {
+            "type": "string",
+            "description": "base64url"
+          },
+          "clientDataJSON": {
+            "type": "string",
+            "description": "base64url"
+          },
+          "signature": {
+            "type": "string",
+            "description": "base64url"
+          },
+          "userHandle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "base64url; absent for a credential that is not discoverable."
+          }
+        }
+      },
+      "PasskeyAttestationCredential": {
+        "type": "object",
+        "description": "`RegistrationResponseJSON`; fields beyond these are accepted and ignored.",
+        "required": [
+          "id",
+          "response"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "response": {
+            "$ref": "#/components/schemas/PasskeyAttestationResponse"
+          }
+        }
+      },
+      "PasskeyAttestationResponse": {
+        "type": "object",
+        "description": "The authenticator's registration response (`AuthenticatorAttestationResponseJSON`), as `credential.toJSON()` yields.",
+        "required": [
+          "clientDataJSON",
+          "attestationObject"
+        ],
+        "properties": {
+          "attestationObject": {
+            "type": "string",
+            "description": "base64url"
+          },
+          "clientDataJSON": {
+            "type": "string",
+            "description": "base64url"
+          },
+          "transports": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "PasskeyAuthenticationBegun": {
+        "type": "object",
+        "description": "An authentication ceremony to run in the browser (`navigator.credentials.get`); answer it with\n`PasskeyAssertionRequest` before `expires_at`.",
+        "required": [
+          "ceremony",
+          "public_key",
+          "expires_at"
+        ],
+        "properties": {
+          "ceremony": {
+            "type": "string",
+            "description": "Send back with the answer. Single use."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "public_key": {
+            "$ref": "#/components/schemas/PasskeyRequestOptions"
+          }
+        }
+      },
+      "PasskeyCreationOptions": {
+        "type": "object",
+        "description": "`PublicKeyCredentialCreationOptionsJSON`: pass it to `PublicKeyCredential.parseCreationOptionsFromJSON` or\ndecode the base64url fields for `navigator.credentials.create`.",
+        "required": [
+          "rp",
+          "user",
+          "challenge",
+          "pubKeyCredParams",
+          "timeout",
+          "excludeCredentials",
+          "authenticatorSelection",
+          "attestation"
+        ],
+        "properties": {
+          "attestation": {
+            "type": "string",
+            "description": "Always `none`."
+          },
+          "authenticatorSelection": {
+            "$ref": "#/components/schemas/PasskeySelection"
+          },
+          "challenge": {
+            "type": "string",
+            "description": "base64url"
+          },
+          "excludeCredentials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PasskeyDescriptor"
+            }
+          },
+          "pubKeyCredParams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PasskeyParam"
+            }
+          },
+          "rp": {
+            "$ref": "#/components/schemas/PasskeyRp"
+          },
+          "timeout": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Milliseconds.",
+            "minimum": 0
+          },
+          "user": {
+            "$ref": "#/components/schemas/PasskeyUser"
+          }
+        }
+      },
+      "PasskeyDescriptor": {
+        "type": "object",
+        "description": "A WebAuthn credential descriptor (`PublicKeyCredentialDescriptorJSON`).",
+        "required": [
+          "type",
+          "id",
+          "transports"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The credential id, base64url."
+          },
+          "transports": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "type": {
+            "type": "string",
+            "description": "Always `public-key`."
+          }
+        }
+      },
+      "PasskeyParam": {
+        "type": "object",
+        "required": [
+          "type",
+          "alg"
+        ],
+        "properties": {
+          "alg": {
+            "type": "integer",
+            "format": "int64",
+            "description": "COSE algorithm: -7 (ES256) or -8 (EdDSA)."
+          },
+          "type": {
+            "type": "string",
+            "description": "Always `public-key`."
+          }
+        }
+      },
+      "PasskeyRegistered": {
+        "type": "object",
+        "description": "A passkey that is now on.",
+        "required": [
+          "passkey",
+          "fresh_until"
+        ],
+        "properties": {
+          "fresh_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "passkey": {
+            "$ref": "#/components/schemas/Passkey"
+          },
+          "recovery_codes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Ten single-use recovery codes, shown only now, and only with the account's first second factor."
+          }
+        }
+      },
+      "PasskeyRegistrationBegun": {
+        "type": "object",
+        "description": "A registration ceremony to run in the browser; answer it with `RegisterPasskeyRequest` before `expires_at`.",
+        "required": [
+          "ceremony",
+          "public_key",
+          "expires_at"
+        ],
+        "properties": {
+          "ceremony": {
+            "type": "string",
+            "description": "Send back with the answer. Single use."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "public_key": {
+            "$ref": "#/components/schemas/PasskeyCreationOptions"
+          }
+        }
+      },
+      "PasskeyRequestOptions": {
+        "type": "object",
+        "description": "`PublicKeyCredentialRequestOptionsJSON`.",
+        "required": [
+          "challenge",
+          "timeout",
+          "rpId",
+          "allowCredentials",
+          "userVerification"
+        ],
+        "properties": {
+          "allowCredentials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PasskeyDescriptor"
+            },
+            "description": "Empty lets the browser offer any discoverable passkey for this server."
+          },
+          "challenge": {
+            "type": "string",
+            "description": "base64url"
+          },
+          "rpId": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "userVerification": {
+            "type": "string",
+            "description": "Always `required`."
+          }
+        }
+      },
+      "PasskeyRp": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "PasskeySelection": {
+        "type": "object",
+        "required": [
+          "residentKey",
+          "userVerification"
+        ],
+        "properties": {
+          "residentKey": {
+            "type": "string",
+            "description": "`required`: a discoverable credential, so a passkey can sign in without a user name."
+          },
+          "userVerification": {
+            "type": "string",
+            "description": "`required`: the authenticator checks the person (PIN, biometrics)."
+          }
+        }
+      },
+      "PasskeyUser": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "displayName"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "base64url"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "PathUsage": {
         "type": "object",
         "description": "Distinct stored bytes of one path across its revisions.",
@@ -13997,6 +14924,28 @@
           }
         }
       },
+      "RegisterPasskeyRequest": {
+        "type": "object",
+        "required": [
+          "ceremony",
+          "credential"
+        ],
+        "properties": {
+          "ceremony": {
+            "type": "string"
+          },
+          "credential": {
+            "$ref": "#/components/schemas/PasskeyAttestationCredential"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A name for the passkey, such as `laptop`. Defaults to `Passkey`."
+          }
+        }
+      },
       "RegisterRequest": {
         "type": "object",
         "required": [
@@ -14082,6 +15031,17 @@
         }
       },
       "RenameBranchRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "RenamePasskeyRequest": {
         "type": "object",
         "required": [
           "name"
@@ -14911,6 +15871,10 @@
             "type": "boolean",
             "description": "The server accepts pushed commits and serves fetches (`/push`, `/fetch`), so a client may keep commits locally."
           },
+          "passkeys": {
+            "type": "boolean",
+            "description": "The server can register and sign in with passkeys: it has a public address WebAuthn accepts (a host name over\nhttps, or localhost). Without it, only authenticator apps are offered."
+          },
           "revision": {
             "type": [
               "string",
@@ -15254,6 +16218,10 @@
                 "type": "null"
               }
             ]
+          },
+          "passkeys": {
+            "type": "boolean",
+            "description": "Whether a passkey can sign in (`POST /v1/session/passkey/begin`); false when the server has no public address\nWebAuthn accepts."
           },
           "password": {
             "type": "boolean",
@@ -15818,13 +16786,24 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Whether the account has a confirmed factor, so sign-in asks for a code."
+            "description": "Whether the account has a confirmed factor or a passkey, so sign-in asks for a second step."
           },
           "factors": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/TwoFactorFactor"
             }
+          },
+          "passkeys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Passkey"
+            },
+            "description": "Passkeys and security keys; each one also counts as a second factor, so `enabled` is true when there is one."
+          },
+          "passkeys_available": {
+            "type": "boolean",
+            "description": "Whether this server can register passkeys (see `ServerCapabilities.passkeys`)."
           },
           "recovery_codes_left": {
             "type": "integer",

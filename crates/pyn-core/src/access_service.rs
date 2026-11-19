@@ -37,7 +37,9 @@ use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
 use crate::store::MetadataStore;
-use crate::two_factor::{FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy};
+use crate::two_factor::{
+    ChallengeRecord, FactorRecord, FactorRemoval, NoticeRecord, PasskeyRecord, TwoFactorPolicy,
+};
 use crate::types::{AccountId, MAX_LABEL_BYTES, validate_label};
 use crate::types::{RepoId, UserId};
 use crate::webhook::{EventDraft, NewSecret, WebhookStore};
@@ -53,6 +55,7 @@ mod invitations;
 mod limits;
 mod org_settings;
 mod organizations;
+mod passkeys;
 mod profile;
 mod recovery;
 mod repo_policy;
@@ -68,6 +71,9 @@ pub use external::{ExternalSignIn, OidcBegin, OidcFinish, OidcStart};
 pub use freeze::OwnerFreezeState;
 pub use invitations::OrgAdd;
 pub use limits::OwnerLimits;
+pub use passkeys::{
+    PasskeyAssertion, PasskeyAttestation, PasskeyCreation, PasskeyRegistered, PasskeyRequest,
+};
 pub use recovery::{AdminRecovery, HOST_RECOVERY_ACTOR};
 pub use self_service::{AccountRename, MAX_ACCOUNT_EMAILS};
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
@@ -550,7 +556,7 @@ pub trait AccessStore: Send + Sync {
     /// Marks a pending factor confirmed; false when it is not the account's pending factor.
     async fn confirm_factor(&self, user: &UserId, id: &str, now: DateTime<Utc>) -> Result<bool>;
 
-    /// Removes a factor. When no confirmed one is left, the account's recovery codes, attempt state and fresh checks go
+    /// Removes a factor. When no confirmed factor or passkey is left, the account's recovery codes, attempt state and fresh checks go
     /// too, in the same step.
     async fn remove_factor(&self, user: &UserId, id: &str) -> Result<FactorRemoval>;
 
@@ -596,8 +602,43 @@ pub trait AccessStore: Send + Sync {
 
     async fn fresh_until(&self, credential: &str) -> Result<Option<DateTime<Utc>>>;
 
-    /// Removes every factor, recovery code, attempt state and fresh check of the account; returns the confirmed
-    /// factors removed.
+    /// The account's passkeys, oldest first.
+    async fn passkeys_of(&self, user: &UserId) -> Result<Vec<PasskeyRecord>>;
+
+    /// The passkey with this credential id, whoever owns it.
+    async fn passkey_by_credential(&self, credential_id: &[u8]) -> Result<Option<PasskeyRecord>>;
+
+    /// Stores a passkey; false when its credential id is already registered.
+    async fn create_passkey(&self, passkey: PasskeyRecord) -> Result<bool>;
+
+    /// Renames a passkey; false when the account has none with this id.
+    async fn rename_passkey(&self, user: &UserId, id: &str, name: &str) -> Result<bool>;
+
+    /// Removes a passkey. As with `remove_factor`, the account's recovery codes, attempt state and fresh checks go in the
+    /// same step when no second factor is left.
+    async fn remove_passkey(&self, user: &UserId, id: &str) -> Result<FactorRemoval>;
+
+    /// Records a use: sets the counter and backup state and the time, only while the stored counter is still
+    /// `previous`, so two concurrent uses cannot both pass. False when it moved.
+    async fn record_passkey_use(
+        &self,
+        user: &UserId,
+        id: &str,
+        previous: u32,
+        sign_count: u32,
+        backup_state: bool,
+        now: DateTime<Utc>,
+    ) -> Result<bool>;
+
+    /// Stores a challenge, replacing the account's earlier one of the same purpose and dropping the expired ones.
+    async fn put_challenge(&self, challenge: ChallengeRecord, now: DateTime<Utc>) -> Result<()>;
+
+    /// Takes a challenge: it is gone after this, whether or not it had expired. `None` when it is unknown or expired.
+    async fn take_challenge(&self, id: &str, now: DateTime<Utc>)
+    -> Result<Option<ChallengeRecord>>;
+
+    /// Removes every factor, passkey, recovery code, attempt state and fresh check of the account; returns the
+    /// confirmed factors and passkeys removed.
     async fn clear_two_factor(&self, user: &UserId) -> Result<usize>;
 
     /// Rewrites every stored seed through `reseal` in one atomic step, failing without a change when it fails.
@@ -946,6 +987,8 @@ pub struct AccessConfig {
     pub public_url: String,
     /// Origins besides `public_url` that may send sign-in and cookie-authenticated writes, such as a dev server.
     pub allowed_origins: Vec<String>,
+    /// The WebAuthn relying party id when it is not the public address's host: a parent domain of that host.
+    pub webauthn_rp_id: Option<String>,
     /// How long a verification link works, and how long an unverified account keeps its name.
     pub verification_ttl: Duration,
     /// Who may create organizations.
@@ -998,6 +1041,7 @@ impl Default for AccessConfig {
             limits: RateLimits::default(),
             public_url: "http://localhost:5173".into(),
             allowed_origins: Vec::new(),
+            webauthn_rp_id: None,
             verification_ttl: Duration::hours(24),
             org_creation: OrgCreation::Anyone,
             org_member_add: OrgMemberAdd::Invite,

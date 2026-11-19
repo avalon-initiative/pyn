@@ -6,7 +6,8 @@ use crate::access::{AccessMode, ServerSettings};
 use crate::account_self::RenameOutcome;
 use crate::deletion::AccountPurge;
 use crate::two_factor::{
-    FREE_ATTEMPTS, FactorKind, FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy,
+    ChallengePurpose, ChallengeRecord, FREE_ATTEMPTS, FactorKind, FactorRecord, FactorRemoval,
+    NoticeRecord, PasskeyRecord, TwoFactorPolicy,
 };
 use crate::{NewSecret, PynError, UserId};
 use chrono::Duration;
@@ -583,4 +584,243 @@ pub async fn notices_are_listed_oldest_first_dismissed_once_and_follow_the_accou
     ));
     assert!(store.notices_of(&user("alicia")).await.unwrap().is_empty());
     assert_eq!(ids(store.notices_of(&user("bob")).await.unwrap()), ["n3"]);
+}
+
+fn passkey(id: &str, owner: &str, minute: i64) -> PasskeyRecord {
+    PasskeyRecord {
+        id: id.into(),
+        user: user(owner),
+        name: format!("{id} name"),
+        credential_id: format!("cred-{id}").into_bytes(),
+        public_key: vec![1, 2, 3],
+        user_handle: vec![9; 32],
+        sign_count: 4,
+        transports: vec!["usb".into(), "nfc".into()],
+        backup_eligible: true,
+        backup_state: false,
+        created_at: at(minute),
+        last_used_at: None,
+    }
+}
+
+pub async fn passkeys_are_unique_by_credential_renamed_by_their_owner_and_listed_oldest_first(
+    store: Access,
+) {
+    active(&store, "alice").await;
+    active(&store, "bob").await;
+    let (alice, bob) = (user("alice"), user("bob"));
+    assert!(
+        store
+            .create_passkey(passkey("p2", "alice", 2))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .create_passkey(passkey("p1", "alice", 1))
+            .await
+            .unwrap()
+    );
+    let mut clash = passkey("p3", "bob", 3);
+    clash.credential_id = b"cred-p1".to_vec();
+    assert!(!store.create_passkey(clash).await.unwrap());
+
+    let held = store.passkeys_of(&alice).await.unwrap();
+    assert_eq!(
+        held.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+        ["p1", "p2"]
+    );
+    assert_eq!(held[0], passkey("p1", "alice", 1));
+    assert!(store.passkeys_of(&bob).await.unwrap().is_empty());
+    assert_eq!(
+        store.passkey_by_credential(b"cred-p2").await.unwrap(),
+        Some(passkey("p2", "alice", 2))
+    );
+    assert_eq!(store.passkey_by_credential(b"nope").await.unwrap(), None);
+
+    assert!(!store.rename_passkey(&bob, "p1", "mine").await.unwrap());
+    assert!(!store.rename_passkey(&alice, "zz", "mine").await.unwrap());
+    assert!(store.rename_passkey(&alice, "p1", "laptop").await.unwrap());
+    assert_eq!(store.passkeys_of(&alice).await.unwrap()[0].name, "laptop");
+}
+
+pub async fn a_passkey_use_is_recorded_once_per_counter_value(store: Access) {
+    active(&store, "alice").await;
+    let alice = user("alice");
+    store
+        .create_passkey(passkey("p1", "alice", 1))
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .record_passkey_use(&alice, "p1", 3, 5, true, at(2))
+            .await
+            .unwrap(),
+        "the stored counter is not 3"
+    );
+    assert!(
+        store
+            .record_passkey_use(&alice, "p1", 4, 5, true, at(2))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .record_passkey_use(&alice, "p1", 4, 6, true, at(3))
+            .await
+            .unwrap(),
+        "a second use that read the old counter loses"
+    );
+    assert!(
+        !store
+            .record_passkey_use(&user("bob"), "p1", 5, 6, true, at(3))
+            .await
+            .unwrap()
+    );
+    let held = &store.passkeys_of(&alice).await.unwrap()[0];
+    assert_eq!(
+        (held.sign_count, held.backup_state, held.last_used_at),
+        (5, true, Some(at(2)))
+    );
+}
+
+pub async fn a_passkey_counts_as_a_second_factor_when_the_last_one_is_removed(store: Access) {
+    active(&store, "alice").await;
+    let alice = user("alice");
+    enrolled(&store, "f1", "alice", 1).await;
+    store
+        .create_passkey(passkey("p1", "alice", 2))
+        .await
+        .unwrap();
+    store
+        .replace_recovery_codes(&alice, &["h1".into()], at(3))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.remove_passkey(&alice, "zz").await.unwrap(),
+        FactorRemoval::NotFound
+    );
+    assert_eq!(
+        store.remove_factor(&alice, "f1").await.unwrap(),
+        FactorRemoval::Removed {
+            second_factor_left: true
+        },
+        "the passkey keeps two-factor authentication on"
+    );
+    assert_eq!(store.unused_recovery_codes(&alice).await.unwrap(), 1);
+    assert_eq!(
+        store.remove_passkey(&alice, "p1").await.unwrap(),
+        FactorRemoval::Removed {
+            second_factor_left: false
+        }
+    );
+    assert_eq!(store.unused_recovery_codes(&alice).await.unwrap(), 0);
+
+    store
+        .create_passkey(passkey("p2", "alice", 4))
+        .await
+        .unwrap();
+    enrolled(&store, "f2", "alice", 5).await;
+    assert_eq!(
+        store.remove_passkey(&alice, "p2").await.unwrap(),
+        FactorRemoval::Removed {
+            second_factor_left: true
+        }
+    );
+}
+
+pub async fn clearing_two_factor_counts_and_removes_passkeys_too(store: Access) {
+    active(&store, "alice").await;
+    let alice = user("alice");
+    enrolled(&store, "f1", "alice", 1).await;
+    store
+        .create_passkey(passkey("p1", "alice", 2))
+        .await
+        .unwrap();
+    store
+        .create_passkey(passkey("p2", "alice", 3))
+        .await
+        .unwrap();
+    assert_eq!(store.clear_two_factor(&alice).await.unwrap(), 3);
+    assert!(store.passkeys_of(&alice).await.unwrap().is_empty());
+    assert_eq!(store.passkey_by_credential(b"cred-p1").await.unwrap(), None);
+}
+
+fn challenge(
+    id: &str,
+    owner: Option<&str>,
+    purpose: ChallengePurpose,
+    until: i64,
+) -> ChallengeRecord {
+    ChallengeRecord {
+        id: id.into(),
+        user: owner.map(user),
+        purpose,
+        challenge: id.as_bytes().to_vec(),
+        expires_at: at(until),
+    }
+}
+
+pub async fn a_challenge_is_taken_once_expires_and_is_replaced_per_account_and_purpose(
+    store: Access,
+) {
+    active(&store, "alice").await;
+    let reg = |id, until| challenge(id, Some("alice"), ChallengePurpose::Register, until);
+
+    store.put_challenge(reg("c1", 10), at(1)).await.unwrap();
+    store.put_challenge(reg("c2", 10), at(2)).await.unwrap();
+    assert_eq!(
+        store.take_challenge("c1", at(3)).await.unwrap(),
+        None,
+        "replaced"
+    );
+    assert_eq!(
+        store.take_challenge("c2", at(3)).await.unwrap(),
+        Some(reg("c2", 10))
+    );
+    assert_eq!(
+        store.take_challenge("c2", at(3)).await.unwrap(),
+        None,
+        "single use"
+    );
+
+    store
+        .put_challenge(
+            challenge("v1", Some("alice"), ChallengePurpose::Verify, 10),
+            at(3),
+        )
+        .await
+        .unwrap();
+    store.put_challenge(reg("c3", 10), at(3)).await.unwrap();
+    assert!(
+        store.take_challenge("v1", at(4)).await.unwrap().is_some(),
+        "another purpose is kept"
+    );
+
+    store.put_challenge(reg("c4", 5), at(4)).await.unwrap();
+    assert_eq!(
+        store.take_challenge("c4", at(6)).await.unwrap(),
+        None,
+        "expired"
+    );
+    assert_eq!(
+        store.take_challenge("c4", at(6)).await.unwrap(),
+        None,
+        "and gone"
+    );
+
+    let sign_in = |id| challenge(id, None, ChallengePurpose::SignIn, 10);
+    store.put_challenge(sign_in("s1"), at(4)).await.unwrap();
+    store.put_challenge(sign_in("s2"), at(4)).await.unwrap();
+    assert!(store.take_challenge("s1", at(5)).await.unwrap().is_some());
+    assert!(store.take_challenge("s2", at(5)).await.unwrap().is_some());
+
+    store.put_challenge(reg("c5", 20), at(5)).await.unwrap();
+    store.put_challenge(sign_in("s3"), at(30)).await.unwrap();
+    assert_eq!(
+        store.take_challenge("c5", at(6)).await.unwrap(),
+        None,
+        "swept by a later put"
+    );
 }

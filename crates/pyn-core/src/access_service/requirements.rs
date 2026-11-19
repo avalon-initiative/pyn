@@ -5,10 +5,11 @@ use super::*;
 use crate::two_factor::{self, NOTICE_TWO_FACTOR_RESET, NoticeRecord, RequiredBy, Requirement};
 
 impl AccessService {
-    /// Whether the account holds a second factor that counts at sign-in. The one place enforcement asks, so a new kind
-    /// of factor joins by being counted here.
+    /// Whether the account holds a second factor that counts at sign-in: a confirmed authenticator app or a passkey.
+    /// The one place enforcement asks, so a new kind of factor joins by being counted here.
     pub async fn has_second_factor(&self, user: &UserId) -> Result<bool> {
-        Ok(!self.confirmed_factors(user).await?.is_empty())
+        Ok(!self.confirmed_factors(user).await?.is_empty()
+            || !self.passkeys(user).await?.is_empty())
     }
 
     /// The requirement with the earliest deadline that applies to the account, whether or not it is met.

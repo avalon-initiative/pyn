@@ -88,7 +88,11 @@ fn origin_permitted(s: &AppState, source: &Source) -> bool {
 pub(crate) async fn csrf_guard(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let headers = req.headers();
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    let sign_in = req.method() == Method::POST && req.uri().path() == "/v1/session";
+    let sign_in = req.method() == Method::POST
+        && matches!(
+            req.uri().path(),
+            "/v1/session" | "/v1/session/passkey/begin" | "/v1/session/passkey/finish"
+        );
     if safe || crate::caller::uses_non_cookie_credential(&s, headers) {
         return next.run(req).await;
     }
@@ -138,13 +142,23 @@ pub(crate) async fn sign_in(
             client.as_deref(),
         )
         .await?;
+    Ok(session_response(&s, &headers, &record, &cookie))
+}
+
+/// The session's info with its cookie set.
+pub(crate) fn session_response(
+    s: &AppState,
+    headers: &HeaderMap,
+    record: &SessionRecord,
+    cookie: &str,
+) -> Response {
     let max_age = s.access.session_lifetime().num_seconds();
-    let mut res = Json(info(&record)).into_response();
+    let mut res = Json(info(record)).into_response();
     res.headers_mut().insert(
         SET_COOKIE,
-        set_cookie(&cookie, max_age, is_https(&s, &headers)),
+        set_cookie(cookie, max_age, is_https(s, headers)),
     );
-    Ok(res)
+    res
 }
 
 #[utoipa::path(get, path = "/v1/session", responses(

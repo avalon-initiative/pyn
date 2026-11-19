@@ -3,7 +3,9 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use pyn_core::two_factor::{FactorRecord, FactorRemoval, NoticeRecord, TwoFactorPolicy};
+use pyn_core::two_factor::{
+    ChallengeRecord, FactorRecord, FactorRemoval, NoticeRecord, PasskeyRecord, TwoFactorPolicy,
+};
 use pyn_core::{
     AccessMode, AccessStore, AccountDeletion, AccountDisable, AccountEmail, AccountId, AccountKind,
     AccountPurge, AccountRecord, AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule,
@@ -2467,6 +2469,51 @@ impl AccessStore for PgMetadataStore {
 
     async fn fresh_until(&self, credential: &str) -> Result<Option<DateTime<Utc>>> {
         self.fresh_until_row(credential).await
+    }
+
+    async fn passkeys_of(&self, user: &UserId) -> Result<Vec<PasskeyRecord>> {
+        self.passkeys_rows(user).await
+    }
+
+    async fn passkey_by_credential(&self, credential_id: &[u8]) -> Result<Option<PasskeyRecord>> {
+        self.passkey_by_credential_row(credential_id).await
+    }
+
+    async fn create_passkey(&self, passkey: PasskeyRecord) -> Result<bool> {
+        self.create_passkey_row(&passkey).await
+    }
+
+    async fn rename_passkey(&self, user: &UserId, id: &str, name: &str) -> Result<bool> {
+        self.rename_passkey_row(user, id, name).await
+    }
+
+    async fn remove_passkey(&self, user: &UserId, id: &str) -> Result<FactorRemoval> {
+        self.remove_passkey_row(user, id).await
+    }
+
+    async fn record_passkey_use(
+        &self,
+        user: &UserId,
+        id: &str,
+        previous: u32,
+        sign_count: u32,
+        backup_state: bool,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.record_passkey_use_row(user, id, previous, sign_count, backup_state, now)
+            .await
+    }
+
+    async fn put_challenge(&self, challenge: ChallengeRecord, now: DateTime<Utc>) -> Result<()> {
+        self.put_challenge_row(&challenge, now).await
+    }
+
+    async fn take_challenge(
+        &self,
+        id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ChallengeRecord>> {
+        self.take_challenge_row(id, now).await
     }
 
     async fn clear_two_factor(&self, user: &UserId) -> Result<usize> {
