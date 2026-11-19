@@ -4,6 +4,8 @@
 //! (tests only).
 
 mod common;
+#[path = "../../pyn-gittransport/tests/common/script.rs"]
+mod script;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -2767,12 +2769,10 @@ impl Pair {
             ],
         );
         let shim = self.root_dir().join("ssh-shim");
-        fs::write(
+        script::write_script(
             &shim,
-            "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o|-p|-P) shift 2;; --|-batch) shift;; *) break;; esac; done\ncmd=\"$2\"\nPATH=\"$(git --exec-path):$PATH\"; export PATH\nexec sh -c \"$cmd\"\n",
-        )
-        .unwrap();
-        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+            "while [ $# -gt 0 ]; do case \"$1\" in -o|-p|-P) shift 2;; --|-batch) shift;; *) break;; esac; done\ncmd=\"$2\"\nPATH=\"$(git --exec-path):$PATH\"; export PATH\nexec sh -c \"$cmd\"\n",
+        );
         let url = format!("ssh://git@example.invalid{}", origin.display());
         self.both(|env, d| {
             env.ok(d, &["remote", "add", "origin", &url]);

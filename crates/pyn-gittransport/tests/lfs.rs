@@ -327,15 +327,11 @@ fn a_refused_upload_and_a_failing_batch_report_why() {
 }
 
 #[cfg(unix)]
-#[path = "common/script.rs"]
-mod script;
-
-#[cfg(unix)]
 mod ssh_endpoint {
     use super::*;
     use pyn_gittransport::lfs_ssh::resolve;
 
-    use super::script;
+    use super::common::gitsrv::script;
 
     /// An ssh client that logs the remote command and answers `git-lfs-authenticate` with `answer` (or fails when empty).
     fn shim(dir: &Path, answer: &str) -> String {
