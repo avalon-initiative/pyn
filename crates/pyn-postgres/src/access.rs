@@ -11,11 +11,12 @@ use pyn_core::{
     ExternalCreate, ExternalIdentity, GrantLevel, IdentityUnlink, InvitationAccept,
     InvitationCreate, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent, MemberCreation,
     NameReservation, NewAccount, NewExternalAccount, NewSecret, OidcFlow, OrgDeleteMark,
-    OrgInvitation, OrgMemberChange, OrgProfile, OrgRole, Permission, PrimaryChange, Profile,
-    ProfileFields, ProfileVisibility, PynError, RateLimitStore, RateState, RegistrationMode,
-    RenameOutcome, RepoAccess, RepoId, RepoPolicy, Result, Role, RoleDefinitions, ServerSettings,
-    ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind,
-    TeamId, TeamRecord, TokenId, TokenRecord, TokenResource, UserId, VerificationRecord,
+    OrgInvitation, OrgMemberChange, OrgProfile, OrgRole, OrgSettings, Permission, PrimaryChange,
+    Profile, ProfileFields, ProfileVisibility, PynError, RateLimitStore, RateState,
+    RegistrationMode, RenameOutcome, RepoAccess, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
+    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
+    SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord, TokenResource, UserId,
+    VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -607,6 +608,42 @@ impl AccessStore for PgMetadataStore {
             .await
             .map_err(db)?;
         Ok(())
+    }
+
+    async fn org_settings(&self, org: &UserId) -> Result<OrgSettings> {
+        let row: Option<Option<bool>> =
+            sqlx::query_scalar("SELECT exclusive_read_only FROM org_settings WHERE org = $1")
+                .bind(org.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?;
+        Ok(OrgSettings {
+            exclusive_read_only: row.flatten(),
+        })
+    }
+
+    async fn set_org_settings(&self, org: &UserId, settings: OrgSettings) -> Result<OrgSettings> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let old: Option<Option<bool>> = sqlx::query_scalar(
+            "SELECT exclusive_read_only FROM org_settings WHERE org = $1 FOR UPDATE",
+        )
+        .bind(org.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        sqlx::query(
+            "INSERT INTO org_settings (org, exclusive_read_only) VALUES ($1, $2)
+             ON CONFLICT (org) DO UPDATE SET exclusive_read_only = EXCLUDED.exclusive_read_only",
+        )
+        .bind(org.as_str())
+        .bind(settings.exclusive_read_only)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(OrgSettings {
+            exclusive_read_only: old.flatten(),
+        })
     }
 
     async fn repo_policy(&self, org: &UserId) -> Result<RepoPolicy> {

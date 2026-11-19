@@ -48,6 +48,7 @@ struct Meta {
     #[serde(default = "default_mode")]
     default: Mode,
     max_locks_per_user: Option<u32>,
+    exclusive_read_only: Option<bool>,
 }
 
 impl Default for Meta {
@@ -55,6 +56,7 @@ impl Default for Meta {
         Self {
             default: default_mode(),
             max_locks_per_user: None,
+            exclusive_read_only: None,
         }
     }
 }
@@ -76,6 +78,7 @@ struct Section {
 pub struct Rules {
     default: Mode,
     max_locks: Option<u32>,
+    exclusive_read_only: Option<bool>,
     exact: HashMap<String, Mode>,
     /// Folder entries stored with a trailing `/`.
     dirs: Vec<(String, Mode)>,
@@ -120,6 +123,7 @@ impl Rules {
         Self {
             default,
             max_locks: None,
+            exclusive_read_only: None,
             exact: HashMap::new(),
             dirs: Vec::new(),
             globs: Vec::new(),
@@ -137,6 +141,7 @@ impl Rules {
         let file: ConfigFile =
             toml::from_str(text).map_err(|e| PynError::InvalidRules(e.to_string()))?;
         let mut rules = Self::with_default(file.meta.default);
+        rules.exclusive_read_only = file.meta.exclusive_read_only;
         rules.max_locks = file
             .meta
             .max_locks_per_user
@@ -191,6 +196,11 @@ impl Rules {
     /// `meta.max_locks_per_user`, when the file sets it.
     pub fn max_locks_per_user(&self) -> Option<u32> {
         self.max_locks
+    }
+
+    /// `meta.exclusive_read_only`, when the file sets it.
+    pub fn exclusive_read_only(&self) -> Option<bool> {
+        self.exclusive_read_only
     }
 
     /// The policy file is exclusive unless an entry covers it, whatever `meta.default` says.
@@ -462,6 +472,24 @@ paths = ["Content/docs/", "**/*.md", "docs/"]
         for bad in ["", "/a", "a/../b", "a\\b", "["] {
             let err = PathFilter::new(bad).unwrap_err();
             assert!(matches!(err, PynError::InvalidRequest(_)), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_read_only_default_is_optional_and_must_be_a_boolean() {
+        assert_eq!(Rules::from_toml("").unwrap().exclusive_read_only(), None);
+        for (text, want) in [("false", false), ("true", true)] {
+            let rules =
+                Rules::from_toml(&format!("[meta]\nexclusive_read_only = {text}\n")).unwrap();
+            assert_eq!(rules.exclusive_read_only(), Some(want));
+        }
+        for bad in [
+            "[meta]\nexclusive_read_only = \"no\"\n",
+            "[meta]\nexclusive_read_only = 1\n",
+            "exclusive_read_only = false\n",
+        ] {
+            let err = Rules::from_toml(bad).unwrap_err();
+            assert!(matches!(err, PynError::InvalidRules(_)), "{bad}: {err}");
         }
     }
 

@@ -68,6 +68,7 @@ pub enum AuditAction {
     RepoCreationPolicyChanged,
     RepoCreationRuleSet,
     RepoCreationRuleRemoved,
+    OrgSettingChanged,
     ServiceCredentialCreated,
     ServiceCredentialRevoked,
     ServerSetupCompleted,
@@ -108,7 +109,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 78] = [
+    pub const ALL: [AuditAction; 79] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -150,6 +151,7 @@ impl AuditAction {
         AuditAction::RepoCreationPolicyChanged,
         AuditAction::RepoCreationRuleSet,
         AuditAction::RepoCreationRuleRemoved,
+        AuditAction::OrgSettingChanged,
         AuditAction::ServiceCredentialCreated,
         AuditAction::ServiceCredentialRevoked,
         AuditAction::ServerSetupCompleted,
@@ -232,6 +234,7 @@ impl AuditAction {
             Self::RepoCreationPolicyChanged => "repo_creation_policy_changed",
             Self::RepoCreationRuleSet => "repo_creation_rule_set",
             Self::RepoCreationRuleRemoved => "repo_creation_rule_removed",
+            Self::OrgSettingChanged => "org_setting_changed",
             Self::ServiceCredentialCreated => "service_credential_created",
             Self::ServiceCredentialRevoked => "service_credential_revoked",
             Self::ServerSetupCompleted => "server_setup_completed",

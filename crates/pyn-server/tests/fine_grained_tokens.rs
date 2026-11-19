@@ -1051,6 +1051,8 @@ async fn a_personal_token_with_repository_administration_write_reaches_no_organi
         ("DELETE", "/v1/orgs/acme/invitations/bob"),
         ("GET", "/v1/orgs/acme/members"),
         ("GET", "/v1/orgs/acme/audit"),
+        ("GET", "/v1/orgs/acme/settings"),
+        ("PUT", "/v1/orgs/acme/settings"),
         ("GET", "/v1/orgs/acme/repo-policy"),
         ("PUT", "/v1/orgs/acme/repo-policy"),
         ("PUT", rule),

@@ -746,11 +746,7 @@ fn adopt(
             lock: locks.iter().find(|l| l.path == entry.path).cloned(),
         };
         let known = if holds {
-            set_read_only(
-                &abs,
-                file.mode == api::Mode::Exclusive
-                    && file.lock.as_ref().is_none_or(|l| l.owner != me),
-            )?;
+            set_read_only(&abs, sync::wants_read_only(ws, &file, &me))?;
             FileState {
                 revision: entry.revision,
                 hash: entry.content.clone(),
@@ -981,7 +977,9 @@ fn write_change(
     put_file(ws, &change.path, &merged, change.file_mode)?;
     set_read_only(
         &ws.dest(&change.path)?,
-        change.mode == api::Mode::Exclusive && lock.is_none_or(|l| l.owner != me),
+        change.mode == api::Mode::Exclusive
+            && lock.is_none_or(|l| l.owner != me)
+            && ws.exclusive_read_only(),
     )
 }
 
@@ -1022,7 +1020,9 @@ fn write_conflict(
         let lock = locks.iter().find(|l| &l.path == path);
         set_read_only(
             &ws.dest(path)?,
-            conflict.mode == api::Mode::Exclusive && lock.is_none_or(|l| l.owner != me),
+            conflict.mode == api::Mode::Exclusive
+                && lock.is_none_or(|l| l.owner != me)
+                && ws.exclusive_read_only(),
         )?;
         state.insert(
             path.clone(),

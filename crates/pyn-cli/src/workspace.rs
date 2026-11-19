@@ -249,6 +249,48 @@ impl Workspace {
         std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
     }
 
+    fn read_only_cache_path(&self) -> PathBuf {
+        self.dir
+            .join(LOCAL_ONLY)
+            .join("state")
+            .join("exclusive_read_only")
+    }
+
+    /// What the server last reported for the read-only default.
+    pub fn cached_read_only(&self) -> Option<bool> {
+        match std::fs::read_to_string(self.read_only_cache_path()).as_deref() {
+            Ok("true") => Some(true),
+            Ok("false") => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Whether exclusive files are read-only without their lock: what the server last reported, else the work tree's
+    /// `.pyn/pyn.toml`, else on.
+    pub fn exclusive_read_only(&self) -> bool {
+        if let Some(on) = self.cached_read_only() {
+            return on;
+        }
+        std::fs::read_to_string(self.dir.join("pyn.toml"))
+            .ok()
+            .and_then(|text| crate::policy::Policy::parse(&text))
+            .and_then(|p| p.exclusive_read_only())
+            .unwrap_or(true)
+    }
+
+    pub fn remember_exclusive_read_only(&self, on: bool) -> Result<()> {
+        let path = self.read_only_cache_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, on.to_string()).with_context(|| format!("writing {}", path.display()))
+    }
+
+    /// Makes an exclusive file without its lock read-only, or writable when the repository turns that default off.
+    pub fn lock_down(&self, target: &Path) -> Result<()> {
+        set_read_only(target, self.exclusive_read_only())
+    }
+
     pub fn abs(&self, repo_path: &str) -> PathBuf {
         self.root.join(repo_path)
     }
@@ -522,6 +564,23 @@ mod tests {
         assert_eq!(mode(&file), 0o444);
         set_read_only(&file, false).unwrap();
         assert_eq!(mode(&file), 0o644);
+    }
+
+    #[test]
+    fn the_read_only_default_is_the_servers_report_then_the_policy_file_then_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = Workspace::create(dir.path()).unwrap();
+        assert!(w.exclusive_read_only());
+        std::fs::write(
+            w.dir.join("pyn.toml"),
+            "[meta]\nexclusive_read_only = false\n",
+        )
+        .unwrap();
+        assert!(!w.exclusive_read_only(), "the policy file");
+        w.remember_exclusive_read_only(true).unwrap();
+        assert!(w.exclusive_read_only(), "what the server reported wins");
+        w.remember_exclusive_read_only(false).unwrap();
+        assert_eq!(w.cached_read_only(), Some(false));
     }
 
     #[test]

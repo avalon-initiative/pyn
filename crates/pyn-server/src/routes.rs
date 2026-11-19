@@ -19,8 +19,9 @@ use utoipa::openapi::extensions::Extensions;
 
 use crate::{
     AppState, access_api, admin_api, branch_api, caller, deletion_api, freeze_api, lfs_api,
-    limits_api, merge_api, oidc_api, org_api, profile_api, push_api, repo_api, repo_policy_api,
-    self_service_api, session_api, setup_api, team_api, two_factor_api, webhook_api,
+    limits_api, merge_api, oidc_api, org_api, org_settings_api, profile_api, push_api, repo_api,
+    repo_policy_api, self_service_api, session_api, setup_api, team_api, two_factor_api,
+    webhook_api,
 };
 
 const fn need(resource: TokenResource, level: GrantLevel) -> GrantNeed {
@@ -565,6 +566,16 @@ fn table() -> Vec<Entry> {
             "/v1/orgs/{org}/members/{user}",
             Reach::OrgScoped(need(OrgMembers, Write)),
             org_api::remove_member,
+        ),
+        get(
+            "/v1/orgs/{org}/settings",
+            Reach::OrgScoped(need(OrgAdministration, Read)),
+            org_settings_api::get_org_settings,
+        ),
+        put(
+            "/v1/orgs/{org}/settings",
+            Reach::OrgScoped(need(OrgAdministration, Write)),
+            org_settings_api::set_org_settings,
         ),
         get(
             "/v1/orgs/{org}/repo-policy",

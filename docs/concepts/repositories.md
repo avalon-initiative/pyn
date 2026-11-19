@@ -157,6 +157,26 @@ setting), `repo_creation_rule_set` and `repo_creation_rule_removed`. Rules for a
 rules for a person when they leave or are removed; the `team_deleted` and `org_member_removed` entries say which.
 Deleting the organization removes its policy.
 
+### Organization settings
+
+Defaults an organization sets for its repositories, where a repository's own [`pyn.toml`](pyn-toml.md) does not say.
+They are not part of the creation policy above and are read and changed by owners only.
+
+| Setting | Meaning |
+| --- | --- |
+| `exclusive_read_only` | Whether exclusive files are read-only in a work tree until their lock is held. Unset means on; a repository's `meta.exclusive_read_only` overrides it ([order](pyn-toml.md#read-only-default)) |
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/orgs/{org}/settings` | owners; `{exclusive_read_only}` (`null` when unset) |
+| `PUT /v1/orgs/{org}/settings` | owners; `{exclusive_read_only}` replaces the settings, and a field left out or `null` clears it; `200` with the result |
+
+A token needs `org_administration` read to read them and write to change them ([access](access.md#organization-and-account-routes));
+an organization is frozen against changes like its other settings. A change is recorded in the organization log as
+`org_setting_changed`. Deleting the organization removes its settings. On the command line (owners): `pyn org settings show <org>`
+and `pyn org settings set <org> --exclusive-read-only on|off|unset`; a repository's work trees pick the new value up at their next
+`pyn update` or `pyn status`.
+
 ### Teams
 
 A **team** is a flat group of an organization's members (teams do not nest) with a `slug` (1 to 39 lowercase letters,
@@ -214,6 +234,9 @@ The owner can change all three and rename the repository. The limit counts one u
 limit across repositories is not implemented. A rename keeps all of its data: a repository has a fixed
 [stable id](#addresses-and-namespaces), and the name is only its address, so old addresses stop working and may be reused by a new repository without
 touching the old data.
+
+A repository also reports `exclusive_read_only`, whether exclusive files are read-only in a work tree until locked, and
+`exclusive_read_only_source` (`repository`, `organization` or `default`); see [`pyn.toml`](pyn-toml.md#read-only-default).
 
 A repository reports `max_locks_per_user` (the limit in force), `max_locks_per_user_setting` (the stored setting, absent when it
 follows the server) and `max_locks_set_by_policy` (true when `.pyn/pyn.toml` sets the limit, so the setting is read-only).

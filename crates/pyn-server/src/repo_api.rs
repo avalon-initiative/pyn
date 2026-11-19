@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use chrono::Duration;
 use pyn_core::{
     AccountStatus, InviteId, InviteRecord, LockLimit, MAX_INVITE_HOURS, Permission, PynError,
-    RepoRecord, RepoSettings, RepoUpdate, Role, UserId,
+    ReadOnlySource, RepoRecord, RepoSettings, RepoUpdate, Role, UserId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -37,6 +37,7 @@ pub(crate) async fn repo_info(
     role: Option<Role>,
     limit: LockLimit,
 ) -> ApiResult<api::RepoInfo> {
+    let read_only = s.repos.read_only_default(&r).await?;
     let owner_id = s.access.account_id(&r.owner).await?.to_string();
     let owner_identity =
         s.access
@@ -58,6 +59,12 @@ pub(crate) async fn repo_info(
         max_locks_per_user: limit.max,
         max_locks_per_user_setting: r.settings.max_locks,
         max_locks_set_by_policy: limit.from_policy,
+        exclusive_read_only: read_only.enabled,
+        exclusive_read_only_source: match read_only.source {
+            ReadOnlySource::Repository => api::ReadOnlySource::Repository,
+            ReadOnlySource::Organization => api::ReadOnlySource::Organization,
+            ReadOnlySource::Default => api::ReadOnlySource::Default,
+        },
         created_at: r.created_at,
         role: role.map(|r| r.to_string()),
     })

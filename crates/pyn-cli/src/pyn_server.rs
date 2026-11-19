@@ -43,6 +43,12 @@ impl Backend for PynServer {
         self.api.list_files()
     }
 
+    fn exclusive_read_only(&self) -> Result<Option<bool>> {
+        let api = &self.api;
+        let repo: api::RepoInfo = api.send(api.get(&api.repo_route("")?))?.json()?;
+        Ok(Some(repo.exclusive_read_only))
+    }
+
     fn tree(&self, path: Option<&str>) -> Result<api::TreeListing> {
         let api = &self.api;
         let mut req = api.on_branch(api.get(&api.repo_route("/tree")?));

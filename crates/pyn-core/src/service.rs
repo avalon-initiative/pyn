@@ -415,6 +415,11 @@ impl RepoService {
         Ok(None)
     }
 
+    /// `meta.exclusive_read_only` of the policy in force, when the file sets it.
+    pub fn exclusive_read_only(&self) -> Option<bool> {
+        self.rules().exclusive_read_only()
+    }
+
     pub fn lock_limit(&self) -> LockLimit {
         let policy = self.rules().max_locks_per_user();
         LockLimit {

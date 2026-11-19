@@ -358,7 +358,7 @@ fn materialize(
                 let mode = api_mode(entry.mode)?;
                 localfile::apply(&abs, name, mode)?;
                 if was_read_only && !editable.contains(name) {
-                    set_read_only(&abs, true)?;
+                    ws.lock_down(&abs)?;
                 }
                 let hash = hash_of(&bytes);
                 match state.get_mut(name) {
