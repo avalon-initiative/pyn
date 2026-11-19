@@ -255,7 +255,9 @@ second_factor_required` (a wrong password still gets the one generic `401`, so t
 password), and a wrong code `401 second_factor_invalid`. A client asks for the code and sends the request again. An app code
 works once: the server remembers the latest time step it accepted and accepts one step of clock drift either way. Signing in
 with a recovery code is recorded in the server audit log. [External sign-in](external-sign-in.md) brings its own second
-factor and is not challenged, and neither are tokens or SSH keys: they are credentials for automation. Provisional: `pyn login` does not ask for the code yet, so on the command line an account with a factor uses a token made in the web app (after a fresh check) until it does.
+factor and is not challenged, and neither are tokens or SSH keys: they are credentials for automation.
+
+`pyn login` asks for the code after the password when the server answers `second_factor_required`, and asks again (up to three codes) after `second_factor_invalid`. The prompt takes one line from standard input, so a script that already pipes the password with `--password-stdin` sends the code as the next line; there is no code flag or environment variable, as a code would show in the process list, and unattended use should sign in with a token instead. A `429 too_many_attempts` is reported with its `Retry-After` wait. Passkeys are not supported by the CLI yet.
 
 **Fresh check (sudo mode).** An account that has a factor must pass it again, recently, before a sensitive action:
 changing the password or the factors (adding, removing, new recovery codes), creating or revoking a token, adding or removing
@@ -263,7 +265,7 @@ an SSH key, and scheduling the account's deletion. (Administrator access session
 /v1/me/two-factor/verify {code}` takes an app code or a recovery code and keeps those actions open for 15 minutes on the
 credential that sent it, a session or a sign-in token (the window belongs to that credential, not to the account), and answers
 `{fresh_until}`. A sign-in that passed the second factor starts with the window open. Without it the action answers `403
-fresh_check_required` and changes nothing. An account with no factor is never asked. A fine-grained token is not challenged
+fresh_check_required` and changes nothing. The CLI handles that answer for `pyn token create` and `revoke`, `pyn key add` and `remove`, `pyn password` and `pyn account delete`: it asks for a code (one line of standard input), calls `verify` and repeats the command once. An account with no factor is never asked. A fine-grained token is not challenged
 (decision #1097 leaves automation alone), but it can only be created by a credential that passed the check, and it never
 reaches the factor routes, which are [full-scope](#full-scope-credentials) only like the password.
 

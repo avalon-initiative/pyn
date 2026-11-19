@@ -249,6 +249,20 @@ pub fn read_password(prompt: &str, from_stdin: bool) -> Result<String> {
     Ok(rpassword::prompt_password(prompt)?)
 }
 
+/// One line of standard input after a prompt on standard error; echoed, as the code is short-lived.
+pub fn read_code(prompt: &str) -> Result<String> {
+    use std::io::Write;
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let line = line.trim().to_string();
+    if line.is_empty() {
+        bail!("no code on standard input");
+    }
+    Ok(line)
+}
+
 /// The token for `--token`: the value itself, or one line of standard input for `-`. A value given on the
 /// command line (`on_command_line`) is visible in the process list, so it earns a warning.
 pub fn resolve_token(
