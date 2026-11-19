@@ -77,7 +77,13 @@ a folder named after the repository, downloads every file at its head revision (
 you are inside the workspace and take paths relative to your current directory.
 
 - **Read-only exclusive files.** Exclusive files are read-only until you hold the lock. `pyn lock` makes the file
-  writable; `pyn commit` and `pyn unlock` make it read-only again. Shared files are always writable. The read-only bit is a
+  writable; `pyn commit` and `pyn unlock` make it read-only again. Shared files are always writable. A repository can turn
+  this default off (`meta.exclusive_read_only = false` in [`pyn.toml`](pyn-toml.md#read-only-default)) and an organization
+  can turn it off for its repositories ([organization settings](repositories.md#organization-settings)); the repository's
+  setting wins, then the organization's, then on. The client reads the value in force from the server and applies it when it
+  makes or lifts the read-only bit (`pyn update`, `pyn status`, `pyn lock`, `pyn commit`, `pyn unlock`, `pyn switch`, `pyn merge`),
+  so changing it makes the next `pyn update` or `pyn status` rewrite the bit on the exclusive files you do not lock. With no
+  server to ask, the work tree's own `.pyn/pyn.toml` decides. `pyn status --json` carries it as `exclusive_read_only`. The read-only bit is a
   courtesy and not the guarantee (anyone can `chmod` the file); the server still publishes an exclusive path only for the
   account that holds its lock. To work offline, `pyn edit <path>...` (files or folders) makes the exclusive files writable
   with no server and no lock, and says the lock is needed to publish; it does not take one.

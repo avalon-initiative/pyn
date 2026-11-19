@@ -65,6 +65,11 @@ pub trait Backend {
 
     fn list_files(&self) -> Result<Vec<api::FileEntry>>;
 
+    /// The repository's effective read-only default for exclusive files, when the home reports one.
+    fn exclusive_read_only(&self) -> Result<Option<bool>> {
+        Ok(None)
+    }
+
     fn tree(&self, path: Option<&str>) -> Result<api::TreeListing>;
 
     /// The newest commit's id; `None` when the repository has none.

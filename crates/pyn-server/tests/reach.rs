@@ -1156,6 +1156,16 @@ const ORGANIZATION_AND_ACCOUNT_ROUTES: &[(&str, &str, &str)] = &[
     ),
     (
         "GET",
+        "/v1/orgs/{org}/settings",
+        "org_scoped:org_administration:read",
+    ),
+    (
+        "PUT",
+        "/v1/orgs/{org}/settings",
+        "org_scoped:org_administration:write",
+    ),
+    (
+        "GET",
         "/v1/orgs/{org}/repo-policy",
         "org_scoped:org_administration:read",
     ),

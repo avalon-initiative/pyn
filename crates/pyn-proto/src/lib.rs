@@ -1058,6 +1058,36 @@ pub enum Visibility {
     Private,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Where a repository's read-only default came from, most specific first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ReadOnlySource {
+    Repository,
+    Organization,
+    #[default]
+    Default,
+}
+
+/// An organization's repository defaults; a field that is absent or null is not set by the organization.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OrgSettingsInfo {
+    /// Whether the organization's repositories make exclusive files read-only until their lock is held, where a
+    /// repository's own `.pyn/pyn.toml` does not say; unset means the built-in default (on).
+    #[serde(default)]
+    pub exclusive_read_only: Option<bool>,
+}
+
+/// Replaces the organization's settings: a field left out or null is cleared.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct SetOrgSettingsRequest {
+    #[serde(default)]
+    pub exclusive_read_only: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RepoInfo {
     /// Stable, never reused and unchanged by a rename; a deleted repository's id is never issued again.
@@ -1079,6 +1109,13 @@ pub struct RepoInfo {
     pub max_locks_per_user_setting: Option<u32>,
     /// True when `.pyn/pyn.toml` sets the limit; the setting then cannot be changed.
     pub max_locks_set_by_policy: bool,
+    /// Whether exclusive files are read-only in a work tree until their lock is held: the policy file's
+    /// `meta.exclusive_read_only`, else the owning organization's setting, else on.
+    #[serde(default = "default_true")]
+    pub exclusive_read_only: bool,
+    /// Which of the three decided `exclusive_read_only`.
+    #[serde(default)]
+    pub exclusive_read_only_source: ReadOnlySource,
     pub created_at: DateTime<Utc>,
     /// The caller's role in the repository; absent when they have none.
     pub role: Option<String>,

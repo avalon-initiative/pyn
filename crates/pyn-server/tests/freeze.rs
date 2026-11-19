@@ -323,6 +323,12 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
                 None,
             ),
             case(
+                "set_org_settings",
+                "PUT",
+                format!("{base}/settings"),
+                Some(json!({"exclusive_read_only": false})),
+            ),
+            case(
                 "set_repo_policy",
                 "PUT",
                 format!("{base}/repo-policy"),

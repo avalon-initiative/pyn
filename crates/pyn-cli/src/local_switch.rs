@@ -501,7 +501,7 @@ fn apply(
                 ws.write_file(&path, &bytes)?;
                 localfile::apply(&target, &path, w.file_mode)?;
                 let entry = branch::file_entry(&w, locks);
-                set_read_only(&target, sync::wants_read_only(&entry, me))?;
+                set_read_only(&target, sync::wants_read_only(ws, &entry, me))?;
                 state.insert(
                     path,
                     FileState {

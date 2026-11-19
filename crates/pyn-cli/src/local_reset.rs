@@ -331,9 +331,9 @@ pub fn reset(backend: &dyn Backend, ws: &Workspace, args: ResetArgs) -> Result<(
             let held = files
                 .iter()
                 .find(|f| f.path == path)
-                .is_some_and(|f| !sync::wants_read_only(f, &me));
+                .is_some_and(|f| !sync::wants_read_only(ws, f, &me));
             if mode == "exclusive" && !held {
-                set_read_only(&target, true)?;
+                ws.lock_down(&target)?;
             }
         }
         state.insert(

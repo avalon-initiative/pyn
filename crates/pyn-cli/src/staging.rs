@@ -670,7 +670,7 @@ fn commit_local(
     let me = backend.whoami()?;
     for entry in backend.list_files()? {
         let staged = index.entries.get(&entry.path).is_some_and(|s| !s.deleted);
-        if staged && !sync::wants_read_only(&entry, &me) {
+        if staged && !sync::wants_read_only(ws, &entry, &me) {
             set_read_only(&ws.dest(&entry.path)?, false)?;
         }
     }

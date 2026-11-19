@@ -31,6 +31,7 @@ use crate::limits::{
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
 use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
+use crate::org_settings::OrgSettings;
 use crate::profile::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility};
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate, Visibility};
@@ -2057,6 +2058,7 @@ struct AccessState {
     team_members: BTreeSet<(UserId, String, UserId)>,
     team_roles: BTreeMap<(RepoId, UserId, String), Role>,
     member_creation: HashMap<UserId, MemberCreation>,
+    org_settings: HashMap<UserId, OrgSettings>,
     creation_rules: BTreeMap<(UserId, CreationSubject, CreationEffect), CreationScope>,
     definitions: HashMap<RepoId, RoleDefinitions>,
     tokens: HashMap<TokenId, TokenRecord>,
@@ -2388,6 +2390,7 @@ impl AccessStore for MemoryAccessStore {
         st.team_members.retain(|(o, _, _)| o != org);
         st.team_roles.retain(|(_, o, _), _| o != org);
         st.member_creation.remove(org);
+        st.org_settings.remove(org);
         st.creation_rules.retain(|(o, _, _), _| o != org);
         st.two_factor.forget_org(org);
         Ok(true)
@@ -2801,6 +2804,19 @@ impl AccessStore for MemoryAccessStore {
         out.sort();
         out.dedup();
         Ok(out)
+    }
+
+    async fn org_settings(&self, org: &UserId) -> Result<OrgSettings> {
+        let st = self.state.lock().unwrap();
+        Ok(st.org_settings.get(org).copied().unwrap_or_default())
+    }
+
+    async fn set_org_settings(&self, org: &UserId, settings: OrgSettings) -> Result<OrgSettings> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st
+            .org_settings
+            .insert(org.clone(), settings)
+            .unwrap_or_default())
     }
 
     async fn repo_policy(&self, org: &UserId) -> Result<RepoPolicy> {

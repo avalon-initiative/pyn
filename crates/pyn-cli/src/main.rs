@@ -48,6 +48,7 @@ mod merging;
 mod migrate;
 mod mv_plan;
 mod no_index;
+mod org_settings;
 mod pathspec;
 mod policy;
 mod policy_lint;
@@ -810,6 +811,9 @@ enum OrgCommand {
     /// Show and change who may create repositories in an organization (owners only).
     #[command(subcommand)]
     Policy(OrgPolicyCommand),
+    /// Show and change an organization's repository defaults (owners only).
+    #[command(subcommand)]
+    Settings(org_settings::OrgSettingsCommand),
 }
 
 #[derive(Subcommand)]
@@ -3831,6 +3835,7 @@ fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
         OrgCommand::Member(cmd) => org_member_command(api, cmd)?,
         OrgCommand::Invitation(cmd) => org_invitation_command(api, cmd)?,
         OrgCommand::Policy(cmd) => org_policy_command(api, cmd)?,
+        OrgCommand::Settings(cmd) => org_settings::run(api, cmd)?,
     }
     Ok(())
 }

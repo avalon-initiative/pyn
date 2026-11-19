@@ -39,6 +39,7 @@ mod merge_api;
 pub mod observe;
 mod oidc_api;
 mod org_api;
+mod org_settings_api;
 pub mod origin;
 pub mod passwords;
 mod profile_api;
@@ -198,6 +199,8 @@ struct RepoAddress {
         org_api::decline_invitation,
         org_api::set_member_role,
         org_api::remove_member,
+        org_settings_api::get_org_settings,
+        org_settings_api::set_org_settings,
         repo_policy_api::get_repo_policy,
         repo_policy_api::set_repo_policy,
         repo_policy_api::set_creation_rule,
@@ -397,6 +400,9 @@ struct RepoAddress {
         api::SetRoleRequest,
         api::Member,
         api::SetMemberRequest,
+        api::OrgSettingsInfo,
+        api::SetOrgSettingsRequest,
+        api::ReadOnlySource,
         api::RepoPolicyInfo,
         api::CreationRuleInfo,
         api::SetRepoPolicyRequest,

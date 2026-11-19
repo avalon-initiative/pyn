@@ -22,6 +22,7 @@ struct File {
 #[derive(Debug, Default, Deserialize)]
 struct Meta {
     default: Option<api::Mode>,
+    exclusive_read_only: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -33,6 +34,7 @@ struct Section {
 /// Most specific first: exact file, glob (`exclusive` wins), deepest folder, then `meta.default`.
 pub struct Policy {
     default: api::Mode,
+    exclusive_read_only: Option<bool>,
     exact: HashMap<String, api::Mode>,
     dirs: Vec<(String, api::Mode)>,
     globs: Vec<(GlobMatcher, api::Mode)>,
@@ -51,6 +53,7 @@ impl Policy {
     fn build(file: File) -> Option<Self> {
         let mut policy = Self {
             default: file.meta.default.unwrap_or(api::Mode::Exclusive),
+            exclusive_read_only: file.meta.exclusive_read_only,
             exact: HashMap::new(),
             dirs: Vec::new(),
             globs: Vec::new(),
@@ -73,6 +76,11 @@ impl Policy {
         }
         policy.dirs.sort_by_key(|(d, _)| std::cmp::Reverse(d.len()));
         Some(policy)
+    }
+
+    /// `meta.exclusive_read_only`, when the file sets it.
+    pub fn exclusive_read_only(&self) -> Option<bool> {
+        self.exclusive_read_only
     }
 
     pub fn mode_for(&self, path: &str) -> api::Mode {

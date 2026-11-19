@@ -4955,6 +4955,117 @@
         "x-pyn-reach": "org_scoped:org_administration:write"
       }
     },
+    "/v1/orgs/{org}/settings": {
+      "get": {
+        "tags": [
+          "org_settings_api"
+        ],
+        "operationId": "get_org_settings",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgSettingsInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token without the organization grant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "org_scoped:org_administration:read"
+      },
+      "put": {
+        "tags": [
+          "org_settings_api"
+        ],
+        "operationId": "set_org_settings",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "the organization's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetOrgSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the settings after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgSettingsInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not_org_owner, or a token without the organization grant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "org_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "org_scoped:org_administration:write"
+      }
+    },
     "/v1/orgs/{org}/teams": {
       "get": {
         "tags": [
@@ -13145,6 +13256,19 @@
           "member"
         ]
       },
+      "OrgSettingsInfo": {
+        "type": "object",
+        "description": "An organization's repository defaults; a field that is absent or null is not set by the organization.",
+        "properties": {
+          "exclusive_read_only": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the organization's repositories make exclusive files read-only until their lock is held, where a\nrepository's own `.pyn/pyn.toml` does not say; unset means the built-in default (on)."
+          }
+        }
+      },
       "OrganizationCreatedData": {
         "type": "object",
         "description": "`organization.created`.",
@@ -13849,6 +13973,15 @@
           }
         }
       },
+      "ReadOnlySource": {
+        "type": "string",
+        "description": "Where a repository's read-only default came from, most specific first.",
+        "enum": [
+          "repository",
+          "organization",
+          "default"
+        ]
+      },
       "RecoveryCodes": {
         "type": "object",
         "description": "New recovery codes, shown once. The old ones no longer work.",
@@ -14020,6 +14153,14 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "exclusive_read_only": {
+            "type": "boolean",
+            "description": "Whether exclusive files are read-only in a work tree until their lock is held: the policy file's\n`meta.exclusive_read_only`, else the owning organization's setting, else on."
+          },
+          "exclusive_read_only_source": {
+            "$ref": "#/components/schemas/ReadOnlySource",
+            "description": "Which of the three decided `exclusive_read_only`."
           },
           "id": {
             "type": "string",
@@ -14907,6 +15048,18 @@
         "properties": {
           "role": {
             "$ref": "#/components/schemas/OrgRole"
+          }
+        }
+      },
+      "SetOrgSettingsRequest": {
+        "type": "object",
+        "description": "Replaces the organization's settings: a field left out or null is cleared.",
+        "properties": {
+          "exclusive_read_only": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         }
       },

@@ -319,6 +319,12 @@ impl Repositories {
         Ok(self.service_for(record).await?.lock_limit())
     }
 
+    /// Whether exclusive files are read-only without the lock: the policy file, then the owner's setting, then on.
+    pub async fn read_only_default(&self, record: &RepoRecord) -> Result<crate::ReadOnlyDefault> {
+        let file = self.service_for(record).await?.exclusive_read_only();
+        self.access.read_only_default(&record.owner, file).await
+    }
+
     /// What one repository uses. Callers check the reader's access first.
     pub async fn repo_usage(&self, record: &RepoRecord) -> Result<RepoUsage> {
         self.meta.repo_usage(&record.id).await

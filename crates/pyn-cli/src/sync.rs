@@ -23,9 +23,32 @@ pub fn mode_name(mode: api::Mode) -> &'static str {
     }
 }
 
-/// Exclusive files stay read-only until their owner holds the lock.
-pub(crate) fn wants_read_only(entry: &api::FileEntry, me: &str) -> bool {
-    entry.mode == api::Mode::Exclusive && entry.lock.as_ref().is_none_or(|l| l.owner != me)
+/// Exclusive files stay read-only until their owner holds the lock, unless the repository turned that default off.
+pub(crate) fn wants_read_only(ws: &Workspace, entry: &api::FileEntry, me: &str) -> bool {
+    entry.mode == api::Mode::Exclusive
+        && entry.lock.as_ref().is_none_or(|l| l.owner != me)
+        && ws.exclusive_read_only()
+}
+
+/// Stores the effective read-only default the server reports, and applies it to the exclusive files held without a lock
+/// when it differs from the one in force.
+pub(crate) fn refresh_read_only(backend: &dyn Backend, ws: &Workspace) -> Result<()> {
+    let Some(on) = backend.exclusive_read_only().ok().flatten() else {
+        return Ok(());
+    };
+    let before = ws.exclusive_read_only();
+    ws.remember_exclusive_read_only(on)?;
+    if before == on {
+        return Ok(());
+    }
+    let me = backend.whoami()?;
+    for entry in backend.list_files()? {
+        let target = ws.abs(&entry.path);
+        if entry.mode == api::Mode::Exclusive && localfile::exists(&target) {
+            set_read_only(&target, wants_read_only(ws, &entry, &me))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn fetch(
@@ -39,7 +62,7 @@ pub fn fetch(
     set_read_only(&target, false)?;
     let (_, hash) = backend.download(&entry.path, Some(revision), &target)?;
     localfile::apply(&target, &entry.path, entry.file_mode)?;
-    set_read_only(&target, wants_read_only(entry, me))?;
+    set_read_only(&target, wants_read_only(ws, entry, me))?;
     Ok(FileState {
         revision,
         hash,
@@ -115,6 +138,9 @@ pub fn clone_into(
     }
     .save(&ws.config_path())?;
 
+    if let Some(on) = backend.exclusive_read_only().ok().flatten() {
+        ws.remember_exclusive_read_only(on)?;
+    }
     let me = backend.whoami()?;
     let mut state = BTreeMap::new();
     for entry in entries {
@@ -165,6 +191,7 @@ pub fn status(
     commit: Option<&str>,
     view: StatusView<'_>,
 ) -> Result<()> {
+    refresh_read_only(backend, ws)?;
     let entries: BTreeMap<String, api::FileEntry> = entries_at(backend, commit)?
         .into_iter()
         .map(|e| (e.path.clone(), e))
@@ -432,6 +459,7 @@ pub fn status(
     if crate::json_out::on() {
         crate::json_out::print(serde_json::json!({
             "files": json_files,
+            "exclusive_read_only": ws.exclusive_read_only(),
             "counts": {
                 "staged": staged, "modified": modified, "behind": behind, "ahead": ahead,
                 "unmerged": unmerged.len(), "new": new, "untracked": untracked,
@@ -492,6 +520,7 @@ pub fn update(
     only: &[String],
     commit: Option<&str>,
 ) -> Result<()> {
+    refresh_read_only(backend, ws)?;
     let me = backend.whoami()?;
     let mut state = ws.load_state()?;
     let index = staging::Index::load(ws)?;
@@ -574,7 +603,7 @@ pub fn update(
         let on_disk = localfile::exists(&target);
         match state.get(&entry.path) {
             Some(k) if k.revision == head => {
-                set_read_only(&target, wants_read_only(&entry, &me))?;
+                set_read_only(&target, wants_read_only(ws, &entry, &me))?;
                 state.get_mut(&entry.path).expect("just read").mode =
                     mode_name(entry.mode).to_string();
                 continue;
@@ -657,7 +686,7 @@ pub fn after_unlock(ws: &Workspace, path: &str) -> Result<()> {
         .get(path)
         .is_some_and(|k| k.mode == "exclusive")
     {
-        set_read_only(&ws.dest(path)?, true)?;
+        ws.lock_down(&ws.dest(path)?)?;
     }
     Ok(())
 }
@@ -681,7 +710,7 @@ pub fn after_commit(
             .map_or_else(|| "shared".to_string(), |e| mode_name(e.mode).to_string()),
     };
     if mode == "exclusive" {
-        set_read_only(&ws.dest(path)?, true)?;
+        ws.lock_down(&ws.dest(path)?)?;
     }
     state.insert(
         path.to_string(),
