@@ -174,6 +174,10 @@ pub enum PynError {
     ServiceScopeRequired(ServiceScope),
     #[error("a service credential cannot be used for this")]
     ServiceCredentialNotAllowed,
+    #[error("an access session cannot do that")]
+    AccessSessionNotAllowed,
+    #[error("no access session {0}")]
+    AccessSessionNotFound(String),
     #[error("no service credential {0}")]
     ServiceCredentialNotFound(String),
     #[error("there is already a service credential named {0}")]
@@ -406,6 +410,8 @@ impl PynError {
             Self::ServiceScopeRequired(_) => "service_scope_required",
             Self::ServiceCredentialNotAllowed => "service_credential_not_allowed",
             Self::ServiceCredentialNotFound(_) => "service_credential_not_found",
+            Self::AccessSessionNotAllowed => "access_session_not_allowed",
+            Self::AccessSessionNotFound(_) => "access_session_not_found",
             Self::ServiceCredentialExists(_) => "service_credential_exists",
             Self::WebhookNotFound(_) => "webhook_not_found",
             Self::WebhookDeliveryNotFound { .. } => "webhook_delivery_not_found",

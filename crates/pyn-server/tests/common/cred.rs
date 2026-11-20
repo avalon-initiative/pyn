@@ -22,6 +22,8 @@ pub enum Cred {
     Token(String),
     /// A service credential (`pyns_...`) as `Authorization: Bearer`.
     Service(String),
+    /// An administrator's access session (`pyna_...`) as `Authorization: Bearer`.
+    AccessSession(String),
     /// A browser session: the cookie, plus the CSRF header a browser adds to writes.
     Session {
         cookie: String,
@@ -40,6 +42,10 @@ impl Cred {
 
     pub fn service(secret: &str) -> Self {
         Cred::Service(secret.into())
+    }
+
+    pub fn access_session(secret: &str) -> Self {
+        Cred::AccessSession(secret.into())
     }
 
     pub fn session(cookie: &str, csrf: &str) -> Self {
@@ -61,6 +67,8 @@ impl Cred {
     pub fn bearer(secret: &str) -> Self {
         if secret.starts_with("pyns_") {
             Cred::Service(secret.into())
+        } else if secret.starts_with("pyna_") {
+            Cred::AccessSession(secret.into())
         } else {
             Cred::Token(secret.into())
         }
@@ -73,6 +81,8 @@ impl Cred {
             Cred::SignedOut
         } else if who.starts_with("pyns_") {
             Cred::Service(who.into())
+        } else if who.starts_with("pyna_") {
+            Cred::AccessSession(who.into())
         } else if who.starts_with("pyn_") {
             Cred::Token(who.into())
         } else {
@@ -87,7 +97,7 @@ impl Cred {
             Cred::Dev(user) => {
                 assert!(
                     !user.is_empty()
-                        && !["pyn_", "pyns_", "pyni_"]
+                        && !["pyn_", "pyns_", "pyna_", "pyni_"]
                             .iter()
                             .any(|p| user.starts_with(p))
                         && !user.contains(char::is_whitespace),
@@ -109,11 +119,18 @@ impl Cred {
                 );
                 b.header("authorization", format!("Bearer {s}"))
             }
+            Cred::AccessSession(s) => {
+                assert!(
+                    s.starts_with("pyna_"),
+                    "an access session starts with `pyna_`: {s:?}"
+                );
+                b.header("authorization", format!("Bearer {s}"))
+            }
             Cred::Session { cookie, csrf } => {
                 assert!(
                     !cookie.is_empty()
                         && !cookie.contains([';', '=', ' '])
-                        && !["pyn_", "pyns_", "pyni_"]
+                        && !["pyn_", "pyns_", "pyna_", "pyni_"]
                             .iter()
                             .any(|p| cookie.starts_with(p)),
                     "a session cookie is an opaque value, not a token or credential secret: {cookie:?}"

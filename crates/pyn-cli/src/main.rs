@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use pyn_proto as api;
 
+mod access_session;
 mod account;
 mod address;
 mod admin;
@@ -105,7 +106,7 @@ struct Cli {
     /// The repository as owner/name; falls back to the workspace's setting, then your user setting.
     #[arg(long, env = "PYN_REPO", global = true)]
     repo: Option<String>,
-    /// Machine-readable output for whoami, status, locks, lock, unlock, files, ls and summary; see docs/cli-json.md.
+    /// Machine-readable output for whoami, status, locks, lock, unlock, files, ls, summary and admin access-session; see docs/cli-json.md.
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
@@ -1340,6 +1341,7 @@ fn json_supported(command: &Command) -> bool {
             | Command::Files
             | Command::Ls { .. }
             | Command::Summary
+            | Command::Admin(admin::AdminCommand::AccessSession(_))
     )
 }
 
