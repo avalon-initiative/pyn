@@ -39,8 +39,8 @@ default, so existing accounts and clients are unchanged. The setting is a `visib
 - The lists of people below honour it too, for every viewer including the owner: a hidden display name or avatar is
   null in `PublicIdentity`.
 
-Cached avatar responses are not recalled: a copy served while the avatar was visible can outlive hiding it by the cache
-lifetime.
+Avatar responses are revalidated on every use (see [Avatars](#avatars)), so hiding takes effect at the next request; only a
+copy a client already displays outlives it.
 
 ## Routes
 
@@ -160,8 +160,10 @@ that cannot display it shows no avatar.
 
 The avatar route answers with the detected `Content-Type`, `X-Content-Type-Options: nosniff`, a sandboxing
 `Content-Security-Policy`, and an `ETag` (the hash; `If-None-Match` gets a `304`). The profile's `avatar_url` ends in `?v=` and
-the start of the hash: a request carrying the current version is cached for a year (`immutable`), any other for five minutes,
-so a new image takes effect at once.
+the start of the hash, which keeps caches of different images apart. Every response carries `Cache-Control: no-cache`, so a
+cache must revalidate with the `ETag` before each use: a new image takes effect at once, and an avatar that was hidden or
+removed answers `404 avatar_not_found` on the next request instead of a `304`. The remaining window is a client that
+displays a copy without asking the server (an open page, or an image it has already decoded) until it next loads the image.
 
 Replacing or removing an avatar does not delete the old bytes. The object store is shared and content-addressed, so another
 record may name the same object. An account may change its avatar 30 times an hour.

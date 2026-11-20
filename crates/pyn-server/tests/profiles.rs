@@ -433,13 +433,12 @@ async fn an_avatar_is_uploaded_served_cached_replaced_and_removed() {
     assert_eq!(r.body, png());
     assert_eq!(r.header("content-type"), "image/png");
     assert_eq!(r.header("x-content-type-options"), "nosniff");
-    assert!(r.header("cache-control").contains("immutable"));
+    assert_eq!(r.header("cache-control"), "no-cache");
     let etag = r.header("etag").to_string();
     assert!(etag.starts_with('"') && etag.len() == 66, "{etag}");
 
     let r = call(&app, "", "GET", "/v1/users/alice/avatar?v=stale", None).await;
-    assert!(!r.header("cache-control").contains("immutable"));
-    assert!(r.header("cache-control").contains("max-age"));
+    assert_eq!(r.header("cache-control"), "no-cache");
     let r = send(
         &app,
         "",
@@ -593,6 +592,41 @@ async fn lists_of_people_carry_their_public_identity() {
     let first = page.entries.iter().find(|e| e.actor == "alice").unwrap();
     let who = first.actor_public.as_ref().expect("actor identity");
     assert_eq!(who.display_name.as_deref(), Some("Alice A."));
+}
+
+#[tokio::test]
+async fn a_hidden_avatar_is_not_served_from_a_conditional_request() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    put_avatar(&app, &alice, "image/png", png()).await;
+    let r = call(&app, "", "GET", "/v1/users/alice/avatar", None).await;
+    let etag = r.header("etag").to_string();
+    let conditional = [("if-none-match", etag.as_str())];
+    let get = || {
+        send(
+            &app,
+            "",
+            "GET",
+            "/v1/users/alice/avatar",
+            "",
+            vec![],
+            &conditional,
+        )
+    };
+    assert_eq!(get().await.status, StatusCode::NOT_MODIFIED);
+
+    let hide = json!({"visibility": {"avatar": false}});
+    call(&app, &alice, "PUT", "/v1/me/profile", Some(hide)).await;
+    let r = get().await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::NOT_FOUND, "avatar_not_found")
+    );
+
+    call(&app, &alice, "DELETE", "/v1/me/avatar", None).await;
+    let show = json!({"visibility": {"avatar": true}});
+    call(&app, &alice, "PUT", "/v1/me/profile", Some(show)).await;
+    assert_eq!(get().await.status, StatusCode::NOT_FOUND, "removed");
 }
 
 #[tokio::test]
@@ -790,7 +824,7 @@ async fn an_organization_avatar_is_uploaded_served_and_removed_by_owners_only() 
     assert_eq!(r.status, StatusCode::OK, "signed out");
     assert_eq!(r.body, png());
     assert_eq!(r.header("content-type"), "image/png");
-    assert!(r.header("cache-control").contains("immutable"));
+    assert_eq!(r.header("cache-control"), "no-cache");
     let etag = r.header("etag").to_string();
     let r = send(
         &app,
