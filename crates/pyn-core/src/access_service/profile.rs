@@ -118,13 +118,8 @@ impl AccessService {
         let fields = fields.validated()?;
         self.account_id(&actor.user).await?;
         self.store
-            .set_profile(&actor.user, &fields, self.clock.now())
+            .save_profile(&actor.user, &fields, visibility.as_ref(), self.clock.now())
             .await?;
-        if let Some(v) = visibility {
-            self.store
-                .set_profile_visibility(&actor.user, &v, self.clock.now())
-                .await?;
-        }
         self.store.profile(&actor.user).await
     }
 

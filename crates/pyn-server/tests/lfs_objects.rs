@@ -336,6 +336,7 @@ async fn an_uploaded_object_downloads_and_batch_download_names_the_href() {
         format!("http://pyn.example{BASE}/objects/{}", oid(bytes))
     );
     assert!(o["actions"].get("upload").is_none());
+    assert!(o.get("authenticated").is_none());
 
     let got = get_with(&w, &w.carol, &oid(bytes), None).await;
     assert_eq!(got.status, StatusCode::OK);
