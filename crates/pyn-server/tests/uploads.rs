@@ -72,6 +72,7 @@ async fn rig(cap: u64, per_user: u32, per_server: u32) -> Rig {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
+        updates: None,
     });
     Rig {
         app,

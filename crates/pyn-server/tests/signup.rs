@@ -64,6 +64,7 @@ fn server_with(trust_forwarded: bool, config: impl FnOnce(&mut AccessConfig)) ->
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded,
+        updates: None,
     });
     Server { app, mail }
 }

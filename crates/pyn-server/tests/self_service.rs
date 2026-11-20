@@ -64,6 +64,7 @@ fn server() -> Server {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
+        updates: None,
     });
     Server { app, mail }
 }

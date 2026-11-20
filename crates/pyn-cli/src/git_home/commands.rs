@@ -358,6 +358,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         | Command::Invite(_)
         | Command::User(_)
         | Command::Whoami
+        | Command::Version { .. }
         | Command::Repo(_)
         | Command::Org(_)
         | Command::Invitation(_)

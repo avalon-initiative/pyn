@@ -73,6 +73,7 @@ mod transfer;
 mod transport;
 mod two_factor;
 mod unsupported;
+mod update;
 mod userconfig;
 mod verify;
 mod webhook;
@@ -357,6 +358,12 @@ enum Command {
     External(Vec<OsString>),
     /// Show who you are signed in as and, in a repository, what you may do there.
     Whoami,
+    /// Show the pyn version; with --check, ask the server you are signed in to whether a newer release exists.
+    Version {
+        /// Ask the server (administrators only; the server must have its update check on).
+        #[arg(long)]
+        check: bool,
+    },
     /// Show profiles, and edit your own display name, bio, links and avatar.
     #[command(subcommand)]
     Profile(profile::ProfileCommand),
@@ -1325,6 +1332,7 @@ fn json_supported(command: &Command) -> bool {
     matches!(
         command,
         Command::Whoami
+            | Command::Version { check: true }
             | Command::Status(_)
             | Command::Locks { .. }
             | Command::Lock { .. }
@@ -1613,6 +1621,7 @@ fn runs_anywhere(command: &Command) -> bool {
             | Command::Setup { .. }
             | Command::Admin(_)
             | Command::Whoami
+            | Command::Version { .. }
             | Command::Member(_)
             | Command::Role(_)
             | Command::Invite(_)
@@ -2159,6 +2168,8 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Command::Version { check: false } => println!("pyn {}", env!("CARGO_PKG_VERSION")),
+        Command::Version { check: true } => update::check(backend.pyn_server("version")?)?,
         Command::Repo(cmd) => repo_command(backend.pyn_server("repo")?, cmd)?,
         Command::Org(cmd) => org_command(backend.pyn_server("org")?, cmd)?,
         Command::Invitation(cmd) => invitation_command(backend.pyn_server("invitation")?, cmd)?,

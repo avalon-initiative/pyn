@@ -18,6 +18,7 @@ use pyn_core::{
     Visibility,
 };
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
+use pyn_server::update_check::UpdateChecker;
 use pyn_server::{AppState, router};
 
 /// The repository `start` registers and the commands default to.
@@ -73,6 +74,18 @@ pub fn start_empty_with_clock(clock: Arc<ManualClock>) -> Env {
     build_with(false, &[], None, clock)
 }
 
+/// A server that has not been set up and expects this setup token, with the release lookup `updates` (or none).
+pub fn start_uninitialised_with_updates(token: &str, updates: Option<Arc<UpdateChecker>>) -> Env {
+    build_full(
+        false,
+        &[],
+        Some(token),
+        Arc::new(SystemClock),
+        false,
+        updates,
+    )
+}
+
 fn start_with(with_repo: bool) -> Env {
     build(with_repo, &[], None)
 }
@@ -83,7 +96,7 @@ fn build(with_repo: bool, accounts: &[&str], setup_token: Option<&str>) -> Env {
 
 /// A server with no repositories and no `PYN_CONFIG`: the all-exclusive fallback and the starter policy for new repositories.
 pub fn start_default_server() -> Env {
-    build_full(false, &[], None, Arc::new(SystemClock), true)
+    build_full(false, &[], None, Arc::new(SystemClock), true, None)
 }
 
 fn build_with(
@@ -92,7 +105,7 @@ fn build_with(
     setup_token: Option<&str>,
     clock: Arc<dyn Clock>,
 ) -> Env {
-    build_full(with_repo, accounts, setup_token, clock, false)
+    build_full(with_repo, accounts, setup_token, clock, false, None)
 }
 
 fn build_full(
@@ -101,6 +114,7 @@ fn build_full(
     setup_token: Option<&str>,
     clock: Arc<dyn Clock>,
     default_server: bool,
+    updates: Option<Arc<UpdateChecker>>,
 ) -> Env {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let objects = Arc::new(pyn_core::ChunkedStore::new(Arc::new(
@@ -183,6 +197,7 @@ fn build_full(
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
+        updates,
     });
     let url = runtime.block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -202,6 +217,11 @@ fn build_full(
 }
 
 impl Env {
+    /// Runs a future on the server's runtime.
+    pub fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
+        self._runtime.block_on(f)
+    }
+
     pub fn dir(&self, name: &str) -> PathBuf {
         let p = self.work.path().join(name);
         std::fs::create_dir_all(&p).unwrap();

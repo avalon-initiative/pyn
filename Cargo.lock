@@ -2185,6 +2185,7 @@ dependencies = [
  "pyn-proto",
  "pyn-webauthn",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sha1 0.11.0",

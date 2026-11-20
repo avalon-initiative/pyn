@@ -61,6 +61,7 @@ async fn server(settings: WebhookSettings) -> Router {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
+        updates: None,
     })
 }
 
