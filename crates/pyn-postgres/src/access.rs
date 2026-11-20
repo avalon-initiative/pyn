@@ -785,22 +785,14 @@ impl AccessStore for PgMetadataStore {
         self.profile_row(user).await
     }
 
-    async fn set_profile(
+    async fn save_profile(
         &self,
         user: &UserId,
         fields: &ProfileFields,
+        visibility: Option<&ProfileVisibility>,
         now: DateTime<Utc>,
     ) -> Result<()> {
-        self.put_profile_fields(user, fields, now).await
-    }
-
-    async fn set_profile_visibility(
-        &self,
-        user: &UserId,
-        visibility: &ProfileVisibility,
-        now: DateTime<Utc>,
-    ) -> Result<()> {
-        self.put_visibility(user, visibility, now).await
+        self.put_profile(user, fields, visibility, now).await
     }
 
     async fn org_profile(&self, org: &UserId) -> Result<OrgProfile> {

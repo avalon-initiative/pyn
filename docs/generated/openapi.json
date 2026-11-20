@@ -4275,7 +4275,7 @@
           {
             "name": "v",
             "in": "query",
-            "description": "the version from `avatar_url`; when it is the current one the image is cached for a year",
+            "description": "the version from `avatar_url`; it only keeps caches of different images apart, and every response must be revalidated",
             "required": false,
             "schema": {
               "type": "string"
@@ -10825,7 +10825,7 @@
           {
             "name": "v",
             "in": "query",
-            "description": "the version from `avatar_url`; when it is the current one the image is cached for a year",
+            "description": "the version from `avatar_url`; it only keeps caches of different images apart, and every response must be revalidated",
             "required": false,
             "schema": {
               "type": "string"

@@ -6,7 +6,7 @@ use pyn_core::{
     Result, UserId,
 };
 use sqlx::Row;
-use sqlx::postgres::PgRow;
+use sqlx::postgres::{PgConnection, PgRow};
 
 use crate::{PgMetadataStore, db};
 
@@ -45,8 +45,25 @@ impl PgMetadataStore {
         })
     }
 
+    /// Writes the text and, when given, the visibility in one transaction.
+    pub(crate) async fn put_profile(
+        &self,
+        user: &UserId,
+        fields: &ProfileFields,
+        visibility: Option<&ProfileVisibility>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        self.put_profile_fields(&mut tx, user, fields, now).await?;
+        if let Some(v) = visibility {
+            self.put_visibility(&mut tx, user, v, now).await?;
+        }
+        tx.commit().await.map_err(db)
+    }
+
     pub(crate) async fn put_profile_fields(
         &self,
+        conn: &mut PgConnection,
         user: &UserId,
         fields: &ProfileFields,
         now: DateTime<Utc>,
@@ -64,7 +81,7 @@ impl PgMetadataStore {
         .bind(&fields.company)
         .bind(&fields.links)
         .bind(now)
-        .execute(&self.pool)
+        .execute(conn)
         .await
         .map_err(db)?;
         Ok(())
@@ -72,6 +89,7 @@ impl PgMetadataStore {
 
     pub(crate) async fn put_visibility(
         &self,
+        conn: &mut PgConnection,
         user: &UserId,
         v: &ProfileVisibility,
         now: DateTime<Utc>,
@@ -91,7 +109,7 @@ impl PgMetadataStore {
         .bind(v.links)
         .bind(v.avatar)
         .bind(now)
-        .execute(&self.pool)
+        .execute(conn)
         .await
         .map_err(db)?;
         Ok(())

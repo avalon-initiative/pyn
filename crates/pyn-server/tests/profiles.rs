@@ -433,13 +433,12 @@ async fn an_avatar_is_uploaded_served_cached_replaced_and_removed() {
     assert_eq!(r.body, png());
     assert_eq!(r.header("content-type"), "image/png");
     assert_eq!(r.header("x-content-type-options"), "nosniff");
-    assert!(r.header("cache-control").contains("immutable"));
+    assert_eq!(r.header("cache-control"), "no-cache");
     let etag = r.header("etag").to_string();
     assert!(etag.starts_with('"') && etag.len() == 66, "{etag}");
 
     let r = call(&app, "", "GET", "/v1/users/alice/avatar?v=stale", None).await;
-    assert!(!r.header("cache-control").contains("immutable"));
-    assert!(r.header("cache-control").contains("max-age"));
+    assert_eq!(r.header("cache-control"), "no-cache");
     let r = send(
         &app,
         "",
@@ -593,6 +592,41 @@ async fn lists_of_people_carry_their_public_identity() {
     let first = page.entries.iter().find(|e| e.actor == "alice").unwrap();
     let who = first.actor_public.as_ref().expect("actor identity");
     assert_eq!(who.display_name.as_deref(), Some("Alice A."));
+}
+
+#[tokio::test]
+async fn a_hidden_avatar_is_not_served_from_a_conditional_request() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    put_avatar(&app, &alice, "image/png", png()).await;
+    let r = call(&app, "", "GET", "/v1/users/alice/avatar", None).await;
+    let etag = r.header("etag").to_string();
+    let conditional = [("if-none-match", etag.as_str())];
+    let get = || {
+        send(
+            &app,
+            "",
+            "GET",
+            "/v1/users/alice/avatar",
+            "",
+            vec![],
+            &conditional,
+        )
+    };
+    assert_eq!(get().await.status, StatusCode::NOT_MODIFIED);
+
+    let hide = json!({"visibility": {"avatar": false}});
+    call(&app, &alice, "PUT", "/v1/me/profile", Some(hide)).await;
+    let r = get().await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::NOT_FOUND, "avatar_not_found")
+    );
+
+    call(&app, &alice, "DELETE", "/v1/me/avatar", None).await;
+    let show = json!({"visibility": {"avatar": true}});
+    call(&app, &alice, "PUT", "/v1/me/profile", Some(show)).await;
+    assert_eq!(get().await.status, StatusCode::NOT_FOUND, "removed");
 }
 
 #[tokio::test]
@@ -790,7 +824,7 @@ async fn an_organization_avatar_is_uploaded_served_and_removed_by_owners_only() 
     assert_eq!(r.status, StatusCode::OK, "signed out");
     assert_eq!(r.body, png());
     assert_eq!(r.header("content-type"), "image/png");
-    assert!(r.header("cache-control").contains("immutable"));
+    assert_eq!(r.header("cache-control"), "no-cache");
     let etag = r.header("etag").to_string();
     let r = send(
         &app,
@@ -1410,4 +1444,36 @@ async fn signed_out_directory_requests_are_rate_limited_per_client_and_signed_in
     )
     .await;
     assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn organization_profile_edits_are_audited_by_field_without_their_content() {
+    let app = server().await;
+    let (alice, bob, _) = org_with_owner_and_member(&app).await;
+    put_org_profile(&app, &alice, json!({"description": "private words"})).await;
+    put_org_profile(&app, &alice, json!({"description": "private words"})).await;
+    put_org_profile(&app, &bob, json!({"description": "refused"})).await;
+    put_org_avatar(&app, &alice, png()).await;
+    call(&app, &alice, "DELETE", "/v1/orgs/acme/avatar", None).await;
+    call(&app, &alice, "DELETE", "/v1/orgs/acme/avatar", None).await;
+
+    let r = call(&app, &alice, "GET", "/v1/orgs/acme/audit", None).await;
+    let text = r.text();
+    let entries = r.json::<api::AuditPage>().entries;
+    let edits: Vec<_> = entries
+        .iter()
+        .rev()
+        .filter(|e| e.action.starts_with("org_profile") || e.action.starts_with("org_avatar"))
+        .map(|e| (e.action.as_str(), e.actor.as_str(), e.detail.as_str()))
+        .collect();
+    assert_eq!(
+        edits,
+        [
+            ("org_profile_updated", "alice", "description"),
+            ("org_avatar_set", "alice", "avatar"),
+            ("org_avatar_removed", "alice", "avatar"),
+        ],
+        "only real changes by an owner are recorded"
+    );
+    assert!(!text.contains("private words"), "{text}");
 }

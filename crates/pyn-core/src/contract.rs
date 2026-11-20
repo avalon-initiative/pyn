@@ -9060,6 +9060,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profiles_store_text_fields_and_an_avatar_apart);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profiles_belong_to_one_account_each);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profile_visibility_defaults_public_and_is_stored_apart);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; save_profile_writes_text_and_visibility_together_or_not_at_all);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_description_and_an_avatar_apart);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_are_apart_from_user_profiles_and_go_with_the_org);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_people_search_lists_active_accounts_and_matches_only_what_is_visible);

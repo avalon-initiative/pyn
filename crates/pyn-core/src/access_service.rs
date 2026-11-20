@@ -382,19 +382,13 @@ pub trait AccessStore: Send + Sync {
     /// The account's profile; empty when none was saved.
     async fn profile(&self, user: &UserId) -> Result<Profile>;
 
-    /// Replaces the profile's text fields, keeping the avatar. The account must exist.
-    async fn set_profile(
+    /// Replaces the profile's text fields and, when given, the per-field visibility, atomically; the avatar is kept.
+    /// The account must exist, else `UserNotFound` and nothing is written.
+    async fn save_profile(
         &self,
         user: &UserId,
         fields: &ProfileFields,
-        now: DateTime<Utc>,
-    ) -> Result<()>;
-
-    /// Replaces the per-field visibility, keeping everything else. The account must exist.
-    async fn set_profile_visibility(
-        &self,
-        user: &UserId,
-        visibility: &ProfileVisibility,
+        visibility: Option<&ProfileVisibility>,
         now: DateTime<Utc>,
     ) -> Result<()>;
 
