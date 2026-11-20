@@ -4,6 +4,12 @@
 # The web version defaults to the latest pyn-web release, since the two are released independently. Needs docker compose, curl, openssl.
 set -euo pipefail
 
+# The first bare-token line under the setup token header; startup log lines may be interleaved in between.
+setup_token_from_log() {
+  awk '/----- pyn one-time setup token -----/ {found=1; next} found && /^[[:space:]]*[A-Za-z0-9]+[[:space:]]*$/ {gsub(/[[:space:]]/, ""); if (length($0) >= 16) {print; exit}}'
+}
+if [[ ${1:-} == --setup-token-from-log ]]; then setup_token_from_log; exit 0; fi
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 version=${1:-}
 web_version=${2:-}
@@ -113,7 +119,7 @@ status=$(curl --silent --fail --max-time 10 "$server_url/v1/setup") || fail "GET
 [[ $status == *'"initialised":false'* ]] || fail "a fresh server should report initialised=false, got: $status"
 
 server_log=$(compose logs --no-log-prefix --no-color server 2>&1) || fail "could not read the server log"
-token=$(awk '/----- pyn one-time setup token -----/ {getline; print; exit}' <<<"$server_log" | tr -d '[:space:][:cntrl:]')
+token=$(setup_token_from_log <<<"$server_log")
 [[ -n $token ]] || fail "the setup token is not in the server log"
 
 step "completing first-run setup"
