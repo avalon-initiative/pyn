@@ -385,3 +385,80 @@ fn changing_the_password_says_the_saved_sign_in_ended_and_forgets_it() {
     let whoami = env.ok(&home, "-", &["whoami"]);
     assert!(whoami.contains("alice"), "{whoami}");
 }
+
+#[test]
+fn an_access_session_acts_as_an_account_until_it_is_ended() {
+    let (env, home) = set_up();
+    let start = ["admin", "access-session", "start", "alice"];
+
+    let no_notes = env.fails(
+        &home,
+        "root",
+        &[&start[..], &["--reason", "other"]].concat(),
+    );
+    assert!(no_notes.contains("invalid_request"), "{no_notes}");
+    let bad = env.fails(
+        &home,
+        "root",
+        &[&start[..], &["--reason", "boredom"]].concat(),
+    );
+    assert!(bad.contains("invalid_request"), "{bad}");
+
+    let made = env.run(
+        &home,
+        "root",
+        &[&start[..], &["--reason", "other", "--notes", "ticket 12"]].concat(),
+    );
+    assert!(made.status.success(), "{}", text(&made));
+    let secret = String::from_utf8_lossy(&made.stdout).trim().to_string();
+    assert!(secret.starts_with("pyna_"), "{secret}");
+    assert!(text(&made).contains("only time the secret is shown"));
+
+    let acting = env.run_with_token(&home, &secret, &["whoami"]);
+    assert!(acting.status.success(), "{}", text(&acting));
+    assert!(text(&acting).contains("alice"), "{}", text(&acting));
+    let refused = env.run_with_token(&home, &secret, &["token", "list"]);
+    assert!(
+        text(&refused).contains("access_session_not_allowed"),
+        "{}",
+        text(&refused)
+    );
+
+    let listed = cell_rows(&env.ok(&home, "root", &["admin", "access-session", "list"]));
+    assert_eq!(
+        listed[0],
+        [
+            "STATE", "ID", "STARTED", "ENDS", "BY", "REASON", "REQUESTS", "USER"
+        ]
+    );
+    assert_eq!(listed[1][0], "active");
+    assert_eq!(listed[1].last().unwrap(), "alice");
+    assert!(!listed[1].join(" ").contains(&secret));
+
+    let json = env.ok(
+        &home,
+        "root",
+        &["--json", "admin", "access-session", "list"],
+    );
+    let doc: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
+    assert_eq!(doc["version"], 1);
+    let session = &doc["sessions"][0];
+    assert_eq!(session["user"], "alice");
+    assert_eq!(session["reason"], "other");
+    assert_eq!(session["notes"], "ticket 12");
+    assert!(session["reached"].as_array().is_some_and(|r| !r.is_empty()));
+    let id = session["id"].as_str().unwrap().to_string();
+
+    let ended = env.ok(
+        &home,
+        "root",
+        &["--json", "admin", "access-session", "end", &id],
+    );
+    let doc: serde_json::Value = serde_json::from_str(ended.trim()).unwrap();
+    assert_eq!(doc["session"]["state"], "ended");
+    let after = env.run_with_token(&home, &secret, &["whoami"]);
+    assert!(!after.status.success());
+
+    let mine = env.ok(&home, "alice", &["--json", "whoami"]);
+    assert!(mine.contains("alice"), "{mine}");
+}

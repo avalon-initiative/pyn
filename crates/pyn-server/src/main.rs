@@ -621,6 +621,7 @@ async fn main() -> anyhow::Result<()> {
 
     start_webhook_delivery(webhooks, clock, &hook_settings, access.public_url())?;
     pyn_server::account_deletion::spawn(access.clone(), std::time::Duration::from_secs(3600));
+    pyn_server::access_session_sweep::spawn(access.clone(), std::time::Duration::from_secs(60));
     pyn_server::lock_stream_api::spawn_sweep(repos.clone(), std::time::Duration::from_secs(5));
     pyn_server::tus_sweep::spawn(repos.clone(), std::time::Duration::from_secs(600));
 

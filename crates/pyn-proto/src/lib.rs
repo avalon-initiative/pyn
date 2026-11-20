@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+mod access_session;
+pub use access_session::*;
 mod account_deletion;
 pub use account_deletion::*;
 mod events;

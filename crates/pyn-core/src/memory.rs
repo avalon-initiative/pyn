@@ -16,6 +16,9 @@ use crate::access::{
 use crate::access_service::{
     AccessStore, AccountDisable, AdminRevoke, OrgDeleteMark, OrgMemberChange,
 };
+use crate::access_session::{
+    AccessSessionEnd, AccessSessionReach, AccessSessionRecord, OVERFLOW_ROUTE, ReachNote,
+};
 use crate::account_self::{AccountEmail, EmailAdd, EmailRemove, PrimaryChange, RenameOutcome};
 use crate::audit::{AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent, brief};
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts};
@@ -2096,6 +2099,8 @@ struct AccessState {
     definitions: HashMap<RepoId, RoleDefinitions>,
     tokens: HashMap<TokenId, TokenRecord>,
     service_credentials: HashMap<TokenId, ServiceCredentialRecord>,
+    access_sessions: Vec<AccessSessionRecord>,
+    access_reach: Vec<(TokenId, AccessSessionReach)>,
     sessions: HashMap<String, SessionRecord>,
     identities: Vec<ExternalIdentity>,
     oidc_flows: HashMap<String, OidcFlow>,
@@ -4106,6 +4111,158 @@ impl AccessStore for MemoryAccessStore {
             c.last_used_from = from.map(str::to_string);
         }
         Ok(())
+    }
+
+    async fn account_by_id(&self, id: &AccountId) -> Result<Option<AccountRecord>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .accounts
+            .values()
+            .find(|a| &a.id == id)
+            .cloned())
+    }
+
+    async fn create_access_session(&self, record: AccessSessionRecord) -> Result<()> {
+        self.state.lock().unwrap().access_sessions.push(record);
+        Ok(())
+    }
+
+    async fn get_access_session(&self, id: &TokenId) -> Result<Option<AccessSessionRecord>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .access_sessions
+            .iter()
+            .find(|s| &s.id == id)
+            .cloned())
+    }
+
+    async fn list_access_sessions(
+        &self,
+        account: Option<&AccountId>,
+        limit: usize,
+    ) -> Result<Vec<AccessSessionRecord>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .access_sessions
+            .iter()
+            .filter(|s| account.is_none_or(|a| &s.account_id == a))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            b.started_at
+                .cmp(&a.started_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    async fn end_access_session(
+        &self,
+        id: &TokenId,
+        now: DateTime<Utc>,
+        end: AccessSessionEnd,
+    ) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        match st
+            .access_sessions
+            .iter_mut()
+            .find(|s| &s.id == id && s.ended_at.is_none())
+        {
+            Some(s) => {
+                s.ended_at = Some(now);
+                s.end = Some(end);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn expire_access_sessions(&self, now: DateTime<Utc>) -> Result<Vec<AccessSessionRecord>> {
+        let mut st = self.state.lock().unwrap();
+        let mut expired = Vec::new();
+        for s in st
+            .access_sessions
+            .iter_mut()
+            .filter(|s| s.ended_at.is_none() && s.expires_at <= now)
+        {
+            s.ended_at = Some(s.expires_at);
+            s.end = Some(AccessSessionEnd::Expired);
+            expired.push(s.clone());
+        }
+        expired.sort_by(|a, b| {
+            a.expires_at
+                .cmp(&b.expires_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(expired)
+    }
+
+    async fn note_access_session_reach(
+        &self,
+        id: &TokenId,
+        reach: AccessSessionReach,
+        max_routes: usize,
+    ) -> Result<ReachNote> {
+        let mut st = self.state.lock().unwrap();
+        let same = |r: &AccessSessionReach, k: &AccessSessionReach| {
+            (&r.method, &r.route, &r.target, r.refused)
+                == (&k.method, &k.route, &k.target, k.refused)
+        };
+        if let Some((_, row)) = st
+            .access_reach
+            .iter_mut()
+            .find(|(i, r)| i == id && same(r, &reach))
+        {
+            row.count += 1;
+            row.last_at = reach.last_at;
+            return Ok(ReachNote::Again);
+        }
+        let itemised = st
+            .access_reach
+            .iter()
+            .filter(|(i, r)| {
+                i == id && !(r.method == OVERFLOW_ROUTE.0 && r.route == OVERFLOW_ROUTE.1)
+            })
+            .count();
+        if itemised < max_routes {
+            st.access_reach.push((id.clone(), reach));
+            return Ok(ReachNote::First);
+        }
+        let overflow = AccessSessionReach {
+            method: OVERFLOW_ROUTE.0.into(),
+            route: OVERFLOW_ROUTE.1.into(),
+            target: String::new(),
+            refused: false,
+            ..reach
+        };
+        if let Some((_, row)) = st
+            .access_reach
+            .iter_mut()
+            .find(|(i, r)| i == id && same(r, &overflow))
+        {
+            row.count += 1;
+            row.last_at = overflow.last_at;
+            return Ok(ReachNote::Again);
+        }
+        st.access_reach.push((id.clone(), overflow));
+        Ok(ReachNote::Overflowed)
+    }
+
+    async fn access_session_reach(&self, id: &TokenId) -> Result<Vec<AccessSessionReach>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .access_reach
+            .iter()
+            .filter(|(i, _)| i == id)
+            .map(|(_, r)| r.clone())
+            .collect())
     }
 }
 

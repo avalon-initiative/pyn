@@ -444,6 +444,11 @@ const EXEMPT: &[(&str, &str)] = &[
         "restore_account_deletion",
         "undoing a deletion stays possible",
     ),
+    (
+        "start_access_session",
+        "an operator action: a frozen account can still be looked at",
+    ),
+    ("end_access_session", "an operator action"),
     ("freeze_owner", "an operator action"),
     ("unfreeze_owner", "an operator action"),
     ("create_webhook", "server-wide, not under an owner"),

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use axum::extract::{FromRequestParts, Path};
 use std::net::IpAddr;
 
-use axum::http::HeaderMap;
 use axum::http::request::Parts;
+use axum::http::{HeaderMap, Method};
 use pyn_core::repositories::OpenRepo;
 use pyn_core::{
     AccessMode, Credential, GrantLevel, GrantNeed, Identity, Principal, PynError,
@@ -19,17 +19,51 @@ use crate::client::source_ip;
 use crate::routes::{Declared, Reach};
 use crate::{ApiError, ApiResult, AppState, open_visible, session_api};
 
-/// What identifying a caller reads from a request: its headers and the address it came from.
+/// What identifying a caller reads from a request: its headers, the address it came from and the route it called.
 #[derive(Clone, Copy)]
 pub(crate) struct Req<'a> {
     pub(crate) headers: &'a HeaderMap,
     pub(crate) source: Option<IpAddr>,
+    pub(crate) call: Option<Call<'a>>,
+}
+
+/// The method and route template of a request, and the path it actually used.
+#[derive(Clone, Copy)]
+pub(crate) struct Call<'a> {
+    pub(crate) method: &'a Method,
+    pub(crate) route: &'static str,
+    pub(crate) path: &'a str,
+}
+
+impl Call<'_> {
+    /// `owner/name` when the route addresses a repository, else empty.
+    fn target(&self) -> String {
+        let template = self.route.trim_matches('/').split('/');
+        let actual: Vec<_> = self.path.trim_matches('/').split('/').collect();
+        let (mut owner, mut name) = (None, None);
+        for (i, part) in template.enumerate() {
+            match part {
+                "{owner}" => owner = actual.get(i),
+                "{name}" => name = actual.get(i),
+                _ => {}
+            }
+        }
+        match (owner, name) {
+            (Some(o), Some(n)) => format!("{o}/{n}"),
+            _ => String::new(),
+        }
+    }
 }
 
 fn req<'a>(parts: &'a Parts, state: &AppState) -> Req<'a> {
     Req {
         headers: &parts.headers,
         source: source_ip(&parts.headers, &parts.extensions, state.trust_forwarded),
+        call: parts.extensions.get::<Declared>().map(|c| Call {
+            method: &parts.method,
+            route: c.1,
+            path: parts.uri.path(),
+        }),
     }
 }
 
@@ -88,13 +122,68 @@ async fn refuse(
 /// Like `identify`, but a service credential is accepted too.
 async fn identify_admin(state: &AppState, req: Req<'_>) -> ApiResult<Identity> {
     let who = authenticate(state, req).await?;
+    refuse_session(state, &who, req).await?;
     state.access.enforce_two_factor(&who).await?;
+    Ok(who)
+}
+
+/// Notes a call of an access session to a route it may not use, and refuses it. Any other credential passes.
+async fn refuse_session(state: &AppState, who: &Identity, req: Req<'_>) -> ApiResult<()> {
+    if !matches!(who.credential, Credential::AccessSession(_)) {
+        return Ok(());
+    }
+    note_reach(state, who, req, true).await?;
+    Err(PynError::AccessSessionNotAllowed.into())
+}
+
+/// Counts an access session's call in its audit trail; a call that cannot be recorded is not served.
+async fn note_reach(
+    state: &AppState,
+    who: &Identity,
+    req: Req<'_>,
+    refused: bool,
+) -> ApiResult<()> {
+    let Some(call) = req.call else {
+        return Ok(());
+    };
+    state
+        .access
+        .note_access_session_reach(
+            who,
+            call.method.as_str(),
+            call.route,
+            &call.target(),
+            refused,
+        )
+        .await?;
+    Ok(())
+}
+
+/// Like `identify`, but an access session is accepted: the routes that serve an administrator acting as the account.
+async fn identify_acting(state: &AppState, req: Req<'_>) -> ApiResult<Identity> {
+    let who = authenticate(state, req).await?;
+    if matches!(who.credential, Credential::AccessSession(_)) {
+        note_reach(state, &who, req, false).await?;
+        return Ok(who);
+    }
+    state.access.enforce_two_factor(&who).await?;
+    if let Credential::Service(c) = &who.credential {
+        return Err(refuse(
+            state,
+            c,
+            req,
+            PynError::ServiceCredentialNotAllowed,
+            "route not open to service credentials",
+        )
+        .await);
+    }
     Ok(who)
 }
 
 /// Like `identify`, but an account that must set up a second factor is accepted: the enrolment routes need it.
 async fn identify_enrolling(state: &AppState, req: Req<'_>) -> ApiResult<Identity> {
     let who = authenticate(state, req).await?;
+    refuse_session(state, &who, req).await?;
     if let Credential::Service(c) = &who.credential {
         return Err(refuse(
             state,
@@ -130,9 +219,16 @@ async fn authenticate(state: &AppState, req: Req<'_>) -> ApiResult<Identity> {
 }
 
 /// Like `identify`, but a request with no credential at all is anonymous; a bad one still fails.
-async fn identify_optional(state: &AppState, req: Req<'_>) -> ApiResult<Option<Identity>> {
+async fn identify_optional(
+    state: &AppState,
+    req: Req<'_>,
+    acting: bool,
+) -> ApiResult<Option<Identity>> {
     if !sends_credential(state, req.headers) {
         return Ok(None);
+    }
+    if acting {
+        return identify_acting(state, req).await.map(Some);
     }
     identify(state, req).await.map(Some)
 }
@@ -165,7 +261,7 @@ pub(crate) async fn admit(
         return Ok(());
     }
     let signed_in = match reach {
-        Reach::Public => identify_optional(state, req).await?.is_some(),
+        Reach::Public => identify_optional(state, req, true).await?.is_some(),
         Reach::PublicLfsRead(_) => sends_credential(state, headers) || sends_basic(headers),
         _ => sends_credential(state, headers),
     };
@@ -194,6 +290,7 @@ async fn identify_pending_ok(state: &AppState, req: Req<'_>) -> ApiResult<Identi
         }
         _ => identify_admin(state, req).await?,
     };
+    refuse_session(state, &who, req).await?;
     if let Credential::Service(c) = &who.credential {
         return Err(refuse(
             state,
@@ -230,7 +327,7 @@ impl FromRequestParts<AppState> for AnyCaller {
 
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
         match declared(parts) {
-            Reach::AnyCredential => Ok(Self(identify(s, req(parts, s)).await?)),
+            Reach::AnyCredential => Ok(Self(identify_acting(s, req(parts, s)).await?)),
             other => Err(mismatch("AnyCaller", other)),
         }
     }
@@ -244,7 +341,7 @@ impl FromRequestParts<AppState> for OptionalCaller {
 
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
         match declared(parts) {
-            Reach::OptionalSignIn => Ok(Self(identify_optional(s, req(parts, s)).await?)),
+            Reach::OptionalSignIn => Ok(Self(identify_optional(s, req(parts, s), true).await?)),
             other => Err(mismatch("OptionalCaller", other)),
         }
     }
@@ -259,7 +356,7 @@ impl FromRequestParts<AppState> for OptionalFullScopeCaller {
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
         match declared(parts) {
             Reach::OptionalFullScope => {
-                let who = identify_optional(s, req(parts, s)).await?;
+                let who = identify_optional(s, req(parts, s), false).await?;
                 if let Some(who) = &who {
                     who.require_full_scope()?;
                 }
@@ -449,7 +546,7 @@ impl FromRequestParts<AppState> for RepoCaller {
         let Reach::RepoScoped(need) = declared(parts) else {
             return Err(mismatch("RepoCaller", declared(parts)));
         };
-        let identity = identify(s, req(parts, s)).await?;
+        let identity = identify_acting(s, req(parts, s)).await?;
         let (owner, name) = address(parts, s).await?;
         let (repo, principal) = open_visible(s, Some(&identity), &owner, &name).await?;
         meets(Some(&identity), &repo, &principal, need)?;
@@ -492,7 +589,7 @@ impl FromRequestParts<AppState> for RepoReader {
         let Reach::PublicRepoRead(need) = declared(parts) else {
             return Err(mismatch("RepoReader", declared(parts)));
         };
-        let identity = identify_optional(s, req(parts, s)).await?;
+        let identity = identify_optional(s, req(parts, s), true).await?;
         let (owner, name) = address(parts, s).await?;
         let (repo, principal) = open_visible(s, identity.as_ref(), &owner, &name).await?;
         meets(identity.as_ref(), &repo, &principal, need)?;
@@ -509,6 +606,7 @@ impl FromRequestParts<AppState> for RepoReader {
 pub(crate) struct LfsCaller {
     state: AppState,
     source: Option<IpAddr>,
+    called: Option<(Method, &'static str, String)>,
     need: GrantNeed,
     anonymous_read: bool,
 }
@@ -524,6 +622,10 @@ impl FromRequestParts<AppState> for LfsCaller {
         Ok(Self {
             state: s.clone(),
             source: req(parts, s).source,
+            called: parts
+                .extensions
+                .get::<Declared>()
+                .map(|c| (parts.method.clone(), c.1, parts.uri.path().to_string())),
             need,
             anonymous_read: matches!(declared(parts), Reach::PublicLfsRead(_)),
         })
@@ -531,10 +633,15 @@ impl FromRequestParts<AppState> for LfsCaller {
 }
 
 impl LfsCaller {
-    fn req<'a>(&self, headers: &'a HeaderMap) -> Req<'a> {
+    fn req<'a>(&'a self, headers: &'a HeaderMap) -> Req<'a> {
         Req {
             headers,
             source: self.source,
+            call: self.called.as_ref().map(|(method, route, path)| Call {
+                method,
+                route,
+                path,
+            }),
         }
     }
 
@@ -545,7 +652,7 @@ impl LfsCaller {
         owner: &str,
         name: &str,
     ) -> ApiResult<(OpenRepo, Principal, Identity)> {
-        let identity = identify(&self.state, self.req(headers)).await?;
+        let identity = identify_acting(&self.state, self.req(headers)).await?;
         let (repo, principal) = open_visible(&self.state, Some(&identity), owner, name).await?;
         meets(Some(&identity), &repo, &principal, self.need)?;
         Ok((repo, principal, identity))
@@ -564,7 +671,7 @@ impl LfsCaller {
                 "authorize_reader on a route not declared public_lfs_read".into(),
             )));
         }
-        let identity = identify_optional(&self.state, self.req(headers)).await?;
+        let identity = identify_optional(&self.state, self.req(headers), true).await?;
         let (repo, principal) = open_visible(&self.state, identity.as_ref(), owner, name).await?;
         meets(identity.as_ref(), &repo, &principal, self.need)?;
         Ok((repo, principal))

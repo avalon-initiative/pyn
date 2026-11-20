@@ -747,6 +747,77 @@ The owner-level reads of [limits, usage and freeze](limits.md#seeing-limits-and-
 `/usage` and `/freeze`) need it too: they are account-level, and the usage report names every repository of the owner. A
 narrower token gets `403 forbidden`; a service credential keeps its `manage_limits` and `manage_freeze` scopes.
 
+## Administrator access sessions
+
+An administrator sometimes has to see what an account sees: a repository with an inappropriate name, tooling its owner keeps
+private. By default an administrator sees what any other viewer sees ([profiles](profiles.md)); an **access session** is
+the one way in, modelled on GitHub Enterprise Server's impersonation (decision #1024) and not covert: the account is told
+and every use is audited. It is a distinct credential kind (`pyna_<id>_<secret>`), never a standing grant.
+
+| | |
+| --- | --- |
+| Start | `POST /v1/admin/users/{user}/access-sessions {reason, notes?}` (`pyn admin access-session start <user> --reason ...`). Server administrators only, never a service credential or another access session. The secret comes back once, is stored only as a hash, and is presented as a bearer token. `201` |
+| Reason | chosen for each session from `abuse_report`, `security_incident`, `support_request`, `legal_request` or `other`; `other` needs `notes` (at most 500 characters). Notes are optional otherwise. `400 invalid_request` for anything else |
+| Length | one hour, fixed at start. Using the session never extends it and nothing renews it: a further session is a new start with its own reason, and its own notification |
+| End | `POST /v1/admin/access-sessions/{id}/end` (`pyn admin access-session end <id>`): any server administrator may end any session, at once. A session that ran out stops working at `expires_at` without anyone acting |
+| List | `GET /v1/admin/access-sessions?user=&limit=` (`pyn admin access-session list`): newest first, each with the routes it called |
+| Who | the target must be an active user account (`404 user_not_found`, `403 account_inactive`), never the administrator's own (`400`). One administrator may act as another: the two are the actor and the target, and there is no separate approval step (decision #1024) |
+| Stops early | when the administrator is no longer an active administrator, or the account is no longer active (disabled, scheduled for deletion), the session is refused (`401` or `403`) while that holds, and works again if it is undone before the hour is over |
+
+### What a session reaches
+
+A session carries the same access as the account where the account's repositories are concerned (GitHub's model: read and
+act). It is not read-only. Everything that manages the account itself, access to it, or the server is refused with `403
+access_session_not_allowed`, because a session must neither outlast itself nor widen. The rule is an allowlist by [route reach](#route-reach):
+a reach the session is not listed for refuses it, so a new route is closed to sessions until it is declared otherwise.
+
+| Reach | An access session |
+| --- | --- |
+| `open`, `public`, `optional_sign_in` | reaches them, as the account (the account's private repositories and fields, where the route narrows by viewer) |
+| `any_credential` | reaches them, as the account: `GET /v1/me`, the repository list, `/v1/me/locks`, an organization lookup |
+| `repo_scoped`, `public_repo_read`, `public_lfs_read` | reach them as the account's role allows: files, history, locks, check-in and restore, branches, policy and audit where the role holds the permission. Refused: `members:write` and `administration:write` (adding or changing members, invitations, teams and roles, renaming or deleting the repository, the usage breakdown), because they decide who can reach a repository afterwards or whether it exists; creating accounts and invitations in a repository is also refused (full scope) |
+| `optional_full_scope` | refused: the people directory is not for a narrower credential |
+| `full_scope`, `full_scope_pending`, `full_scope_enrolment`, `namespace`, `session` | refused. These are the account's own credentials and standing: tokens, SSH keys, [passwords](#accounts-and-signing-in), [two-factor](#two-factor-authentication) and passkeys, emails and username, [deleting the account](#deleting-an-account), creating repositories and organizations, accepting invitations, signing out |
+| `org_scoped`, `account_scoped` | refused: organization administration (members, teams, settings, repository policy, audit) and the account's own profile, avatar and SSH keys. The account's role in an organization still applies to the organization's repositories through the repository routes |
+| `admin_only`, `service:*`, `full_scope_or_service:*` | refused, whether or not the account is an administrator: a session never administers the server, starts another session, changes the freeze or limits of an owner, or reads the server audit log |
+
+Each refusal is one of: managing credentials (a session could mint one and keep access after it ends), managing who may
+reach a repository (the same), changing the account's identity or recovery (lockout), or acting as the account in the
+server's administration (the administrator already has that with their own credential, which is audited under their own name).
+Two-factor is not asked of the account for a session: the administrator proved theirs to start it, and a requirement the
+account has not met yet does not apply to the administrator.
+
+**Frozen owner.** A session on a [frozen](limits.md#freezing-an-owner) account is allowed, because reading is the point: it
+reads what the owner's members read and every write under the owner is refused `owner_frozen`, exactly as for the account. A
+session cannot lift or change the freeze (administrator route). **Organizations.** The account's memberships and team roles apply as
+they do for the account, so the session reads and works in the organization's repositories by the account's role, and no
+further; it cannot administer the organization, and a frozen organization is frozen for it. **Scoped credentials**
+([tokens](#tokens)). A session is not a token and holds no grants: it has the account's full role reach, not that of a
+fine-grained token the account also holds, and it never reads, lists, creates or revokes the account's tokens. The account's
+tokens are untouched and keep working as before while a session runs and after it ends.
+
+### The record
+
+- **Server audit log**: `access_session_started` (reason, notes, expiry), `access_session_reached` and
+  `access_session_ended` ([audit](#audit)), with the administrator as actor.
+- **Account security log**: the same events, in a second hash-chained log kept for the affected account, keyed by its
+  stable account id so a rename keeps it (`@account:<id>`). It is the same append-only chain as the others, so a break is
+  detectable ([integrity](integrity.md)). Today it holds access sessions; it is where later account security events can go.
+- **What was reached**: every request of a session is counted by method and route template (never a body), and the *first*
+  call to each method, route and repository (`owner/name` for a repository route) writes one `access_session_reached` entry,
+  as does the first refused call to a route (`refused:`). Later calls only add to the count, so a script cannot flood the
+  logs. At most 200 distinct entries are itemised per session; the rest are counted under one `(further routes)` entry. The end
+  entry carries the total (`N requests over M routes`). A call that cannot be recorded is not served. Repository audit logs
+  record the account as the actor of what the session did, because that is whose access it was: the session log, which names
+  the administrator and carries the time, is how to tell. An expired session is recorded as ended, at its expiry time, by a
+  sweep that runs every minute and by any read of the sessions.
+- **Notification**: `GET /v1/me/access-sessions` lists every access session on the signed-in account, newest first, with the
+  administrator, reason, notes, times, state (`active`, `ended`, `expired`) and the routes it called. It cannot be turned off or
+  dismissed: there is no setting, and no route that edits or deletes an entry, so a session started on an account always
+  appears there, including one that has ended. It needs a full-scope credential and is refused to a session. Email does not exist yet
+  (it will send the same facts once the optional email capability is there, and it will not be optional either). A web app
+  shows a banner while a session is `active`, and the list as the account's security history.
+
 ## Service credentials
 
 A service credential lets a trusted external service administer a server without being a person. A server
@@ -850,7 +921,7 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `namespace` | full scope, or a token of the caller's own account for all repositories holding `administration` write |
 | `org_scoped:<resource>:<level>` | a full-scope credential, or a token owned by the organization in the path holding the organization resource at the level; the creator's organization role still applies (see [organization and account routes](#organization-and-account-routes)). A personal token with repository `administration` write no longer reaches these routes |
 | `account_scoped:<resource>:<level>` | a full-scope credential, or a token owned by the caller's own account holding the account resource at the level |
-| `admin_only` | a server administrator; service credentials are refused |
+| `admin_only` | a server administrator; service credentials and [access sessions](#administrator-access-sessions) are refused |
 | `service:<scope>` | a server administrator, or a service credential holding the scope |
 | `full_scope_or_service:<scope>` | a full-scope user (the core limits it to its own owner), or a service credential holding the scope |
 | `repo_scoped:<resource>:<level>` | a signed-in credential holding the resource at the level in the named repository (see [repository routes](#repository-routes)) |
@@ -859,27 +930,26 @@ core (full scope, namespace management, administrator and service scopes, per-re
 
 ### What each credential kind reaches
 
-The same rules as a matrix, by reach and credential kind. "Session" is a web session or a sign-in token (full scope), "dev" the
+The same rules as a matrix, by reach and credential kind. "Session" is a web session or a sign-in token (full scope), "access session" an [administrator access session](#administrator-access-sessions), "dev" the
 development identity (full scope, administrator on its own header). A repository-scoped token is any token limited to
 repositories or holding fine-grained grants; a service credential holds only `service` scopes. On a `private` server a signed-out
 caller is refused wherever the table says "public servers only"; a credential that is sent must be valid on every route.
 
-| Reach | Signed out | Session, full-scope token, dev | Repository-scoped token | Service credential |
-| --- | --- | --- | --- | --- |
-| `open` | yes | yes | yes | yes |
-| `public` | public servers only | yes | yes | yes, public servers only |
-| `optional_sign_in` | public servers only | yes | yes (the same public answer) | no |
-| `optional_full_scope` | public servers only | yes | no | no |
-| `session` | no | session cookie only | no | no |
-| `any_credential` | no | yes | yes, narrowed to its repositories (no profile fields beyond the public view) | no |
-| `full_scope`, `full_scope_pending`, `full_scope_enrolment`, `namespace` | no | yes | no | no |
-| `org_scoped`, `account_scoped` | no | yes | only a token owned by that organization or account holding the grant | no |
-| `admin_only` | no | administrators | no | no |
-| `service:<scope>` | no | administrators | no | holding the scope |
-| `full_scope_or_service:<scope>` | no | yes | no | holding the scope |
-| `repo_scoped` | no | yes, by role | only its repositories, holding the resource at the level | no |
-| `public_repo_read`, `public_lfs_read` | public repositories on public servers | yes, by role | its repositories by grant, other public repositories read-only | no |
-
+| Reach | Signed out | Session, full-scope token, dev | Repository-scoped token | Service credential | Access session |
+| --- | --- | --- | --- | --- | --- |
+| `open` | yes | yes | yes | yes | yes |
+| `public` | public servers only | yes | yes | yes, public servers only | yes |
+| `optional_sign_in` | public servers only | yes | yes (the same public answer) | no | yes, as the account |
+| `optional_full_scope` | public servers only | yes | no | no | no |
+| `session` | no | session cookie only | no | no | no |
+| `any_credential` | no | yes | yes, narrowed to its repositories (no profile fields beyond the public view) | no | yes, as the account |
+| `full_scope`, `full_scope_pending`, `full_scope_enrolment`, `namespace` | no | yes | no | no | no |
+| `org_scoped`, `account_scoped` | no | yes | only a token owned by that organization or account holding the grant | no | no |
+| `admin_only` | no | administrators | no | no | no |
+| `service:<scope>` | no | administrators | no | holding the scope | no |
+| `full_scope_or_service:<scope>` | no | yes | no | holding the scope | no |
+| `repo_scoped` | no | yes, by role | only its repositories, holding the resource at the level | no | yes, except `members:write` and `administration:write` |
+| `public_repo_read`, `public_lfs_read` | public repositories on public servers | yes, by role | its repositories by grant, other public repositories read-only | no | yes, as the account |
 A repository-scoped token never reaches an account, organization or server-wide listing, another account's non-public profile
 fields, an audit log outside its repositories, or any settings route. `GET /v1/orgs/{org}` and the organization profile are the
 exceptions that answer only the public view, as do single-name profiles and avatars (an organization's name is not secret). `crates/pyn-server/tests/reach.rs` keeps this table
@@ -1003,5 +1073,5 @@ Organization events (created, deleted, members added, removed or changed, teams 
 owners (`pyn org audit <org>`). Adding a member (by an admin, by registration or as the creator of a repository), changing a member's role, changing what a
 role grants, giving a team a role or taking it away, creating or revoking a token or an invitation (never its code), and creating, changing or deleting the repository itself are recorded in that
 repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions and service credential changes go to
-the [server audit log](#protecting-open-registration). A token's events go to the log of
+the [server audit log](#protecting-open-registration), and so do [administrator access sessions](#administrator-access-sessions), which are also written to a security log of the affected account. A token's events go to the log of
 each repository it is limited to. Token secrets are never recorded, and neither are sign-in sessions.

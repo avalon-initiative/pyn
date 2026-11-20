@@ -15,6 +15,10 @@ use crate::access::{
     TokenId, TokenRecord, TokenResource, VerificationRecord, account, grant_delta, invite,
     service_credential, session, ssh, token, verification,
 };
+use crate::access_session::{
+    AccessSessionEnd, AccessSessionReach, AccessSessionReason, AccessSessionRecord,
+    AccessSessionView, ReachNote, session_credential,
+};
 use crate::account_self::{AccountEmail, EmailAdd, EmailRemove, PrimaryChange, RenameOutcome};
 use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
@@ -50,6 +54,7 @@ use crate::webhook::{EventDraft, NewSecret, WebhookStore};
 /// no repository can have.
 pub const SERVER_AUDIT_ID: &str = "@server";
 
+mod access_sessions;
 mod deletion;
 mod external;
 mod freeze;
@@ -498,6 +503,44 @@ pub trait AccessStore: Send + Sync {
         now: DateTime<Utc>,
         from: Option<&str>,
     ) -> Result<()>;
+
+    /// The account with this stable id, whatever its name is now.
+    async fn account_by_id(&self, id: &AccountId) -> Result<Option<AccountRecord>>;
+
+    async fn create_access_session(&self, record: AccessSessionRecord) -> Result<()>;
+
+    async fn get_access_session(&self, id: &TokenId) -> Result<Option<AccessSessionRecord>>;
+
+    /// Sessions on one account, or on every account, newest first.
+    async fn list_access_sessions(
+        &self,
+        account: Option<&AccountId>,
+        limit: usize,
+    ) -> Result<Vec<AccessSessionRecord>>;
+
+    /// Stops a session that is still running at `now`; false when it had already stopped or does not exist.
+    async fn end_access_session(
+        &self,
+        id: &TokenId,
+        now: DateTime<Utc>,
+        end: AccessSessionEnd,
+    ) -> Result<bool>;
+
+    /// Stops, as expired at their expiry time, every session whose hour has run out, and returns them: each is
+    /// returned once, so the caller records each end once.
+    async fn expire_access_sessions(&self, now: DateTime<Utc>) -> Result<Vec<AccessSessionRecord>>;
+
+    /// Counts a call of the session to a route. At most `max_routes` distinct routes are itemised; the rest share
+    /// the overflow row. Returns whether this row is new.
+    async fn note_access_session_reach(
+        &self,
+        id: &TokenId,
+        reach: AccessSessionReach,
+        max_routes: usize,
+    ) -> Result<ReachNote>;
+
+    /// The routes a session called, in the order first reached.
+    async fn access_session_reach(&self, id: &TokenId) -> Result<Vec<AccessSessionReach>>;
 
     /// Creates a self-registered account with its password; false if the name is already taken.
     async fn create_account(&self, new: NewAccount) -> Result<bool> {
@@ -1430,6 +1473,9 @@ impl AccessService {
         if service_credential::is_service(raw) {
             return self.identify_service(raw, source).await;
         }
+        if session_credential::is_access_session(raw) {
+            return self.identify_access_session(raw).await;
+        }
         let (id, secret) = token::parse(raw).ok_or_else(|| unauthenticated("malformed token"))?;
         let presented = token::hash_secret(secret);
         let record = self.store.get_token(&id).await?;
@@ -1516,7 +1562,9 @@ impl AccessService {
     pub async fn principal_in(&self, repo: &RepoId, who: &Identity) -> Result<Principal> {
         match &who.credential {
             Credential::Unrestricted => Ok(Principal::unrestricted(who.user.clone())),
-            Credential::Session => self.principal(repo, &who.user).await,
+            Credential::Session | Credential::AccessSession(_) => {
+                self.principal(repo, &who.user).await
+            }
             Credential::Service(_) => Ok(Principal {
                 user: who.user.clone(),
                 permissions: BTreeSet::new(),

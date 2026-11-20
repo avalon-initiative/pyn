@@ -13,6 +13,9 @@ pub enum AdminCommand {
     /// List and review accounts.
     #[command(subcommand)]
     User(AdminUserCommand),
+    /// Act as an account for at most an hour, for a stated reason; the account is told and it is audited.
+    #[command(subcommand)]
+    AccessSession(crate::access_session::AccessSessionCommand),
     /// Make an active account a server administrator.
     Grant { user: String },
     /// Take the administrator flag away; the last active administrator cannot be revoked.
@@ -179,6 +182,7 @@ pub fn run(api: &Api, cmd: AdminCommand) -> Result<()> {
             println!("{} is not a server administrator", who.user);
             Ok(())
         }
+        AdminCommand::AccessSession(cmd) => crate::access_session::run(api, cmd),
         AdminCommand::ServiceCredential(cmd) => service_credential(api, cmd),
         AdminCommand::Org(cmd) => org(api, cmd),
         AdminCommand::Freeze { owner, reason } => crate::freeze::freeze(api, &owner, reason),
