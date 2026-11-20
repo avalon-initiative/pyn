@@ -192,6 +192,26 @@ impl FromRequestParts<AppState> for OptionalCaller {
     }
 }
 
+/// The caller of a route declared `optional_full_scope`: anonymous without a credential, else full scope.
+pub(crate) struct OptionalFullScopeCaller(pub(crate) Option<Identity>);
+
+impl FromRequestParts<AppState> for OptionalFullScopeCaller {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
+        match declared(parts) {
+            Reach::OptionalFullScope => {
+                let who = identify_optional(s, &parts.headers).await?;
+                if let Some(who) = &who {
+                    who.require_full_scope()?;
+                }
+                Ok(Self(who))
+            }
+            other => Err(mismatch("OptionalFullScopeCaller", other)),
+        }
+    }
+}
+
 /// The caller of a route declared `full_scope`, `full_scope_pending` or `full_scope_enrolment`.
 pub(crate) struct FullScopeCaller(pub(crate) Identity);
 

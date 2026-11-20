@@ -85,9 +85,9 @@ owner stays visible: freezing refuses writes, not reads.
 ## People directory
 
 `GET /v1/users` lists accounts, searchable, the way GitHub's people search is. It is readable signed out on a `public`
-[server](access.md#server-access-mode); a `private` one needs a sign-in (`401 unauthenticated`). Every valid credential
-(a session, a full-scope token, a repository-scoped or otherwise narrower token, the development identity) gets exactly
-the entries a signed-out caller gets, because an entry holds only public data. A service credential is still
+[server](access.md#server-access-mode); a `private` one needs a sign-in (`401 unauthenticated`). A session, a full-scope token or the development identity gets exactly
+the entries a signed-out caller gets, because an entry holds only public data. A repository-scoped or otherwise narrower token is
+`403 forbidden` (a scoped credential reaches only what it was granted, never a server-wide listing), a service credential is
 `403 service_credential_not_allowed`, and a credential that is sent must be valid (else `401`). Signed-out requests are
 rate limited per client address (60 per minute, `PYN_RATE_PEOPLE_CLIENT`; see
 [rate limits](access.md#protecting-open-registration)): past it `429 too_many_attempts` with `Retry-After`. Signed-in callers
