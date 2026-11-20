@@ -41,6 +41,7 @@ mod local_sync;
 mod local_tags;
 mod local_view;
 mod localfile;
+mod lock_watch;
 mod lockcheck;
 mod log_filter;
 mod ls_remote;
@@ -372,6 +373,15 @@ enum Command {
     Locks {
         #[arg(long)]
         mine: bool,
+        /// Keep running and print a line per lock change (with --json, one document per line).
+        #[arg(long, conflicts_with = "mine")]
+        watch: bool,
+        /// With --watch, resume after this cursor (a `cursor` from an earlier line) instead of starting now.
+        #[arg(long, requires = "watch", value_name = "CURSOR")]
+        after: Option<String>,
+        /// With --watch, seconds between polls when the server has no change stream.
+        #[arg(long, requires = "watch", value_name = "SECONDS", default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
+        interval: u64,
     },
     /// List files with their mode, head revision and lock.
     Files,
@@ -2176,7 +2186,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Admin(cmd) => admin::run(backend.pyn_server("admin")?, cmd)?,
         Command::Usage { owner } => limits::usage(backend.pyn_server("usage")?, owner)?,
         Command::Team(cmd) => team_command(backend.pyn_server("team")?, cmd)?,
-        Command::Locks { mine: true } => {
+        Command::Locks { mine: true, .. } => {
             let api = backend.pyn_server("locks")?;
             let locks: Vec<api::MyLock> = api.send(api.get("/v1/me/locks"))?.json()?;
             if json_out::on() {
@@ -2200,7 +2210,16 @@ fn run(cli: Cli) -> Result<()> {
                 "no locks",
             );
         }
-        Command::Locks { mine: false } => {
+        Command::Locks {
+            watch: true,
+            after,
+            interval,
+            ..
+        } => {
+            let api = backend.pyn_server("locks")?;
+            watch_locks(api, after, interval)?;
+        }
+        Command::Locks { mine: false, .. } => {
             let api = backend.pyn_server("locks")?;
             let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
             if json_out::on() {
@@ -3133,6 +3152,28 @@ fn held_by(api: &client::Api, path: &str, e: anyhow::Error) -> anyhow::Error {
         Some(lock) => e.context(json_out::HeldBy(lock)),
         None => e,
     }
+}
+
+/// Prints lock changes until the output closes; a closed pipe ends the watch quietly.
+fn watch_locks(api: &client::Api, after: Option<String>, interval: u64) -> Result<()> {
+    use std::io::Write;
+    let json = json_out::on();
+    let mut out = std::io::stdout().lock();
+    let mut emit = |c: &lock_watch::Change| {
+        let line = if json {
+            c.document().to_string()
+        } else {
+            c.line()
+        };
+        writeln!(out, "{line}").and_then(|()| out.flush()).is_ok()
+    };
+    lock_watch::run(
+        api,
+        after,
+        std::time::Duration::from_secs(interval),
+        &mut emit,
+        &std::thread::sleep,
+    )
 }
 
 fn files_command(backend: &dyn Backend) -> Result<()> {

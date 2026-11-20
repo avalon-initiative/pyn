@@ -1086,6 +1086,48 @@ impl MetadataStore for PgMetadataStore {
         row.as_ref().map(lock_from).transpose()
     }
 
+    async fn lapsed_locks(&self, now: DateTime<Utc>, limit: u32) -> Result<Vec<(RepoId, Lock)>> {
+        let rows = sqlx::query(
+            "SELECT repo, path, owner, acquired_at, expires_at FROM locks
+             WHERE expires_at <= COALESCE($1, now()) ORDER BY expires_at LIMIT $2",
+        )
+        .bind(self.bound_now(now))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter()
+            .map(|r| Ok((RepoId::new(r.get::<String, _>("repo")), lock_from(r)?)))
+            .collect()
+    }
+
+    async fn expire_lock_with_events(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: DateTime<Utc>,
+        events: Option<LockEventBuilder<'_>>,
+    ) -> Result<Option<Lock>> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let row = sqlx::query(
+            "DELETE FROM locks WHERE repo = $1 AND path = $2 AND expires_at <= COALESCE($3, now())
+             RETURNING path, owner, acquired_at, expires_at",
+        )
+        .bind(repo.as_str())
+        .bind(path.as_str())
+        .bind(self.bound_now(now))
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        let lock = row.as_ref().map(lock_from).transpose()?;
+        if let (Some(build), Some(lock)) = (events, &lock) {
+            let draft = build(LockChange::Expired(lock))?;
+            self.queue_events(&mut tx, &[draft]).await?;
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(lock)
+    }
+
     async fn force_release_lock_with_events(
         &self,
         repo: &RepoId,

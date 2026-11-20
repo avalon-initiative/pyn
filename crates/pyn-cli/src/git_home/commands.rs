@@ -333,7 +333,8 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         }
         Command::Update { .. } => refuse("update"),
         Command::Get { .. } => refuse("get"),
-        Command::Locks { mine } => super::lfs_lock::locks(git, mine),
+        Command::Locks { watch: true, .. } => refuse("locks --watch"),
+        Command::Locks { mine, .. } => super::lfs_lock::locks(git, mine),
         Command::Lock { base: Some(_), .. } => {
             bail!("`pyn lock --base` compares revisions, which a git repository does not have")
         }

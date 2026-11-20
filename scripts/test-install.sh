@@ -55,7 +55,8 @@ cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.2-alpha/"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.1-alpha/"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v1.0.0/"
 cat >"$work/env.example" <<'EOF'
-PYN_VERSION=
+PYN_SERVER_VERSION=
+PYN_WEB_VERSION=
 POSTGRES_PASSWORD=
 PYN_SECRET_KEY=
 PYN_PUBLIC_URL=http://localhost:8080
@@ -64,12 +65,13 @@ PYN_PUBLIC_URL=http://localhost:8080
 EOF
 cp "$work/env.example" "$fix/raw/main/.env.example"
 cp "$work/env.example" "$fix/raw/main/.env.server.example"
-printf 'PYN_VERSION=\nPYN_API_URL=\n# PYN_WEB_PUBLISH=127.0.0.1:8080\n' >"$fix/raw/main/.env.web.example"
+printf 'PYN_WEB_VERSION=\nPYN_API_URL=\n# PYN_WEB_PUBLISH=127.0.0.1:8080\n' >"$fix/raw/main/.env.web.example"
 cp "$work/env.example" "$fix/raw/v0.1.2-alpha/.env.example"
 cp "$work/env.example" "$fix/raw/v0.1.1-alpha/.env.example"
 cp "$work/env.example" "$fix/raw/v1.0.0/.env.example"
 printf '{\n  "tag_name": "v0.1.2-alpha"\n}\n' >"$fix/latest.json"
 printf '{\n  "tag_name": "v1.0.0"\n}\n' >"$fix/latest-v1.json"
+printf '{\n  "tag_name": "v0.3.0-alpha"\n}\n' >"$fix/latest-web.json"
 printf 'ID=ubuntu\nID_LIKE=debian\n' >"$fix/os-debian"
 printf 'ID=fedora\n' >"$fix/os-fedora"
 printf '#!/bin/sh\necho docker-installer >>"$LOG"\ncp "$FIX/stub-docker" "$BIN/docker"\n' >"$fix/get-docker.sh"
@@ -106,6 +108,7 @@ if [ -n "${FAKE_CURL_FAIL:-}" ] && [[ $url == *"$FAKE_CURL_FAIL"* ]]; then exit 
 if [ -n "${FAKE_NET_DOWN:-}" ]; then [ -z "$wfmt" ] || printf 000; exit 6; fi
 code=200
 case $url in
+  *api.github.com/repos/*/pyn-web/releases/latest) f=$FIX/latest-web.json ;;
   *api.github.com*releases/latest) f=$FIX/latest.json; [ -z "${FAKE_LATEST_V1:-}" ] || f=$FIX/latest-v1.json; [ -z "${FAKE_NO_RELEASES:-}" ] || f=/nonexistent; code=${FAKE_API_CODE:-200} ;;
   *api.github.com*per_page=100) f=$FIX/releases.json; code=${FAKE_API_CODE:-200} ;;
   *github.com/*/releases/download/*) f=$FIX/dl/$(basename "$(dirname "$url")")/$(basename "$url") ;;
@@ -252,8 +255,10 @@ expect "native without systemd says so" has "$err" "systemd"
 case_start v1
 run_install --dir "$c/pyn" --shape full --yes
 expect "default version is the newest release" ok_rc
-expect "newest: image tag drops the title suffix" has "$c/pyn/.env" "PYN_VERSION=v0.1.2"
+expect "newest: image tag drops the title suffix" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.2"
 expect "newest: Compose file comes from the newest tag" has "$c/log" "raw.githubusercontent.com/avalon-initiative/pyn/v0.1.2-alpha/deploy/docker-compose.yml"
+expect "newest: the web image is its own latest release, not the server's" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.3.0"
+expect "newest: asks the pyn-web latest-release endpoint" has "$c/log" "repos/avalon-initiative/pyn-web/releases/latest"
 expect "newest: asks the latest-release endpoint" has "$c/log" "releases/latest"
 
 # Docker writes under --dir, so give every Docker case its own directory.
@@ -265,8 +270,19 @@ dock() { # dock NAME flags...: run a Docker install into $c/pyn
 
 dock v2 --shape full --version v0.1.1-alpha
 expect "full tag is accepted" ok_rc
-expect "full tag: image tag" has "$c/pyn/.env" "PYN_VERSION=v0.1.1"
+expect "full tag: image tag" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.1"
 expect "full tag: file from that tag" has "$c/log" "/v0.1.1-alpha/deploy/docker-compose.yml"
+dock vw --shape full --version v0.1.1-alpha --web-version 0.2.5
+expect "--web-version sets the web image tag on its own" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.2.5"
+expect "--web-version leaves the server tag alone" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.1"
+dock vw2 --shape full --web-version v0.2.6-alpha
+expect "--web-version accepts a full tag and drops the suffix" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.2.6"
+dock vw3 --shape full --web-version nonsense
+expect "a bad --web-version fails" bad_rc
+dock vw4 --shape server
+expect "a server-only install writes no web version" lacks "$c/pyn/.env" "PYN_WEB_VERSION=v"
+dock vw5 --shape web --api-url https://pyn.example.com
+expect "a web-only install writes only the web version" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.3.0"
 dock v3 --shape full --version 0.1.1
 expect "bare version is accepted" ok_rc
 expect "bare version maps to the release tag" has "$c/log" "/v0.1.1-alpha/deploy/docker-compose.yml"
@@ -304,7 +320,7 @@ tty_file="$c/answers"
 printf 'full\ndocker\n%s\n\n2\n0.1.1\nhttps://pyn.example.com\ny\n' "$c/pyn" >"$tty_file"
 run_install
 expect "typed names, bare version and URL are taken" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
-expect "typed bare version selects its tag" has "$c/pyn/.env" "PYN_VERSION=v0.1.1"
+expect "typed bare version selects its tag" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.1"
 expect "an https address keeps the port on loopback" lacks "$c/pyn/.env" "PYN_WEB_PUBLISH=0.0.0.0"
 
 case_start p3
@@ -357,11 +373,11 @@ pw1=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$c/pyn/.env"); sk1=$(sed -n 's/^PYN_SEC
 : >"$c/log"
 run_install --dir "$c/pyn" --yes --shape full --version v0.1.2-alpha
 expect "re-run succeeds" ok_rc
-expect "re-run moves only the version" has "$c/pyn/.env" "PYN_VERSION=v0.1.2"
+expect "re-run moves only the version" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.2"
 expect "re-run keeps the password" has "$c/pyn/.env" "POSTGRES_PASSWORD=$pw1"
 expect "re-run keeps the secret key" has "$c/pyn/.env" "PYN_SECRET_KEY=$sk1"
 expect "re-run keeps custom settings" has "$c/pyn/.env" "PYN_REGISTRATION=closed"
-expect "re-run says what changed" has "$c/out" "PYN_VERSION v0.1.1 -> v0.1.2"
+expect "re-run says what changed" has "$c/out" "PYN_SERVER_VERSION v0.1.1 -> v0.1.2"
 expect "re-run does not print the setup token again" lacks "$c/out" "TOKEN-ABC-123"
 expect "re-run does not refetch the env example" lacks "$c/log" ".env.example"
 expect "re-run keeps mode 600" test "$(mode_of "$c/pyn/.env")" = 600
@@ -557,14 +573,14 @@ printf 'full\ndocker\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install
 expect "the latest release is the menu default" has "$out" "Latest release (v1.0.0) (default)"
 expect "the latest release's tag is resolved" has "$out" "resolved release: v1.0.0"
-expect "the latest release's image tag" has "$c/pyn/.env" "PYN_VERSION=v1.0.0"
+expect "the latest release's image tag" has "$c/pyn/.env" "PYN_SERVER_VERSION=v1.0.0"
 chan h2; tty_file="$c/answers"
 printf 'full\ndocker\n%s\n\n2\n0.1.1\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install
-expect "menu choice 2 asks for a tag" has "$c/pyn/.env" "PYN_VERSION=v0.1.1"
+expect "menu choice 2 asks for a tag" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.1"
 chan h4; extra_env=(FAKE_LATEST_V1=1)
 run_install --yes --dir "$c/pyn"
-expect "--yes takes the latest release" has "$c/pyn/.env" "PYN_VERSION=v1.0.0"
+expect "--yes takes the latest release" has "$c/pyn/.env" "PYN_SERVER_VERSION=v1.0.0"
 chan h5; extra_env=(FAKE_NO_RELEASES=1)
 run_install --yes --dir "$c/pyn"
 expect "no release at all fails" bad_rc
@@ -574,7 +590,7 @@ run_install --yes --channel stable
 expect "--channel is no longer an option" bad_rc
 chan h10; extra_env=(FAKE_LATEST_V1=1)
 run_install --yes --version 0.1.1 --dir "$c/pyn"
-expect "--version wins over the latest release" has "$c/pyn/.env" "PYN_VERSION=v0.1.1"
+expect "--version wins over the latest release" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.1"
 
 # Existing folder: use / refresh / fresh
 seed() { # seed NAME: a Docker install of v0.1.1 with a local Compose edit and a custom setting
@@ -599,7 +615,7 @@ expect "refresh: replaces the Compose file" lacks "$c/pyn/docker-compose.yml" "#
 expect "refresh: backs the old Compose file up" baks "$c/pyn/docker-compose.yml"
 expect "refresh: the backup holds the local edit" bash -c 'grep -qF "# local edit" "$0"/docker-compose.yml.bak.*' "$c/pyn"
 expect "refresh: keeps custom env settings" has "$c/pyn/.env" "PYN_REGISTRATION=closed"
-expect "refresh: moves the version" has "$c/pyn/.env" "PYN_VERSION=v0.1.2"
+expect "refresh: moves the version" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.2"
 expect "refresh: shows the Compose diff" has "$c/out" "differs from the one in v0.1.2-alpha"
 expect "refresh: the diff is a unified diff" has "$c/out" "+++"
 seed e3
@@ -623,19 +639,19 @@ expect "prompted: the address is taken from the existing env" lacks "$out" "Addr
 seed e5
 tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n2\n\nn\n' "$c/pyn" >"$tty_file"
 run_install
-expect "prompted: refresh asks before moving PYN_VERSION" has "$out" "Move PYN_VERSION in $c/pyn/.env from v0.1.1 to v0.1.2"
-expect "prompted: declining keeps the old version" has "$c/pyn/.env" "PYN_VERSION=v0.1.1"
-expect "prompted: declining is stated" has "$out" "PYN_VERSION stays v0.1.1"
+expect "prompted: refresh asks before moving PYN_SERVER_VERSION" has "$out" "Move PYN_SERVER_VERSION in $c/pyn/.env from v0.1.1 to v0.1.2"
+expect "prompted: declining keeps the old version" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.1"
+expect "prompted: declining is stated" has "$out" "PYN_SERVER_VERSION stays v0.1.1"
 seed e6
 tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n2\n\n\n' "$c/pyn" >"$tty_file"
 run_install
-expect "prompted: accepting moves PYN_VERSION" has "$c/pyn/.env" "PYN_VERSION=v0.1.2"
+expect "prompted: accepting moves PYN_SERVER_VERSION" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.2"
 expect "prompted: the env is still the user's" has "$c/pyn/.env" "PYN_REGISTRATION=closed"
 expect "prompted: the secrets are unchanged" has "$c/pyn/.env" "POSTGRES_PASSWORD=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$c/env.before")"
 
 # An env file elsewhere
 cat >"$work/ext.env" <<'EOF'
-PYN_VERSION=v0.1.0
+PYN_SERVER_VERSION=v0.1.0
 POSTGRES_PASSWORD=keep-this-password
 PYN_SECRET_KEY=
 PYN_PUBLIC_URL=http://envhost:8080
@@ -652,7 +668,7 @@ expect "Docker env file: existing password kept" has "$c/pyn/.env" "POSTGRES_PAS
 expect "Docker env file: missing secret generated" bash -c 'grep -qE "^PYN_SECRET_KEY=[0-9a-f]{64}$" "$0"' "$c/pyn/.env"
 expect "Docker env file: custom setting kept" has "$c/pyn/.env" "MY_CUSTOM=1"
 expect "Docker env file: address taken from it, not prompted" has "$c/pyn/.env" "PYN_PUBLIC_URL=http://envhost:8080"
-expect "Docker env file: version moved to the release" has "$c/pyn/.env" "PYN_VERSION=v0.1.2"
+expect "Docker env file: version moved to the release" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.2"
 expect "Docker env file: the source is untouched" cmp -s "$work/ext.env" "$c/ext.env"
 chan x2
 run_install --dir "$c/pyn" --yes --shape full --env-file "$c/nope.env"
@@ -750,7 +766,7 @@ run_install
 expect "cwd install: all default answers refresh it" ok_rc
 expect "cwd install: the existing install is found without being told" has "$out" "An install already exists in $c/cwd"
 expect "cwd install: shape is inferred from the Compose file" has "$out" "plan: full via docker"
-expect "cwd install: env kept, version moved" bash -c 'grep -q PYN_REGISTRATION=closed "$0" && grep -q PYN_VERSION=v0.1.2 "$0"' "$c/cwd/.env"
+expect "cwd install: env kept, version moved" bash -c 'grep -q PYN_REGISTRATION=closed "$0" && grep -q PYN_SERVER_VERSION=v0.1.2 "$0"' "$c/cwd/.env"
 case_start w_home; extra_env=(); run_cwd="$c/home"
 run_install --yes --shape full
 expect "cwd = home falls back to ./pyn" test -f "$c/home/pyn/.env"

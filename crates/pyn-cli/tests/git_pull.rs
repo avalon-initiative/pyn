@@ -401,9 +401,7 @@ fn pull_edit_flags_open_the_editor_as_git_does() {
         for (flags, env, edits) in cases {
             let t = Twin::new(format, via);
             let editor = t.home.join("editor.sh");
-            fs::write(&editor, "#!/bin/sh\necho \"edited by editor\" >> \"$1\"\n").unwrap();
-            fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-                .unwrap();
+            script::write_script(&editor, "echo \"edited by editor\" >> \"$1\"\n");
             let mut vars = vec![(
                 "GIT_EDITOR".to_owned(),
                 editor.to_string_lossy().into_owned(),
@@ -1282,9 +1280,7 @@ fn pull_merge_hooks_follow_verify() {
         let t = diverged("sha1", Via::Ssh);
         for dir in [&t.git, &t.pyn] {
             let hook = dir.join(".git/hooks/pre-merge-commit");
-            fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
-            fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-                .unwrap();
+            script::write_script(&hook, "exit 1\n");
         }
         let mut args = vec!["--no-edit"];
         args.extend(flags);

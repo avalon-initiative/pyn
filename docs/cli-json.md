@@ -5,7 +5,7 @@ flag (`pyn locks --json`, `pyn --json locks`) and works against a pyn server; on
 server and repository selection are unchanged (`--server`, `--token`, `--repo`, `PYN_SERVER`, `PYN_TOKEN`, `PYN_REPO`, the
 workspace and user config), so an integration inherits the user's sign-in.
 
-Supported: `whoami`, `status`, `locks` (and `--mine`), `lock`, `unlock` (and `--force`), `files`, `ls` and `summary`. Any other
+Supported: `whoami`, `status`, `locks` (and `--mine`, and `--watch`, which prints one document per line: see below), `lock`, `unlock` (and `--force`), `files`, `ls` and `summary`. Any other
 command with `--json` is a usage error (exit 129). `status --json` cannot be combined with `--short`, `--porcelain` or `-b`.
 
 ## Versioning
@@ -63,6 +63,38 @@ workspace has not synced. `staged` is `-`, `added`, `modified` or `deleted`. `st
 commit while the signed-in user holds no lock on it: `needs_lock` when nobody holds it, `blocked_by_lock` when someone else
 does (`lock.owner` names them). `pyn push` refuses both; `counts.needs_lock` and `counts.blocked_by_lock` total them.
 `lock.mine` is true when the signed-in user holds it. `pyn edit` has no `--json` document.
+
+## `locks --watch`
+
+`pyn locks --watch` keeps running and follows the repository's lock changes live. Without `--json` it prints one line per
+change (time, event, holder, detail, path last). With `--json` it prints one document per line, flushed as it happens, and
+never an enclosing array:
+
+```json
+{"version": 1, "cursor": "812", "type": "lock.acquired", "at": "2030-01-01T12:00:00Z", "path": "Content/m.umap",
+ "holder": "alice", "expires_at": "2030-01-01T20:00:00Z", "actor": "alice", "reason": null}
+```
+
+`type` is `lock.acquired`, `lock.released`, `lock.expired` or `lock.forced`, the event types of
+[lock events](concepts/events.md#lock-events); a type a later version adds is skipped by this version. `expires_at` is when
+the lease ends (`lock.acquired`) or ended (`lock.expired`), and null otherwise. `actor` is who did it: the holder for
+`lock.acquired` and `lock.released`, the one who removed it for `lock.forced`, null for `lock.expired`. `reason` is `checkin`
+for a release by a check-in or push, the unlock reason for `lock.forced`, else null. Only changes after the watch started
+are printed.
+
+`cursor` identifies the change; `--after <cursor>` starts a new watch just after it, so an integration that restarts
+resumes without a gap (changes older than the server keeps events, 30 days, are gone). The watch reconnects by itself,
+resuming from the last cursor, when the connection drops or the server answers a 5xx, 408 or 429, waiting 1 second and then
+longer up to 30 seconds, with a note on standard error. A refusal (no read access, no such repository, a bad token) ends it
+with the error the other commands give, exit code included.
+
+A server that has no change stream (an older one) is polled instead, every `--interval` seconds (default 2). Polling
+compares successive lock lists, so its documents have `cursor` null and a `lock.released` cannot tell a release from a
+check-in or a forced unlock (`actor` and `reason` are null); a lock that disappears after its expiry is `lock.expired`.
+A lock taken and released between two polls is never seen.
+
+The watch needs a pyn server (a git repository refuses it) and cannot combine with `--mine`. It ends when its output closes
+or it is interrupted.
 
 ## Errors
 

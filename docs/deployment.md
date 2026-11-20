@@ -94,7 +94,7 @@ published on loopback by default (`PYN_PUBLISH` in `.env`), so only a reverse pr
 
 ### The web app
 
-The web app is its own image, `ghcr.io/avalon-initiative/pyn-web:<tag>`, released with the same tag scheme as `pyn-core`. It serves the
+The web app is its own image, `ghcr.io/avalon-initiative/pyn-web:<tag>`, versioned and released on its own, separately from `pyn-core` (its tags are its own). It serves the
 app and proxies `/v1` and `/healthz` to the server, so people use one address. It is optional in the Compose file (profile `web`); without `PYN_WEB_IMAGE` the profile cannot pull an image, and a server-only deployment never reads it:
 
 ```
@@ -107,7 +107,19 @@ docker compose --profile web up -d --wait
 
 The web container listens on `127.0.0.1:8080` by default (`PYN_WEB_PUBLISH` changes it); put the TLS proxy in front of it, not in front of
 the server. `PYN_API_URL` (set to `http://server:7878` in the Compose file) is the only setting the image reads; it must have no path.
-Upgrade both images together to the same tag.
+The two images are set separately (`PYN_IMAGE` and `PYN_WEB_IMAGE` here; `PYN_SERVER_VERSION` and `PYN_WEB_VERSION` in the
+released files under `deploy/`), their tags need not match, and either can be upgraded alone: change its line, then
+`docker compose pull` and `docker compose up -d`.
+
+### Compatibility
+
+The server and the web app are released independently, and no release requires a specific version of the other.
+
+- The HTTP API is additive within `/v1`: fields and routes are added, never removed or changed. A newer server never breaks an older web app.
+- A web app that is newer than its server may use endpoints the server lacks. Each web release states the oldest server it needs
+  (`min_server`) in its release notes, and the app shows a notice when the server it talks to is older than that.
+- `GET /v1/capabilities` reports the server's release in `version` (readable signed out, in both access modes), which is what the
+  web app compares against.
 
 ### Reverse proxy and TLS
 

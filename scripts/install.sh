@@ -4,7 +4,7 @@
 set -euo pipefail
 
 repo=avalon-initiative/pyn
-shape="" method="" version_in="" dir="" public_url="" api_url="" database_url="" env_file="" reuse=""
+shape="" method="" version_in="" web_version_in="" web_ver="" dir="" public_url="" api_url="" database_url="" env_file="" reuse=""
 os_kind="" os_id="" arch="" native_env="" start_dir="" dir_default="" dir_warn=""
 yes=0 no_install=0 interactive=0 tmp=""
 root=${PYN_INSTALL_ROOT:-}
@@ -20,6 +20,8 @@ Every answer has a flag; with --yes (or no terminal) a missing answer takes its 
   --shape full|server|web|cli   full: server and web app (default); server; web: web app only; cli: the pyn command only
   --method docker|native        docker (default); native runs the release pyn-server binary under systemd (server and cli only)
   --version TAG                 a full tag such as v0.1.2-alpha, or a bare version such as 0.1.2 (default: the latest release)
+  --web-version TAG             the pyn-web release for the web app image, as a tag or a bare version (default: the latest pyn-web
+                                release; the web app is versioned separately from the server)
   --dir DIR                     (paths may start with ~ or be relative to the current folder) where the Docker files live (default: the current folder; a subfolder pyn when that is / , your
                                 home or a source checkout)
   --env-file PATH               an existing env file to reuse: copied to DIR/.env for Docker, used in place as the service's
@@ -130,6 +132,7 @@ while [ $# -gt 0 ]; do
     --env-file) env_file=${2:?--env-file needs a value}; shift 2 ;;
     --reuse) reuse=${2:?--reuse needs a value}; shift 2 ;;
     --version) version_in=${2:?--version needs a value}; shift 2 ;;
+    --web-version) web_version_in=${2:?--web-version needs a value}; shift 2 ;;
     --dir) dir=${2:?--dir needs a value}; shift 2 ;;
     --dir=*) dir=${1#--dir=}; [ -n "$dir" ] || die "--dir needs a value"; shift ;;
     --env-file=*) env_file=${1#--env-file=}; [ -n "$env_file" ] || die "--env-file needs a value"; shift ;;
@@ -360,6 +363,24 @@ set_env() { # set_env FILE KEY VALUE: replaces the active line, else the first c
 
 get_env() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1 || true; }
 
+pin_version() { # pin_version FILE KEY TAG: sets an image tag, asking before it moves an existing one
+  local old
+  old=$(get_env "$1" "$2")
+  if [ -z "$old" ]; then
+    set_env "$1" "$2" "$3"
+    say "wrote $1 (mode 600); $2 $3"
+  elif [ "$old" = "$3" ]; then
+    say "keeping $1; $2 is already $3"
+  elif [ "$reuse" = use ]; then
+    say "keeping $1 as it is; $2 stays $old"
+  elif confirm "Move $2 in $1 from $old to $3?" y; then
+    set_env "$1" "$2" "$3"
+    say "upgrade: keeping $1, $2 $old -> $3"
+  else
+    say "keeping $1; $2 stays $old"
+  fi
+}
+
 fill_secret() { # fill_secret FILE KEY BYTES: only when the value is empty
   local v
   [ -n "$(get_env "$1" "$2")" ] || { v=$(rand_hex "$3"); set_env "$1" "$2" "$v"; }
@@ -558,7 +579,7 @@ install_missing() {
 api_get() { # api_get PATH: saves the answer in $tmp/api.json and prints 200 or 404; stops on anything else
   local code
   code=$(curl -sSL -H 'Accept: application/vnd.github+json' -o "$tmp/api.json" -w '%{http_code}' \
-    "https://api.github.com/repos/$repo/$1" 2>"$tmp/curl.err" </dev/null) || code=000
+    "https://api.github.com/repos/${api_repo:-$repo}/$1" 2>"$tmp/curl.err" </dev/null) || code=000
   code=${code: -3}
   case $code in
     200 | 404) echo "$code" ;;
@@ -615,6 +636,18 @@ resolve_version() {
   ver=${tag#v}
   ver=${ver%%-*}
   say "resolved release: $tag (image tag v$ver)"
+}
+
+resolve_web_version() { # sets web_ver (X.Y.Z) from --web-version or the latest pyn-web release
+  local tag=$web_version_in
+  if [ -z "$tag" ]; then
+    tag=$(api_repo=avalon-initiative/pyn-web latest_release)
+    [ -n "$tag" ] || die "GitHub lists no pyn-web releases; pass --web-version"
+  fi
+  tag=${tag#v}
+  [[ $tag =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$ ]] || die "'$tag' is not a pyn-web version: use a tag like v0.1.3-alpha or a version like 0.1.3"
+  web_ver=${tag%%-*}
+  say "pyn-web release: v$web_ver"
 }
 
 # Downloads and checksums
@@ -781,25 +814,18 @@ docker_flow() {
     esac
   fi
 
-  old=$(get_env "$env_path" PYN_VERSION)
-  if [ -z "$old" ]; then
-    set_env "$env_path" PYN_VERSION "v$ver"
-    say "wrote $env_path (mode 600); PYN_VERSION v$ver"
-  elif [ "$old" = "v$ver" ]; then
-    say "keeping $env_path; PYN_VERSION is already v$ver"
-  elif [ "$reuse" = use ]; then
-    say "keeping $env_path as it is; PYN_VERSION stays $old"
-  elif confirm "Move PYN_VERSION in $env_path from $old to v$ver?" y; then
-    set_env "$env_path" PYN_VERSION "v$ver"
-    say "upgrade: keeping $env_path, PYN_VERSION $old -> v$ver"
-  else
-    say "keeping $env_path; PYN_VERSION stays $old"
+  if [ "$shape" != web ]; then pin_version "$env_path" PYN_SERVER_VERSION "v$ver"; fi
+  if [ "$shape" != server ]; then
+    resolve_web_version
+    pin_version "$env_path" PYN_WEB_VERSION "v$web_ver"
   fi
 
   if [ "$shape" = web ]; then
-    check_required "$env_path" PYN_VERSION PYN_API_URL
+    check_required "$env_path" PYN_WEB_VERSION PYN_API_URL
+  elif [ "$shape" = server ]; then
+    check_required "$env_path" PYN_SERVER_VERSION POSTGRES_PASSWORD PYN_SECRET_KEY PYN_PUBLIC_URL
   else
-    check_required "$env_path" PYN_VERSION POSTGRES_PASSWORD PYN_SECRET_KEY PYN_PUBLIC_URL
+    check_required "$env_path" PYN_SERVER_VERSION PYN_WEB_VERSION POSTGRES_PASSWORD PYN_SECRET_KEY PYN_PUBLIC_URL
   fi
   run_stream "Pulling the images" compose_in pull || die "the images could not be pulled; see the output above"
   run_stream "Starting the stack" compose_in up --detach --wait ||

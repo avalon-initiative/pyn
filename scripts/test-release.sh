@@ -232,36 +232,35 @@ fixtures "$tree" '"failure"'
 expect_refused "a failing CI run still runs the gate" "checks failed" release GATE_FAILS=1 VER=0.1.0 TITLE= YES=1
 expect "SKIP_CHECKS still wins without any CI data" bash -c 'cd "$0" && PATH="$0/bin:$PATH" GH_API_FAIL=1 GATE_FAILS=1 SKIP_CHECKS=1 VER=0.1.0 TITLE= YES=1 scripts/release.sh </dev/null >/dev/null 2>&1' "$r"
 
-# release-all.sh refusals, all before anything is changed: a sibling pyn-web fixture beside the pyn one.
+# release-all.sh refusals, all before anything is changed: a sibling pyn-web fixture beside the pyn one. The two versions are independent.
 new_repo "$r"
 w="$work/web"
 rm -rf "$w"; mkdir -p "$w/scripts"
 git init -q -b main "$w"
-printf '{\n  "name": "pyn-web",\n  "version": "0.0.1",\n  "dependencies": {\n    "@avalon-initiative/pyn-common-ui": "^0.1.5"\n  }\n}\n' > "$w/package.json"
+printf '{\n  "name": "pyn-web",\n  "version": "0.0.2",\n  "dependencies": {\n    "@avalon-initiative/pyn-common-ui": "^0.1.5"\n  }\n}\n' > "$w/package.json"
 printf '#!/bin/sh\nexit 0\n' > "$w/scripts/release.sh"
 (cd "$w" && git add -A && git commit -qm init)
 : > "$GH_LOG"
 all() { run env PYN_WEB_DIR="$w" PYN_COMMON_UI_DIR="$work/none" "$@" scripts/release-all.sh; }
-expect_refused "release-all needs a version" "VER is required" all YES=1
+expect_refused "release-all needs a version" "VER (pyn) or WEB_VER (pyn-web) is required" all YES=1
 expect_refused "release-all refuses a bad version" "invalid version" all VER=1.0 YES=1
-expect_refused "release-all refuses a version that is not greater" "not greater" all VER=0.0.1 YES=1
-expect_refused "release-all refuses a missing pyn-web checkout" "no pyn-web checkout" all PYN_WEB_DIR="$work/nowhere" VER=0.2.0 YES=1
-expect_refused "release-all asks for confirmation" "no terminal" all VER=0.2.0
+expect_refused "release-all refuses a bad web version" "invalid version" all WEB_VER=1.0 YES=1
+expect_refused "release-all refuses a pyn version that is not greater" "pyn version 0.0.1 is not greater" all VER=0.0.1 YES=1
+expect_refused "release-all refuses a web version that is not greater" "pyn-web version 0.0.1 is not greater" all WEB_VER=0.0.1 YES=1
+expect_refused "release-all refuses a missing pyn-web checkout" "no pyn-web checkout" all PYN_WEB_DIR="$work/nowhere" WEB_VER=0.2.0 YES=1
+expect_refused "release-all asks for confirmation" "no terminal" all VER=0.2.0 WEB_VER=0.0.3
 echo dirty > "$w/dirty"
-expect_refused "release-all refuses a dirty pyn-web" "pyn-web has a dirty" all VER=0.2.0 YES=1
+expect_refused "release-all refuses a dirty pyn-web" "pyn-web has a dirty" all VER=0.2.0 WEB_VER=0.0.3 YES=1
 rm "$w/dirty"
 echo dirty > "$r/dirty"
-expect_refused "release-all refuses a dirty pyn" "pyn has a dirty" all VER=0.2.0 YES=1
+expect_refused "release-all refuses a dirty pyn" "pyn has a dirty" all VER=0.2.0 WEB_VER=0.0.3 YES=1
 rm "$r/dirty"
 git -C "$w" switch -q -c topic
-expect_refused "release-all refuses pyn-web off main" "pyn-web is not on main" all VER=0.2.0 YES=1
+expect_refused "release-all refuses pyn-web off main" "pyn-web is not on main" all WEB_VER=0.0.3 YES=1
 git -C "$w" switch -q main
 git -C "$r" switch -q -c topic
 expect_refused "release-all refuses pyn off main" "pyn is not on main" all VER=0.2.0 YES=1
 git -C "$r" switch -q main
-sed -i 's/"version": "0.0.1"/"version": "0.0.2"/' "$w/package.json"
-git -C "$w" commit -qam bump
-expect_refused "release-all refuses differing versions" "versions differ" all VER=0.2.0 YES=1
 expect "release-all refusals change nothing" unchanged
 expect "release-all refusals open no pull request" test ! -s "$GH_LOG"
 

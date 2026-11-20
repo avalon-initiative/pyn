@@ -35,6 +35,7 @@ mod freeze_api;
 pub mod host_admin;
 mod lfs_api;
 mod limits_api;
+pub mod lock_stream_api;
 mod merge_api;
 pub mod observe;
 mod oidc_api;
@@ -241,6 +242,7 @@ struct RepoAddress {
         repo_api::list_members,
         repo_api::set_member,
         list_locks,
+        lock_stream_api::lock_events,
         list_files,
         tree,
         summary,
@@ -460,6 +462,8 @@ struct RepoAddress {
         api::RepoStorageCap,
         api::OwnerUsage,
         api::Event,
+        api::LockStreamEvent,
+        api::LockStreamPage,
         api::LimitKind,
         api::AccountCreatedData,
         api::AccountApprovedData,
@@ -865,9 +869,13 @@ fn commit_dto(c: pyn_core::Commit) -> api::Commit {
 }
 
 #[utoipa::path(get, path = "/healthz", responses((status = 200, body = String)))]
-async fn health() -> &'static str {
-    "ok"
+async fn health(State(s): State<AppState>) -> ([(&'static str, &'static str); 1], &'static str) {
+    let dev = if s.dev_auth.is_some() { "on" } else { "off" };
+    ([(DEV_AUTH_HEADER, dev)], "ok")
 }
+
+/// `/healthz` response header that states whether development auth is on.
+pub const DEV_AUTH_HEADER: &str = "x-pyn-dev-auth";
 
 #[utoipa::path(get, path = "/v1/capabilities", responses((status = 200, body = api::ServerCapabilities)))]
 async fn capabilities(State(s): State<AppState>) -> Json<api::ServerCapabilities> {
@@ -1958,18 +1966,33 @@ pub fn setup_hint(configured_public_url: Option<&str>) -> String {
     }
 }
 
+/// Whether a listen address is an IP loopback address or `localhost`.
+pub fn is_loopback_addr(addr: &str) -> bool {
+    match addr.parse::<std::net::SocketAddr>() {
+        Ok(a) => a.ip().is_loopback(),
+        Err(_) => addr
+            .rsplit_once(':')
+            .is_some_and(|(host, _)| host.eq_ignore_ascii_case("localhost")),
+    }
+}
+
+/// Development auth on a non-loopback listener is refused unless `acknowledged`.
+pub fn check_dev_auth_bind(addr: &str, dev_auth: bool, acknowledged: bool) -> Result<(), String> {
+    if !dev_auth || acknowledged || is_loopback_addr(addr) {
+        return Ok(());
+    }
+    Err(format!(
+        "PYN_DEV_AUTH=true with PYN_ADDR={addr}: any client that can reach this address can act as any user. \
+         Bind a loopback address, or set PYN_DEV_AUTH_ALLOW_NON_LOOPBACK=true to accept the risk"
+    ))
+}
+
 /// A warning when session cookies would not be Secure on a server reachable beyond this machine.
 pub fn insecure_cookie_warning(addr: &str, public_url: &str) -> Option<&'static str> {
     if public_url.to_ascii_lowercase().starts_with("https://") {
         return None;
     }
-    let loopback = match addr.parse::<std::net::SocketAddr>() {
-        Ok(a) => a.ip().is_loopback(),
-        Err(_) => addr
-            .rsplit_once(':')
-            .is_some_and(|(host, _)| host.eq_ignore_ascii_case("localhost")),
-    };
-    (!loopback).then_some(
+    (!is_loopback_addr(addr)).then_some(
         "PYN_PUBLIC_URL is not https and the server is bound beyond loopback: session cookies are not marked Secure unless a proxy sends X-Forwarded-Proto: https",
     )
 }

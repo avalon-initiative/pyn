@@ -153,6 +153,82 @@ pub async fn lock_changes_queue_their_events(meta: Store, access_store: Access, 
     );
 }
 
+pub async fn lock_events_read_back_by_repository_and_cursor(
+    meta: Store,
+    access_store: Access,
+    hooks: Webhooks,
+) {
+    let w = world(meta, access_store.clone(), hooks.clone()).await;
+    let alice = who("alice");
+    access_store.ensure_user(&alice.user, t0()).await.unwrap();
+    for name in ["game", "other"] {
+        w.repos
+            .create(&alice, &alice.user, name, None, None)
+            .await
+            .unwrap();
+    }
+    let game = w.repos.open("alice", "game").await.unwrap();
+    let other = w.repos.open("alice", "other").await.unwrap();
+    let path = crate::RepoPath::try_from("a.bin".to_string()).unwrap();
+    let start = hooks.lock_events_head().await.unwrap();
+
+    game.service
+        .checkout(&path, &alice.user, None)
+        .await
+        .unwrap();
+    other
+        .service
+        .checkout(&path, &alice.user, None)
+        .await
+        .unwrap();
+    game.service.release(&path, &alice.user).await.unwrap();
+    other
+        .service
+        .checkout(&path, &alice.user, None)
+        .await
+        .unwrap();
+
+    let id = game.record.id.as_str();
+    let events = hooks.lock_events_after(id, start, 100).await.unwrap();
+    let types: Vec<_> = events.iter().map(|e| e.event_type.as_str()).collect();
+    assert_eq!(types, ["lock.acquired", "lock.released"]);
+    let (first, second) = (events[0].id, events[1].id);
+    assert!(start < first && first < second);
+    assert_eq!(
+        hooks.lock_events_after(id, first, 100).await.unwrap().len(),
+        1
+    );
+    assert_eq!(
+        hooks.lock_events_after(id, start, 1).await.unwrap().len(),
+        1
+    );
+    assert!(
+        hooks
+            .lock_events_after(id, second, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(hooks.lock_events_head().await.unwrap(), second);
+
+    w.clock.advance(Duration::days(30));
+    assert_eq!(w.repos.sweep_expired_locks().await.unwrap(), 1);
+    assert_eq!(w.repos.sweep_expired_locks().await.unwrap(), 0);
+    let swept = hooks
+        .lock_events_after(other.record.id.as_str(), start, 100)
+        .await
+        .unwrap();
+    let types: Vec<_> = swept.iter().map(|e| e.event_type.as_str()).collect();
+    assert_eq!(types, ["lock.acquired", "lock.expired"]);
+    assert!(
+        hooks
+            .lock_events_after(id, second, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 pub async fn changes_queue_their_events_in_order(
     meta: Store,
     access_store: Access,
@@ -391,6 +467,7 @@ fn draft(event_type: &str) -> EventDraft {
         event_type: event_type.into(),
         payload: "{}".into(),
         at: t0(),
+        repo_id: None,
     }
 }
 
