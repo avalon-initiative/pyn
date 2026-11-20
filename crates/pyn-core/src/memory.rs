@@ -2171,25 +2171,22 @@ impl AccessStore for MemoryAccessStore {
         Ok(st.profiles.get(user).cloned().unwrap_or_default())
     }
 
-    async fn set_profile(
+    async fn save_profile(
         &self,
         user: &UserId,
         fields: &ProfileFields,
+        visibility: Option<&ProfileVisibility>,
         _now: DateTime<Utc>,
     ) -> Result<()> {
         let mut st = self.state.lock().unwrap();
-        st.profiles.entry(user.clone()).or_default().fields = fields.clone();
-        Ok(())
-    }
-
-    async fn set_profile_visibility(
-        &self,
-        user: &UserId,
-        visibility: &ProfileVisibility,
-        _now: DateTime<Utc>,
-    ) -> Result<()> {
-        let mut st = self.state.lock().unwrap();
-        st.profiles.entry(user.clone()).or_default().visibility = *visibility;
+        if !st.accounts.contains_key(user) {
+            return Err(PynError::UserNotFound(user.to_string()));
+        }
+        let profile = st.profiles.entry(user.clone()).or_default();
+        profile.fields = fields.clone();
+        if let Some(v) = visibility {
+            profile.visibility = *v;
+        }
         Ok(())
     }
 
