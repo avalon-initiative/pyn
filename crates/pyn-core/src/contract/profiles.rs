@@ -33,7 +33,7 @@ pub async fn profiles_store_text_fields_and_an_avatar_apart(store: Access) {
     );
 
     store
-        .set_profile(&alice, &fields("Alice"), at(1))
+        .save_profile(&alice, &fields("Alice"), None, at(1))
         .await
         .unwrap();
     let saved = store.profile(&alice).await.unwrap();
@@ -53,7 +53,7 @@ pub async fn profiles_store_text_fields_and_an_avatar_apart(store: Access) {
     );
 
     store
-        .set_profile(&alice, &ProfileFields::default(), at(3))
+        .save_profile(&alice, &ProfileFields::default(), None, at(3))
         .await
         .unwrap();
     let saved = store.profile(&alice).await.unwrap();
@@ -82,7 +82,7 @@ pub async fn profiles_belong_to_one_account_each(store: Access) {
     store.create_user(&alice, at(0)).await.unwrap();
     store.create_user(&bob, at(0)).await.unwrap();
     store
-        .set_profile(&alice, &fields("Alice"), at(1))
+        .save_profile(&alice, &fields("Alice"), None, at(1))
         .await
         .unwrap();
     store
@@ -91,7 +91,7 @@ pub async fn profiles_belong_to_one_account_each(store: Access) {
         .unwrap();
     assert_eq!(store.profile(&bob).await.unwrap(), Default::default());
     store
-        .set_profile(&bob, &fields("Bob"), at(2))
+        .save_profile(&bob, &fields("Bob"), None, at(2))
         .await
         .unwrap();
     let alice_profile = store.profile(&alice).await.unwrap();
@@ -115,11 +115,11 @@ pub async fn profile_visibility_defaults_public_and_is_stored_apart(store: Acces
         ..Default::default()
     };
     store
-        .set_profile_visibility(&alice, &hidden, at(1))
+        .save_profile(&alice, &ProfileFields::default(), Some(&hidden), at(1))
         .await
         .unwrap();
     store
-        .set_profile(&alice, &fields("Alice"), at(2))
+        .save_profile(&alice, &fields("Alice"), None, at(2))
         .await
         .unwrap();
     store
@@ -133,7 +133,7 @@ pub async fn profile_visibility_defaults_public_and_is_stored_apart(store: Acces
 
     let public = ProfileVisibility::default();
     store
-        .set_profile_visibility(&alice, &public, at(4))
+        .save_profile(&alice, &fields("Alice"), Some(&public), at(4))
         .await
         .unwrap();
     let saved = store.profile(&alice).await.unwrap();
@@ -196,7 +196,7 @@ pub async fn org_profiles_are_apart_from_user_profiles_and_go_with_the_org(store
         .await
         .unwrap();
     store
-        .set_profile(&alice, &fields("Alice"), at(3))
+        .save_profile(&alice, &fields("Alice"), None, at(3))
         .await
         .unwrap();
     assert_eq!(store.profile(&acme).await.unwrap(), Default::default());
@@ -230,11 +230,11 @@ pub async fn the_people_search_lists_active_accounts_and_matches_only_what_is_vi
         ..Default::default()
     };
     store
-        .set_profile(&user("alice"), &named("Zed Quartz"), at(9))
+        .save_profile(&user("alice"), &named("Zed Quartz"), None, at(9))
         .await
         .unwrap();
     store
-        .set_profile(&user("bob"), &named("Secret Plum"), at(9))
+        .save_profile(&user("bob"), &named("Secret Plum"), None, at(9))
         .await
         .unwrap();
     let hidden = ProfileVisibility {
@@ -242,7 +242,12 @@ pub async fn the_people_search_lists_active_accounts_and_matches_only_what_is_vi
         ..Default::default()
     };
     store
-        .set_profile_visibility(&user("bob"), &hidden, at(9))
+        .save_profile(
+            &user("bob"),
+            &ProfileFields::default(),
+            Some(&hidden),
+            at(9),
+        )
         .await
         .unwrap();
     store
@@ -302,5 +307,44 @@ pub async fn the_people_search_lists_active_accounts_and_matches_only_what_is_vi
     assert!(
         hit("%").await.is_empty() && hit("_").await.is_empty(),
         "no wildcards"
+    );
+}
+
+pub async fn save_profile_writes_text_and_visibility_together_or_not_at_all(store: Access) {
+    let (alice, ghost) = (user("alice"), user("ghost"));
+    store.create_user(&alice, at(0)).await.unwrap();
+    let hidden = ProfileVisibility {
+        bio: false,
+        ..Default::default()
+    };
+    store
+        .save_profile(&alice, &fields("Alice"), Some(&hidden), at(1))
+        .await
+        .unwrap();
+    let saved = store.profile(&alice).await.unwrap();
+    assert_eq!((saved.fields, saved.visibility), (fields("Alice"), hidden));
+
+    store
+        .save_profile(&alice, &fields("Alicia"), None, at(2))
+        .await
+        .unwrap();
+    let saved = store.profile(&alice).await.unwrap();
+    assert_eq!(saved.fields, fields("Alicia"));
+    assert_eq!(
+        saved.visibility, hidden,
+        "no visibility keeps the stored one"
+    );
+
+    assert!(
+        store
+            .save_profile(&ghost, &fields("Ghost"), Some(&hidden), at(3))
+            .await
+            .is_err(),
+        "an unknown account is refused"
+    );
+    assert_eq!(
+        store.profile(&ghost).await.unwrap(),
+        Default::default(),
+        "a refused save writes neither part"
     );
 }
