@@ -214,6 +214,8 @@ pub struct EventDraft {
     /// The serialized envelope.
     pub payload: String,
     pub at: DateTime<Utc>,
+    /// The repository a lock event belongs to, so a stream can read one repository's events.
+    pub repo_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,6 +310,18 @@ pub trait WebhookStore: Send + Sync {
         payload: &str,
         now: DateTime<Utc>,
     ) -> Result<OutboxEvent>;
+
+    /// Lock events of the repository with an id above `after`, oldest first. A reader that resumes from the last id it
+    /// saw misses none: lock events become visible in id order.
+    async fn lock_events_after(
+        &self,
+        repo_id: &str,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<OutboxEvent>>;
+
+    /// The id of the newest lock event, 0 when there is none: the cursor of a stream that starts now.
+    async fn lock_events_head(&self) -> Result<i64>;
 
     /// Atomically admits and queues `owner.limit_reached` for this owner and limit at most once an hour.
     /// Returns `None` when suppressed, without extending the window; the store chooses the clock.

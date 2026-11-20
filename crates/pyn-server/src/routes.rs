@@ -804,6 +804,11 @@ fn table() -> Vec<Entry> {
             crate::list_locks,
         ),
         get(
+            "/v1/repos/{owner}/{name}/locks/events",
+            Reach::PublicRepoRead(need(Locks, Read)),
+            crate::lock_stream_api::lock_events,
+        ),
+        get(
             "/v1/repos/{owner}/{name}/info/lfs/locks",
             Reach::RepoScoped(need(Locks, Read)),
             lfs_api::list_locks,

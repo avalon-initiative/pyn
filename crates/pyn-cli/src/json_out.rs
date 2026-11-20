@@ -31,13 +31,18 @@ impl std::fmt::Display for HeldBy {
     }
 }
 
-/// Prints `fields` (a JSON object) with the version added.
-pub fn print(fields: Value) {
+/// `fields` (a JSON object) with the version added.
+pub fn document(fields: Value) -> Value {
     let mut doc = json!({ "version": VERSION });
     if let (Some(doc), Value::Object(fields)) = (doc.as_object_mut(), fields) {
         doc.extend(fields);
     }
-    println!("{doc}");
+    doc
+}
+
+/// Prints `fields` (a JSON object) with the version added.
+pub fn print(fields: Value) {
+    println!("{}", document(fields));
 }
 
 /// Prints `{"<key>": value}` with the version added.

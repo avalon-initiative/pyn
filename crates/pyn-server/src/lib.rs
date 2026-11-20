@@ -35,6 +35,7 @@ mod freeze_api;
 pub mod host_admin;
 mod lfs_api;
 mod limits_api;
+pub mod lock_stream_api;
 mod merge_api;
 pub mod observe;
 mod oidc_api;
@@ -241,6 +242,7 @@ struct RepoAddress {
         repo_api::list_members,
         repo_api::set_member,
         list_locks,
+        lock_stream_api::lock_events,
         list_files,
         tree,
         summary,
@@ -460,6 +462,8 @@ struct RepoAddress {
         api::RepoStorageCap,
         api::OwnerUsage,
         api::Event,
+        api::LockStreamEvent,
+        api::LockStreamPage,
         api::LimitKind,
         api::AccountCreatedData,
         api::AccountApprovedData,

@@ -108,7 +108,8 @@ fn build_full(
     )));
     let audit = Arc::new(MemoryAuditStore::new());
     let rules = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Content/\"]\n";
-    let meta = Arc::new(MemoryMetadataStore::new());
+    let hooks = Arc::new(pyn_core::memory::MemoryWebhookStore::new());
+    let meta = Arc::new(MemoryMetadataStore::new().with_outbox(hooks.clone()));
     if with_repo {
         runtime
             .block_on(meta.create_repo(RepoRecord {
@@ -132,11 +133,13 @@ fn build_full(
             ..AccessConfig::default()
         }
     };
-    let hooks = Arc::new(pyn_core::memory::MemoryWebhookStore::new());
     let mut service = AccessService::new(
         Arc::new(MemoryAccessStore::new().with_outbox(hooks.clone())),
         clock.clone(),
-        Arc::new(pyn_core::MemoryLimitEvents::new()),
+        Arc::new(pyn_server::events::WebhookLimitEvents::new(
+            hooks.clone(),
+            "https://pyn.test".into(),
+        )),
     )
     .with_config(config)
     .with_registry(meta.clone())
@@ -242,6 +245,28 @@ impl Env {
         }
         cmd.envs(vars.iter().copied());
         cmd.output().unwrap()
+    }
+
+    /// Starts the CLI as `user` and returns it with standard output piped, for a command that keeps running.
+    pub fn spawn(&self, cwd: &Path, user: &str, args: &[&str]) -> std::process::Child {
+        use std::process::Stdio;
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_pyn"));
+        cmd.args(args)
+            .current_dir(cwd)
+            .env("PYN_SERVER", &self.url)
+            .env("PYN_USER", user)
+            .env("PYN_CONFIG_DIR", self.config.path())
+            .env("TZ", "UTC")
+            .env_remove("PYN_TOKEN")
+            .env_remove("PYN_DIR")
+            .env_remove("PYN_REPO")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(repo) = self.default_repo {
+            cmd.env("PYN_REPO", repo);
+        }
+        cmd.spawn().unwrap()
     }
 
     /// Runs the CLI as `user` with an open pipe as standard input that never gets data or end of file;

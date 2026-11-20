@@ -774,6 +774,37 @@ impl MetadataStore for MemoryMetadataStore {
         }
     }
 
+    async fn lapsed_locks(&self, now: DateTime<Utc>, limit: u32) -> Result<Vec<(RepoId, Lock)>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<(RepoId, Lock)> = st
+            .locks
+            .iter()
+            .filter(|(_, l)| !live(l, now))
+            .map(|((r, _), l)| (r.clone(), l.clone()))
+            .collect();
+        out.sort_by_key(|(_, l)| l.expires_at);
+        out.truncate(limit as usize);
+        Ok(out)
+    }
+
+    async fn expire_lock_with_events(
+        &self,
+        repo: &RepoId,
+        path: &RepoPath,
+        now: DateTime<Utc>,
+        events: Option<LockEventBuilder<'_>>,
+    ) -> Result<Option<Lock>> {
+        let mut st = self.state.lock().unwrap();
+        let key = (repo.clone(), path.clone());
+        let Some(lapsed) = st.locks.get(&key).filter(|l| !live(l, now)) else {
+            return Ok(None);
+        };
+        if let Some(build) = events {
+            self.outbox.queue(&[build(LockChange::Expired(lapsed))?])?;
+        }
+        Ok(st.locks.remove(&key))
+    }
+
     async fn get_lock(
         &self,
         repo: &RepoId,
@@ -4226,6 +4257,7 @@ struct WebhookState {
     subscriptions: BTreeMap<i64, Subscription>,
     secrets: Vec<WebhookSecret>,
     events: BTreeMap<i64, OutboxEvent>,
+    event_repos: HashMap<i64, String>,
     deliveries: Vec<Delivery>,
 }
 
@@ -4286,7 +4318,10 @@ impl MemoryWebhookStore {
     fn queue(&self, events: &[EventDraft]) -> Result<()> {
         let mut st = self.state.lock().unwrap();
         for e in events {
-            st.append_event(&e.event_type, &e.payload, e.at)?;
+            let event = st.append_event(&e.event_type, &e.payload, e.at)?;
+            if let Some(repo) = &e.repo_id {
+                st.event_repos.insert(event.id, repo.clone());
+            }
         }
         Ok(())
     }
@@ -4453,6 +4488,34 @@ impl WebhookStore for MemoryWebhookStore {
         s.append_event(event_type, payload, now)
     }
 
+    async fn lock_events_after(
+        &self,
+        repo_id: &str,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<OutboxEvent>> {
+        let s = self.state.lock().unwrap();
+        Ok(s.events
+            .range(after + 1..)
+            .map(|(_, e)| e)
+            .filter(|e| {
+                e.event_type.starts_with("lock.")
+                    && s.event_repos.get(&e.id).is_some_and(|r| r == repo_id)
+            })
+            .take(limit as usize)
+            .cloned()
+            .collect())
+    }
+
+    async fn lock_events_head(&self) -> Result<i64> {
+        let s = self.state.lock().unwrap();
+        Ok(s.events
+            .values()
+            .rev()
+            .find(|e| e.event_type.starts_with("lock."))
+            .map_or(0, |e| e.id))
+    }
+
     async fn append_limit_reached(
         &self,
         owner: &UserId,
@@ -4609,6 +4672,7 @@ impl WebhookStore for MemoryWebhookStore {
             .collect();
         for id in &old {
             s.events.remove(id);
+            s.event_repos.remove(id);
         }
         s.deliveries.retain(|d| !old.contains(&d.event_id));
         Ok(old.len() as u64)

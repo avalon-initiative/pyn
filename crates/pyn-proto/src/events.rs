@@ -268,6 +268,24 @@ pub struct LockForcedData {
     pub reason: Option<String>,
 }
 
+/// One lock change in a repository's stream.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct LockStreamEvent {
+    /// Resume after this event by passing it as `after`.
+    pub cursor: String,
+    /// The same envelope a webhook delivers: `lock.acquired`, `lock.released`, `lock.expired` or `lock.forced`.
+    pub event: Event,
+}
+
+/// A page of a repository's lock changes, oldest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct LockStreamPage {
+    pub events: Vec<LockStreamEvent>,
+    /// Pass it as `after` to get what follows this page. It is the position of the last event returned, or of the
+    /// request when none was; without `after` it is the position of now and `events` is empty.
+    pub cursor: String,
+}
+
 /// The typed `data` of an event, chosen by its `type`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventData {

@@ -191,6 +191,17 @@ pub enum LockChange<'a> {
 pub type LockEventBuilder<'a> = &'a (dyn Fn(LockChange<'_>) -> Result<EventDraft> + Send + Sync);
 
 impl DomainEvent {
+    /// The repository a lock event belongs to; none for other events.
+    pub fn repo_id(&self) -> Option<&RepoId> {
+        match self {
+            Self::LockAcquired { repo_id, .. }
+            | Self::LockReleased { repo_id, .. }
+            | Self::LockExpired { repo_id, .. }
+            | Self::LockForced { repo_id, .. } => Some(repo_id),
+            _ => None,
+        }
+    }
+
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::AccountCreated { .. } => "account.created",
@@ -258,6 +269,7 @@ impl LimitEvents for MemoryLimitEvents {
             event_type: event_type.into(),
             payload: format!("{{\"type\":\"{event_type}\"}}"),
             at: now,
+            repo_id: event.repo_id().map(|r| r.to_string()),
         })
     }
 }

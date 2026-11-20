@@ -17,6 +17,22 @@ pub struct WebhookSettings {
     pub allow_http: bool,
 }
 
+impl AccessService {
+    /// Lock events of one repository after `after`; the caller has already checked read access.
+    pub async fn lock_events_after(
+        &self,
+        repo_id: &str,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<crate::webhook::OutboxEvent>> {
+        self.webhooks.lock_events_after(repo_id, after, limit).await
+    }
+
+    pub async fn lock_events_head(&self) -> Result<i64> {
+        self.webhooks.lock_events_head().await
+    }
+}
+
 /// What an administrator may know of a stored secret: never the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebhookSecretInfo {

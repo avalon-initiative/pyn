@@ -21,6 +21,7 @@ use crate::rules::Rules;
 use crate::service::{DEFAULT_UNREFERENCED_UPLOAD_BYTES, LockLimit, RepoService, ServiceConfig};
 use crate::store::MetadataStore;
 use crate::types::{Lock, UserId};
+use crate::webhook::OutboxEvent;
 
 mod visible;
 
@@ -85,6 +86,43 @@ impl Repositories {
     /// Drops the resumable LFS uploads that lapsed and the pieces they stored; returns how many.
     pub async fn sweep_tus_sessions(&self) -> Result<usize> {
         crate::sweep_tus_sessions(&self.meta, &self.objects, self.clock.now()).await
+    }
+
+    /// Removes the leases that ran out and queues `lock.expired` for each; returns how many were removed.
+    pub async fn sweep_expired_locks(&self) -> Result<usize> {
+        let lapsed = self.meta.lapsed_locks(self.clock.now(), 500).await?;
+        let mut removed = 0;
+        for (repo, lock) in lapsed {
+            let Some(record) = self.meta.get_repo(&repo).await? else {
+                continue;
+            };
+            if self
+                .service_for(&record)
+                .await?
+                .expire_lock(&lock.path)
+                .await?
+            {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// The repository's lock events with an id above `after`, oldest first, and the id to resume from.
+    pub async fn lock_events_after(
+        &self,
+        record: &RepoRecord,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<OutboxEvent>> {
+        self.access
+            .lock_events_after(record.id.as_str(), after, limit)
+            .await
+    }
+
+    /// The cursor of a lock stream that starts now.
+    pub async fn lock_events_head(&self) -> Result<i64> {
+        self.access.lock_events_head().await
     }
 
     /// `rules` apply to a repository until it has a `.pyn/pyn.toml`.
