@@ -1938,11 +1938,11 @@ dependencies = [
 
 [[package]]
 name = "pyn-chunk"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "pyn-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -1983,7 +1983,7 @@ dependencies = [
 
 [[package]]
 name = "pyn-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2013,11 +2013,11 @@ dependencies = [
 
 [[package]]
 name = "pyn-diff"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "pyn-fs"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "pyn-git"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -2049,11 +2049,11 @@ dependencies = [
 
 [[package]]
 name = "pyn-gitattr"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "pyn-gittransport"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "pyn-gitwire"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "pyn-object",
  "tempfile",
@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "pyn-gitwork"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "flate2",
  "pyn-git",
@@ -2095,7 +2095,7 @@ dependencies = [
 
 [[package]]
 name = "pyn-hash"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "hex",
  "sha2 0.11.1",
@@ -2103,14 +2103,14 @@ dependencies = [
 
 [[package]]
 name = "pyn-merge"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "pyn-diff",
 ]
 
 [[package]]
 name = "pyn-object"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "hex",
  "sha1-checked",
@@ -2120,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "pyn-oidc"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "pyn-postgres"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "pyn-proto"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "serde",
@@ -2163,7 +2163,7 @@ dependencies = [
 
 [[package]]
 name = "pyn-server"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2201,7 +2201,7 @@ dependencies = [
 
 [[package]]
 name = "pyn-webauthn"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "base64 0.23.1",
  "ciborium",
