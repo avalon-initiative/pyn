@@ -59,6 +59,7 @@ mod setup_api;
 mod team_api;
 pub mod tus_sweep;
 mod two_factor_api;
+pub mod update_check;
 mod webhook_api;
 pub mod webhook_delivery;
 
@@ -78,6 +79,8 @@ pub struct AppState {
     pub dev_auth: Option<Arc<dyn AuthProvider>>,
     /// Takes the caller's address from `X-Forwarded-For` (the last entry), for a server behind a trusted proxy.
     pub trust_forwarded: bool,
+    /// The release lookup; `None` when `PYN_UPDATE_CHECK` is off.
+    pub updates: Option<Arc<update_check::UpdateChecker>>,
 }
 
 /// The `{owner}` and `{name}` of every repository route.
@@ -166,6 +169,7 @@ struct RepoAddress {
         deletion_api::schedule_account_deletion,
         deletion_api::restore_account_deletion,
         deletion_api::admin_settings,
+        admin_api::update_status,
         admin_api::grant_admin,
         admin_api::set_access_mode,
         admin_api::revoke_admin,
@@ -487,6 +491,7 @@ struct RepoAddress {
         api::DeletionBlockers,
         api::AccountDeletionSettings,
         api::AdminSettings,
+        api::UpdateStatus,
         api::AdministratorSummary,
         api::AccountDeletionScheduledData,
         api::AccountDeletionRestoredData,

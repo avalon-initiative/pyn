@@ -232,6 +232,11 @@ fn table() -> Vec<Entry> {
             admin_api::revoke_admin,
         ),
         get("/v1/admin/audit", Reach::AdminOnly, admin_api::audit),
+        get(
+            "/v1/admin/update",
+            Reach::AdminOnly,
+            admin_api::update_status,
+        ),
         put(
             "/v1/admin/access",
             Reach::AdminOnly,

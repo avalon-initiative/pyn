@@ -66,6 +66,7 @@ fn server() -> Server {
         }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
+        updates: None,
     });
     Server { app, access, clock }
 }

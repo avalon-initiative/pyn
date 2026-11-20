@@ -101,6 +101,7 @@ fn app(log: LogConfig) -> Router {
             auth: Arc::new(BearerAuth { access }),
             dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
             trust_forwarded: false,
+            updates: None,
         },
         RequestLimits::default(),
         log,
