@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
@@ -36,6 +37,7 @@ use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
+use crate::source_range;
 use crate::store::MetadataStore;
 use crate::two_factor::{
     ChallengeRecord, FactorRecord, FactorRemoval, NoticeRecord, PasskeyRecord, TwoFactorPolicy,
@@ -490,7 +492,12 @@ pub trait AccessStore: Send + Sync {
     /// Marks the named credential revoked; false if there is none. Revoking twice is harmless.
     async fn revoke_service_credential(&self, name: &str, now: DateTime<Utc>) -> Result<bool>;
 
-    async fn touch_service_credential(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()>;
+    async fn touch_service_credential(
+        &self,
+        id: &TokenId,
+        now: DateTime<Utc>,
+        from: Option<&str>,
+    ) -> Result<()>;
 
     /// Creates a self-registered account with its password; false if the name is already taken.
     async fn create_account(&self, new: NewAccount) -> Result<bool> {
@@ -933,6 +940,8 @@ pub struct RateLimits {
     pub mail_per_email: u32,
     /// People-directory requests per client address in a minute, signed-out callers only.
     pub people_per_client: u32,
+    /// Requests per service credential in a minute, unless the credential sets its own; `0` means no limit.
+    pub service_per_credential: u32,
 }
 
 impl Default for RateLimits {
@@ -943,6 +952,7 @@ impl Default for RateLimits {
             register_per_client: 10,
             mail_per_email: 3,
             people_per_client: 60,
+            service_per_credential: 0,
         }
     }
 }
@@ -964,6 +974,18 @@ const SIGN_IN_WINDOW: Duration = Duration::minutes(15);
 const REGISTER_WINDOW: Duration = Duration::hours(1);
 const MAIL_WINDOW: Duration = Duration::hours(1);
 const PEOPLE_WINDOW: Duration = Duration::minutes(1);
+const SERVICE_WINDOW: Duration = Duration::minutes(1);
+const MAX_SERVICE_SOURCES: usize = 64;
+
+/// Optional restrictions on a new service credential; the default is none.
+#[derive(Debug, Clone, Default)]
+pub struct ServiceCredentialLimits {
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Addresses or CIDR blocks; empty means any address.
+    pub allowed_sources: Vec<String>,
+    /// Requests per minute, overriding the server default.
+    pub rate_limit_per_minute: Option<u32>,
+}
 
 /// Server settings that shape who can join and how long a sign-in lasts.
 #[derive(Debug, Clone)]
@@ -1386,17 +1408,27 @@ impl AccessService {
 
     /// Checks a bearer token and names its owner; the token's limits apply once a repository is chosen.
     pub async fn identify(&self, raw: &str) -> Result<Identity> {
-        self.identify_with(raw, false).await
+        self.identify_from(raw, None).await
+    }
+
+    /// Like `identify`, with the address the request came from; a service credential restricted by source needs it.
+    pub async fn identify_from(&self, raw: &str, source: Option<IpAddr>) -> Result<Identity> {
+        self.identify_with(raw, false, source).await
     }
 
     /// Like `identify`, but an account scheduled for deletion by its owner is accepted, for restoring it.
     pub async fn identify_allowing_pending(&self, raw: &str) -> Result<Identity> {
-        self.identify_with(raw, true).await
+        self.identify_with(raw, true, None).await
     }
 
-    async fn identify_with(&self, raw: &str, allow_pending: bool) -> Result<Identity> {
+    async fn identify_with(
+        &self,
+        raw: &str,
+        allow_pending: bool,
+        source: Option<IpAddr>,
+    ) -> Result<Identity> {
         if service_credential::is_service(raw) {
-            return self.identify_service(raw).await;
+            return self.identify_service(raw, source).await;
         }
         let (id, secret) = token::parse(raw).ok_or_else(|| unauthenticated("malformed token"))?;
         let presented = token::hash_secret(secret);
@@ -1429,7 +1461,7 @@ impl AccessService {
         })
     }
 
-    async fn identify_service(&self, raw: &str) -> Result<Identity> {
+    async fn identify_service(&self, raw: &str, source: Option<IpAddr>) -> Result<Identity> {
         let (id, secret) = service_credential::parse(raw)
             .ok_or_else(|| unauthenticated("malformed credential"))?;
         let presented = token::hash_secret(secret);
@@ -1442,11 +1474,37 @@ impl AccessService {
             Some(r) if matches => r,
             _ => return Err(unauthenticated("unknown credential")),
         };
+        let now = self.clock.now();
         if record.revoked_at.is_some() {
+            self.record_service_refusal(&record, "revoked", source)
+                .await;
             return Err(unauthenticated("credential revoked"));
         }
+        if record.is_expired(now) {
+            self.record_service_refusal(&record, "expired", source)
+                .await;
+            return Err(unauthenticated("credential expired"));
+        }
+        if !record.allows_source(source) {
+            self.record_service_refusal(&record, "source not allowed", source)
+                .await;
+            return Err(unauthenticated("credential not valid from this address"));
+        }
+        let max = record
+            .rate_limit_per_minute
+            .unwrap_or(self.config.limits.service_per_credential);
+        if max > 0 {
+            self.count_limited(&format!("svc:{}", record.id), max, SERVICE_WINDOW)
+                .await?;
+        }
         self.store
-            .touch_service_credential(&id, self.clock.now())
+            .touch_service_credential(
+                &id,
+                now,
+                source
+                    .map(|ip| source_range::unmap(ip).to_string())
+                    .as_deref(),
+            )
             .await?;
         Ok(Identity {
             user: record.actor(),
@@ -3325,6 +3383,18 @@ impl AccessService {
         name: &str,
         scopes: BTreeSet<ServiceScope>,
     ) -> Result<(ServiceCredentialRecord, String)> {
+        self.create_service_credential_with(actor, name, scopes, ServiceCredentialLimits::default())
+            .await
+    }
+
+    /// Like `create_service_credential`, with an optional expiry, source restriction and rate limit.
+    pub async fn create_service_credential_with(
+        &self,
+        actor: &Identity,
+        name: &str,
+        scopes: BTreeSet<ServiceScope>,
+        limits: ServiceCredentialLimits,
+    ) -> Result<(ServiceCredentialRecord, String)> {
         self.require_server_admin(actor).await?;
         let name = service_credential::validate_name(name)?;
         if scopes.is_empty() {
@@ -3332,6 +3402,26 @@ impl AccessService {
                 "a service credential needs at least one scope".into(),
             ));
         }
+        let now = self.clock.now();
+        if limits.expires_at.is_some_and(|t| t <= now) {
+            return Err(PynError::InvalidRequest(
+                "expires_at must be in the future".into(),
+            ));
+        }
+        if limits
+            .rate_limit_per_minute
+            .is_some_and(|n| n == 0 || i32::try_from(n).is_err())
+        {
+            return Err(PynError::InvalidRequest(
+                "rate_limit_per_minute must be a positive number".into(),
+            ));
+        }
+        if limits.allowed_sources.len() > MAX_SERVICE_SOURCES {
+            return Err(PynError::InvalidRequest(format!(
+                "at most {MAX_SERVICE_SOURCES} allowed sources"
+            )));
+        }
+        let allowed_sources = source_range::parse_all(&limits.allowed_sources)?;
         let (id, full, secret_hash) = service_credential::generate()?;
         let record = ServiceCredentialRecord {
             id,
@@ -3339,21 +3429,59 @@ impl AccessService {
             secret_hash,
             scopes,
             created_by: actor.user.clone(),
-            created_at: self.clock.now(),
+            created_at: now,
             revoked_at: None,
             last_used_at: None,
+            last_used_from: None,
+            expires_at: limits.expires_at,
+            allowed_sources,
+            rate_limit_per_minute: limits.rate_limit_per_minute,
         };
         if !self.store.create_service_credential(record.clone()).await? {
             return Err(PynError::ServiceCredentialExists(name));
         }
-        let detail = format!(
+        let mut detail = format!(
             "service credential {name} ({}): scopes [{}]",
             record.id,
             join(record.scopes.iter())
         );
+        if let Some(t) = record.expires_at {
+            detail.push_str(&format!(", expires {}", t.to_rfc3339()));
+        }
+        if !record.allowed_sources.is_empty() {
+            detail.push_str(&format!(", from [{}]", record.allowed_sources.join(", ")));
+        }
+        if let Some(n) = record.rate_limit_per_minute {
+            detail.push_str(&format!(", {n} requests per minute"));
+        }
         self.record_server(&actor.user, AuditAction::ServiceCredentialCreated, detail)
             .await?;
         Ok((record, full))
+    }
+
+    /// Writes the audit entry for a refused service-credential request. It names the credential, the reason and the
+    /// address, never the secret; a failure to write is logged and does not change the refusal.
+    pub async fn record_service_refusal(
+        &self,
+        credential: &ServiceCredentialRecord,
+        reason: &str,
+        source: Option<IpAddr>,
+    ) {
+        let from = source.map_or_else(|| "unknown address".to_string(), |ip| ip.to_string());
+        let detail = format!(
+            "service credential {} refused: {reason}, from {from}",
+            credential.name
+        );
+        if let Err(e) = self
+            .record_server(
+                &credential.actor(),
+                AuditAction::ServiceCredentialRefused,
+                detail,
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "could not record a refused service credential request");
+        }
     }
 
     /// Every service credential, oldest first. Server administrators only.

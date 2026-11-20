@@ -82,6 +82,15 @@ pub enum ServiceCredentialCommand {
         /// Comma-separated scopes: manage_accounts, manage_organizations, manage_limits, manage_webhooks, manage_freeze.
         #[arg(long, value_delimiter = ',', required = true)]
         scopes: Vec<String>,
+        /// Refuse the credential from this instant on (RFC 3339, for example 2027-01-01T00:00:00Z).
+        #[arg(long)]
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        /// Comma-separated addresses or CIDR blocks the credential may be used from; default any.
+        #[arg(long, value_delimiter = ',')]
+        allow_from: Vec<String>,
+        /// Requests per minute this credential may make; default the server's limit.
+        #[arg(long)]
+        rate_limit: Option<u32>,
     },
     /// List credentials, revoked ones included.
     List,
@@ -259,8 +268,20 @@ fn account_action(
 
 fn service_credential(api: &Api, cmd: ServiceCredentialCommand) -> Result<()> {
     match cmd {
-        ServiceCredentialCommand::Create { name, scopes } => {
-            let body = api::CreateServiceCredentialRequest { name, scopes };
+        ServiceCredentialCommand::Create {
+            name,
+            scopes,
+            expires_at,
+            allow_from,
+            rate_limit,
+        } => {
+            let body = api::CreateServiceCredentialRequest {
+                name,
+                scopes,
+                expires_at,
+                allowed_sources: allow_from,
+                rate_limit_per_minute: rate_limit,
+            };
             let made: api::CreatedServiceCredential = api
                 .send(
                     api.request(Method::POST, "/v1/admin/service-credentials")
@@ -281,6 +302,8 @@ fn service_credential(api: &Api, cmd: ServiceCredentialCommand) -> Result<()> {
                 .map(|c| {
                     let state = if c.revoked_at.is_some() {
                         "revoked"
+                    } else if c.expires_at.is_some_and(|t| t <= chrono::Utc::now()) {
+                        "expired"
                     } else {
                         "active"
                     };
@@ -288,6 +311,7 @@ fn service_credential(api: &Api, cmd: ServiceCredentialCommand) -> Result<()> {
                         state.to_string(),
                         time::local(c.created_at),
                         c.last_used_at.map_or("never".to_string(), time::local),
+                        c.last_used_from.unwrap_or_else(|| "-".to_string()),
                         c.created_by,
                         c.scopes.join(","),
                         c.name,
@@ -295,7 +319,15 @@ fn service_credential(api: &Api, cmd: ServiceCredentialCommand) -> Result<()> {
                 })
                 .collect();
             table::show(
-                &["STATE", "CREATED", "LAST USED", "BY", "SCOPES", "NAME"],
+                &[
+                    "STATE",
+                    "CREATED",
+                    "LAST USED",
+                    "FROM",
+                    "BY",
+                    "SCOPES",
+                    "NAME",
+                ],
                 &rows,
                 "no service credentials",
             );

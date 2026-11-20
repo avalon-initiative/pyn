@@ -35,6 +35,7 @@ pub mod repo_policy;
 pub mod repositories;
 pub mod rules;
 pub mod service;
+pub mod source_range;
 pub mod store;
 pub mod stranded;
 pub mod totp;
@@ -61,8 +62,8 @@ pub use access_service::{
     DEFAULT_TOKEN_DAYS, ExternalPolicy, ExternalSignIn, MAX_INVITE_HOURS, NewToken, OidcBegin,
     OidcFinish, OidcStart, OrgAdd, OrgDeleteMark, OrgMemberChange, OwnerFreezeState, OwnerLimits,
     PasskeyAssertion, PasskeyAttestation, PasskeyCreation, PasskeyRegistered, PasskeyRequest,
-    RateLimits, Registration, RepoMember, SERVER_AUDIT_ID, SetupRequest, SetupStatus, SignUp,
-    TeamDetail, TokenExpiry, generate_setup_token,
+    RateLimits, Registration, RepoMember, SERVER_AUDIT_ID, ServiceCredentialLimits, SetupRequest,
+    SetupStatus, SignUp, TeamDetail, TokenExpiry, generate_setup_token,
 };
 pub use access_service::{
     AdminRecovery, CreateWebhook, DeliveryPage, HOST_RECOVERY_ACTOR, IssuedSecret, TotpConfirmed,

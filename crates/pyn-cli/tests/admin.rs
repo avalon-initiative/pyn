@@ -210,7 +210,15 @@ fn service_credentials_are_created_listed_used_and_revoked() {
     let listed = cell_rows(&env.ok(&home, "root", &list));
     assert_eq!(
         listed[0],
-        ["STATE", "CREATED", "LAST USED", "BY", "SCOPES", "NAME"]
+        [
+            "STATE",
+            "CREATED",
+            "LAST USED",
+            "FROM",
+            "BY",
+            "SCOPES",
+            "NAME"
+        ]
     );
     assert_eq!(listed[1][0], "active");
     assert_eq!(listed[1].last().unwrap(), "provisioner");
@@ -243,6 +251,69 @@ fn service_credentials_are_created_listed_used_and_revoked() {
     assert_eq!(listed[1][0], "revoked");
     let after = env.run_with_token(&home, &secret, &["admin", "org", "delete", "acme", "--yes"]);
     assert!(!after.status.success());
+}
+
+#[test]
+fn a_service_credential_can_be_restricted_by_source_expiry_and_rate() {
+    let (env, home) = set_up();
+    let create = |name: &str, extra: &[&str]| {
+        let mut args = vec![
+            "admin",
+            "service-credential",
+            "create",
+            name,
+            "--scopes",
+            "manage_accounts",
+        ];
+        args.extend_from_slice(extra);
+        let made = env.run(&home, "root", &args);
+        assert!(made.status.success(), "{}", text(&made));
+        String::from_utf8_lossy(&made.stdout).trim().to_string()
+    };
+    let list_users = ["admin", "user", "list"];
+
+    let elsewhere = create("elsewhere", &["--allow-from", "192.0.2.0/24,2001:db8::/32"]);
+    let refused = env.run_with_token(&home, &elsewhere, &list_users);
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused).contains("unauthenticated"),
+        "{}",
+        text(&refused)
+    );
+
+    let local = create(
+        "local",
+        &["--allow-from", "127.0.0.1", "--rate-limit", "50"],
+    );
+    let ok = env.run_with_token(&home, &local, &list_users);
+    assert!(ok.status.success(), "{}", text(&ok));
+
+    let soon = create("soon", &["--expires-at", "2099-01-01T00:00:00Z"]);
+    assert!(
+        env.run_with_token(&home, &soon, &list_users)
+            .status
+            .success()
+    );
+    let past = env.fails(
+        &home,
+        "root",
+        &[
+            "admin",
+            "service-credential",
+            "create",
+            "past",
+            "--scopes",
+            "manage_accounts",
+            "--expires-at",
+            "2001-01-01T00:00:00Z",
+        ],
+    );
+    assert!(past.contains("invalid_request"), "{past}");
+
+    let listed = cell_rows(&env.ok(&home, "root", &["admin", "service-credential", "list"]));
+    let row = |name: &str| listed.iter().find(|r| r.last().unwrap() == name).unwrap();
+    assert_eq!(row("local")[3], "127.0.0.1");
+    assert_eq!(row("elsewhere")[3], "-");
 }
 
 #[test]

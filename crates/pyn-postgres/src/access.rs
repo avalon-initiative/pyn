@@ -97,6 +97,12 @@ fn service_credential_from(row: &PgRow) -> Result<ServiceCredentialRecord> {
         created_at: row.get("created_at"),
         revoked_at: row.get("revoked_at"),
         last_used_at: row.get("last_used_at"),
+        last_used_from: row.get("last_used_from"),
+        expires_at: row.get("expires_at"),
+        allowed_sources: row.get("allowed_sources"),
+        rate_limit_per_minute: row
+            .get::<Option<i32>, _>("rate_limit_per_minute")
+            .map(|n| n as u32),
     })
 }
 
@@ -1122,8 +1128,9 @@ impl AccessStore for PgMetadataStore {
 
     async fn create_service_credential(&self, record: ServiceCredentialRecord) -> Result<bool> {
         let done = sqlx::query(
-            "INSERT INTO service_credentials (id, name, secret_hash, scopes, created_by, created_at, revoked_at, last_used_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (name) DO NOTHING",
+            "INSERT INTO service_credentials (id, name, secret_hash, scopes, created_by, created_at, revoked_at, last_used_at,
+                                          last_used_from, expires_at, allowed_sources, rate_limit_per_minute)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (name) DO NOTHING",
         )
         .bind(&record.id.0)
         .bind(&record.name)
@@ -1139,6 +1146,10 @@ impl AccessStore for PgMetadataStore {
         .bind(record.created_at)
         .bind(record.revoked_at)
         .bind(record.last_used_at)
+        .bind(&record.last_used_from)
+        .bind(record.expires_at)
+        .bind(&record.allowed_sources)
+        .bind(record.rate_limit_per_minute.map(|n| n as i32))
         .execute(&self.pool)
         .await
         .map_err(db)?;
@@ -1150,7 +1161,8 @@ impl AccessStore for PgMetadataStore {
         id: &TokenId,
     ) -> Result<Option<ServiceCredentialRecord>> {
         let row = sqlx::query(
-            "SELECT id, name, secret_hash, scopes, created_by, created_at, revoked_at, last_used_at
+            "SELECT id, name, secret_hash, scopes, created_by, created_at, revoked_at, last_used_at,
+                    last_used_from, expires_at, allowed_sources, rate_limit_per_minute
              FROM service_credentials WHERE id = $1",
         )
         .bind(&id.0)
@@ -1162,7 +1174,8 @@ impl AccessStore for PgMetadataStore {
 
     async fn list_service_credentials(&self) -> Result<Vec<ServiceCredentialRecord>> {
         let rows = sqlx::query(
-            "SELECT id, name, secret_hash, scopes, created_by, created_at, revoked_at, last_used_at
+            "SELECT id, name, secret_hash, scopes, created_by, created_at, revoked_at, last_used_at,
+                    last_used_from, expires_at, allowed_sources, rate_limit_per_minute
              FROM service_credentials ORDER BY created_at, id",
         )
         .fetch_all(&self.pool)
@@ -1183,13 +1196,21 @@ impl AccessStore for PgMetadataStore {
         Ok(done.rows_affected() > 0)
     }
 
-    async fn touch_service_credential(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()> {
-        sqlx::query("UPDATE service_credentials SET last_used_at = $2 WHERE id = $1")
-            .bind(&id.0)
-            .bind(now)
-            .execute(&self.pool)
-            .await
-            .map_err(db)?;
+    async fn touch_service_credential(
+        &self,
+        id: &TokenId,
+        now: DateTime<Utc>,
+        from: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE service_credentials SET last_used_at = $2, last_used_from = $3 WHERE id = $1",
+        )
+        .bind(&id.0)
+        .bind(now)
+        .bind(from)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
         Ok(())
     }
 

@@ -187,7 +187,10 @@ fn build_full(
     let url = runtime.block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        tokio::spawn(async move {
+            let app = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+            axum::serve(listener, app).await.unwrap()
+        });
         format!("http://{addr}")
     });
     Env {
