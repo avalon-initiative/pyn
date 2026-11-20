@@ -81,6 +81,7 @@ fn build(
         auth: Arc::new(BearerAuth { access }),
         dev_auth: None,
         trust_forwarded: false,
+        updates: None,
     });
     Server { app, idp, store }
 }

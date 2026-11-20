@@ -62,6 +62,7 @@ fn build(trust_forwarded: bool) -> Router {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded,
+        updates: None,
     })
 }
 

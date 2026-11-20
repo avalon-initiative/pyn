@@ -8,6 +8,8 @@ mod account_deletion;
 pub use account_deletion::*;
 mod events;
 pub use events::*;
+mod update;
+pub use update::*;
 mod webhooks;
 pub use webhooks::*;
 

@@ -893,6 +893,37 @@
         "x-pyn-reach": "admin_only"
       }
     },
+    "/v1/admin/update": {
+      "get": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "update_status",
+        "responses": {
+          "200": {
+            "description": "whether a newer release exists, from the server's cached lookup; `enabled` is false unless the operator set PYN_UPDATE_CHECK=on",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
+      }
+    },
     "/v1/admin/users": {
       "get": {
         "tags": [
@@ -17093,6 +17124,53 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "UpdateStatus": {
+        "type": "object",
+        "description": "Whether a newer pyn release exists, as this server last learned it (`GET /v1/admin/update`).",
+        "required": [
+          "enabled",
+          "current"
+        ],
+        "properties": {
+          "checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the last successful lookup finished; absent while none has. With `latest` absent, present means up to date."
+          },
+          "current": {
+            "type": "string",
+            "description": "The running server's version."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "The server runs the check (`PYN_UPDATE_CHECK=on`). When false, every other field but `current` is absent."
+          },
+          "latest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest release on this server's channel; absent when the server is up to date or has not learned it yet."
+          },
+          "prerelease": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether `latest` is a pre-release; present with `latest`."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The release notes page for `latest`."
           }
         }
       },

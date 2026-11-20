@@ -115,6 +115,7 @@ async fn world() -> World {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: None,
         trust_forwarded: true,
+        updates: None,
     };
     let root = UserId::new("root");
     state.access.admin_for_tests(&root).await.unwrap();

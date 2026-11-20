@@ -20,6 +20,7 @@ use pyn_server::email::LogEmailSender;
 use pyn_server::observe::{LogConfig, LogFormat, LoggedAudit};
 use pyn_server::passwords::PooledPasswords;
 use pyn_server::request_limits::RequestLimits;
+use pyn_server::update_check::{GithubReleases, ReleaseSource, UpdateChecker};
 use pyn_server::webhook_delivery::{DeliveryWorker, SafeSender, WorkerConfig};
 use pyn_server::{AppState, router_with_log};
 
@@ -171,6 +172,41 @@ fn strict_flag(name: &str, default: bool) -> anyhow::Result<bool> {
         Ok("false") => Ok(false),
         Ok(_) => anyhow::bail!("{name} must be true or false"),
     }
+}
+
+/// `on` or `off`; anything else is an error rather than a silent default.
+fn on_off(name: &str, default: bool) -> anyhow::Result<bool> {
+    on_off_value(name, std::env::var(name).ok().as_deref(), default)
+}
+
+fn on_off_value(name: &str, value: Option<&str>, default: bool) -> anyhow::Result<bool> {
+    match value {
+        None => Ok(default),
+        Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        Some(_) => anyhow::bail!("{name} must be on or off"),
+    }
+}
+
+/// The release lookup, only when `on`; off by default, and then no source is even built and nothing is contacted.
+fn update_checker(
+    on: bool,
+    source: impl FnOnce() -> anyhow::Result<Arc<dyn ReleaseSource>>,
+    clock: Arc<dyn Clock>,
+) -> anyhow::Result<Option<Arc<UpdateChecker>>> {
+    if !on {
+        return Ok(None);
+    }
+    tracing::info!(
+        "PYN_UPDATE_CHECK is on: this server asks api.github.com for the latest pyn releases about once a day"
+    );
+    let checker = Arc::new(UpdateChecker::new(
+        source()?,
+        clock,
+        env!("CARGO_PKG_VERSION"),
+    ));
+    checker.clone().spawn(std::time::Duration::from_secs(600));
+    Ok(Some(checker))
 }
 
 /// `PYN_WEBHOOKS_ALLOW_LOOPBACK` is refused unless plain-http development mode is on too.
@@ -619,6 +655,11 @@ async fn main() -> anyhow::Result<()> {
     );
     let repos = Arc::new(repos);
 
+    let updates = update_checker(
+        on_off("PYN_UPDATE_CHECK", false)?,
+        || Ok(Arc::new(GithubReleases::new()?)),
+        clock.clone(),
+    )?;
     start_webhook_delivery(webhooks, clock, &hook_settings, access.public_url())?;
     pyn_server::account_deletion::spawn(access.clone(), std::time::Duration::from_secs(3600));
     pyn_server::lock_stream_api::spawn_sweep(repos.clone(), std::time::Duration::from_secs(5));
@@ -641,6 +682,7 @@ async fn main() -> anyhow::Result<()> {
             auth: Arc::new(BearerAuth { access }),
             dev_auth,
             trust_forwarded: flag("PYN_TRUST_FORWARDED_FOR"),
+            updates,
         },
         request_limits,
         log_config,
@@ -658,7 +700,7 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{loopback_mode, whole_number};
+    use super::{loopback_mode, on_off_value, update_checker, whole_number};
 
     #[test]
     fn a_whole_number_parses_including_zero() {
@@ -676,6 +718,28 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_update_check_takes_only_on_or_off() {
+        assert!(!on_off_value("X", None, false).unwrap());
+        assert!(on_off_value("X", Some("on"), false).unwrap());
+        assert!(!on_off_value("X", Some("off"), true).unwrap());
+        for bad in ["true", "ON", "", "1", "yes"] {
+            let err = on_off_value("PYN_UPDATE_CHECK", Some(bad), false).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "PYN_UPDATE_CHECK must be on or off",
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_off_update_check_builds_no_source() {
+        let clock: std::sync::Arc<dyn pyn_core::Clock> = std::sync::Arc::new(pyn_core::SystemClock);
+        let checker = update_checker(false, || panic!("the source must not be built"), clock);
+        assert!(checker.unwrap().is_none());
     }
 
     #[test]
