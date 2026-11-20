@@ -4275,7 +4275,7 @@
           {
             "name": "v",
             "in": "query",
-            "description": "the version from `avatar_url`; when it is the current one the image is cached for a year",
+            "description": "the version from `avatar_url`; it only keeps caches of different images apart, and every response must be revalidated",
             "required": false,
             "schema": {
               "type": "string"
@@ -10701,7 +10701,7 @@
         ],
         "responses": {
           "200": {
-            "description": "the same public entries signed out or with any valid user credential: active user accounts by name; never an email address, a hidden field, or an account that is disabled, not yet approved, scheduled for deletion or an organization",
+            "description": "the same public entries signed out or with a full-scope credential: active user accounts by name; never an email address, a hidden field, or an account that is disabled, not yet approved, scheduled for deletion or an organization",
             "content": {
               "application/json": {
                 "schema": {
@@ -10731,7 +10731,7 @@
             }
           },
           "403": {
-            "description": "service_credential_not_allowed for a service credential",
+            "description": "service_credential_not_allowed for a service credential; forbidden for a token that is not full-scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -10751,7 +10751,7 @@
             }
           }
         },
-        "x-pyn-reach": "optional_sign_in"
+        "x-pyn-reach": "optional_full_scope"
       }
     },
     "/v1/users/{user}": {
@@ -10825,7 +10825,7 @@
           {
             "name": "v",
             "in": "query",
-            "description": "the version from `avatar_url`; when it is the current one the image is cached for a year",
+            "description": "the version from `avatar_url`; it only keeps caches of different images apart, and every response must be revalidated",
             "required": false,
             "schema": {
               "type": "string"

@@ -12,7 +12,7 @@ use pyn_core::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility, Py
 use pyn_proto as api;
 use serde::Deserialize;
 
-use crate::caller::{AccountCaller, AnyCaller, OptionalCaller, OrgCaller};
+use crate::caller::{AccountCaller, AnyCaller, OptionalCaller, OptionalFullScopeCaller, OrgCaller};
 use crate::client::Client;
 use crate::{ApiResult, AppState, FileContent};
 
@@ -98,14 +98,14 @@ pub(crate) struct PeopleQuery {
     params(("q" = Option<String>, Query, description = "keeps accounts whose name or visible display name contains this text, ignoring case; at most 64 characters"),
            ("after" = Option<String>, Query, description = "return accounts after this account name"),
            ("limit" = Option<usize>, Query, description = "page size, default 30, max 100")),
-    responses((status = 200, body = api::PeoplePage, description = "the same public entries signed out or with any valid user credential: active user accounts by name; never an email address, a hidden field, or an account that is disabled, not yet approved, scheduled for deletion or an organization"),
+    responses((status = 200, body = api::PeoplePage, description = "the same public entries signed out or with a full-scope credential: active user accounts by name; never an email address, a hidden field, or an account that is disabled, not yet approved, scheduled for deletion or an organization"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: a search over 64 characters"),
               (status = 401, body = api::ErrorBody, description = "a credential that is not valid, or signed out on a private server"),
-              (status = 403, body = api::ErrorBody, description = "service_credential_not_allowed for a service credential"),
+              (status = 403, body = api::ErrorBody, description = "service_credential_not_allowed for a service credential; forbidden for a token that is not full-scope"),
               (status = 429, body = api::ErrorBody, description = "too_many_attempts: a signed-out client asked too often; Retry-After says how many seconds to wait")))]
 pub(crate) async fn list_people(
     State(s): State<AppState>,
-    OptionalCaller(who): OptionalCaller,
+    OptionalFullScopeCaller(who): OptionalFullScopeCaller,
     Client(client): Client,
     Query(q): Query<PeopleQuery>,
 ) -> ApiResult<Json<api::PeoplePage>> {
@@ -245,14 +245,9 @@ pub(crate) async fn delete_avatar(
     Ok(Json(profile_dto(&who.user, saved, true)))
 }
 
-#[derive(Deserialize)]
-pub(crate) struct AvatarQuery {
-    v: Option<String>,
-}
-
 #[utoipa::path(get, path = "/v1/users/{user}/avatar",
     params(("user" = String, Path, description = "the account's name"),
-           ("v" = Option<String>, Query, description = "the version from `avatar_url`; when it is the current one the image is cached for a year")),
+           ("v" = Option<String>, Query, description = "the version from `avatar_url`; it only keeps caches of different images apart, and every response must be revalidated")),
     responses((status = 200, content_type = "image/png", body = inline(FileContent), description = "the image, as `image/png`, `image/jpeg` or `image/webp` according to its bytes; readable signed out, with an `ETag` and `Cache-Control`"),
               (status = 304, description = "`If-None-Match` matches the current image"),
               (status = 401, body = api::ErrorBody, description = "credentials were sent but are not valid"),
@@ -262,27 +257,15 @@ pub(crate) async fn get_avatar(
     headers: HeaderMap,
     OptionalCaller(who): OptionalCaller,
     Path(user): Path<String>,
-    Query(q): Query<AvatarQuery>,
 ) -> ApiResult<Response> {
     let (avatar, bytes) = profiles(&s).avatar(&user, who.as_ref()).await?;
-    Ok(avatar_response(&headers, q.v.as_deref(), &avatar, bytes))
+    Ok(avatar_response(&headers, &avatar, bytes))
 }
 
-/// The avatar image with its type, `ETag` and cache headers; a matching `If-None-Match` gets a `304`.
-fn avatar_response(
-    headers: &HeaderMap,
-    version: Option<&str>,
-    avatar: &Avatar,
-    bytes: Vec<u8>,
-) -> Response {
-    let hash = avatar.content.to_hex();
-    let etag = format!("\"{hash}\"");
-    let current = version.is_some_and(|v| v.len() >= 8 && hash.starts_with(v));
-    let cache = if current {
-        "public, max-age=31536000, immutable"
-    } else {
-        "public, max-age=300, must-revalidate"
-    };
+/// The avatar image with its type, `ETag` and `no-cache`, so every use revalidates and a hidden or removed avatar
+/// stops being served at the next request; a matching `If-None-Match` gets a `304`.
+fn avatar_response(headers: &HeaderMap, avatar: &Avatar, bytes: Vec<u8>) -> Response {
+    let etag = format!("\"{}\"", avatar.content.to_hex());
     let unchanged = headers
         .get(IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
@@ -298,7 +281,7 @@ fn avatar_response(
         res
     };
     let h = res.headers_mut();
-    h.insert(CACHE_CONTROL, HeaderValue::from_static(cache));
+    h.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     h.insert(ETAG, HeaderValue::from_str(&etag).expect("hex"));
     h.insert(
         "x-content-type-options",
@@ -398,7 +381,7 @@ pub(crate) async fn delete_org_avatar(
 
 #[utoipa::path(get, path = "/v1/orgs/{org}/avatar",
     params(("org" = String, Path, description = "the organization's name"),
-           ("v" = Option<String>, Query, description = "the version from `avatar_url`; when it is the current one the image is cached for a year")),
+           ("v" = Option<String>, Query, description = "the version from `avatar_url`; it only keeps caches of different images apart, and every response must be revalidated")),
     responses((status = 200, content_type = "image/png", body = inline(FileContent), description = "the image, as `image/png`, `image/jpeg` or `image/webp` according to its bytes; readable signed out, with an `ETag` and `Cache-Control`"),
               (status = 304, description = "`If-None-Match` matches the current image"),
               (status = 404, body = api::ErrorBody, description = "org_not_found, or avatar_not_found when it has none")))]
@@ -406,8 +389,7 @@ pub(crate) async fn get_org_avatar(
     State(s): State<AppState>,
     headers: HeaderMap,
     Path(org): Path<String>,
-    Query(q): Query<AvatarQuery>,
 ) -> ApiResult<Response> {
     let (avatar, bytes) = profiles(&s).org_avatar(&org).await?;
-    Ok(avatar_response(&headers, q.v.as_deref(), &avatar, bytes))
+    Ok(avatar_response(&headers, &avatar, bytes))
 }
