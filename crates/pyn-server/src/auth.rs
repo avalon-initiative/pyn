@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -10,8 +11,12 @@ pub struct BearerAuth {
 
 #[async_trait]
 impl AuthProvider for BearerAuth {
-    async fn authenticate(&self, credential: &str) -> pyn_core::Result<Identity> {
-        self.access.identify(credential).await
+    async fn authenticate(
+        &self,
+        credential: &str,
+        source: Option<IpAddr>,
+    ) -> pyn_core::Result<Identity> {
+        self.access.identify_from(credential, source).await
     }
 }
 
@@ -20,7 +25,11 @@ pub struct DevHeaderAuth;
 
 #[async_trait]
 impl AuthProvider for DevHeaderAuth {
-    async fn authenticate(&self, credential: &str) -> pyn_core::Result<Identity> {
+    async fn authenticate(
+        &self,
+        credential: &str,
+        _source: Option<IpAddr>,
+    ) -> pyn_core::Result<Identity> {
         if credential.trim().is_empty() {
             return Err(PynError::Unauthenticated("missing X-Pyn-User".into()));
         }

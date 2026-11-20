@@ -1060,7 +1060,15 @@ async fn enforce_access_mode(
         .find(|(k, _)| *k == "owner")
         .zip(params.iter().find(|(k, _)| *k == "name"))
         .map(|((_, owner), (_, name))| format!("{owner}/{name}"));
-    match caller::admit(&state, request.headers(), reach, repo).await {
+    let req = caller::Req {
+        headers: request.headers(),
+        source: crate::client::source_ip(
+            request.headers(),
+            request.extensions(),
+            state.trust_forwarded,
+        ),
+    };
+    match caller::admit(&state, req, reach, repo).await {
         Ok(()) => next.run(request).await,
         Err(e) if matches!(reach, Reach::PublicLfsRead(_)) => {
             crate::lfs_api::LfsError::from(e).into_response()

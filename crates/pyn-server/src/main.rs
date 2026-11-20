@@ -453,6 +453,10 @@ async fn main() -> anyhow::Result<()> {
             )?,
             mail_per_email: number("PYN_RATE_MAIL_PER_EMAIL", limit_defaults.mail_per_email)?,
             people_per_client: number("PYN_RATE_PEOPLE_CLIENT", limit_defaults.people_per_client)?,
+            service_per_credential: number(
+                "PYN_RATE_SERVICE_CREDENTIAL",
+                limit_defaults.service_per_credential,
+            )?,
         },
         public_url: std::env::var("PYN_PUBLIC_URL").unwrap_or_else(|_| format!("http://{addr}")),
         allowed_origins: match std::env::var("PYN_ALLOWED_ORIGINS") {

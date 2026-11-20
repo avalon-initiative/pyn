@@ -704,7 +704,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: bad name, no scope or an unknown scope",
+            "description": "invalid_request: bad name, no scope, an unknown scope, an expiry not in the future, a malformed source range or a rate limit below 1",
             "content": {
               "application/json": {
                 "schema": {
@@ -12126,9 +12126,33 @@
           "scopes"
         ],
         "properties": {
+          "allowed_sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Addresses or CIDR blocks (`192.0.2.7`, `10.0.0.0/8`, `2001:db8::/32`) the credential may be used from, at most 64.\nOmit or leave empty to allow any address."
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The credential is refused from this instant on; it must be in the future. Omit for no expiry."
+          },
           "name": {
             "type": "string",
             "description": "1 to 64 lowercase letters, digits, `-` or `_`; unique, and never reused after revocation."
+          },
+          "rate_limit_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Requests per minute this credential may make, at least 1. Omit to use the server default.",
+            "minimum": 0
           },
           "scopes": {
             "type": "array",
@@ -16017,6 +16041,13 @@
           "created_at"
         ],
         "properties": {
+          "allowed_sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Empty means any address."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -16025,6 +16056,14 @@
             "type": "string",
             "description": "The server administrator who created it."
           },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When set and not in the future, the credential is expired: refused, but still listed."
+          },
           "last_used_at": {
             "type": [
               "string",
@@ -16032,8 +16071,24 @@
             ],
             "format": "date-time"
           },
+          "last_used_from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address of the last accepted request; absent when the server could not tell."
+          },
           "name": {
             "type": "string"
+          },
+          "rate_limit_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The credential's own limit in requests per minute; absent means the server default.",
+            "minimum": 0
           },
           "revoked_at": {
             "type": [

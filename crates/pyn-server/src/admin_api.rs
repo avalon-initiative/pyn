@@ -7,7 +7,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use pyn_core::{
     AccessMode, AccountDeletion, AccountRecord, AccountStatus, AuditQuery, OrgRole,
-    ServiceCredentialRecord, ServiceScope, UserId,
+    ServiceCredentialLimits, ServiceCredentialRecord, ServiceScope, UserId,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -265,12 +265,16 @@ fn credential_info(c: ServiceCredentialRecord) -> api::ServiceCredentialInfo {
         created_at: c.created_at,
         revoked_at: c.revoked_at,
         last_used_at: c.last_used_at,
+        last_used_from: c.last_used_from,
+        expires_at: c.expires_at,
+        allowed_sources: c.allowed_sources,
+        rate_limit_per_minute: c.rate_limit_per_minute,
     }
 }
 
 #[utoipa::path(post, path = "/v1/admin/service-credentials", request_body = api::CreateServiceCredentialRequest, responses(
     (status = 201, body = api::CreatedServiceCredential, description = "the secret is shown once"),
-    (status = 400, body = api::ErrorBody, description = "invalid_request: bad name, no scope or an unknown scope"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request: bad name, no scope, an unknown scope, an expiry not in the future, a malformed source range or a rate limit below 1"),
     (status = 403, body = api::ErrorBody, description = "server_admin_required: a service credential cannot create credentials"),
     (status = 409, body = api::ErrorBody, description = "service_credential_exists: names are never reused"),
 ))]
@@ -286,7 +290,16 @@ pub(crate) async fn create_service_credential(
         .collect::<Result<_, _>>()?;
     let (record, secret) = s
         .access
-        .create_service_credential(&who, &req.name, scopes)
+        .create_service_credential_with(
+            &who,
+            &req.name,
+            scopes,
+            ServiceCredentialLimits {
+                expires_at: req.expires_at,
+                allowed_sources: req.allowed_sources,
+                rate_limit_per_minute: req.rate_limit_per_minute,
+            },
+        )
         .await?;
     Ok((
         StatusCode::CREATED,

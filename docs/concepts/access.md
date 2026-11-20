@@ -570,8 +570,8 @@ On the command line (server administrators; each listing is an aligned table wit
 | `pyn account delete [--password-stdin]`, `pyn account restore`, `pyn account status` | your own account: schedule its deletion (password again), cancel it, show the deadline |
 | `pyn admin user approve <user>`, `disable <user> [--reason R]`, `enable <user>` | the account routes above |
 | `pyn admin grant <user>`, `pyn admin revoke <user>` | grant or revoke the administrator flag |
-| `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations,manage_limits,manage_webhooks,manage_freeze` | prints the secret alone on stdout; it is shown once |
-| `pyn admin service-credential list`, `revoke <name>` | columns `STATE CREATED LAST USED BY SCOPES NAME`; revoked ones are listed |
+| `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations,manage_limits,manage_webhooks,manage_freeze [--expires-at T] [--allow-from ADDR,CIDR] [--rate-limit N]` | prints the secret alone on stdout; it is shown once. The options are [hardening](#hardening-a-service-credential) |
+| `pyn admin service-credential list`, `revoke <name>` | columns `STATE CREATED LAST USED FROM BY SCOPES NAME`; `STATE` is `active`, `expired` or `revoked`, and revoked and expired ones are listed |
 | `pyn admin limits list`, `show <owner>`, `set <owner> [--repos N] [--members N] [--storage SIZE]` | optional [limits](limits.md); `default` drops an owner's own value |
 | `pyn admin freeze <owner> --reason R`, `unfreeze <owner>`, `frozen <owner>` | [freeze](limits.md#freezing-an-owner) a user or organization read-only, lift it, or show it |
 | `pyn admin webhook create`, `list`, `show`, `update`, `delete`, `rotate`, `retire` | [webhook subscriptions](webhooks.md) and their secrets |
@@ -773,13 +773,60 @@ with the actor `@service:<name>`; organization actions also appear in that organ
 
 | Route | Notes |
 | --- | --- |
-| `POST /v1/admin/service-credentials` | `{name, scopes}` gives `201 {secret, info}`; `400 invalid_request` for a bad name, no scope or an unknown scope; `409 service_credential_exists` |
-| `GET /v1/admin/service-credentials` | `[{name, scopes, created_by, created_at, revoked_at, last_used_at}]`, oldest first |
+| `POST /v1/admin/service-credentials` | `{name, scopes, expires_at?, allowed_sources?, rate_limit_per_minute?}` gives `201 {secret, info}`; `400 invalid_request` for a bad name, no scope, an unknown scope, an expiry not in the future, a malformed range or a rate limit below 1; `409 service_credential_exists` |
+| `GET /v1/admin/service-credentials` | `[{name, scopes, created_by, created_at, revoked_at, last_used_at, last_used_from, expires_at, allowed_sources, rate_limit_per_minute}]`, oldest first |
 | `DELETE /v1/admin/service-credentials/{name}` | `204`; `404 service_credential_not_found` |
 | `POST /v1/admin/orgs` | `{name, owner}` gives `201`; the owner must be an existing active user (`404 user_not_found`); `409 user_exists` |
 | `DELETE /v1/admin/orgs/{org}` | `204`; `404 org_not_found`, `409 org_not_empty` |
 
-A credential missing the scope gets `403 service_scope_required`; a revoked or unknown one gets `401 unauthenticated`.
+A credential missing the scope gets `403 service_scope_required`; a revoked, expired or unknown one gets `401 unauthenticated`.
+
+### Blast radius of each scope
+
+A service credential has no repository access and no account, but each scope is a lever over everyone on the server. Grant
+the fewest scopes a service needs, and use one credential per service so a leak is revoked on its own.
+
+| Scope | What an attacker holding the secret can do |
+| --- | --- |
+| `manage_accounts` | list every account with its email and status, approve pending accounts, and disable any account, locking its owner out until it is enabled again, or enable one. It cannot set a password, sign in as anyone, or grant the administrator flag |
+| `manage_organizations` | create an organization owned by any existing active user, which is how a squatted name or a surprise owner appears, and delete an organization that owns no repositories. It cannot touch an organization's content or members |
+| `manage_limits` | read every owner's limits and usage (the usage report names every repository and its size) and lift or lower any owner's limits, which removes a quota meant to bound storage and cost, or starves an owner |
+| `manage_freeze` | freeze any owner read-only (a denial of service against that owner's writes) or lift a freeze the operator set, and read any owner's frozen state |
+| `manage_webhooks` | create subscriptions that send events to a host the attacker picks (limited by `PYN_WEBHOOKS_ALLOWED_HOSTS` when set, and never to private addresses), read what they carry, rotate or delete subscriptions and so cut a legitimate integration off |
+
+None of the scopes reads file content, or reads or writes the server audit log and the credential list. Every use is
+logged under `@service:<name>`.
+
+### Hardening a service credential
+
+All of these are optional at creation and none changes a credential that already exists. They are checked on the server
+for every request, after the secret itself.
+
+| Control | Behaviour |
+| --- | --- |
+| Expiry | `expires_at` is an absolute RFC 3339 time that must be in the future; from that instant the credential is refused with `401 unauthenticated`. An expired credential stays in the listing with its `expires_at` (the CLI shows `expired`); it is not revoked and cannot be extended, so make a new one (rotation in place is tracked separately) |
+| Source restriction | `allowed_sources` lists addresses or CIDR blocks, IPv4 or IPv6, at most 64 (`10.0.0.0/8`, `192.0.2.7`, `2001:db8::/32`), stored in canonical form. A request from another address is refused with `401 unauthenticated`. A restricted credential is also refused when the server cannot tell the address, so it fails closed. Empty or omitted allows any address |
+| Rate limit | A credential may make `rate_limit_per_minute` requests a minute (a fixed window, like the other [rate limits](#protecting-open-registration)); the next gets `429 too_many_attempts` with `Retry-After`. Without its own value the server default applies, `PYN_RATE_SERVICE_CREDENTIAL` (default `0`: no limit). Requests refused for their source do not count, so a thief elsewhere cannot use up the real service's allowance |
+| Last use | The listing shows `last_used_at` and `last_used_from`, the address of the last accepted request (absent when the address is unknown) |
+| Audit | A refused request of an identified credential (revoked, expired, from a disallowed source, a missing scope, or a route a service credential cannot reach) adds a `service_credential_refused` entry to the server audit log with actor `@service:<name>`, the reason and the address. It never contains the secret. A wrong or unknown secret identifies nobody and is not logged, and rate-limit refusals are not logged either, so a flood cannot fill the log |
+
+The address is the one used for every other rate limit: the connection's peer, or the last `X-Forwarded-For` entry when
+`PYN_TRUST_FORWARDED_FOR=true` (only behind a proxy that sets it). Source restriction is only as good as that setting, so
+behind a proxy that does not overwrite the header it must not be relied on, and without one that the header is ignored.
+
+### Recommended deployment
+
+Keep the hosted service and the core on a private network path, so the core's API is not reachable from the internet at
+all for that traffic:
+
+- Give the service its own address range (a private network, VPN or peering link) and set `allowed_sources` to exactly
+  that range; if the core sits behind a reverse proxy, let the proxy overwrite `X-Forwarded-For` and turn on
+  `PYN_TRUST_FORWARDED_FOR`.
+- Expose `/v1/admin/*` only on that path where the proxy can route it separately, and keep TLS on the link.
+- One credential per service and per environment, only the scopes it uses, an `expires_at` (a quarter or a year) with a
+  reminder to replace it, and a `rate_limit_per_minute` a little above its real peak.
+- Store the secret in the service's secret manager, never in a repository or a log, and revoke it at the first sign of a leak.
+- Watch `service_credential_refused` entries and `last_used_from` for use from an address that is not the service's.
 
 ## Route reach
 

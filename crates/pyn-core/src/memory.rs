@@ -4095,9 +4095,15 @@ impl AccessStore for MemoryAccessStore {
         Ok(true)
     }
 
-    async fn touch_service_credential(&self, id: &TokenId, now: DateTime<Utc>) -> Result<()> {
+    async fn touch_service_credential(
+        &self,
+        id: &TokenId,
+        now: DateTime<Utc>,
+        from: Option<&str>,
+    ) -> Result<()> {
         if let Some(c) = self.state.lock().unwrap().service_credentials.get_mut(id) {
             c.last_used_at = Some(now);
+            c.last_used_from = from.map(str::to_string);
         }
         Ok(())
     }

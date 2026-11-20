@@ -5,6 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::request::Parts;
+use axum::http::{Extensions, HeaderMap};
 
 use crate::AppState;
 
@@ -22,6 +23,40 @@ fn key(raw: &str) -> String {
     }
 }
 
+/// The caller's address as text: the last `X-Forwarded-For` entry when forwarded headers are trusted, else the peer.
+/// Rate limits and service credential source checks both start here.
+pub(crate) fn address(
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    trust_forwarded: bool,
+) -> Option<String> {
+    let forwarded = trust_forwarded
+        .then(|| {
+            headers
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.rsplit(',').next())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        })
+        .flatten();
+    forwarded.or_else(|| {
+        extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|c| c.0.ip().to_string())
+    })
+}
+
+/// The caller's address as an IP, when it parses.
+pub(crate) fn source_ip(
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    trust_forwarded: bool,
+) -> Option<IpAddr> {
+    address(headers, extensions, trust_forwarded)?.parse().ok()
+}
+
 impl FromRequestParts<AppState> for Client {
     type Rejection = Infallible;
 
@@ -29,24 +64,8 @@ impl FromRequestParts<AppState> for Client {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let forwarded = state
-            .trust_forwarded
-            .then(|| {
-                parts
-                    .headers
-                    .get("x-forwarded-for")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.rsplit(',').next())
-                    .filter(|v| !v.trim().is_empty())
-                    .map(key)
-            })
-            .flatten();
-        let peer = || {
-            parts
-                .extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|c| key(&c.0.ip().to_string()))
-        };
-        Ok(Client(forwarded.or_else(peer)))
+        Ok(Client(
+            address(&parts.headers, &parts.extensions, state.trust_forwarded).map(|a| key(&a)),
+        ))
     }
 }
