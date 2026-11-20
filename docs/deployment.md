@@ -153,6 +153,10 @@ to put audit events in the same stream. The access line has the request id, rout
 signed-in account, so "who did what, and which request" is one search. Set `RUST_LOG=info` or finer: the `access` and
 `audit` lines are `info`.
 
+The compose files under `deploy/` keep Docker's `json-file` driver and rotate it: each container keeps at most 5 files of
+10 MB, so the logs of a long-running server cannot fill the disk. Change `max-size` and `max-file` in the `x-logging` block at
+the top of the file, or switch the driver to send logs elsewhere.
+
 With Compose, a collector reads the container's output through Docker's logging driver or the file under
 `/var/lib/docker/containers`. A [Fluent Bit](https://fluentbit.io/) configuration that sends it to a Splunk HTTP Event
 Collector (the token is the collector's, set in `SPLUNK_HEC_TOKEN`):

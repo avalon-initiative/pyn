@@ -1,10 +1,17 @@
 # pyn web app only, from a release image, in front of a server running elsewhere. See docs/getting-started.md.
 name: pyn
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
 services:
   web:
     image: ghcr.io/avalon-initiative/pyn-web:${PYN_WEB_VERSION:?set PYN_WEB_VERSION in .env (for example v0.0.2)}
     restart: unless-stopped
+    logging: *logging
     environment:
       PYN_API_URL: ${PYN_API_URL:?set PYN_API_URL in .env (the server address, for example https://pyn.example.com)}
     ports:
