@@ -69,20 +69,32 @@ fn is_uuid(s: &str) -> bool {
         })
 }
 
+/// Serializes lock events from the id they draw to commit, so they become visible in id order and a stream cursor skips none.
+const LOCK_EVENT_ORDER: i64 = 0x7079_6e5f_6c6b_6576;
+
 async fn append_event_in(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event_type: &str,
     payload: &str,
     now: Option<DateTime<Utc>>,
+    repo_id: Option<&str>,
 ) -> Result<OutboxEvent> {
+    if event_type.starts_with("lock.") {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(LOCK_EVENT_ORDER)
+            .execute(&mut **tx)
+            .await
+            .map_err(db)?;
+    }
     let row = sqlx::query(
-        "INSERT INTO webhook_events (event_type, payload, created_at)
-             VALUES ($1, $2::text::jsonb, COALESCE($3::timestamptz, now()))
+        "INSERT INTO webhook_events (event_type, payload, created_at, repo_id)
+             VALUES ($1, $2::text::jsonb, COALESCE($3::timestamptz, now()), $4)
              RETURNING id, event_type, payload::text AS payload, created_at",
     )
     .bind(event_type)
     .bind(payload)
     .bind(now)
+    .bind(repo_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(db)?;
@@ -114,7 +126,14 @@ impl PgMetadataStore {
         events: &[EventDraft],
     ) -> Result<()> {
         for e in events {
-            append_event_in(tx, &e.event_type, &e.payload, self.bound_now(e.at)).await?;
+            append_event_in(
+                tx,
+                &e.event_type,
+                &e.payload,
+                self.bound_now(e.at),
+                e.repo_id.as_deref(),
+            )
+            .await?;
         }
         Ok(())
     }
@@ -330,9 +349,47 @@ impl WebhookStore for PgMetadataStore {
         now: DateTime<Utc>,
     ) -> Result<OutboxEvent> {
         let mut tx = self.pool.begin().await.map_err(db)?;
-        let event = append_event_in(&mut tx, event_type, payload, self.bound_now(now)).await?;
+        let event =
+            append_event_in(&mut tx, event_type, payload, self.bound_now(now), None).await?;
         tx.commit().await.map_err(db)?;
         Ok(event)
+    }
+
+    async fn lock_events_after(
+        &self,
+        repo_id: &str,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<OutboxEvent>> {
+        let rows = sqlx::query(
+            "SELECT id, event_type, payload::text AS payload, created_at FROM webhook_events
+             WHERE repo_id = $1 AND id > $2 AND event_type LIKE 'lock.%'
+             ORDER BY id LIMIT $3",
+        )
+        .bind(repo_id)
+        .bind(after)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .iter()
+            .map(|row| OutboxEvent {
+                id: row.get("id"),
+                event_type: row.get("event_type"),
+                payload: row.get("payload"),
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
+    async fn lock_events_head(&self) -> Result<i64> {
+        sqlx::query_scalar(
+            "SELECT COALESCE(max(id), 0) FROM webhook_events WHERE event_type LIKE 'lock.%'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)
     }
 
     async fn append_limit_reached(
@@ -359,8 +416,14 @@ impl WebhookStore for PgMetadataStore {
         if admitted.is_none() {
             return Ok(None);
         }
-        let event =
-            append_event_in(&mut tx, "owner.limit_reached", payload, self.bound_now(now)).await?;
+        let event = append_event_in(
+            &mut tx,
+            "owner.limit_reached",
+            payload,
+            self.bound_now(now),
+            None,
+        )
+        .await?;
         tx.commit().await.map_err(db)?;
         Ok(Some(event))
     }

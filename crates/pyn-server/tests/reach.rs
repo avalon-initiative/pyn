@@ -966,6 +966,7 @@ const REPOSITORY_ROUTES: &[(&str, &str, &str)] = &[
     ("PUT", "/teams/{team}", "repo_scoped:members:write"),
     ("DELETE", "/teams/{team}", "repo_scoped:members:write"),
     ("GET", "/locks", "public_repo_read:locks:read"),
+    ("GET", "/locks/events", "public_repo_read:locks:read"),
     ("GET", "/info/lfs/locks", "repo_scoped:locks:read"),
     ("POST", "/info/lfs/locks", "repo_scoped:locks:write"),
     ("POST", "/info/lfs/locks/verify", "repo_scoped:locks:read"),

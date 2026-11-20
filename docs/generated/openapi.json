@@ -8161,6 +8161,88 @@
         "x-pyn-reach": "public_repo_read:locks:read"
       }
     },
+    "/v1/repos/{owner}/{name}/locks/events": {
+      "get": {
+        "tags": [
+          "lock_stream_api"
+        ],
+        "summary": "Lock changes of the repository after a cursor, oldest first. Waits up to `wait` seconds for one when there is none.",
+        "operationId": "lock_events",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "cursor of the last event seen; without it the stream starts now and returns no events",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "description": "seconds to hold the request open when nothing is new, default 0, at most 25",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "most events returned, default 100, at most 500",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockStreamPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the cursor is not one this server issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:locks:read"
+      }
+    },
     "/v1/repos/{owner}/{name}/me": {
       "get": {
         "tags": [
@@ -13032,6 +13114,44 @@
           },
           "repo_id": {
             "type": "string"
+          }
+        }
+      },
+      "LockStreamEvent": {
+        "type": "object",
+        "description": "One lock change in a repository's stream.",
+        "required": [
+          "cursor",
+          "event"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "description": "Resume after this event by passing it as `after`."
+          },
+          "event": {
+            "$ref": "#/components/schemas/Event",
+            "description": "The same envelope a webhook delivers: `lock.acquired`, `lock.released`, `lock.expired` or `lock.forced`."
+          }
+        }
+      },
+      "LockStreamPage": {
+        "type": "object",
+        "description": "A page of a repository's lock changes, oldest first.",
+        "required": [
+          "events",
+          "cursor"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "description": "Pass it as `after` to get what follows this page. It is the position of the last event returned, or of the\nrequest when none was; without `after` it is the position of now and `events` is empty."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LockStreamEvent"
+            }
           }
         }
       },

@@ -38,6 +38,7 @@ impl WebhookLimitEvents {
             event_type,
             payload,
             at: now,
+            repo_id: None,
         })
     }
 }
@@ -78,6 +79,7 @@ impl LimitEvents for WebhookLimitEvents {
     }
 
     fn draft(&self, event: DomainEvent, now: DateTime<Utc>) -> Result<EventDraft> {
+        let repo_id = event.repo_id().map(|r| r.to_string());
         let data = match event {
             DomainEvent::AccountCreated {
                 user,
@@ -355,6 +357,9 @@ impl LimitEvents for WebhookLimitEvents {
                 reason,
             }),
         };
-        self.envelope(data, now)
+        Ok(EventDraft {
+            repo_id,
+            ..self.envelope(data, now)?
+        })
     }
 }

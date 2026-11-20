@@ -104,6 +104,23 @@ pub trait MetadataStore: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<Option<Lock>>;
 
+    /// Up to `limit` leases that ran out and are still stored, oldest expiry first. Empty for a store that does not sweep.
+    async fn lapsed_locks(&self, _now: DateTime<Utc>, _limit: u32) -> Result<Vec<(RepoId, Lock)>> {
+        Ok(Vec::new())
+    }
+
+    /// Removes the path's lease if it has run out, queueing `Expired` in the same transaction, and returns it. `None` when
+    /// the path has no lapsed lease (already swept, or taken again): exactly one caller sees each lapse.
+    async fn expire_lock_with_events(
+        &self,
+        _repo: &RepoId,
+        _path: &RepoPath,
+        _now: DateTime<Utc>,
+        _events: Option<LockEventBuilder<'_>>,
+    ) -> Result<Option<Lock>> {
+        Ok(None)
+    }
+
     async fn list_locks(&self, repo: &RepoId, now: DateTime<Utc>) -> Result<Vec<Lock>>;
 
     /// The live locks `owner` holds in every repository, ordered by repository id then path.

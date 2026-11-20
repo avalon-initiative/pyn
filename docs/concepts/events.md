@@ -521,7 +521,25 @@ a replica running ahead can push `last_event_at` into the future. Postgres uses 
 
 Raised in the same transaction as the lock change, so a refused change (a held path, the lock limit, a release by a non-holder) raises nothing. Every lock event names the repository by `owner` and `repo` (its name), with `owner_id` and `repo_id`, and the locked `path`. A renewal (checking out again while holding a live lock) raises no event.
 
-Expiry is observed lazily: pyn has no background reaper, and a lease that runs out just stops counting as a lock. `lock.expired` is raised when the lapsed lease is replaced, by the next checkout of that path (by anyone, the former holder included), immediately before that checkout's `lock.acquired`. A lease nobody takes again never raises it. A check-in or push that consumes the holder's lock (the lock is released with the path's revision, in the same transaction) raises `lock.released` with `reason` `checkin`. A policy change that makes a path shared releases the live locks on it as `lock.forced`, not `lock.released`. Deleting a repository raises no lock events: `repository.deleted` covers the locks it removes.
+Expiry is raised by whichever of two things removes the lapsed lease first: a sweep that runs on the server every few seconds, or the next checkout of that path (by anyone, the former holder included), which raises it immediately before that checkout's `lock.acquired`. The lease row is removed in the same transaction as the event, so each lapse raises exactly one `lock.expired`, and `expires_at` is when it ran out, not when it was noticed. A check-in or push that consumes the holder's lock (the lock is released with the path's revision, in the same transaction) raises `lock.released` with `reason` `checkin`. A policy change that makes a path shared releases the live locks on it as `lock.forced`, not `lock.released`. Deleting a repository raises no lock events: `repository.deleted` covers the locks it removes.
+
+The actor of `lock.acquired` and `lock.released` is the holder; `lock.forced` names its `actor`; `lock.expired` has none (the clock did it).
+
+### Following a repository's lock changes
+
+`GET /v1/repos/{owner}/{name}/locks/events` returns the repository's lock events from the same outbox, in the same envelope, oldest first. It needs what `GET /v1/repos/{owner}/{name}/locks` needs: read access (`locks:read` for a token), and a public repository is readable like the lock list is. Someone without read access gets the same refusal as the lock list.
+
+It is a cursor long-poll rather than a server-sent stream. A client holds one request open and reconnects with the last cursor it saw, so a dropped connection, a restart or a deploy loses nothing, it works through any proxy a plain request does, and it needs no connection state shared between server replicas: every replica answers from the outbox.
+
+| Query | Meaning |
+| --- | --- |
+| `after` | The `cursor` of the last event seen. Without it the request returns no events and the `cursor` of now, to start from. |
+| `wait` | Seconds to hold the request open when nothing is newer than `after` (default 0, at most 25). It returns as soon as an event exists. |
+| `limit` | Most events returned (default 100, at most 500). |
+
+The response is `{"events": [{"cursor", "event"}], "cursor"}`. `event` is the webhook envelope above (`lock.acquired`, `lock.released`, `lock.expired` or `lock.forced`; ignore a type you do not know). `cursor` on the response is where to resume: the last returned event's, or `after` unchanged when there was none. A cursor is an opaque string that only grows; a malformed one is `invalid_request`. Lock events are visible in cursor order, so resuming from the last cursor never skips an event. Events are kept for 30 days like the rest of the outbox: a cursor older than that resumes at the oldest event still kept. The stream carries only lock events, whatever webhook subscriptions exist, and it does not depend on any being configured.
+
+`pyn locks --watch` is the client for it, and what an editor or engine integration should run instead of polling ([CLI JSON output](../cli-json.md#locks---watch)).
 
 ### `lock.acquired`
 
@@ -556,7 +574,7 @@ The holder released the lock, or a check-in or push consumed it.
 
 ### `lock.expired`
 
-A lapsed lease was replaced (see above).
+A lease ran out and was removed (see above).
 
 `data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder` (who held the lapsed lease), `expires_at` (when it ran out).
 

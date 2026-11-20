@@ -863,6 +863,18 @@ impl RepoService {
             .await
     }
 
+    /// Removes a lease that ran out and queues `lock.expired`; false when it was already swept or taken again.
+    pub async fn expire_lock(&self, path: &RepoPath) -> Result<bool> {
+        let Some(events) = self.lock_events(None).await else {
+            return Ok(false);
+        };
+        let lapsed = self
+            .meta
+            .expire_lock_with_events(&self.repo, path, self.clock.now(), Some(events.as_ref()))
+            .await?;
+        Ok(lapsed.is_some())
+    }
+
     /// What applying the policy `text` would change: paths whose mode flips and live locks it would release.
     pub async fn preview_policy(&self, who: &Principal, text: &str) -> Result<PolicyPreview> {
         who.require(Permission::EditPolicy)?;
