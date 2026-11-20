@@ -3,7 +3,7 @@ name: pyn
 
 services:
   web:
-    image: ghcr.io/avalon-initiative/pyn-web:${PYN_VERSION:?set PYN_VERSION in .env (for example v0.0.2)}
+    image: ghcr.io/avalon-initiative/pyn-web:${PYN_WEB_VERSION:?set PYN_WEB_VERSION in .env (for example v0.0.2)}
     restart: unless-stopped
     environment:
       PYN_API_URL: ${PYN_API_URL:?set PYN_API_URL in .env (the server address, for example https://pyn.example.com)}

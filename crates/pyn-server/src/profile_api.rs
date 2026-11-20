@@ -6,6 +6,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_NONE_MATCH};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use futures_util::{Stream, StreamExt};
 use pyn_core::profiles::Profiles;
 use pyn_core::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility, PynError, UserId};
 use pyn_proto as api;
@@ -166,21 +167,50 @@ pub(crate) async fn update_profile(
     Ok(Json(profile_dto(&who.user, saved, true)))
 }
 
+/// Reading past this much of a refused body is not worth it; the client then sees a dropped connection.
+const REFUSED_BODY_DRAIN: u64 = 16 << 20;
+const REFUSED_BODY_DRAIN_TIME: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Reads and discards what a refused upload still sends: closing a socket with unread data resets it,
+/// and the client then loses the refusal instead of reading it.
+async fn drain_refused<S, T: AsRef<[u8]>, E>(mut stream: S)
+where
+    S: Stream<Item = Result<T, E>> + Unpin,
+{
+    let mut seen = 0u64;
+    let _ = tokio::time::timeout(REFUSED_BODY_DRAIN_TIME, async {
+        while let Some(Ok(chunk)) = stream.next().await {
+            seen += chunk.as_ref().len() as u64;
+            if seen > REFUSED_BODY_DRAIN {
+                break;
+            }
+        }
+    })
+    .await;
+}
+
 /// The bytes the client sends as the avatar, refused early when they declare or hold more than the limit.
 async fn avatar_bytes(headers: &HeaderMap, body: Body) -> Result<Vec<u8>, PynError> {
-    let too_large = PynError::ObjectTooLarge { limit: AVATAR_MAX };
+    let too_large = || PynError::ObjectTooLarge { limit: AVATAR_MAX };
     let declared = headers
         .get(CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
     if declared.is_some_and(|n| n > AVATAR_MAX) {
-        return Err(too_large);
+        drain_refused(body.into_data_stream()).await;
+        return Err(too_large());
     }
-    let limit = AVATAR_MAX as usize;
-    let bytes = axum::body::to_bytes(body, limit)
-        .await
-        .map_err(|_| too_large)?;
-    Ok(bytes.to_vec())
+    let mut stream = body.into_data_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| too_large())?;
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() as u64 > AVATAR_MAX {
+            drain_refused(stream).await;
+            return Err(too_large());
+        }
+    }
+    Ok(bytes)
 }
 
 #[utoipa::path(put, path = "/v1/me/avatar",

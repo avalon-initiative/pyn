@@ -32,13 +32,16 @@ repository with a stub `gh`; it is part of `make check`.
 
 ### Both repositories at once
 
-Maintainers with a sibling `pyn-web` checkout can release both in one go: `make release-all VER=1.0.0 TITLE="First stable"`
+The server (`pyn`) and the web app (`pyn-web`) have independent versions: either is released alone, and no release needs the
+other to be at any version (see [compatibility](deployment.md#compatibility)). Maintainers with a sibling `pyn-web` checkout can
+release one or both in one go as a convenience: `make release-all VER=0.2.0 WEB_VER=0.1.4 TITLE="First stable"`
 ([`scripts/release-all.sh`](../scripts/release-all.sh); the checkout is `../pyn-web` unless `PYN_WEB_DIR` says otherwise).
-It refuses to start unless both repositories are on `main` with a clean tree and both are at the same current version
-(and `VER` is greater). It then runs `release.sh` in each (with `YES=1`), waits for both pull requests to turn green
+`VER` is the pyn version and `WEB_VER` the pyn-web version; give either or both, and `TITLE` (`WEB_TITLE` for pyn-web, defaulting
+to `TITLE`). It refuses to start unless each repository being released is on `main` with a clean tree and its version is greater
+than its own current one. It then runs `release.sh` in each (with `YES=1`), waits for the pull requests to turn green
 (`mergeStateStatus` is `CLEAN`; a failed check or a pull request that fell behind aborts, `RELEASE_WAIT_MAX` seconds at most),
-squash-merges both, checks that both versions on `main` equal `VER`, and tags pyn-web first and pyn second, since the
-pyn-web workflow builds the web image the pyn smoke test pulls.
+squash-merges them, checks that each version on `main` equals the one asked for, and tags pyn-web first and pyn second, so the
+web image the pyn smoke test pulls is likely published by then.
 
 - **It publishes tags** (images, binaries, GitHub Releases), which cannot be undone, so it prints that and asks for
   confirmation unless `YES=1`.
@@ -116,13 +119,14 @@ Outcomes of the tag workflow, with `gate` and `live` as one column (a gate that 
 ## Smoke test
 
 [`scripts/smoke-release.sh`](../scripts/smoke-release.sh) checks what was actually published: it takes `deploy/docker-compose.yml`
-from the checkout, writes a throwaway `.env` (`PYN_VERSION=v<version>`, random secrets, a free web port) in a temporary
+from the checkout, writes a throwaway `.env` (`PYN_SERVER_VERSION=v<version>`, `PYN_WEB_VERSION`, random secrets, a free web port) in a temporary
 directory and starts the stack under its own compose project, so it does not touch a real deployment (it still needs host
 port 7878 for the server). It then checks `/healthz` and the web app, completes first-run setup with the token from the
 server log through `POST /v1/setup`, and confirms `GET /v1/setup` reports `initialised`. It always removes the stack and its
 volumes (`docker compose down --volumes`), and on failure prints `compose ps` and the logs first.
 
 The release workflow runs it as the `smoke` job once the images are published ([`smoke.yml`](../.github/workflows/smoke.yml)).
+The web version is an optional second argument and defaults to the latest pyn-web release (the two are versioned independently).
 The web image is built by pyn-web's own tag workflow, which can finish after this one, so the script retries the pull for
 about ten minutes (`SMOKE_PULL_ATTEMPTS`, `SMOKE_PULL_WAIT`).
 
@@ -133,7 +137,7 @@ prints before deciding anything.
 Run it by hand on a machine with Docker (`docker compose`, `curl`, `openssl`), or trigger the workflow:
 
 ```bash
-scripts/smoke-release.sh 0.1.0        # or: make release-smoke VER=0.1.0
+scripts/smoke-release.sh 0.1.0 [0.1.3]   # server version, then optionally the web version; or: make release-smoke VER=0.1.0 WEB_VER=0.1.3
 gh workflow run smoke.yml -f version=0.1.0
 ```
 

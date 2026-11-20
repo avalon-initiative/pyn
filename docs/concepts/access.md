@@ -830,7 +830,7 @@ A read of a public repository skips the grant check: any caller, signed out or w
 | `metadata:read` | `GET /v1/repos/{owner}/{name}`, `.../me` |
 | `contents:read` | usage, files, tree, summary, content, history, verify, commits, snapshot, branches, fetch, objects, merge preview, and the LFS batch and object download (an upload batch needs `contents:write`, checked in the handler) |
 | `contents:write` | checkin, changesets, restore, branch create, rename and delete, push, merge, object upload, chunk, missing and assemble, LFS object upload, verify and tus |
-| `locks:read` | the lock lists: `.../locks`, LFS lock list and verify |
+| `locks:read` | the lock lists: `.../locks`, the lock change stream `.../locks/events`, LFS lock list and verify |
 | `locks:write` | checkout, release, LFS lock create and unlock |
 | `locks:admin` | force-unlock |
 | `policy:write` | policy preview |
@@ -914,6 +914,12 @@ seeding; see the [README](../../README.md#run-it).
 
 `PYN_DEV_AUTH=true` is a test-only escape hatch: it lets any request name itself with an `X-Pyn-User` header and grants it
 every permission. Never set it on a server others can reach.
+
+The server refuses to start with `PYN_DEV_AUTH=true` unless `PYN_ADDR` is a loopback address (`127.0.0.1`, `::1` or
+`localhost`). To run it on another address anyway (a throwaway container, say), also set
+`PYN_DEV_AUTH_ALLOW_NON_LOOPBACK=true`. The server logs a warning with the address on every start with the flag on, and
+`/healthz` carries an `X-Pyn-Dev-Auth: on` response header (`off` otherwise). A bearer token always wins over the
+header, and the flag never changes what a service credential may do.
 
 ## Audit
 

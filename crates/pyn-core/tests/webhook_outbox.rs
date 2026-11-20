@@ -25,6 +25,12 @@ async fn lock_changes_queue_their_events() {
 }
 
 #[tokio::test]
+async fn lock_events_read_back_by_repository_and_cursor() {
+    let (meta, access, hooks) = memory();
+    pyn_core::contract::lock_events_read_back_by_repository_and_cursor(meta, access, hooks).await;
+}
+
+#[tokio::test]
 async fn refused_changes_queue_no_event() {
     let (meta, access, hooks) = memory();
     pyn_core::contract::refused_changes_queue_no_event(meta, access, hooks).await;

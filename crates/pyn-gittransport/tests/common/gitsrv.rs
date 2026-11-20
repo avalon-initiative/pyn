@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -13,6 +12,9 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::Response;
+
+#[path = "script.rs"]
+pub mod script;
 
 pub const FORMATS: [&str; 2] = ["sha1", "sha256"];
 
@@ -130,8 +132,7 @@ pub fn ssh_shim(dir: &Path, strip_protocol: bool) -> PathBuf {
     let script = dir.join(if strip_protocol { "ssh-v0" } else { "ssh-shim" });
     let log = dir.join("ssh.log");
     let body = format!(
-        r#"#!/bin/sh
-for a in "$@"; do printf 'ARG %s\n' "$a" >> '{log}'; done
+        r#"for a in "$@"; do printf 'ARG %s\n' "$a" >> '{log}'; done
 printf 'GIT_PROTOCOL=%s\n' "${{GIT_PROTOCOL-unset}}" >> '{log}'
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -152,8 +153,7 @@ exec sh -c "$cmd"
             ""
         }
     );
-    fs::write(&script, body).unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    script::write_script(&script, &body);
     script
 }
 

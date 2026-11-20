@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Smoke-tests a published release: pulls the images, runs deploy/docker-compose.yml, checks the server and web app,
-# completes first-run setup. Usage: scripts/smoke-release.sh <version> (for example 0.1.0). Needs docker compose, curl, openssl.
+# completes first-run setup. Usage: scripts/smoke-release.sh <server-version> [<web-version>] (for example 0.1.0 0.1.3).
+# The web version defaults to the latest pyn-web release, since the two are released independently. Needs docker compose, curl, openssl.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 version=${1:-}
-if [[ ! $version =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "usage: $0 <version>   (X.Y.Z, without a title suffix)" >&2
+web_version=${2:-}
+semver='^v?[0-9]+\.[0-9]+\.[0-9]+$'
+if [[ ! $version =~ $semver ]] || { [[ -n $web_version ]] && [[ ! $web_version =~ $semver ]]; }; then
+  echo "usage: $0 <server-version> [<web-version>]   (X.Y.Z, without a title suffix; the web version defaults to the latest pyn-web release)" >&2
   exit 2
 fi
 version=${version#v}
+web_version=${web_version#v}
 
 for tool in docker curl openssl awk; do
   command -v "$tool" >/dev/null || { echo "smoke: $tool is required" >&2; exit 2; }
@@ -47,6 +51,15 @@ trap cleanup EXIT
 fail() { echo "smoke: $*" >&2; exit 1; }
 step() { echo "smoke: $*"; }
 
+latest_web_version() {
+  local tag
+  tag=$(curl --silent --fail --location --max-time 20 https://api.github.com/repos/avalon-initiative/pyn-web/releases/latest |
+    sed -n 's/.*"tag_name": *"v\{0,1\}\([0-9]*\.[0-9]*\.[0-9]*\)[^"]*".*/\1/p' | head -n 1)
+  [[ -n $tag ]] || fail "could not find the latest pyn-web release; pass the web version as the second argument"
+  echo "$tag"
+}
+[[ -n $web_version ]] || web_version=$(latest_web_version)
+
 free_port() {
   local port
   for _ in $(seq 1 50); do
@@ -59,7 +72,8 @@ free_port() {
 cp "$root/deploy/docker-compose.yml" "$work/docker-compose.yml"
 web_port=$(free_port)
 cat >"$work/.env" <<ENV
-PYN_VERSION=v$version
+PYN_SERVER_VERSION=v$version
+PYN_WEB_VERSION=v$web_version
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 PYN_SECRET_KEY=$(openssl rand -hex 32)
 PYN_PUBLIC_URL=http://127.0.0.1:$web_port
@@ -67,14 +81,14 @@ PYN_WEB_PUBLISH=127.0.0.1:$web_port
 ENV
 
 # The web image comes from pyn-web's own tag workflow, which can finish later than this repo's.
-step "pulling the v$version images (up to $pull_attempts attempts, ${pull_wait}s apart)"
+step "pulling pyn-core v$version and pyn-web v$web_version (up to $pull_attempts attempts, ${pull_wait}s apart)"
 pulled=0
 for attempt in $(seq 1 "$pull_attempts"); do
   if compose pull --quiet 2>"$work/pull.err"; then pulled=1; break; fi
   echo "smoke: pull attempt $attempt/$pull_attempts failed: $(tail -n 1 "$work/pull.err")" >&2
   [[ $attempt -lt $pull_attempts ]] && sleep "$pull_wait"
 done
-[[ $pulled -eq 1 ]] || fail "could not pull the images for v$version (is pyn-web's v$version image published, and are both packages public?)"
+[[ $pulled -eq 1 ]] || fail "could not pull pyn-core v$version and pyn-web v$web_version (are both images published, and are both packages public?)"
 
 step "starting the stack (web on 127.0.0.1:$web_port)"
 started=1
@@ -113,4 +127,4 @@ status=$(curl --silent --fail --max-time 10 "$server_url/v1/setup") || fail "GET
 [[ $status == *'"initialised":true'* ]] || fail "the server does not report initialised=true after setup, got: $status"
 
 ok=1
-step "OK: v$version images start, answer, and complete setup"
+step "OK: pyn-core v$version with pyn-web v$web_version start, answer, and complete setup"

@@ -77,6 +77,14 @@ impl WebhookStore for FailingWebhooks {
         panic!("unexpected WebhookStore::append_event")
     }
 
+    async fn lock_events_after(&self, _: &str, _: i64, _: u32) -> Result<Vec<OutboxEvent>> {
+        panic!("unexpected WebhookStore::lock_events_after")
+    }
+
+    async fn lock_events_head(&self) -> Result<i64> {
+        panic!("unexpected WebhookStore::lock_events_head")
+    }
+
     async fn append_limit_reached(
         &self,
         owner: &UserId,

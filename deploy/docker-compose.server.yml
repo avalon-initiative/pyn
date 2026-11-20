@@ -18,7 +18,7 @@ services:
       retries: 10
 
   server:
-    image: ghcr.io/avalon-initiative/pyn-core:${PYN_VERSION:?set PYN_VERSION in .env (for example v0.0.2)}
+    image: ghcr.io/avalon-initiative/pyn-core:${PYN_SERVER_VERSION:?set PYN_SERVER_VERSION in .env (for example v0.0.2)}
     restart: unless-stopped
     depends_on:
       db:

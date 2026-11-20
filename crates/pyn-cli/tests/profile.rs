@@ -121,6 +121,10 @@ fn an_avatar_is_uploaded_checked_and_removed() {
     let mut big = png();
     big.resize((1 << 20) + 1, 0);
     std::fs::write(&huge, big).unwrap();
+    let vast = home.join("vast.png");
+    let mut big = png();
+    big.resize(8 << 20, 0);
+    std::fs::write(&vast, big).unwrap();
 
     let err = env.fails(
         &home,
@@ -134,6 +138,14 @@ fn an_avatar_is_uploaded_checked_and_removed() {
         &["profile", "avatar", "set", huge.to_str().unwrap()],
     );
     assert!(err.contains("object_too_large"), "{err}");
+    for _ in 0..3 {
+        let err = env.fails(
+            &home,
+            "alice",
+            &["profile", "avatar", "set", vast.to_str().unwrap()],
+        );
+        assert!(err.contains("object_too_large"), "{err}");
+    }
     let err = env.fails(&home, "alice", &["profile", "avatar", "set", "missing.png"]);
     assert!(err.contains("reading"), "{err}");
 

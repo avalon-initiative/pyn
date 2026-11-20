@@ -27,6 +27,7 @@ fn good() -> EventDraft {
         event_type: "test.event".into(),
         payload: r#"{"ok":true}"#.into(),
         at: t0(),
+        repo_id: None,
     }
 }
 
@@ -35,6 +36,7 @@ fn bad() -> EventDraft {
         event_type: "test.event".into(),
         payload: "not json".into(),
         at: t0(),
+        repo_id: None,
     }
 }
 
@@ -78,6 +80,15 @@ async fn lock_changes_queue_their_events() {
     let (meta, access, hooks): (Store, Access, Webhooks) =
         (store.clone(), store.clone(), store.clone());
     pyn_core::contract::lock_changes_queue_their_events(meta, access, hooks).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs PYN_DATABASE_URL"]
+async fn lock_events_read_back_by_repository_and_cursor() {
+    let store = pg().await;
+    let (meta, access, hooks): (Store, Access, Webhooks) =
+        (store.clone(), store.clone(), store.clone());
+    pyn_core::contract::lock_events_read_back_by_repository_and_cursor(meta, access, hooks).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

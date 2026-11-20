@@ -340,6 +340,12 @@ async fn main() -> anyhow::Result<()> {
     if let Some(command) = host_command {
         return pyn_server::host_admin::run(command).await;
     }
+    pyn_server::check_dev_auth_bind(
+        &addr,
+        flag("PYN_DEV_AUTH"),
+        strict_flag("PYN_DEV_AUTH_ALLOW_NON_LOOPBACK", false)?,
+    )
+    .map_err(anyhow::Error::msg)?;
     let (clock, time) = dev_clock()?;
     let (rules, initial_policy) = match std::env::var("PYN_CONFIG") {
         Ok(path) => {
@@ -611,10 +617,14 @@ async fn main() -> anyhow::Result<()> {
 
     start_webhook_delivery(webhooks, clock, &hook_settings, access.public_url())?;
     pyn_server::account_deletion::spawn(access.clone(), std::time::Duration::from_secs(3600));
+    pyn_server::lock_stream_api::spawn_sweep(repos.clone(), std::time::Duration::from_secs(5));
     pyn_server::tus_sweep::spawn(repos.clone(), std::time::Duration::from_secs(600));
 
     let dev_auth: Option<Arc<dyn AuthProvider>> = if flag("PYN_DEV_AUTH") {
-        tracing::warn!("PYN_DEV_AUTH is on: anyone who can reach this server can act as any user");
+        tracing::warn!(
+            addr,
+            "PYN_DEV_AUTH is on: anyone who can reach this server can act as any user"
+        );
         Some(Arc::new(DevHeaderAuth))
     } else {
         None

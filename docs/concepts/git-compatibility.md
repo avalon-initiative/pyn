@@ -834,7 +834,7 @@ No git equivalent; these keep their own names and are never aliased to a git com
 | `pyn lock <path> [--base <rev>]` | Take the leased lock on an exclusive file. On a git home it takes the Git LFS lock, see [Git LFS](#git-lfs). |
 | `pyn unlock <path> [--force --reason <text>]` | Give a lock up without committing, or remove another user's (needs `force_unlock`). |
 | `pyn edit <path>...` | Make a read-only exclusive file writable for offline work, with no server and no lock; publishing still needs the lock. |
-| `pyn locks [--mine]` | List live locks in the repository, or yours everywhere. |
+| `pyn locks [--mine \| --watch]` | List live locks in the repository, or yours everywhere; `--watch` follows lock changes live (a pyn server only, see [CLI JSON output](../cli-json.md#locks---watch)). |
 | `pyn policy preview` | Show which paths would change mode, which locks would be released and which branch versions would be stranded, if a policy file were committed. |
 | `pyn policy lint [--policy <file>]` | Git home: list tracked paths where the `lockable` attribute and `exclusive` mode disagree, see [Git LFS](#git-lfs). |
 | `pyn audit` | Audit log (see `reflog` above). |
@@ -3123,7 +3123,7 @@ are repository-root relative whatever the working directory.
 | --- | --- |
 | `pyn lock <path>` | Creates the lock and prints `locked <path>`. A path already locked fails and names the holder. `--base` is refused: a git repository has no revisions. |
 | `pyn unlock <path> [--force --reason <text>]` | Looks the lock up by path and removes it (`unlocked <path>`). `--force` removes another user's lock and prints `removed <owner>'s lock on <path>`; the server needs `force_unlock` for it. LFS has no reason field, so the text is accepted and not sent. |
-| `pyn locks [--mine]` | A table of `OWNER`, `LOCKED` and `PATH` for every lock; `--mine` lists the caller's own through `verify` (`LOCKED`, `PATH`) in this repository. |
+| `pyn locks [--mine]` | `--watch` is refused (it needs a pyn server). A table of `OWNER`, `LOCKED` and `PATH` for every lock; `--mine` lists the caller's own through `verify` (`LOCKED`, `PATH`) in this repository. |
 | `pyn edit <path>...` | Makes `lockable` files writable with no server and no lock, and says the lock is needed to publish; any other path is already writable. `add` and `commit` never checked locks on a git home, and the push check stays the LFS one: it refuses only files someone else holds (`lfs.locksverify`), it does not require your own lock. |
 
 A path with the `lockable` attribute (`*.psd lockable` in `.gitattributes`) is read-only in the work tree until its lock is taken.
