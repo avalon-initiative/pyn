@@ -415,9 +415,9 @@ existed before the setting did.
 | Mode | What a signed-out caller can read |
 | --- | --- |
 | `private` (default) | nothing, except what a visitor needs to sign in or sign up (listed below) |
-| `public` | what a signed-out caller reads on any server: public repositories (tree, files, history, fetch, Git LFS object download), public profiles and avatars, the people directory (rate limited, see [protecting open registration](#protecting-open-registration)), organization avatars and the repository explore list |
+| `public` | what a signed-out caller reads on any server: public repositories (tree, files, history, fetch, Git LFS object download), public profiles and avatars, the people directory (full-scope credentials only when signed in; rate limited, see [protecting open registration](#protecting-open-registration)), organization avatars and the repository explore list |
 
-On a `private` server every route declared `public`, `optional_sign_in`, `public_repo_read` or `public_lfs_read`
+On a `private` server every route declared `public`, `optional_sign_in`, `optional_full_scope`, `public_repo_read` or `public_lfs_read`
 (see [route reach](#route-reach)) refuses a request that carries no credential: `401 unauthenticated`, except on a
 repository route, which answers `404 repo_not_found` exactly as it does for a private repository, so it neither
 confirms nor denies that a repository exists (a `public_lfs_read` route answers `401` in the LFS error format with `WWW-Authenticate`, so git-lfs asks for credentials). That covers anonymous clone and fetch of a public repository, profiles,
@@ -794,6 +794,7 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `open` | everyone, in both access modes; no credential is read |
 | `public` | everyone on a `public` server; on a `private` one a valid credential. No credential is read otherwise |
 | `optional_sign_in` | signed out or any user credential on a `public` server; any user credential on a `private` one |
+| `optional_full_scope` | like `optional_sign_in`, but a signed-in caller needs full scope: a repository-scoped or otherwise narrower token is `403 forbidden`, a service credential `403 service_credential_not_allowed` (the people directory) |
 | `session` | a web session cookie only |
 | `any_credential` | any user credential; the response narrows to the credential's scope |
 | `full_scope` | a session, a full-scope token or the development identity |
@@ -808,6 +809,34 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `repo_scoped:<resource>:<level>` | a signed-in credential holding the resource at the level in the named repository (see [repository routes](#repository-routes)) |
 | `public_repo_read:<resource>:<level>` | like `repo_scoped`, and a public repository's reads need no credential on a `public` server; a `private` one needs a credential and answers a signed-out caller `404 repo_not_found` |
 | `public_lfs_read:<resource>:<level>` | the Git LFS download routes (`POST .../info/lfs/objects/batch`, `GET .../info/lfs/objects/{oid}`): like `public_repo_read`, answered in the LFS error format, and a signed-out batch is accepted only for `operation: "download"` (an upload batch signed out is `401`); a private server answers a signed-out caller `401` |
+
+### What each credential kind reaches
+
+The same rules as a matrix, by reach and credential kind. "Session" is a web session or a sign-in token (full scope), "dev" the
+development identity (full scope, administrator on its own header). A repository-scoped token is any token limited to
+repositories or holding fine-grained grants; a service credential holds only `service` scopes. On a `private` server a signed-out
+caller is refused wherever the table says "public servers only"; a credential that is sent must be valid on every route.
+
+| Reach | Signed out | Session, full-scope token, dev | Repository-scoped token | Service credential |
+| --- | --- | --- | --- | --- |
+| `open` | yes | yes | yes | yes |
+| `public` | public servers only | yes | yes | yes, public servers only |
+| `optional_sign_in` | public servers only | yes | yes (the same public answer) | no |
+| `optional_full_scope` | public servers only | yes | no | no |
+| `session` | no | session cookie only | no | no |
+| `any_credential` | no | yes | yes, narrowed to its repositories (no profile fields beyond the public view) | no |
+| `full_scope`, `full_scope_pending`, `full_scope_enrolment`, `namespace` | no | yes | no | no |
+| `org_scoped`, `account_scoped` | no | yes | only a token owned by that organization or account holding the grant | no |
+| `admin_only` | no | administrators | no | no |
+| `service:<scope>` | no | administrators | no | holding the scope |
+| `full_scope_or_service:<scope>` | no | yes | no | holding the scope |
+| `repo_scoped` | no | yes, by role | only its repositories, holding the resource at the level | no |
+| `public_repo_read`, `public_lfs_read` | public repositories on public servers | yes, by role | its repositories by grant, other public repositories read-only | no |
+
+A repository-scoped token never reaches an account, organization or server-wide listing, another account's non-public profile
+fields, an audit log outside its repositories, or any settings route. `GET /v1/orgs/{org}` and the organization profile are the
+exceptions that answer only the public view, as do single-name profiles and avatars (an organization's name is not secret). `crates/pyn-server/tests/reach.rs` keeps this table
+and the route table in step: every reach label must appear in it.
 
 ### Repository routes
 
@@ -874,7 +903,7 @@ they were (any credential, the public view; the caller's `role` only for a full-
 locks everywhere. Accepting an organization invitation, declining one, listing one's own invitations and organizations, and creating
 an organization are not organization permissions and keep their `full_scope` and `namespace` reaches.
 
-A repository-scoped token reaches only `open`, `public`, `optional_sign_in` (the people directory among them), `any_credential` and the repository kinds; a service
+A repository-scoped token reaches only `open`, `public`, `optional_sign_in` (single-name public profiles and avatars), `any_credential` and the repository kinds; a service
 credential reaches only `open`, `public` (on a `public` server), the `service` kinds and `full_scope_or_service`. `crates/pyn-server/tests/reach.rs` checks that the table and the
 document agree and calls every route with each credential kind, so a new route with no declaration, or one that a credential
 reaches against its declaration, fails the build.

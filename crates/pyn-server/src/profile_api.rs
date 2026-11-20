@@ -12,7 +12,7 @@ use pyn_core::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility, Py
 use pyn_proto as api;
 use serde::Deserialize;
 
-use crate::caller::{AccountCaller, AnyCaller, OptionalCaller, OrgCaller};
+use crate::caller::{AccountCaller, AnyCaller, OptionalCaller, OptionalFullScopeCaller, OrgCaller};
 use crate::client::Client;
 use crate::{ApiResult, AppState, FileContent};
 
@@ -98,14 +98,14 @@ pub(crate) struct PeopleQuery {
     params(("q" = Option<String>, Query, description = "keeps accounts whose name or visible display name contains this text, ignoring case; at most 64 characters"),
            ("after" = Option<String>, Query, description = "return accounts after this account name"),
            ("limit" = Option<usize>, Query, description = "page size, default 30, max 100")),
-    responses((status = 200, body = api::PeoplePage, description = "the same public entries signed out or with any valid user credential: active user accounts by name; never an email address, a hidden field, or an account that is disabled, not yet approved, scheduled for deletion or an organization"),
+    responses((status = 200, body = api::PeoplePage, description = "the same public entries signed out or with a full-scope credential: active user accounts by name; never an email address, a hidden field, or an account that is disabled, not yet approved, scheduled for deletion or an organization"),
               (status = 400, body = api::ErrorBody, description = "invalid_request: a search over 64 characters"),
               (status = 401, body = api::ErrorBody, description = "a credential that is not valid, or signed out on a private server"),
-              (status = 403, body = api::ErrorBody, description = "service_credential_not_allowed for a service credential"),
+              (status = 403, body = api::ErrorBody, description = "service_credential_not_allowed for a service credential; forbidden for a token that is not full-scope"),
               (status = 429, body = api::ErrorBody, description = "too_many_attempts: a signed-out client asked too often; Retry-After says how many seconds to wait")))]
 pub(crate) async fn list_people(
     State(s): State<AppState>,
-    OptionalCaller(who): OptionalCaller,
+    OptionalFullScopeCaller(who): OptionalFullScopeCaller,
     Client(client): Client,
     Query(q): Query<PeopleQuery>,
 ) -> ApiResult<Json<api::PeoplePage>> {

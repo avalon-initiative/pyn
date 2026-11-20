@@ -38,6 +38,8 @@ pub enum Reach {
     /// Signed out or any user credential, a credential that is sent must be valid; a private server refuses a
     /// signed-out caller.
     OptionalSignIn,
+    /// Like `OptionalSignIn`, but a signed-in caller needs full scope: a narrower token or a service credential is refused.
+    OptionalFullScope,
     /// A web session cookie only (also while the account is scheduled for deletion).
     Session,
     /// Any user credential; the response is narrowed to what the credential's scope allows.
@@ -78,7 +80,11 @@ impl Reach {
     fn closed_when_private(self) -> bool {
         matches!(
             self,
-            Self::Public | Self::OptionalSignIn | Self::PublicRepoRead(_) | Self::PublicLfsRead(_)
+            Self::Public
+                | Self::OptionalSignIn
+                | Self::OptionalFullScope
+                | Self::PublicRepoRead(_)
+                | Self::PublicLfsRead(_)
         )
     }
 
@@ -88,6 +94,7 @@ impl Reach {
             Self::Open => "open".into(),
             Self::Public => "public".into(),
             Self::OptionalSignIn => "optional_sign_in".into(),
+            Self::OptionalFullScope => "optional_full_scope".into(),
             Self::Session => "session".into(),
             Self::AnyCredential => "any_credential".into(),
             Self::FullScope => "full_scope".into(),
@@ -548,7 +555,11 @@ fn table() -> Vec<Entry> {
             Reach::AccountScoped(need(AccountProfile, Write)),
             profile_api::delete_avatar,
         ),
-        get("/v1/users", Reach::OptionalSignIn, profile_api::list_people),
+        get(
+            "/v1/users",
+            Reach::OptionalFullScope,
+            profile_api::list_people,
+        ),
         get(
             "/v1/users/{user}",
             Reach::OptionalSignIn,

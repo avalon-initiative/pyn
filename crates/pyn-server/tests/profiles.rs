@@ -1319,7 +1319,7 @@ async fn signed_out_the_directory_lists_exactly_the_public_entries() {
 }
 
 #[tokio::test]
-async fn every_valid_credential_gets_the_signed_out_entries() {
+async fn full_scope_credentials_get_the_signed_out_entries() {
     let app = server().await;
     let alice = directory_fixture(&app).await;
     let signed_out = people(&app, "", "").await;
@@ -1349,7 +1349,6 @@ async fn every_valid_credential_gets_the_signed_out_entries() {
     for (kind, r) in [
         ("user session", session),
         ("full-scope token", people(&app, &alice, "").await),
-        ("repository-scoped token", people(&app, &scoped, "").await),
         ("dev token", people(&app, "alice", "").await),
     ] {
         assert_eq!(r.status, StatusCode::OK, "{kind}: {}", r.text());
@@ -1357,6 +1356,10 @@ async fn every_valid_credential_gets_the_signed_out_entries() {
         let q = people(&app, "alice", "?q=hopper").await;
         assert!(people_names(&q).is_empty(), "{kind}");
     }
+
+    let r = people(&app, &scoped, "").await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text());
+    assert_eq!(r.code(), "forbidden");
 
     let svc = call(
         &app,
