@@ -162,6 +162,7 @@ release-all:
 
 release-test:
 	@scripts/test-release.sh
+	@scripts/test-smoke-token.sh
 
 install-test:
 	@scripts/test-install.sh
