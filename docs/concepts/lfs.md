@@ -113,8 +113,9 @@ Request `{"operation": "download" | "upload", "transfers": ["tus", "basic"], "re
 `transfers` and `hash_algo` may be left out; `ref` is accepted and ignored. A batch names at most 1000 objects.
 
 `200` `{"transfer": "basic" | "tus", "objects": [...], "hash_algo": "sha256"}`, one entry per requested object in order. An entry that has
-something to do carries `"authenticated": true` and `actions`, each `{"href"}` with an absolute URL; the client sends the same
-credentials to it, so no `header` is returned.
+something to do carries `actions`, each `{"href"}` with an absolute URL. `authenticated` is never sent (git-lfs would then
+transfer without credentials, which the object routes refuse), so the client sends the same credentials to each href and no
+`header` is returned.
 
 | Operation | The server has the object | The server does not |
 | --- | --- | --- |
