@@ -7,18 +7,19 @@ use pyn_core::two_factor::{
     ChallengeRecord, FactorRecord, FactorRemoval, NoticeRecord, PasskeyRecord, TwoFactorPolicy,
 };
 use pyn_core::{
-    AccessMode, AccessStore, AccountDeletion, AccountDisable, AccountEmail, AccountId, AccountKind,
+    AccessMode, AccessSessionEnd, AccessSessionReach, AccessSessionReason, AccessSessionRecord,
+    AccessStore, AccountDeletion, AccountDisable, AccountEmail, AccountId, AccountKind,
     AccountPurge, AccountRecord, AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule,
     CreationScope, CreationSubject, DeletionSchedule, EmailAdd, EmailRemove, EventDraft,
     ExternalCreate, ExternalIdentity, GrantLevel, IdentityUnlink, InvitationAccept,
     InvitationCreate, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent, MemberCreation,
-    NameReservation, NewAccount, NewExternalAccount, NewSecret, OidcFlow, OrgDeleteMark,
-    OrgInvitation, OrgMemberChange, OrgProfile, OrgRole, OrgSettings, Permission, PrimaryChange,
-    Profile, ProfileFields, ProfileVisibility, PynError, RateLimitStore, RateState,
-    RegistrationMode, RenameOutcome, RepoAccess, RepoId, RepoPolicy, Result, Role, RoleDefinitions,
-    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
-    SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord, TokenResource, UserId,
-    VerificationRecord,
+    NameReservation, NewAccount, NewExternalAccount, NewSecret, OVERFLOW_ROUTE, OidcFlow,
+    OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgProfile, OrgRole, OrgSettings, Permission,
+    PrimaryChange, Profile, ProfileFields, ProfileVisibility, PynError, RateLimitStore, RateState,
+    ReachNote, RegistrationMode, RenameOutcome, RepoAccess, RepoId, RepoPolicy, Result, Role,
+    RoleDefinitions, ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord,
+    SignupStage, SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord,
+    TokenResource, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -103,6 +104,26 @@ fn service_credential_from(row: &PgRow) -> Result<ServiceCredentialRecord> {
         rate_limit_per_minute: row
             .get::<Option<i32>, _>("rate_limit_per_minute")
             .map(|n| n as u32),
+    })
+}
+
+fn access_session_from(row: &PgRow) -> Result<AccessSessionRecord> {
+    Ok(AccessSessionRecord {
+        id: TokenId(row.get("id")),
+        secret_hash: row.get("secret_hash"),
+        admin_id: AccountId::new(row.get::<String, _>("admin_id")),
+        admin: UserId::new(row.get::<String, _>("admin")),
+        account_id: AccountId::new(row.get::<String, _>("account_id")),
+        user: UserId::new(row.get::<String, _>("username")),
+        reason: AccessSessionReason::from_str(row.get("reason"))?,
+        notes: row.get("notes"),
+        started_at: row.get("started_at"),
+        expires_at: row.get("expires_at"),
+        ended_at: row.get("ended_at"),
+        end: row
+            .get::<Option<String>, _>("ended_how")
+            .map(|h| AccessSessionEnd::from_str(&h))
+            .transpose()?,
     })
 }
 
@@ -1212,6 +1233,210 @@ impl AccessStore for PgMetadataStore {
         .await
         .map_err(db)?;
         Ok(())
+    }
+
+    async fn account_by_id(&self, id: &AccountId) -> Result<Option<AccountRecord>> {
+        let row = sqlx::query("SELECT id, account_id, kind, email, email_verified_at, signup, disabled_at, disabled_reason, is_admin, created_at, deleting_since, frozen_at, frozen_reason FROM users WHERE account_id = $1")
+            .bind(id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        row.as_ref().map(account_from).transpose()
+    }
+
+    async fn create_access_session(&self, record: AccessSessionRecord) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO access_sessions (id, secret_hash, admin_id, admin, account_id, username, reason, notes,
+                                          started_at, expires_at, ended_at, ended_how)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        )
+        .bind(&record.id.0)
+        .bind(&record.secret_hash)
+        .bind(record.admin_id.as_str())
+        .bind(record.admin.as_str())
+        .bind(record.account_id.as_str())
+        .bind(record.user.as_str())
+        .bind(record.reason.as_str())
+        .bind(&record.notes)
+        .bind(record.started_at)
+        .bind(record.expires_at)
+        .bind(record.ended_at)
+        .bind(record.end.map(AccessSessionEnd::as_str))
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn get_access_session(&self, id: &TokenId) -> Result<Option<AccessSessionRecord>> {
+        let row = sqlx::query(
+            "SELECT id, secret_hash, admin_id, admin, account_id, username, reason, notes, started_at, expires_at, ended_at, ended_how FROM access_sessions WHERE id = $1",
+        )
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(access_session_from).transpose()
+    }
+
+    async fn list_access_sessions(
+        &self,
+        account: Option<&AccountId>,
+        limit: usize,
+    ) -> Result<Vec<AccessSessionRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, secret_hash, admin_id, admin, account_id, username, reason, notes, started_at, expires_at, ended_at, ended_how FROM access_sessions WHERE ($1::text IS NULL OR account_id = $1)
+             ORDER BY started_at DESC, id DESC LIMIT $2",
+        )
+        .bind(account.map(AccountId::as_str))
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(access_session_from).collect()
+    }
+
+    async fn end_access_session(
+        &self,
+        id: &TokenId,
+        now: DateTime<Utc>,
+        end: AccessSessionEnd,
+    ) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE access_sessions SET ended_at = $2, ended_how = $3 WHERE id = $1 AND ended_at IS NULL",
+        )
+        .bind(&id.0)
+        .bind(now)
+        .bind(end.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn expire_access_sessions(&self, now: DateTime<Utc>) -> Result<Vec<AccessSessionRecord>> {
+        let rows = sqlx::query(
+            "UPDATE access_sessions SET ended_at = expires_at, ended_how = 'expired'
+             WHERE ended_at IS NULL AND expires_at <= $1 RETURNING id, secret_hash, admin_id, admin, account_id, username, reason, notes, started_at, expires_at, ended_at, ended_how",
+        )
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let mut expired = rows
+            .iter()
+            .map(access_session_from)
+            .collect::<Result<Vec<_>>>()?;
+        expired.sort_by(|a, b| {
+            a.expires_at
+                .cmp(&b.expires_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(expired)
+    }
+
+    async fn note_access_session_reach(
+        &self,
+        id: &TokenId,
+        reach: AccessSessionReach,
+        max_routes: usize,
+    ) -> Result<ReachNote> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        // Serializes the calls of one session so the bound on itemised routes holds.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1))")
+            .bind(&id.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        let bump = "UPDATE access_session_reach SET count = count + 1, last_at = $6
+                    WHERE session_id = $1 AND method = $2 AND route = $3 AND target = $4 AND refused = $5";
+        let hit = sqlx::query(bump)
+            .bind(&id.0)
+            .bind(&reach.method)
+            .bind(&reach.route)
+            .bind(&reach.target)
+            .bind(reach.refused)
+            .bind(reach.last_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        if hit.rows_affected() > 0 {
+            tx.commit().await.map_err(db)?;
+            return Ok(ReachNote::Again);
+        }
+        let itemised: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM access_session_reach WHERE session_id = $1 AND NOT (method = $2 AND route = $3)",
+        )
+        .bind(&id.0)
+        .bind(OVERFLOW_ROUTE.0)
+        .bind(OVERFLOW_ROUTE.1)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+        let (row, note) = if (itemised as usize) < max_routes {
+            (reach, ReachNote::First)
+        } else {
+            let overflow = AccessSessionReach {
+                method: OVERFLOW_ROUTE.0.into(),
+                route: OVERFLOW_ROUTE.1.into(),
+                target: String::new(),
+                refused: false,
+                ..reach
+            };
+            let hit = sqlx::query(bump)
+                .bind(&id.0)
+                .bind(&overflow.method)
+                .bind(&overflow.route)
+                .bind(&overflow.target)
+                .bind(overflow.refused)
+                .bind(overflow.last_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            if hit.rows_affected() > 0 {
+                tx.commit().await.map_err(db)?;
+                return Ok(ReachNote::Again);
+            }
+            (overflow, ReachNote::Overflowed)
+        };
+        sqlx::query(
+            "INSERT INTO access_session_reach (session_id, method, route, target, refused, count, first_at, last_at)
+             VALUES ($1, $2, $3, $4, $5, 1, $6, $6)",
+        )
+        .bind(&id.0)
+        .bind(&row.method)
+        .bind(&row.route)
+        .bind(&row.target)
+        .bind(row.refused)
+        .bind(row.first_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(note)
+    }
+
+    async fn access_session_reach(&self, id: &TokenId) -> Result<Vec<AccessSessionReach>> {
+        let rows = sqlx::query(
+            "SELECT method, route, target, refused, count, first_at, last_at
+             FROM access_session_reach WHERE session_id = $1 ORDER BY seq",
+        )
+        .bind(&id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .iter()
+            .map(|r| AccessSessionReach {
+                method: r.get("method"),
+                route: r.get("route"),
+                target: r.get("target"),
+                refused: r.get("refused"),
+                count: r.get::<i64, _>("count") as u64,
+                first_at: r.get("first_at"),
+                last_at: r.get("last_at"),
+            })
+            .collect())
     }
 
     async fn org_members(&self, org: &UserId) -> Result<Vec<(UserId, OrgRole)>> {

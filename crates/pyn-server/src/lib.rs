@@ -22,6 +22,8 @@ use utoipa::{IntoParams, OpenApi, PartialSchema, ToSchema};
 use crate::caller::{RepoCaller, RepoReader};
 
 mod access_api;
+mod access_session_api;
+pub mod access_session_sweep;
 pub mod account_deletion;
 mod admin_api;
 pub mod auth;
@@ -177,6 +179,10 @@ struct RepoAddress {
         admin_api::create_service_credential,
         admin_api::list_service_credentials,
         admin_api::revoke_service_credential,
+        access_session_api::start,
+        access_session_api::list,
+        access_session_api::end,
+        access_session_api::mine,
         limits_api::list_limits,
         limits_api::owner_limits,
         limits_api::set_owner_limits,
@@ -423,6 +429,11 @@ struct RepoAddress {
         api::CreateServiceCredentialRequest,
         api::ServiceCredentialInfo,
         api::CreatedServiceCredential,
+        api::AccessSessionReason,
+        api::StartAccessSessionRequest,
+        api::AccessSessionReach,
+        api::AccessSessionInfo,
+        api::StartedAccessSession,
         api::Visibility,
         api::RepoInfo,
         api::CreateRepoRequest,
@@ -623,6 +634,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::ServerAdminRequired
         | PynError::ServiceScopeRequired(_)
         | PynError::ServiceCredentialNotAllowed
+        | PynError::AccessSessionNotAllowed
         | PynError::NotNamespaceOwner(_)
         | PynError::NotOrgOwner(_)
         | PynError::NotOrgMember(_)
@@ -654,6 +666,7 @@ fn status_for(e: &PynError) -> StatusCode {
         PynError::ExternalProviderUnavailable(_) => StatusCode::BAD_GATEWAY,
         PynError::TokenNotFound(_)
         | PynError::ServiceCredentialNotFound(_)
+        | PynError::AccessSessionNotFound(_)
         | PynError::WebhookNotFound(_)
         | PynError::WebhookSecretNotFound { .. }
         | PynError::WebhookDeliveryNotFound { .. }

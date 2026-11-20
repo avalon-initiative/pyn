@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod access_service;
+pub mod access_session;
 pub mod account_self;
 pub mod audit;
 pub mod auth;
@@ -68,6 +69,11 @@ pub use access_service::{
 pub use access_service::{
     AdminRecovery, CreateWebhook, DeliveryPage, HOST_RECOVERY_ACTOR, IssuedSecret, TotpConfirmed,
     TotpEnrolment, TwoFactorStatus, WebhookDetail, WebhookSecretInfo, WebhookSettings,
+};
+pub use access_session::{
+    ACCESS_SESSION_MAX_ROUTES, ACCESS_SESSION_MINUTES, ACCESS_SESSION_NOTES_CHARS,
+    AccessSessionEnd, AccessSessionReach, AccessSessionReason, AccessSessionRecord,
+    AccessSessionView, OVERFLOW_ROUTE, ReachNote, session_credential,
 };
 pub use account_self::{
     AccountEmail, EmailAdd, EmailRemove, NameSpan, PrimaryChange, RenameOutcome,

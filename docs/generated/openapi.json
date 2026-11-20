@@ -240,6 +240,123 @@
         "x-pyn-reach": "admin_only"
       }
     },
+    "/v1/admin/access-sessions": {
+      "get": {
+        "tags": [
+          "access_session_api"
+        ],
+        "operationId": "list_access_sessions",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "query",
+            "description": "only sessions on this account",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "default 50, max 200",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "newest first, with the routes each called",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccessSessionInfo"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
+      }
+    },
+    "/v1/admin/access-sessions/{id}/end": {
+      "post": {
+        "tags": [
+          "access_session_api"
+        ],
+        "operationId": "end_access_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "stops working at once; ending a session that already stopped changes nothing. Any administrator may end any session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessSessionInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "access_session_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
+      }
+    },
     "/v1/admin/audit": {
       "get": {
         "tags": [
@@ -977,6 +1094,78 @@
           }
         },
         "x-pyn-reach": "service:manage_accounts"
+      }
+    },
+    "/v1/admin/users/{user}/access-sessions": {
+      "post": {
+        "tags": [
+          "access_session_api"
+        ],
+        "operationId": "start_access_session",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account to act as",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAccessSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "the secret is shown once; present it as a bearer token. The session ends by itself after an hour and is never extended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartedAccessSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: an unknown reason, `other` without notes, notes over 500 characters, or the administrator's own account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or access_session_not_allowed for an access session; account_inactive for an account that is not active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
       }
     },
     "/v1/admin/users/{user}/admin": {
@@ -2288,6 +2477,52 @@
           }
         },
         "x-pyn-reach": "any_credential"
+      }
+    },
+    "/v1/me/access-sessions": {
+      "get": {
+        "tags": [
+          "access_session_api"
+        ],
+        "operationId": "my_access_sessions",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "default 50, max 200",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "every administrator access session on the signed-in account, newest first: the notification that one started. It cannot be turned off or dismissed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccessSessionInfo"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden for a token that is not full scope; access_session_not_allowed for an access session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
       }
     },
     "/v1/me/avatar": {
@@ -10913,6 +11148,125 @@
           "public"
         ]
       },
+      "AccessSessionInfo": {
+        "type": "object",
+        "description": "An access session, as the administrator and the account both see it.",
+        "required": [
+          "id",
+          "admin",
+          "user",
+          "reason",
+          "started_at",
+          "expires_at",
+          "ended_at",
+          "state",
+          "reached"
+        ],
+        "properties": {
+          "admin": {
+            "type": "string",
+            "description": "The administrator, by the name written when the session started."
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it stopped, once it has."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The session stops working at this instant; it is never extended."
+          },
+          "id": {
+            "type": "string"
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reached": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccessSessionReach"
+            },
+            "description": "The routes it called, in the order first reached; at most 200 distinct ones are listed, the rest are counted\nunder one `(further routes)` row."
+          },
+          "reason": {
+            "$ref": "#/components/schemas/AccessSessionReason"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "state": {
+            "type": "string",
+            "description": "`active`, `ended` (by an administrator) or `expired`."
+          },
+          "user": {
+            "type": "string",
+            "description": "The account acted as, by the name written when the session started."
+          }
+        }
+      },
+      "AccessSessionReach": {
+        "type": "object",
+        "description": "A route a session called, counted. Never a body.",
+        "required": [
+          "method",
+          "route",
+          "target",
+          "refused",
+          "count",
+          "first_at",
+          "last_at"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "first_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "method": {
+            "type": "string"
+          },
+          "refused": {
+            "type": "boolean",
+            "description": "The route is not open to an access session, and the request was refused."
+          },
+          "route": {
+            "type": "string",
+            "description": "The route template, such as `/v1/repos/{owner}/{name}/files`."
+          },
+          "target": {
+            "type": "string",
+            "description": "`owner/name` for a repository route, else empty."
+          }
+        }
+      },
+      "AccessSessionReason": {
+        "type": "string",
+        "description": "Why an administrator acts as an account.",
+        "enum": [
+          "abuse_report",
+          "security_incident",
+          "support_request",
+          "legal_request",
+          "other"
+        ]
+      },
       "Account": {
         "type": "object",
         "description": "The signed-in account, independent of any repository.",
@@ -16535,6 +16889,43 @@
           },
           "user": {
             "type": "string"
+          }
+        }
+      },
+      "StartAccessSessionRequest": {
+        "type": "object",
+        "description": "Starts an access session on the account named in the path.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required for `other`, at most 500 characters. The account sees them."
+          },
+          "reason": {
+            "$ref": "#/components/schemas/AccessSessionReason",
+            "description": "One of `abuse_report`, `security_incident`, `support_request`, `legal_request` or `other`; chosen for each session."
+          }
+        }
+      },
+      "StartedAccessSession": {
+        "type": "object",
+        "description": "A started session. The secret is the credential the administrator presents as a bearer token.",
+        "required": [
+          "secret",
+          "info"
+        ],
+        "properties": {
+          "info": {
+            "$ref": "#/components/schemas/AccessSessionInfo"
+          },
+          "secret": {
+            "type": "string",
+            "description": "Shown once and never stored."
           }
         }
       },

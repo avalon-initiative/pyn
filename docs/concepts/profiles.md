@@ -34,7 +34,7 @@ default, so existing accounts and clients are unchanged. The setting is a `visib
   profile without the hidden fields and without a `visibility` object: a hidden text field is `null`, hidden `links` is
   empty, a hidden avatar has no `avatar_url` and `GET /v1/users/{user}/avatar` answers `404 avatar_not_found`. Nothing
   tells a viewer whether a field is hidden or just empty.
-- A server administrator sees what any other viewer sees: hiding is not overridden by the admin role.. A credential that is not full-scope counts as
+- A server administrator sees what any other viewer sees: hiding is not overridden by the admin role. The one way past it is an [administrator access session](access.md#administrator-access-sessions): the account is told and every use is audited. A credential that is not full-scope counts as
   another viewer, even the owner's own.
 - The lists of people below honour it too, for every viewer including the owner: a hidden display name or avatar is
   null in `PublicIdentity`.

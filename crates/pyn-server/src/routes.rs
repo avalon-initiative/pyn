@@ -18,10 +18,10 @@ use utoipa::OpenApi;
 use utoipa::openapi::extensions::Extensions;
 
 use crate::{
-    AppState, access_api, admin_api, branch_api, caller, deletion_api, freeze_api, lfs_api,
-    limits_api, merge_api, oidc_api, org_api, org_settings_api, passkeys_api, profile_api,
-    push_api, repo_api, repo_policy_api, requirements_api, self_service_api, session_api,
-    setup_api, team_api, two_factor_api, webhook_api,
+    AppState, access_api, access_session_api, admin_api, branch_api, caller, deletion_api,
+    freeze_api, lfs_api, limits_api, merge_api, oidc_api, org_api, org_settings_api, passkeys_api,
+    profile_api, push_api, repo_api, repo_policy_api, requirements_api, self_service_api,
+    session_api, setup_api, team_api, two_factor_api, webhook_api,
 };
 
 const fn need(resource: TokenResource, level: GrantLevel) -> GrantNeed {
@@ -113,9 +113,9 @@ impl Reach {
     }
 }
 
-/// The reach of the matched route, put in the request's extensions for the caller extractors.
+/// The reach and the template of the matched route, put in the request's extensions for the caller extractors.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Declared(pub(crate) Reach);
+pub(crate) struct Declared(pub(crate) Reach, pub(crate) &'static str);
 
 /// One operation of the table.
 pub struct Declaration {
@@ -143,7 +143,7 @@ where
         },
         route: MethodRouter::new()
             .on(filter, handler)
-            .layer(Extension(Declared(reach))),
+            .layer(Extension(Declared(reach, path))),
     }
 }
 
@@ -266,6 +266,26 @@ fn table() -> Vec<Entry> {
             "/v1/admin/service-credentials/{name}",
             Reach::AdminOnly,
             admin_api::revoke_service_credential,
+        ),
+        post(
+            "/v1/admin/users/{user}/access-sessions",
+            Reach::AdminOnly,
+            access_session_api::start,
+        ),
+        get(
+            "/v1/admin/access-sessions",
+            Reach::AdminOnly,
+            access_session_api::list,
+        ),
+        post(
+            "/v1/admin/access-sessions/{id}/end",
+            Reach::AdminOnly,
+            access_session_api::end,
+        ),
+        get(
+            "/v1/me/access-sessions",
+            Reach::FullScope,
+            access_session_api::mine,
         ),
         get(
             "/v1/admin/limits",
@@ -1072,6 +1092,7 @@ async fn enforce_access_mode(
             request.extensions(),
             state.trust_forwarded,
         ),
+        call: None,
     };
     match caller::admit(&state, req, reach, repo).await {
         Ok(()) => next.run(request).await,

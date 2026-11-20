@@ -3708,6 +3708,185 @@ pub async fn service_credential_restrictions_and_the_last_source_round_trip(stor
     assert_eq!(got.rate_limit_per_minute, Some(7));
 }
 
+fn access_session(id: &str, account: &AccountId, started: i64) -> crate::AccessSessionRecord {
+    crate::AccessSessionRecord {
+        id: TokenId(id.to_string()),
+        secret_hash: "00".repeat(32),
+        admin_id: AccountId::new("u-root"),
+        admin: user("root"),
+        account_id: account.clone(),
+        user: user("alice"),
+        reason: crate::AccessSessionReason::Other,
+        notes: Some("a report".into()),
+        started_at: at(started),
+        expires_at: at(started + 60),
+        ended_at: None,
+        end: None,
+    }
+}
+
+pub async fn access_sessions_round_trip_list_newest_first_and_end_once(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    let alice = store.account(&user("alice")).await.unwrap().unwrap().id;
+    assert_eq!(
+        store.account_by_id(&alice).await.unwrap().map(|a| a.user),
+        Some(user("alice"))
+    );
+    assert!(
+        store
+            .account_by_id(&AccountId::new("nobody"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    for (id, started) in [("aaaaaaaaaaaa", 1), ("bbbbbbbbbbbb", 5)] {
+        store
+            .create_access_session(access_session(id, &alice, started))
+            .await
+            .unwrap();
+    }
+    let id = TokenId("aaaaaaaaaaaa".into());
+    assert_eq!(
+        store.get_access_session(&id).await.unwrap(),
+        Some(access_session("aaaaaaaaaaaa", &alice, 1))
+    );
+    let ids: Vec<_> = store
+        .list_access_sessions(Some(&alice), 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id.0)
+        .collect();
+    assert_eq!(ids, ["bbbbbbbbbbbb", "aaaaaaaaaaaa"]);
+    assert!(
+        store
+            .list_access_sessions(Some(&AccountId::new("other")), 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .end_access_session(&id, at(10), crate::AccessSessionEnd::Ended)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .end_access_session(&id, at(11), crate::AccessSessionEnd::Ended)
+            .await
+            .unwrap(),
+        "ending twice changes nothing"
+    );
+    let got = store.get_access_session(&id).await.unwrap().unwrap();
+    assert_eq!(
+        (got.ended_at, got.end),
+        (Some(at(10)), Some(crate::AccessSessionEnd::Ended))
+    );
+}
+
+pub async fn expired_access_sessions_are_returned_once_stamped_with_their_expiry(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    let alice = store.account(&user("alice")).await.unwrap().unwrap().id;
+    for (id, started) in [("aaaaaaaaaaaa", 0), ("bbbbbbbbbbbb", 30)] {
+        store
+            .create_access_session(access_session(id, &alice, started))
+            .await
+            .unwrap();
+    }
+    assert!(
+        store
+            .expire_access_sessions(at(59))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let first = store.expire_access_sessions(at(70)).await.unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].id.0, "aaaaaaaaaaaa");
+    assert_eq!(first[0].ended_at, Some(at(60)), "stamped with the expiry");
+    assert_eq!(first[0].end, Some(crate::AccessSessionEnd::Expired));
+    assert!(
+        store
+            .expire_access_sessions(at(70))
+            .await
+            .unwrap()
+            .is_empty(),
+        "each expiry is returned once"
+    );
+    assert!(
+        !store
+            .end_access_session(&first[0].id, at(71), crate::AccessSessionEnd::Ended)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.expire_access_sessions(at(100)).await.unwrap().len(),
+        1
+    );
+}
+
+fn reach(
+    method: &str,
+    route: &str,
+    target: &str,
+    refused: bool,
+    minute: i64,
+) -> crate::AccessSessionReach {
+    crate::AccessSessionReach {
+        method: method.into(),
+        route: route.into(),
+        target: target.into(),
+        refused,
+        count: 1,
+        first_at: at(minute),
+        last_at: at(minute),
+    }
+}
+
+pub async fn access_session_reach_counts_each_route_and_bounds_the_itemised_ones(store: Access) {
+    use crate::ReachNote::*;
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    let alice = store.account(&user("alice")).await.unwrap().unwrap().id;
+    let id = TokenId("aaaaaaaaaaaa".into());
+    store
+        .create_access_session(access_session("aaaaaaaaaaaa", &alice, 0))
+        .await
+        .unwrap();
+    let note = |r| {
+        let store = store.clone();
+        let id = id.clone();
+        async move { store.note_access_session_reach(&id, r, 2).await.unwrap() }
+    };
+    assert_eq!(note(reach("GET", "/files", "a/b", false, 1)).await, First);
+    assert_eq!(note(reach("GET", "/files", "a/b", false, 2)).await, Again);
+    assert_eq!(
+        note(reach("GET", "/files", "a/b", true, 3)).await,
+        First,
+        "a refusal is its own row"
+    );
+    assert_eq!(
+        note(reach("GET", "/files", "a/c", false, 4)).await,
+        Overflowed
+    );
+    assert_eq!(note(reach("POST", "/locks", "", false, 5)).await, Again);
+    assert_eq!(note(reach("GET", "/files", "a/b", false, 6)).await, Again);
+    let rows = store.access_session_reach(&id).await.unwrap();
+    let summary: Vec<_> = rows
+        .iter()
+        .map(|r| (r.method.as_str(), r.route.as_str(), r.refused, r.count))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("GET", "/files", false, 3),
+            ("GET", "/files", true, 1),
+            ("-", "(further routes)", false, 2),
+        ]
+    );
+    assert_eq!((rows[0].first_at, rows[0].last_at), (at(1), at(6)));
+}
+
 pub async fn roles_assign_and_overwrite(store: Access) {
     let repo = RepoId::new("game");
     for u in ["alice", "bob"] {
@@ -9040,6 +9219,9 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; service_credentials_round_trip_list_oldest_first_and_keep_names_unique);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_and_touching_a_service_credential_are_recorded);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; service_credential_restrictions_and_the_last_source_round_trip);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; access_sessions_round_trip_list_newest_first_and_end_once);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; expired_access_sessions_are_returned_once_stamped_with_their_expiry);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; access_session_reach_counts_each_route_and_bounds_the_itemised_ones);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; roles_assign_and_overwrite);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; role_definitions_apply_overrides_to_defaults);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_hold_a_unique_name_and_a_password);
@@ -9270,11 +9452,13 @@ pub async fn audit_scopes_keep_repository_organization_and_server_logs_apart(sto
         AuditScope::Repo(RepoId::new("game")),
         AuditScope::Org(user("game")),
         AuditScope::Server,
+        AuditScope::Account(AccountId::new("u-abc")),
     ];
     let actions = [
         AuditAction::RepoCreated,
         AuditAction::OrgCreated,
         AuditAction::AccountApproved,
+        AuditAction::AccessSessionStarted,
     ];
     for (scope, action) in scopes.iter().zip(actions) {
         store
@@ -9291,6 +9475,7 @@ pub async fn audit_scopes_keep_repository_organization_and_server_logs_apart(sto
         vec![AuditAction::RepoCreated],
         vec![AuditAction::OrgDeleted, AuditAction::OrgCreated],
         vec![AuditAction::AccountApproved],
+        vec![AuditAction::AccessSessionStarted],
     ]) {
         let found: Vec<_> = store
             .list(
@@ -9318,6 +9503,8 @@ pub async fn audit_scopes_keep_repository_organization_and_server_logs_apart(sto
         .await
         .unwrap();
     assert!(none.is_empty());
+    let key = scopes[3].key();
+    assert_eq!(AuditScope::from_key(&key), scopes[3]);
 }
 
 pub async fn audit_events_are_hash_chained_per_scope(store: Audit) {
@@ -9325,6 +9512,7 @@ pub async fn audit_events_are_hash_chained_per_scope(store: Audit) {
         AuditScope::Repo(RepoId::new("game")),
         AuditScope::Org(user("game")),
         AuditScope::Server,
+        AuditScope::Account(AccountId::new("u-abc")),
     ];
     for minute in 0..3 {
         for scope in &scopes {

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::access_service::SERVER_AUDIT_ID;
 use crate::error::{PynError, Result};
-use crate::types::{RepoId, RepoPath, UserId};
+use crate::types::{AccountId, RepoId, RepoPath, UserId};
 
 /// The most message bytes an audit detail carries.
 pub const AUDIT_MESSAGE_BYTES: usize = 256;
@@ -114,11 +114,14 @@ pub enum AuditAction {
     WebhookSecretRotated,
     WebhookSecretRetired,
     WebhookRedelivered,
+    AccessSessionStarted,
+    AccessSessionReached,
+    AccessSessionEnded,
     Delete,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 88] = [
+    pub const ALL: [AuditAction; 91] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -206,6 +209,9 @@ impl AuditAction {
         AuditAction::WebhookSecretRotated,
         AuditAction::WebhookSecretRetired,
         AuditAction::WebhookRedelivered,
+        AuditAction::AccessSessionStarted,
+        AuditAction::AccessSessionReached,
+        AuditAction::AccessSessionEnded,
         AuditAction::Delete,
     ];
 
@@ -298,6 +304,9 @@ impl AuditAction {
             Self::WebhookSecretRotated => "webhook_secret_rotated",
             Self::WebhookSecretRetired => "webhook_secret_retired",
             Self::WebhookRedelivered => "webhook_redelivered",
+            Self::AccessSessionStarted => "access_session_started",
+            Self::AccessSessionReached => "access_session_reached",
+            Self::AccessSessionEnded => "access_session_ended",
             Self::Delete => "delete",
         }
     }
@@ -358,6 +367,8 @@ pub struct AuditQuery {
 pub enum AuditScope {
     Repo(RepoId),
     Org(UserId),
+    /// An account's security log, keyed by its stable id so a rename keeps it.
+    Account(AccountId),
     Server,
 }
 
@@ -367,6 +378,7 @@ impl AuditScope {
         match self {
             Self::Repo(id) => id.to_string(),
             Self::Org(name) => format!("@org:{name}"),
+            Self::Account(id) => format!("@account:{id}"),
             Self::Server => SERVER_AUDIT_ID.to_string(),
         }
     }
@@ -375,6 +387,9 @@ impl AuditScope {
 impl AuditScope {
     /// The scope a storage key from `key` names.
     pub fn from_key(key: &str) -> Self {
+        if let Some(id) = key.strip_prefix("@account:") {
+            return Self::Account(AccountId::new(id));
+        }
         match key.strip_prefix("@org:") {
             Some(name) => Self::Org(UserId::new(name)),
             None if key == SERVER_AUDIT_ID => Self::Server,

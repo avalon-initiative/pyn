@@ -5,7 +5,7 @@ flag (`pyn locks --json`, `pyn --json locks`) and works against a pyn server; on
 server and repository selection are unchanged (`--server`, `--token`, `--repo`, `PYN_SERVER`, `PYN_TOKEN`, `PYN_REPO`, the
 workspace and user config), so an integration inherits the user's sign-in.
 
-Supported: `whoami`, `status`, `locks` (and `--mine`, and `--watch`, which prints one document per line: see below), `lock`, `unlock` (and `--force`), `files`, `ls` and `summary`. Any other
+Supported: `whoami`, `status`, `locks` (and `--mine`, and `--watch`, which prints one document per line: see below), `lock`, `unlock` (and `--force`), `files`, `ls`, `summary` and `admin access-session start|end|list`. Any other
 command with `--json` is a usage error (exit 129). `status --json` cannot be combined with `--short`, `--porcelain` or `-b`.
 
 ## Versioning
@@ -29,10 +29,13 @@ field here means what it means there. Shapes are provisional until the first rel
 | `files` | `{"version", "files": [FileEntry]}` |
 | `ls [path]` | `{"version", "path", "entries": [TreeEntry]}` |
 | `summary` | `{"version", "summary": RepoSummary}` |
+| `admin access-session start <user> --reason ...` | `{"version", "session": AccessSessionInfo, "secret": string}` (the secret is shown once) |
+| `admin access-session end <id>` | `{"version", "session": AccessSessionInfo}` |
+| `admin access-session list` | `{"version", "sessions": [AccessSessionInfo]}` |
 
 `Lock` is `{path, owner, acquired_at, expires_at}`; `MyLock` adds `name` (the repository) next to `owner`. `FileEntry` is
 `{path, mode, revision, file_mode, lock}` with `mode` `shared` or `exclusive`, `revision` null when the path has none yet
-and `lock` null when unlocked. `TreeEntry` is `{name, path, kind, mode, last_change, lock}`. `RepoSummary` is
+and `lock` null when unlocked. `TreeEntry` is `{name, path, kind, mode, last_change, lock}`. `AccessSessionInfo` is `{id, admin, user, reason, notes, started_at, expires_at, ended_at, state, reached: [{method, route, target, refused, count, first_at, last_at}]}`. `RepoSummary` is
 `{default_branch, branch_count, files, exclusive_files, shared_files, updated_at, locks, activity}`.
 
 ### `status`

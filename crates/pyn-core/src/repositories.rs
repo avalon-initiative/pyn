@@ -594,7 +594,9 @@ impl Repositories {
         let all = self.meta.list_repos(owner).await?;
         let member: HashSet<_> = match &who.credential {
             Credential::Unrestricted => all.iter().map(|r| r.id.clone()).collect(),
-            Credential::Session => self.access.repos_of(&who.user).await?.into_iter().collect(),
+            Credential::Session | Credential::AccessSession(_) => {
+                self.access.repos_of(&who.user).await?.into_iter().collect()
+            }
             Credential::Service(_) => HashSet::new(),
             Credential::Token(t) => {
                 let owners: HashMap<_, _> = all.iter().map(|r| (&r.id, &r.owner)).collect();

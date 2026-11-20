@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::access_session::AccessSessionRecord;
 use crate::error::{PynError, Result};
 use crate::types::{AccountId, RepoId, TeamId, UserId};
 
@@ -151,6 +152,9 @@ pub enum Credential {
     Session,
     /// A trusted external service: administrative scopes only, no account and no repository roles.
     Service(ServiceCredentialRecord),
+    /// An administrator acting as the account for an hour (decision #1024): the account's roles apply to repository
+    /// work, and everything that manages the account itself, or access to it, is refused.
+    AccessSession(AccessSessionRecord),
     /// Development identity with every permission everywhere.
     Unrestricted,
 }
@@ -167,7 +171,7 @@ impl Identity {
     pub fn is_full_scope(&self) -> bool {
         match &self.credential {
             Credential::Session | Credential::Unrestricted => true,
-            Credential::Service(_) => false,
+            Credential::Service(_) | Credential::AccessSession(_) => false,
             Credential::Token(t) => t.sign_in,
         }
     }
@@ -176,7 +180,7 @@ impl Identity {
     /// repository access reach, a service in none.
     pub fn covers_repo(&self, repo: &RepoId, owner: &UserId) -> bool {
         match &self.credential {
-            Credential::Session | Credential::Unrestricted => true,
+            Credential::Session | Credential::Unrestricted | Credential::AccessSession(_) => true,
             Credential::Service(_) => false,
             Credential::Token(t) => t.covers(repo, owner),
         }
@@ -189,6 +193,11 @@ impl Identity {
                 Some(level) if *level >= need.level => Ok(()),
                 _ => Err(PynError::GrantRequired(need)),
             },
+            Credential::AccessSession(_)
+                if need.level >= GrantLevel::Write && need.resource.shapes_access() =>
+            {
+                Err(PynError::AccessSessionNotAllowed)
+            }
             _ => Ok(()),
         }
     }
@@ -211,7 +220,7 @@ impl Identity {
             {
                 self.require_full_scope()
             }
-            Credential::Service(_) => self.require_full_scope(),
+            Credential::Service(_) | Credential::AccessSession(_) => self.require_full_scope(),
             _ => Ok(()),
         }
     }
@@ -229,6 +238,7 @@ impl Identity {
         }
         match &self.credential {
             Credential::Service(_) => Err(PynError::ServiceCredentialNotAllowed),
+            Credential::AccessSession(_) => Err(PynError::AccessSessionNotAllowed),
             Credential::Token(t) => {
                 let held = t.permissions();
                 Err(PynError::Forbidden(
@@ -255,6 +265,7 @@ impl Identity {
                 Err(PynError::Forbidden(Permission::ManageRoles))
             }
             Credential::Service(_) => Err(PynError::ServiceCredentialNotAllowed),
+            Credential::AccessSession(_) => Err(PynError::AccessSessionNotAllowed),
             _ => Ok(()),
         }
     }
@@ -443,6 +454,11 @@ impl TokenResource {
             Self::AccountSshKeys => "account_ssh_keys",
             Self::AccountLocks => "account_locks",
         }
+    }
+
+    /// Whether writing this resource changes who can reach a repository or whether it exists.
+    pub fn shapes_access(self) -> bool {
+        matches!(self, Self::Members | Self::Administration)
     }
 
     pub fn scope(self) -> GrantScope {
@@ -692,7 +708,7 @@ pub mod token {
         Ok((id, secret, hash))
     }
 
-    pub(super) fn is_id_and_secret(id: &str, secret: &str) -> bool {
+    pub(crate) fn is_id_and_secret(id: &str, secret: &str) -> bool {
         let hex = |s: &str, len: usize| s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit());
         hex(id, 12) && hex(secret, 64)
     }

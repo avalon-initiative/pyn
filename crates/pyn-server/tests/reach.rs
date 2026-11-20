@@ -134,10 +134,13 @@ enum Kind {
     OtherRepo,
     ServiceOther,
     ServiceAll,
+    /// An administrator's access session acting as alice.
+    Acting,
 }
 
 impl Kind {
-    const ALL: [Kind; 9] = [
+    const ALL: [Kind; 10] = [
+        Kind::Acting,
         Kind::SignedOut,
         Kind::ServiceOther,
         Kind::ServiceAll,
@@ -172,6 +175,7 @@ fn expected(mode: AccessMode, reach: Reach, kind: Kind) -> Expect {
             | Kind::ReadOnly
             | Kind::ScopedAll
             | Kind::OtherRepo
+            | Kind::Acting
     );
     let hit = |yes: bool| if yes { Reached } else { Refused };
     match reach {
@@ -180,6 +184,7 @@ fn expected(mode: AccessMode, reach: Reach, kind: Kind) -> Expect {
         Reach::Public => hit(user),
         Reach::OptionalSignIn if mode == AccessMode::Private => hit(user),
         Reach::OptionalSignIn => hit(user || kind == Kind::SignedOut),
+        Reach::OptionalFullScope if kind == Kind::Acting => Refused,
         Reach::OptionalFullScope if mode == AccessMode::Private => {
             hit(matches!(kind, Kind::Session | Kind::Full | Kind::Admin))
         }
@@ -194,6 +199,19 @@ fn expected(mode: AccessMode, reach: Reach, kind: Kind) -> Expect {
         | Reach::FullScopeEnrolment
         | Reach::Namespace
         | Reach::OrgScoped(_)
+        | Reach::AccountScoped(_)
+        | Reach::AdminOnly
+        | Reach::Service(_)
+        | Reach::FullScopeOrService(_)
+            if kind == Kind::Acting =>
+        {
+            Refused
+        }
+        Reach::FullScope
+        | Reach::FullScopePending
+        | Reach::FullScopeEnrolment
+        | Reach::Namespace
+        | Reach::OrgScoped(_)
         | Reach::AccountScoped(_) => hit(matches!(kind, Kind::Session | Kind::Full | Kind::Admin)),
         Reach::AdminOnly => hit(kind == Kind::Admin),
         Reach::Service(_) => hit(matches!(kind, Kind::Admin | Kind::ServiceAll)),
@@ -202,6 +220,9 @@ fn expected(mode: AccessMode, reach: Reach, kind: Kind) -> Expect {
             Kind::Session | Kind::Full | Kind::Admin | Kind::ServiceAll
         )),
         Reach::RepoScoped(need) => match kind {
+            Kind::Acting => {
+                hit(!(need.level >= GrantLevel::Write && need.resource.shapes_access()))
+            }
             Kind::ReadOnly => hit(read_only_holds(need)),
             Kind::Session | Kind::Full | Kind::Admin | Kind::ScopedAll => Reached,
             _ => Refused,
@@ -246,6 +267,7 @@ impl Reply {
                         | "service_credential_not_allowed"
                         | "service_scope_required"
                         | "server_admin_required"
+                        | "access_session_not_allowed"
                 ),
                 None => lfs,
             },
@@ -424,6 +446,17 @@ async fn world_in(mode: AccessMode, kind: Kind, reach: Reach) -> (Router, Cred) 
                 .await
                 .unwrap();
             Cred::token(&token)
+        }
+        Kind::Acting => {
+            let root_id = Identity {
+                user: root,
+                credential: Credential::Unrestricted,
+            };
+            let (_, secret) = access
+                .start_access_session(&root_id, &alice, "abuse_report", None)
+                .await
+                .unwrap();
+            Cred::access_session(&secret)
         }
         Kind::ServiceOther | Kind::ServiceAll => {
             let declared = match reach {
@@ -655,7 +688,7 @@ async fn matrix(mode: AccessMode) {
                 ));
             }
             let mut expect = expected(mode, d.reach, kind);
-            if matches!(kind, Kind::ReadOnly | Kind::ScopedAll)
+            if matches!(kind, Kind::ReadOnly | Kind::ScopedAll | Kind::Acting)
                 && full_scope_in_core(&d.method, d.path)
             {
                 expect = Expect::Refused;
