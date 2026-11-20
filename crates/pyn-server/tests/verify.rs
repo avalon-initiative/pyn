@@ -79,6 +79,7 @@ async fn world() -> World {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: true,
+        updates: None,
     });
     World { app, meta }
 }

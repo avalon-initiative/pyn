@@ -68,6 +68,7 @@ async fn world(mode: AccessMode) -> World {
         }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
+        updates: None,
     };
     access.admin_for_tests(&UserId::new("root")).await.unwrap();
     let app = router(state.clone());

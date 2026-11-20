@@ -100,6 +100,7 @@ async fn world(mode: AccessMode) -> World {
         }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
+        updates: None,
     };
     let app = router(state);
     let body = json!({"username": "alice", "password": "correct horse battery"}).to_string();

@@ -92,6 +92,7 @@ async fn state_full(
         auth: Arc::new(BearerAuth { access }),
         dev_auth: dev.then(|| Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: true,
+        updates: None,
     }
 }
 

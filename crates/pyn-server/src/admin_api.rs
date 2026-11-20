@@ -334,3 +334,17 @@ pub(crate) async fn revoke_service_credential(
     s.access.revoke_service_credential(&who, &name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[utoipa::path(get, path = "/v1/admin/update", responses(
+    (status = 200, body = api::UpdateStatus, description = "whether a newer release exists, from the server's cached lookup; `enabled` is false unless the operator set PYN_UPDATE_CHECK=on"),
+    (status = 403, body = api::ErrorBody, description = "server_admin_required"),
+))]
+pub(crate) async fn update_status(
+    State(s): State<AppState>,
+    AdminCaller(_): AdminCaller,
+) -> Json<api::UpdateStatus> {
+    Json(match &s.updates {
+        Some(checker) => checker.status(),
+        None => crate::update_check::disabled(env!("CARGO_PKG_VERSION")),
+    })
+}

@@ -51,6 +51,7 @@ fn app() -> Router {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: None,
         trust_forwarded: false,
+        updates: None,
     })
 }
 
