@@ -180,6 +180,13 @@ fn expected(mode: AccessMode, reach: Reach, kind: Kind) -> Expect {
         Reach::Public => hit(user),
         Reach::OptionalSignIn if mode == AccessMode::Private => hit(user),
         Reach::OptionalSignIn => hit(user || kind == Kind::SignedOut),
+        Reach::OptionalFullScope if mode == AccessMode::Private => {
+            hit(matches!(kind, Kind::Session | Kind::Full | Kind::Admin))
+        }
+        Reach::OptionalFullScope => hit(matches!(
+            kind,
+            Kind::SignedOut | Kind::Session | Kind::Full | Kind::Admin
+        )),
         Reach::Session => hit(kind == Kind::Session),
         Reach::AnyCredential => hit(user),
         Reach::FullScope
@@ -661,7 +668,10 @@ async fn matrix(mode: AccessMode) {
                 };
                 let closed = matches!(
                     d.reach,
-                    Reach::Public | Reach::OptionalSignIn | Reach::PublicRepoRead(_)
+                    Reach::Public
+                        | Reach::OptionalSignIn
+                        | Reach::OptionalFullScope
+                        | Reach::PublicRepoRead(_)
                 );
                 if closed
                     && d.method != Method::HEAD
@@ -711,6 +721,7 @@ fn the_table_uses_every_reach_kind() {
         "open",
         "public",
         "optional_sign_in",
+        "optional_full_scope",
         "session",
         "any_credential",
         "full_scope",
@@ -1453,4 +1464,139 @@ async fn an_organization_or_account_token_reaches_exactly_what_its_grants_declar
         failures.len(),
         failures.join("\n")
     );
+}
+
+async fn json_of(app: &Router, cred: &Cred, uri: &str) -> (StatusCode, serde_json::Value) {
+    let r = send(app, cred, &Method::GET, uri, None, &[]).await;
+    let v = serde_json::from_slice(&r.body).unwrap_or(json!(null));
+    (r.status, v)
+}
+
+fn names(v: &serde_json::Value, key: &str) -> BTreeSet<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e[key].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// A repository-scoped token's answers on the routes any credential reaches stay inside its repositories.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_scoped_token_sees_only_its_repositories_on_the_shared_routes() {
+    for kind in [Kind::ScopedAll, Kind::ReadOnly] {
+        let (app, cred) = world(kind, Reach::AnyCredential).await;
+
+        let (status, repos) = json_of(&app, &cred, "/v1/repos").await;
+        assert_eq!(status, StatusCode::OK, "{kind:?}");
+        let listed = names(&repos, "name");
+        assert!(listed.contains("game"), "{kind:?}: {listed:?}");
+        assert!(!listed.contains("other"), "{kind:?}: {listed:?}");
+
+        let (status, profile) = json_of(&app, &cred, "/v1/users/alice").await;
+        assert_eq!(status, StatusCode::OK, "{kind:?}");
+        let listed = names(&profile["repositories"], "name");
+        assert!(!listed.contains("other"), "{kind:?}: {listed:?}");
+        assert!(
+            profile["organizations"].as_array().unwrap().is_empty(),
+            "{kind:?}: {profile}"
+        );
+
+        let (status, explore) = json_of(&app, &cred, "/v1/explore/repos").await;
+        assert_eq!(status, StatusCode::OK, "{kind:?}");
+        let listed = names(&explore["repos"], "name");
+        assert!(
+            !listed.contains("other") && !listed.contains("game"),
+            "{kind:?}: {listed:?}"
+        );
+
+        let (status, mine) = json_of(&app, &cred, "/v1/me").await;
+        assert_eq!(status, StatusCode::OK, "{kind:?}");
+        assert!(mine.get("has_password").is_none(), "{kind:?}: {mine}");
+
+        let (status, org) = json_of(&app, &cred, "/v1/orgs/acme").await;
+        assert_eq!(status, StatusCode::OK, "{kind:?}");
+        assert!(
+            org.get("role").is_none_or(|r| r.is_null()),
+            "{kind:?}: {org}"
+        );
+
+        let (_, locks) = json_of(&app, &cred, "/v1/me/locks").await;
+        assert!(
+            locks
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l["name"] == "game"),
+            "{kind:?}"
+        );
+    }
+}
+
+/// A scoped token of the account is not the account: what the owner hid stays hidden from it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_scoped_token_reads_its_owners_profile_as_a_stranger_does() {
+    for kind in [Kind::ScopedAll, Kind::ReadOnly] {
+        let (app, cred) = world(kind, Reach::AnyCredential).await;
+        let body = json!({"bio": "private bio", "visibility": {"bio": false}}).to_string();
+        let r = send(
+            &app,
+            &Cred::dev("alice"),
+            &Method::PUT,
+            "/v1/me/profile",
+            Some(body),
+            &[],
+        )
+        .await;
+        assert!(r.status.is_success(), "{kind:?}: {}", r.status);
+        let (status, profile) = json_of(&app, &cred, "/v1/users/alice").await;
+        assert_eq!(status, StatusCode::OK, "{kind:?}");
+        assert!(profile["profile"]["bio"].is_null(), "{kind:?}: {profile}");
+        assert!(profile["profile"].get("visibility").is_none(), "{kind:?}");
+        let (_, mine) = json_of(&app, &cred, "/v1/me").await;
+        assert!(mine["profile"]["bio"].is_null(), "{kind:?}: {mine}");
+    }
+}
+
+/// The credential-kind table of the access doc names every reach in use.
+#[test]
+fn the_access_doc_table_names_every_reach() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/concepts/access.md");
+    let doc = std::fs::read_to_string(path).unwrap();
+    let start = doc.find("### What each credential kind reaches").unwrap();
+    let end = doc[start..].find("### Repository routes").unwrap() + start;
+    let section = &doc[start..end];
+    let missing: BTreeSet<String> = declarations()
+        .iter()
+        .map(|d| d.reach.label().split(':').next().unwrap().to_string())
+        .filter(|label| !section.contains(&format!("`{label}")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "not in the access doc table: {missing:?}"
+    );
+}
+
+/// The people directory is for full-scope credentials and signed-out callers on a public server only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_people_directory_refuses_scoped_tokens_and_service_credentials() {
+    for kind in [Kind::ReadOnly, Kind::ScopedAll, Kind::OtherRepo] {
+        let (app, cred) = world_in(AccessMode::Public, kind, Reach::OptionalFullScope).await;
+        let r = send(&app, &cred, &Method::GET, "/v1/users", None, &[]).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{kind:?}");
+        assert_eq!(r.code().as_deref(), Some("forbidden"), "{kind:?}");
+    }
+    let (app, cred) = world_in(
+        AccessMode::Public,
+        Kind::ServiceAll,
+        Reach::OptionalFullScope,
+    )
+    .await;
+    let r = send(&app, &cred, &Method::GET, "/v1/users", None, &[]).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(r.code().as_deref(), Some("service_credential_not_allowed"));
+    for kind in [Kind::SignedOut, Kind::Session, Kind::Full, Kind::Admin] {
+        let (app, cred) = world_in(AccessMode::Public, kind, Reach::OptionalFullScope).await;
+        let r = send(&app, &cred, &Method::GET, "/v1/users", None, &[]).await;
+        assert_eq!(r.status, StatusCode::OK, "{kind:?}");
+    }
 }

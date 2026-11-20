@@ -3591,6 +3591,10 @@ fn service_credential(id: &str, name: &str, created: i64) -> ServiceCredentialRe
         created_at: at(created),
         revoked_at: None,
         last_used_at: None,
+        last_used_from: None,
+        expires_at: None,
+        allowed_sources: Vec::new(),
+        rate_limit_per_minute: None,
     }
 }
 
@@ -3644,7 +3648,10 @@ pub async fn revoking_and_touching_a_service_credential_are_recorded(store: Acce
         .create_service_credential(service_credential("aaaaaaaaaaaa", "provisioner", 1))
         .await
         .unwrap();
-    store.touch_service_credential(&id, at(30)).await.unwrap();
+    store
+        .touch_service_credential(&id, at(30), Some("192.0.2.9"))
+        .await
+        .unwrap();
     assert!(
         store
             .revoke_service_credential("provisioner", at(40))
@@ -3662,6 +3669,7 @@ pub async fn revoking_and_touching_a_service_credential_are_recorded(store: Acce
         (got.last_used_at, got.revoked_at),
         (Some(at(30)), Some(at(40)))
     );
+    assert_eq!(got.last_used_from.as_deref(), Some("192.0.2.9"));
     assert!(
         !store
             .revoke_service_credential("nobody", at(40))
@@ -3675,6 +3683,29 @@ pub async fn revoking_and_touching_a_service_credential_are_recorded(store: Acce
             .unwrap(),
         "a revoked credential keeps its name"
     );
+}
+
+pub async fn service_credential_restrictions_and_the_last_source_round_trip(store: Access) {
+    let mut c = service_credential("aaaaaaaaaaaa", "provisioner", 1);
+    c.expires_at = Some(at(500));
+    c.allowed_sources = vec!["10.0.0.0/8".into(), "2001:db8::/32".into()];
+    c.rate_limit_per_minute = Some(7);
+    assert!(store.create_service_credential(c.clone()).await.unwrap());
+    let id = TokenId("aaaaaaaaaaaa".into());
+    assert_eq!(store.get_service_credential(&id).await.unwrap(), Some(c));
+
+    store
+        .touch_service_credential(&id, at(30), Some("10.1.2.3"))
+        .await
+        .unwrap();
+    store
+        .touch_service_credential(&id, at(31), None)
+        .await
+        .unwrap();
+    let got = store.get_service_credential(&id).await.unwrap().unwrap();
+    assert_eq!((got.last_used_at, got.last_used_from), (Some(at(31)), None));
+    assert_eq!(got.allowed_sources, ["10.0.0.0/8", "2001:db8::/32"]);
+    assert_eq!(got.rate_limit_per_minute, Some(7));
 }
 
 pub async fn roles_assign_and_overwrite(store: Access) {
@@ -9008,6 +9039,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; touching_a_token_records_last_use);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; service_credentials_round_trip_list_oldest_first_and_keep_names_unique);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; revoking_and_touching_a_service_credential_are_recorded);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; service_credential_restrictions_and_the_last_source_round_trip);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; roles_assign_and_overwrite);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; role_definitions_apply_overrides_to_defaults);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_hold_a_unique_name_and_a_password);

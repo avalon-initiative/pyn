@@ -167,9 +167,15 @@ impl AccessService {
     ) -> Result<OrgProfile> {
         let description = validate_org_description(description)?;
         self.require_org_edit(actor, org).await?;
+        let old = self.store.org_profile(org).await?;
         self.store
             .set_org_description(org, description.as_deref(), self.clock.now())
             .await?;
+        if old.description != description {
+            let (scope, action) = (AuditScope::Org(org.clone()), AuditAction::OrgProfileUpdated);
+            self.record(scope, &actor.user, action, "description".into())
+                .await?;
+        }
         self.store.org_profile(org).await
     }
 
@@ -187,9 +193,20 @@ impl AccessService {
             Duration::hours(1),
         )
         .await?;
+        let had = self.store.org_profile(org).await?.avatar.is_some();
         self.store
             .set_org_avatar(org, avatar.as_ref(), self.clock.now())
             .await?;
+        let action = match (&avatar, had) {
+            (Some(_), _) => Some(AuditAction::OrgAvatarSet),
+            (None, true) => Some(AuditAction::OrgAvatarRemoved),
+            (None, false) => None,
+        };
+        if let Some(action) = action {
+            let scope = AuditScope::Org(org.clone());
+            self.record(scope, &actor.user, action, "avatar".into())
+                .await?;
+        }
         self.store.org_profile(org).await
     }
 

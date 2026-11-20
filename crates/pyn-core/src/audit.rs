@@ -53,6 +53,9 @@ pub enum AuditAction {
     OrgMemberAdded,
     OrgMemberRemoved,
     OrgMemberRoleChanged,
+    OrgProfileUpdated,
+    OrgAvatarSet,
+    OrgAvatarRemoved,
     OrgMemberInvited,
     OrgInvitationAccepted,
     OrgInvitationDeclined,
@@ -71,6 +74,7 @@ pub enum AuditAction {
     OrgSettingChanged,
     ServiceCredentialCreated,
     ServiceCredentialRevoked,
+    ServiceCredentialRefused,
     ServerSetupCompleted,
     ServerAccessModeChanged,
     AdminGranted,
@@ -114,7 +118,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 84] = [
+    pub const ALL: [AuditAction; 88] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -141,6 +145,9 @@ impl AuditAction {
         AuditAction::OrgMemberAdded,
         AuditAction::OrgMemberRemoved,
         AuditAction::OrgMemberRoleChanged,
+        AuditAction::OrgProfileUpdated,
+        AuditAction::OrgAvatarSet,
+        AuditAction::OrgAvatarRemoved,
         AuditAction::OrgMemberInvited,
         AuditAction::OrgInvitationAccepted,
         AuditAction::OrgInvitationDeclined,
@@ -159,6 +166,7 @@ impl AuditAction {
         AuditAction::OrgSettingChanged,
         AuditAction::ServiceCredentialCreated,
         AuditAction::ServiceCredentialRevoked,
+        AuditAction::ServiceCredentialRefused,
         AuditAction::ServerSetupCompleted,
         AuditAction::ServerAccessModeChanged,
         AuditAction::AdminGranted,
@@ -229,6 +237,9 @@ impl AuditAction {
             Self::OrgMemberAdded => "org_member_added",
             Self::OrgMemberRemoved => "org_member_removed",
             Self::OrgMemberRoleChanged => "org_member_role_changed",
+            Self::OrgProfileUpdated => "org_profile_updated",
+            Self::OrgAvatarSet => "org_avatar_set",
+            Self::OrgAvatarRemoved => "org_avatar_removed",
             Self::OrgMemberInvited => "org_member_invited",
             Self::OrgInvitationAccepted => "org_invitation_accepted",
             Self::OrgInvitationDeclined => "org_invitation_declined",
@@ -247,6 +258,7 @@ impl AuditAction {
             Self::OrgSettingChanged => "org_setting_changed",
             Self::ServiceCredentialCreated => "service_credential_created",
             Self::ServiceCredentialRevoked => "service_credential_revoked",
+            Self::ServiceCredentialRefused => "service_credential_refused",
             Self::ServerSetupCompleted => "server_setup_completed",
             Self::ServerAccessModeChanged => "server_access_mode_changed",
             Self::AdminGranted => "admin_granted",

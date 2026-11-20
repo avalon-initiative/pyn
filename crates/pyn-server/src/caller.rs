@@ -4,17 +4,34 @@
 use std::collections::HashMap;
 
 use axum::extract::{FromRequestParts, Path};
+use std::net::IpAddr;
+
 use axum::http::HeaderMap;
 use axum::http::request::Parts;
 use pyn_core::repositories::OpenRepo;
 use pyn_core::{
-    AccessMode, Credential, GrantLevel, GrantNeed, Identity, Principal, PynError, SessionRecord,
-    UserId, Visibility,
+    AccessMode, Credential, GrantLevel, GrantNeed, Identity, Principal, PynError,
+    ServiceCredentialRecord, SessionRecord, UserId, Visibility, service_credential,
 };
 use pyn_proto as api;
 
+use crate::client::source_ip;
 use crate::routes::{Declared, Reach};
 use crate::{ApiError, ApiResult, AppState, open_visible, session_api};
+
+/// What identifying a caller reads from a request: its headers and the address it came from.
+#[derive(Clone, Copy)]
+pub(crate) struct Req<'a> {
+    pub(crate) headers: &'a HeaderMap,
+    pub(crate) source: Option<IpAddr>,
+}
+
+fn req<'a>(parts: &'a Parts, state: &AppState) -> Req<'a> {
+    Req {
+        headers: &parts.headers,
+        source: source_ip(&parts.headers, &parts.extensions, state.trust_forwarded),
+    }
+}
 
 pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     let value = headers
@@ -38,38 +55,68 @@ pub(crate) fn uses_non_cookie_credential(state: &AppState, headers: &HeaderMap) 
 
 /// Names the account behind a bearer token, the dev header or a session cookie. A service credential is refused, and
 /// so is an account that must set up a second factor and has not.
-async fn identify(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
-    let who = identify_admin(state, headers).await?;
-    if matches!(who.credential, Credential::Service(_)) {
-        return Err(PynError::ServiceCredentialNotAllowed.into());
+async fn identify(state: &AppState, req: Req<'_>) -> ApiResult<Identity> {
+    let who = identify_admin(state, req).await?;
+    if let Credential::Service(c) = &who.credential {
+        return Err(refuse(
+            state,
+            c,
+            req,
+            PynError::ServiceCredentialNotAllowed,
+            "route not open to service credentials",
+        )
+        .await);
     }
     Ok(who)
 }
 
+/// Audits a refused service credential request and returns the refusal.
+async fn refuse(
+    state: &AppState,
+    credential: &ServiceCredentialRecord,
+    req: Req<'_>,
+    error: PynError,
+    reason: &str,
+) -> ApiError {
+    state
+        .access
+        .record_service_refusal(credential, reason, req.source)
+        .await;
+    error.into()
+}
+
 /// Like `identify`, but a service credential is accepted too.
-async fn identify_admin(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
-    let who = authenticate(state, headers).await?;
+async fn identify_admin(state: &AppState, req: Req<'_>) -> ApiResult<Identity> {
+    let who = authenticate(state, req).await?;
     state.access.enforce_two_factor(&who).await?;
     Ok(who)
 }
 
 /// Like `identify`, but an account that must set up a second factor is accepted: the enrolment routes need it.
-async fn identify_enrolling(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
-    let who = authenticate(state, headers).await?;
-    if matches!(who.credential, Credential::Service(_)) {
-        return Err(PynError::ServiceCredentialNotAllowed.into());
+async fn identify_enrolling(state: &AppState, req: Req<'_>) -> ApiResult<Identity> {
+    let who = authenticate(state, req).await?;
+    if let Credential::Service(c) = &who.credential {
+        return Err(refuse(
+            state,
+            c,
+            req,
+            PynError::ServiceCredentialNotAllowed,
+            "route not open to service credentials",
+        )
+        .await);
     }
     Ok(who)
 }
 
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
+async fn authenticate(state: &AppState, req: Req<'_>) -> ApiResult<Identity> {
+    let headers = req.headers;
     let dev_user = headers
         .get(api::DEV_USER_HEADER)
         .and_then(|v| v.to_str().ok());
     let who = match (bearer_token(headers), &state.dev_auth, dev_user) {
-        (Some(token), _, _) => state.auth.authenticate(token).await?,
+        (Some(token), _, _) => state.auth.authenticate(token, req.source).await?,
         (None, Some(dev), Some(user)) => {
-            let who = dev.authenticate(user).await?;
+            let who = dev.authenticate(user, req.source).await?;
             state.access.reject_org(&who.user).await?;
             who
         }
@@ -83,11 +130,11 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Identi
 }
 
 /// Like `identify`, but a request with no credential at all is anonymous; a bad one still fails.
-async fn identify_optional(state: &AppState, headers: &HeaderMap) -> ApiResult<Option<Identity>> {
-    if !sends_credential(state, headers) {
+async fn identify_optional(state: &AppState, req: Req<'_>) -> ApiResult<Option<Identity>> {
+    if !sends_credential(state, req.headers) {
         return Ok(None);
     }
-    identify(state, headers).await.map(Some)
+    identify(state, req).await.map(Some)
 }
 
 fn sends_credential(state: &AppState, headers: &HeaderMap) -> bool {
@@ -109,15 +156,16 @@ fn sends_basic(headers: &HeaderMap) -> bool {
 /// is validated by the route's own extractor, except on `Public` routes, which read none.
 pub(crate) async fn admit(
     state: &AppState,
-    headers: &HeaderMap,
+    req: Req<'_>,
     reach: Reach,
     repo: Option<String>,
 ) -> ApiResult<()> {
+    let headers = req.headers;
     if state.access.access_mode() == AccessMode::Public {
         return Ok(());
     }
     let signed_in = match reach {
-        Reach::Public => identify_optional(state, headers).await?.is_some(),
+        Reach::Public => identify_optional(state, req).await?.is_some(),
         Reach::PublicLfsRead(_) => sends_credential(state, headers) || sends_basic(headers),
         _ => sends_credential(state, headers),
     };
@@ -131,9 +179,12 @@ pub(crate) async fn admit(
 }
 
 /// Like `identify`, but an account its owner scheduled for deletion is accepted: its restore routes need it.
-async fn identify_pending_ok(state: &AppState, headers: &HeaderMap) -> ApiResult<Identity> {
+async fn identify_pending_ok(state: &AppState, req: Req<'_>) -> ApiResult<Identity> {
+    let headers = req.headers;
     let who = match (bearer_token(headers), session_api::session_cookie(headers)) {
-        (Some(token), _) => state.access.identify_allowing_pending(token).await?,
+        (Some(token), _) if !service_credential::is_service(token) => {
+            state.access.identify_allowing_pending(token).await?
+        }
         (None, Some(cookie)) => {
             state
                 .access
@@ -141,10 +192,17 @@ async fn identify_pending_ok(state: &AppState, headers: &HeaderMap) -> ApiResult
                 .await?
                 .0
         }
-        (None, None) => identify_admin(state, headers).await?,
+        _ => identify_admin(state, req).await?,
     };
-    if matches!(who.credential, Credential::Service(_)) {
-        return Err(PynError::ServiceCredentialNotAllowed.into());
+    if let Credential::Service(c) = &who.credential {
+        return Err(refuse(
+            state,
+            c,
+            req,
+            PynError::ServiceCredentialNotAllowed,
+            "route not open to service credentials",
+        )
+        .await);
     }
     Ok(who)
 }
@@ -172,7 +230,7 @@ impl FromRequestParts<AppState> for AnyCaller {
 
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
         match declared(parts) {
-            Reach::AnyCredential => Ok(Self(identify(s, &parts.headers).await?)),
+            Reach::AnyCredential => Ok(Self(identify(s, req(parts, s)).await?)),
             other => Err(mismatch("AnyCaller", other)),
         }
     }
@@ -186,8 +244,28 @@ impl FromRequestParts<AppState> for OptionalCaller {
 
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
         match declared(parts) {
-            Reach::OptionalSignIn => Ok(Self(identify_optional(s, &parts.headers).await?)),
+            Reach::OptionalSignIn => Ok(Self(identify_optional(s, req(parts, s)).await?)),
             other => Err(mismatch("OptionalCaller", other)),
+        }
+    }
+}
+
+/// The caller of a route declared `optional_full_scope`: anonymous without a credential, else full scope.
+pub(crate) struct OptionalFullScopeCaller(pub(crate) Option<Identity>);
+
+impl FromRequestParts<AppState> for OptionalFullScopeCaller {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
+        match declared(parts) {
+            Reach::OptionalFullScope => {
+                let who = identify_optional(s, req(parts, s)).await?;
+                if let Some(who) = &who {
+                    who.require_full_scope()?;
+                }
+                Ok(Self(who))
+            }
+            other => Err(mismatch("OptionalFullScopeCaller", other)),
         }
     }
 }
@@ -200,9 +278,9 @@ impl FromRequestParts<AppState> for FullScopeCaller {
 
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
         let who = match declared(parts) {
-            Reach::FullScope => identify(s, &parts.headers).await?,
-            Reach::FullScopePending => identify_pending_ok(s, &parts.headers).await?,
-            Reach::FullScopeEnrolment => identify_enrolling(s, &parts.headers).await?,
+            Reach::FullScope => identify(s, req(parts, s)).await?,
+            Reach::FullScopePending => identify_pending_ok(s, req(parts, s)).await?,
+            Reach::FullScopeEnrolment => identify_enrolling(s, req(parts, s)).await?,
             other => return Err(mismatch("FullScopeCaller", other)),
         };
         who.require_full_scope()?;
@@ -219,7 +297,7 @@ impl FromRequestParts<AppState> for NamespaceCaller {
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
         match declared(parts) {
             Reach::Namespace => {
-                let who = identify(s, &parts.headers).await?;
+                let who = identify(s, req(parts, s)).await?;
                 who.require_namespace_management()?;
                 Ok(Self(who))
             }
@@ -240,7 +318,7 @@ impl FromRequestParts<AppState> for OrgCaller {
         let Reach::OrgScoped(need) = reach else {
             return Err(mismatch("OrgCaller", reach));
         };
-        let who = identify(s, &parts.headers).await?;
+        let who = identify(s, req(parts, s)).await?;
         let Path(params) = Path::<HashMap<String, String>>::from_request_parts(parts, s)
             .await
             .map_err(|_| {
@@ -263,7 +341,7 @@ impl FromRequestParts<AppState> for AccountCaller {
         let Reach::AccountScoped(need) = declared(parts) else {
             return Err(mismatch("AccountCaller", declared(parts)));
         };
-        let who = identify(s, &parts.headers).await?;
+        let who = identify(s, req(parts, s)).await?;
         who.require_account_grant(need)
             .map_err(|_| PynError::GrantRequired(need))?;
         Ok(Self(who))
@@ -279,8 +357,13 @@ impl FromRequestParts<AppState> for AdminCaller {
     async fn from_request_parts(parts: &mut Parts, s: &AppState) -> ApiResult<Self> {
         match declared(parts) {
             Reach::AdminOnly => {
-                let who = identify_admin(s, &parts.headers).await?;
+                let r = req(parts, s);
+                let who = identify_admin(s, r).await?;
                 if !s.access.is_server_admin(&who).await? {
+                    if let Credential::Service(c) = &who.credential {
+                        let err = PynError::ServerAdminRequired;
+                        return Err(refuse(s, c, r, err, "server administrator required").await);
+                    }
                     return Err(PynError::ServerAdminRequired.into());
                 }
                 Ok(Self(who))
@@ -301,10 +384,14 @@ impl FromRequestParts<AppState> for ServiceCaller {
         let (Reach::Service(scope) | Reach::FullScopeOrService(scope)) = reach else {
             return Err(mismatch("ServiceCaller", reach));
         };
-        let who = identify_admin(s, &parts.headers).await?;
+        let r = req(parts, s);
+        let who = identify_admin(s, r).await?;
         match &who.credential {
             Credential::Service(c) if c.scopes.contains(&scope) => {}
-            Credential::Service(_) => return Err(PynError::ServiceScopeRequired(scope).into()),
+            Credential::Service(c) => {
+                let why = format!("scope {scope} required");
+                return Err(refuse(s, c, r, PynError::ServiceScopeRequired(scope), &why).await);
+            }
             _ if matches!(reach, Reach::Service(_)) => {
                 if !s.access.is_server_admin(&who).await? {
                     return Err(PynError::ServerAdminRequired.into());
@@ -362,7 +449,7 @@ impl FromRequestParts<AppState> for RepoCaller {
         let Reach::RepoScoped(need) = declared(parts) else {
             return Err(mismatch("RepoCaller", declared(parts)));
         };
-        let identity = identify(s, &parts.headers).await?;
+        let identity = identify(s, req(parts, s)).await?;
         let (owner, name) = address(parts, s).await?;
         let (repo, principal) = open_visible(s, Some(&identity), &owner, &name).await?;
         meets(Some(&identity), &repo, &principal, need)?;
@@ -405,7 +492,7 @@ impl FromRequestParts<AppState> for RepoReader {
         let Reach::PublicRepoRead(need) = declared(parts) else {
             return Err(mismatch("RepoReader", declared(parts)));
         };
-        let identity = identify_optional(s, &parts.headers).await?;
+        let identity = identify_optional(s, req(parts, s)).await?;
         let (owner, name) = address(parts, s).await?;
         let (repo, principal) = open_visible(s, identity.as_ref(), &owner, &name).await?;
         meets(identity.as_ref(), &repo, &principal, need)?;
@@ -421,6 +508,7 @@ impl FromRequestParts<AppState> for RepoReader {
 /// and read their body first.
 pub(crate) struct LfsCaller {
     state: AppState,
+    source: Option<IpAddr>,
     need: GrantNeed,
     anonymous_read: bool,
 }
@@ -435,6 +523,7 @@ impl FromRequestParts<AppState> for LfsCaller {
         };
         Ok(Self {
             state: s.clone(),
+            source: req(parts, s).source,
             need,
             anonymous_read: matches!(declared(parts), Reach::PublicLfsRead(_)),
         })
@@ -442,6 +531,13 @@ impl FromRequestParts<AppState> for LfsCaller {
 }
 
 impl LfsCaller {
+    fn req<'a>(&self, headers: &'a HeaderMap) -> Req<'a> {
+        Req {
+            headers,
+            source: self.source,
+        }
+    }
+
     /// Authenticates with `headers` and opens the named repository, meeting the declared need.
     pub(crate) async fn authorize(
         &self,
@@ -449,7 +545,7 @@ impl LfsCaller {
         owner: &str,
         name: &str,
     ) -> ApiResult<(OpenRepo, Principal, Identity)> {
-        let identity = identify(&self.state, headers).await?;
+        let identity = identify(&self.state, self.req(headers)).await?;
         let (repo, principal) = open_visible(&self.state, Some(&identity), owner, name).await?;
         meets(Some(&identity), &repo, &principal, self.need)?;
         Ok((repo, principal, identity))
@@ -468,7 +564,7 @@ impl LfsCaller {
                 "authorize_reader on a route not declared public_lfs_read".into(),
             )));
         }
-        let identity = identify_optional(&self.state, headers).await?;
+        let identity = identify_optional(&self.state, self.req(headers)).await?;
         let (repo, principal) = open_visible(&self.state, identity.as_ref(), owner, name).await?;
         meets(identity.as_ref(), &repo, &principal, self.need)?;
         Ok((repo, principal))

@@ -872,6 +872,16 @@ pub struct CreateServiceCredentialRequest {
     pub name: String,
     /// At least one of `manage_accounts`, `manage_organizations`, `manage_limits`, `manage_webhooks`, `manage_freeze`.
     pub scopes: Vec<String>,
+    /// The credential is refused from this instant on; it must be in the future. Omit for no expiry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Addresses or CIDR blocks (`192.0.2.7`, `10.0.0.0/8`, `2001:db8::/32`) the credential may be used from, at most 64.
+    /// Omit or leave empty to allow any address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_sources: Vec<String>,
+    /// Requests per minute this credential may make, at least 1. Omit to use the server default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_per_minute: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -883,6 +893,18 @@ pub struct ServiceCredentialInfo {
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// The address of the last accepted request; absent when the server could not tell.
+    #[serde(default)]
+    pub last_used_from: Option<String>,
+    /// When set and not in the future, the credential is expired: refused, but still listed.
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Empty means any address.
+    #[serde(default)]
+    pub allowed_sources: Vec<String>,
+    /// The credential's own limit in requests per minute; absent means the server default.
+    #[serde(default)]
+    pub rate_limit_per_minute: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

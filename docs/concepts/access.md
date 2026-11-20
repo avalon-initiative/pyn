@@ -415,9 +415,9 @@ existed before the setting did.
 | Mode | What a signed-out caller can read |
 | --- | --- |
 | `private` (default) | nothing, except what a visitor needs to sign in or sign up (listed below) |
-| `public` | what a signed-out caller reads on any server: public repositories (tree, files, history, fetch, Git LFS object download), public profiles and avatars, the people directory (rate limited, see [protecting open registration](#protecting-open-registration)), organization avatars and the repository explore list |
+| `public` | what a signed-out caller reads on any server: public repositories (tree, files, history, fetch, Git LFS object download), public profiles and avatars, the people directory (full-scope credentials only when signed in; rate limited, see [protecting open registration](#protecting-open-registration)), organization avatars and the repository explore list |
 
-On a `private` server every route declared `public`, `optional_sign_in`, `public_repo_read` or `public_lfs_read`
+On a `private` server every route declared `public`, `optional_sign_in`, `optional_full_scope`, `public_repo_read` or `public_lfs_read`
 (see [route reach](#route-reach)) refuses a request that carries no credential: `401 unauthenticated`, except on a
 repository route, which answers `404 repo_not_found` exactly as it does for a private repository, so it neither
 confirms nor denies that a repository exists (a `public_lfs_read` route answers `401` in the LFS error format with `WWW-Authenticate`, so git-lfs asks for credentials). That covers anonymous clone and fetch of a public repository, profiles,
@@ -570,8 +570,8 @@ On the command line (server administrators; each listing is an aligned table wit
 | `pyn account delete [--password-stdin]`, `pyn account restore`, `pyn account status` | your own account: schedule its deletion (password again), cancel it, show the deadline |
 | `pyn admin user approve <user>`, `disable <user> [--reason R]`, `enable <user>` | the account routes above |
 | `pyn admin grant <user>`, `pyn admin revoke <user>` | grant or revoke the administrator flag |
-| `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations,manage_limits,manage_webhooks,manage_freeze` | prints the secret alone on stdout; it is shown once |
-| `pyn admin service-credential list`, `revoke <name>` | columns `STATE CREATED LAST USED BY SCOPES NAME`; revoked ones are listed |
+| `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations,manage_limits,manage_webhooks,manage_freeze [--expires-at T] [--allow-from ADDR,CIDR] [--rate-limit N]` | prints the secret alone on stdout; it is shown once. The options are [hardening](#hardening-a-service-credential) |
+| `pyn admin service-credential list`, `revoke <name>` | columns `STATE CREATED LAST USED FROM BY SCOPES NAME`; `STATE` is `active`, `expired` or `revoked`, and revoked and expired ones are listed |
 | `pyn admin limits list`, `show <owner>`, `set <owner> [--repos N] [--members N] [--storage SIZE]` | optional [limits](limits.md); `default` drops an owner's own value |
 | `pyn admin freeze <owner> --reason R`, `unfreeze <owner>`, `frozen <owner>` | [freeze](limits.md#freezing-an-owner) a user or organization read-only, lift it, or show it |
 | `pyn admin webhook create`, `list`, `show`, `update`, `delete`, `rotate`, `retire` | [webhook subscriptions](webhooks.md) and their secrets |
@@ -773,13 +773,60 @@ with the actor `@service:<name>`; organization actions also appear in that organ
 
 | Route | Notes |
 | --- | --- |
-| `POST /v1/admin/service-credentials` | `{name, scopes}` gives `201 {secret, info}`; `400 invalid_request` for a bad name, no scope or an unknown scope; `409 service_credential_exists` |
-| `GET /v1/admin/service-credentials` | `[{name, scopes, created_by, created_at, revoked_at, last_used_at}]`, oldest first |
+| `POST /v1/admin/service-credentials` | `{name, scopes, expires_at?, allowed_sources?, rate_limit_per_minute?}` gives `201 {secret, info}`; `400 invalid_request` for a bad name, no scope, an unknown scope, an expiry not in the future, a malformed range or a rate limit below 1; `409 service_credential_exists` |
+| `GET /v1/admin/service-credentials` | `[{name, scopes, created_by, created_at, revoked_at, last_used_at, last_used_from, expires_at, allowed_sources, rate_limit_per_minute}]`, oldest first |
 | `DELETE /v1/admin/service-credentials/{name}` | `204`; `404 service_credential_not_found` |
 | `POST /v1/admin/orgs` | `{name, owner}` gives `201`; the owner must be an existing active user (`404 user_not_found`); `409 user_exists` |
 | `DELETE /v1/admin/orgs/{org}` | `204`; `404 org_not_found`, `409 org_not_empty` |
 
-A credential missing the scope gets `403 service_scope_required`; a revoked or unknown one gets `401 unauthenticated`.
+A credential missing the scope gets `403 service_scope_required`; a revoked, expired or unknown one gets `401 unauthenticated`.
+
+### Blast radius of each scope
+
+A service credential has no repository access and no account, but each scope is a lever over everyone on the server. Grant
+the fewest scopes a service needs, and use one credential per service so a leak is revoked on its own.
+
+| Scope | What an attacker holding the secret can do |
+| --- | --- |
+| `manage_accounts` | list every account with its email and status, approve pending accounts, and disable any account, locking its owner out until it is enabled again, or enable one. It cannot set a password, sign in as anyone, or grant the administrator flag |
+| `manage_organizations` | create an organization owned by any existing active user, which is how a squatted name or a surprise owner appears, and delete an organization that owns no repositories. It cannot touch an organization's content or members |
+| `manage_limits` | read every owner's limits and usage (the usage report names every repository and its size) and lift or lower any owner's limits, which removes a quota meant to bound storage and cost, or starves an owner |
+| `manage_freeze` | freeze any owner read-only (a denial of service against that owner's writes) or lift a freeze the operator set, and read any owner's frozen state |
+| `manage_webhooks` | create subscriptions that send events to a host the attacker picks (limited by `PYN_WEBHOOKS_ALLOWED_HOSTS` when set, and never to private addresses), read what they carry, rotate or delete subscriptions and so cut a legitimate integration off |
+
+None of the scopes reads file content, or reads or writes the server audit log and the credential list. Every use is
+logged under `@service:<name>`.
+
+### Hardening a service credential
+
+All of these are optional at creation and none changes a credential that already exists. They are checked on the server
+for every request, after the secret itself.
+
+| Control | Behaviour |
+| --- | --- |
+| Expiry | `expires_at` is an absolute RFC 3339 time that must be in the future; from that instant the credential is refused with `401 unauthenticated`. An expired credential stays in the listing with its `expires_at` (the CLI shows `expired`); it is not revoked and cannot be extended, so make a new one (rotation in place is tracked separately) |
+| Source restriction | `allowed_sources` lists addresses or CIDR blocks, IPv4 or IPv6, at most 64 (`10.0.0.0/8`, `192.0.2.7`, `2001:db8::/32`), stored in canonical form. A request from another address is refused with `401 unauthenticated`. A restricted credential is also refused when the server cannot tell the address, so it fails closed. Empty or omitted allows any address |
+| Rate limit | A credential may make `rate_limit_per_minute` requests a minute (a fixed window, like the other [rate limits](#protecting-open-registration)); the next gets `429 too_many_attempts` with `Retry-After`. Without its own value the server default applies, `PYN_RATE_SERVICE_CREDENTIAL` (default `0`: no limit). Requests refused for their source do not count, so a thief elsewhere cannot use up the real service's allowance |
+| Last use | The listing shows `last_used_at` and `last_used_from`, the address of the last accepted request (absent when the address is unknown) |
+| Audit | A refused request of an identified credential (revoked, expired, from a disallowed source, a missing scope, or a route a service credential cannot reach) adds a `service_credential_refused` entry to the server audit log with actor `@service:<name>`, the reason and the address. It never contains the secret. A wrong or unknown secret identifies nobody and is not logged, and rate-limit refusals are not logged either, so a flood cannot fill the log |
+
+The address is the one used for every other rate limit: the connection's peer, or the last `X-Forwarded-For` entry when
+`PYN_TRUST_FORWARDED_FOR=true` (only behind a proxy that sets it). Source restriction is only as good as that setting, so
+behind a proxy that does not overwrite the header it must not be relied on, and without one that the header is ignored.
+
+### Recommended deployment
+
+Keep the hosted service and the core on a private network path, so the core's API is not reachable from the internet at
+all for that traffic:
+
+- Give the service its own address range (a private network, VPN or peering link) and set `allowed_sources` to exactly
+  that range; if the core sits behind a reverse proxy, let the proxy overwrite `X-Forwarded-For` and turn on
+  `PYN_TRUST_FORWARDED_FOR`.
+- Expose `/v1/admin/*` only on that path where the proxy can route it separately, and keep TLS on the link.
+- One credential per service and per environment, only the scopes it uses, an `expires_at` (a quarter or a year) with a
+  reminder to replace it, and a `rate_limit_per_minute` a little above its real peak.
+- Store the secret in the service's secret manager, never in a repository or a log, and revoke it at the first sign of a leak.
+- Watch `service_credential_refused` entries and `last_used_from` for use from an address that is not the service's.
 
 ## Route reach
 
@@ -794,6 +841,7 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `open` | everyone, in both access modes; no credential is read |
 | `public` | everyone on a `public` server; on a `private` one a valid credential. No credential is read otherwise |
 | `optional_sign_in` | signed out or any user credential on a `public` server; any user credential on a `private` one |
+| `optional_full_scope` | like `optional_sign_in`, but a signed-in caller needs full scope: a repository-scoped or otherwise narrower token is `403 forbidden`, a service credential `403 service_credential_not_allowed` (the people directory) |
 | `session` | a web session cookie only |
 | `any_credential` | any user credential; the response narrows to the credential's scope |
 | `full_scope` | a session, a full-scope token or the development identity |
@@ -808,6 +856,34 @@ core (full scope, namespace management, administrator and service scopes, per-re
 | `repo_scoped:<resource>:<level>` | a signed-in credential holding the resource at the level in the named repository (see [repository routes](#repository-routes)) |
 | `public_repo_read:<resource>:<level>` | like `repo_scoped`, and a public repository's reads need no credential on a `public` server; a `private` one needs a credential and answers a signed-out caller `404 repo_not_found` |
 | `public_lfs_read:<resource>:<level>` | the Git LFS download routes (`POST .../info/lfs/objects/batch`, `GET .../info/lfs/objects/{oid}`): like `public_repo_read`, answered in the LFS error format, and a signed-out batch is accepted only for `operation: "download"` (an upload batch signed out is `401`); a private server answers a signed-out caller `401` |
+
+### What each credential kind reaches
+
+The same rules as a matrix, by reach and credential kind. "Session" is a web session or a sign-in token (full scope), "dev" the
+development identity (full scope, administrator on its own header). A repository-scoped token is any token limited to
+repositories or holding fine-grained grants; a service credential holds only `service` scopes. On a `private` server a signed-out
+caller is refused wherever the table says "public servers only"; a credential that is sent must be valid on every route.
+
+| Reach | Signed out | Session, full-scope token, dev | Repository-scoped token | Service credential |
+| --- | --- | --- | --- | --- |
+| `open` | yes | yes | yes | yes |
+| `public` | public servers only | yes | yes | yes, public servers only |
+| `optional_sign_in` | public servers only | yes | yes (the same public answer) | no |
+| `optional_full_scope` | public servers only | yes | no | no |
+| `session` | no | session cookie only | no | no |
+| `any_credential` | no | yes | yes, narrowed to its repositories (no profile fields beyond the public view) | no |
+| `full_scope`, `full_scope_pending`, `full_scope_enrolment`, `namespace` | no | yes | no | no |
+| `org_scoped`, `account_scoped` | no | yes | only a token owned by that organization or account holding the grant | no |
+| `admin_only` | no | administrators | no | no |
+| `service:<scope>` | no | administrators | no | holding the scope |
+| `full_scope_or_service:<scope>` | no | yes | no | holding the scope |
+| `repo_scoped` | no | yes, by role | only its repositories, holding the resource at the level | no |
+| `public_repo_read`, `public_lfs_read` | public repositories on public servers | yes, by role | its repositories by grant, other public repositories read-only | no |
+
+A repository-scoped token never reaches an account, organization or server-wide listing, another account's non-public profile
+fields, an audit log outside its repositories, or any settings route. `GET /v1/orgs/{org}` and the organization profile are the
+exceptions that answer only the public view, as do single-name profiles and avatars (an organization's name is not secret). `crates/pyn-server/tests/reach.rs` keeps this table
+and the route table in step: every reach label must appear in it.
 
 ### Repository routes
 
@@ -874,7 +950,7 @@ they were (any credential, the public view; the caller's `role` only for a full-
 locks everywhere. Accepting an organization invitation, declining one, listing one's own invitations and organizations, and creating
 an organization are not organization permissions and keep their `full_scope` and `namespace` reaches.
 
-A repository-scoped token reaches only `open`, `public`, `optional_sign_in` (the people directory among them), `any_credential` and the repository kinds; a service
+A repository-scoped token reaches only `open`, `public`, `optional_sign_in` (single-name public profiles and avatars), `any_credential` and the repository kinds; a service
 credential reaches only `open`, `public` (on a `public` server), the `service` kinds and `full_scope_or_service`. `crates/pyn-server/tests/reach.rs` checks that the table and the
 document agree and calls every route with each credential kind, so a new route with no declaration, or one that a credential
 reaches against its declaration, fails the build.

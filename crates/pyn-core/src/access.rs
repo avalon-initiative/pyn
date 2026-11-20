@@ -786,12 +786,30 @@ pub struct ServiceCredentialRecord {
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// The address of the last accepted request, when the server could tell.
+    pub last_used_from: Option<String>,
+    /// Refused from this instant on; none means it never expires.
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Canonical addresses or CIDR blocks the credential may be used from; empty means anywhere.
+    pub allowed_sources: Vec<String>,
+    /// Requests per minute; none means the server default.
+    pub rate_limit_per_minute: Option<u32>,
 }
 
 impl ServiceCredentialRecord {
     /// The audit actor. The `@` keeps it apart from every account name.
     pub fn actor(&self) -> UserId {
         UserId::new(format!("@service:{}", self.name))
+    }
+
+    pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at.is_some_and(|t| t <= now)
+    }
+
+    /// Whether a request from `source` is allowed. A restricted credential refuses an unknown address.
+    pub fn allows_source(&self, source: Option<std::net::IpAddr>) -> bool {
+        self.allowed_sources.is_empty()
+            || source.is_some_and(|ip| crate::source_range::any_contains(&self.allowed_sources, ip))
     }
 }
 

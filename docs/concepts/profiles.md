@@ -85,9 +85,9 @@ owner stays visible: freezing refuses writes, not reads.
 ## People directory
 
 `GET /v1/users` lists accounts, searchable, the way GitHub's people search is. It is readable signed out on a `public`
-[server](access.md#server-access-mode); a `private` one needs a sign-in (`401 unauthenticated`). Every valid credential
-(a session, a full-scope token, a repository-scoped or otherwise narrower token, the development identity) gets exactly
-the entries a signed-out caller gets, because an entry holds only public data. A service credential is still
+[server](access.md#server-access-mode); a `private` one needs a sign-in (`401 unauthenticated`). A session, a full-scope token or the development identity gets exactly
+the entries a signed-out caller gets, because an entry holds only public data. A repository-scoped or otherwise narrower token is
+`403 forbidden` (a scoped credential reaches only what it was granted, never a server-wide listing), a service credential is
 `403 service_credential_not_allowed`, and a credential that is sent must be valid (else `401`). Signed-out requests are
 rate limited per client address (60 per minute, `PYN_RATE_PEOPLE_CLIENT`; see
 [rate limits](access.md#protecting-open-registration)): past it `429 too_many_attempts` with `Retry-After`. Signed-in callers
@@ -142,7 +142,8 @@ at most 1 MiB, judged from the bytes) and shares their storage.
 Editing is for organization owners with a full-scope credential (`403 not_org_owner` for anyone else), and is refused while
 the organization is [frozen](limits.md#freezing-an-owner). An organization may change its avatar 30 times an hour. The
 `avatar_url` has the form `/v1/orgs/{org}/avatar?v=<hash start>`, cached like a user's. Deleting an organization deletes its
-profile. The edits are not written to the organization's audit log.
+profile. Edits are written to the organization's audit log as `org_profile_updated` (the description), `org_avatar_set` and
+`org_avatar_removed`, with the acting owner; the detail names the field, never the text or the image.
 
 Every repository response (`RepoInfo`) carries `owner_identity` when an organization owns the repository: a `PublicIdentity`
 whose `user` is the organization's name, `display_name` is null (organizations have none) and `avatar_url` is its avatar.
