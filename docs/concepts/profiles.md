@@ -142,7 +142,8 @@ at most 1 MiB, judged from the bytes) and shares their storage.
 Editing is for organization owners with a full-scope credential (`403 not_org_owner` for anyone else), and is refused while
 the organization is [frozen](limits.md#freezing-an-owner). An organization may change its avatar 30 times an hour. The
 `avatar_url` has the form `/v1/orgs/{org}/avatar?v=<hash start>`, cached like a user's. Deleting an organization deletes its
-profile. The edits are not written to the organization's audit log.
+profile. Edits are written to the organization's audit log as `org_profile_updated` (the description), `org_avatar_set` and
+`org_avatar_removed`, with the acting owner; the detail names the field, never the text or the image.
 
 Every repository response (`RepoInfo`) carries `owner_identity` when an organization owns the repository: a `PublicIdentity`
 whose `user` is the organization's name, `display_name` is null (organizations have none) and `avatar_url` is its avatar.

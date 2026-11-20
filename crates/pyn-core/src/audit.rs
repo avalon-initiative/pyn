@@ -53,6 +53,9 @@ pub enum AuditAction {
     OrgMemberAdded,
     OrgMemberRemoved,
     OrgMemberRoleChanged,
+    OrgProfileUpdated,
+    OrgAvatarSet,
+    OrgAvatarRemoved,
     OrgMemberInvited,
     OrgInvitationAccepted,
     OrgInvitationDeclined,
@@ -114,7 +117,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 84] = [
+    pub const ALL: [AuditAction; 87] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -141,6 +144,9 @@ impl AuditAction {
         AuditAction::OrgMemberAdded,
         AuditAction::OrgMemberRemoved,
         AuditAction::OrgMemberRoleChanged,
+        AuditAction::OrgProfileUpdated,
+        AuditAction::OrgAvatarSet,
+        AuditAction::OrgAvatarRemoved,
         AuditAction::OrgMemberInvited,
         AuditAction::OrgInvitationAccepted,
         AuditAction::OrgInvitationDeclined,
@@ -229,6 +235,9 @@ impl AuditAction {
             Self::OrgMemberAdded => "org_member_added",
             Self::OrgMemberRemoved => "org_member_removed",
             Self::OrgMemberRoleChanged => "org_member_role_changed",
+            Self::OrgProfileUpdated => "org_profile_updated",
+            Self::OrgAvatarSet => "org_avatar_set",
+            Self::OrgAvatarRemoved => "org_avatar_removed",
             Self::OrgMemberInvited => "org_member_invited",
             Self::OrgInvitationAccepted => "org_invitation_accepted",
             Self::OrgInvitationDeclined => "org_invitation_declined",
