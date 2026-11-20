@@ -1408,3 +1408,35 @@ async fn signed_out_directory_requests_are_rate_limited_per_client_and_signed_in
     .await;
     assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn organization_profile_edits_are_audited_by_field_without_their_content() {
+    let app = server().await;
+    let (alice, bob, _) = org_with_owner_and_member(&app).await;
+    put_org_profile(&app, &alice, json!({"description": "private words"})).await;
+    put_org_profile(&app, &alice, json!({"description": "private words"})).await;
+    put_org_profile(&app, &bob, json!({"description": "refused"})).await;
+    put_org_avatar(&app, &alice, png()).await;
+    call(&app, &alice, "DELETE", "/v1/orgs/acme/avatar", None).await;
+    call(&app, &alice, "DELETE", "/v1/orgs/acme/avatar", None).await;
+
+    let r = call(&app, &alice, "GET", "/v1/orgs/acme/audit", None).await;
+    let text = r.text();
+    let entries = r.json::<api::AuditPage>().entries;
+    let edits: Vec<_> = entries
+        .iter()
+        .rev()
+        .filter(|e| e.action.starts_with("org_profile") || e.action.starts_with("org_avatar"))
+        .map(|e| (e.action.as_str(), e.actor.as_str(), e.detail.as_str()))
+        .collect();
+    assert_eq!(
+        edits,
+        [
+            ("org_profile_updated", "alice", "description"),
+            ("org_avatar_set", "alice", "avatar"),
+            ("org_avatar_removed", "alice", "avatar"),
+        ],
+        "only real changes by an owner are recorded"
+    );
+    assert!(!text.contains("private words"), "{text}");
+}
