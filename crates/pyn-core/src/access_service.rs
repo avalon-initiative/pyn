@@ -2571,16 +2571,15 @@ impl AccessService {
             .is_ok();
         if self.store.verified_email_owner(&email).await?.is_some() {
             if mail_allowed {
-                self.email
-                    .send(EmailMessage {
-                        to: email,
-                        subject: "Someone tried to sign up with your address".into(),
-                        body: "A sign-up was started with this email address, but it already belongs to an \
-                               account on this server. If that was you, sign in instead. Otherwise, ignore \
-                               this message."
-                            .into(),
-                    })
-                    .await?;
+                self.deliver(EmailMessage {
+                    to: email,
+                    subject: "Someone tried to sign up with your address".into(),
+                    body: "A sign-up was started with this email address, but it already belongs to an \
+                           account on this server. If that was you, sign in instead. Otherwise, ignore \
+                           this message."
+                        .into(),
+                })
+                .await;
             }
             return Ok(signup);
         }
@@ -2615,17 +2614,26 @@ impl AccessService {
             "{}/verify-email?token={raw}",
             self.public_url().trim_end_matches('/')
         );
-        self.email
-            .send(EmailMessage {
-                to: email.to_string(),
-                subject: "Confirm your email address".into(),
-                body: format!(
-                    "Finish creating the account {user} by opening this link:\n\n{link}\n\n\
-                     It works once and expires in {} hours. If you did not sign up, ignore this message.",
-                    self.config.verification_ttl.num_hours()
-                ),
-            })
-            .await
+        self.deliver(EmailMessage {
+            to: email.to_string(),
+            subject: "Confirm your email address".into(),
+            body: format!(
+                "Finish creating the account {user} by opening this link:\n\n{link}\n\n\
+                 It works once and expires in {} hours. If you did not sign up, ignore this message.",
+                self.config.verification_ttl.num_hours()
+            ),
+        })
+        .await;
+        Ok(())
+    }
+
+    /// Sends one message; a failure is logged and never fails the action that asked for it.
+    pub(crate) async fn deliver(&self, message: EmailMessage) {
+        let domain = message.to.rsplit_once('@').map_or("unknown", |(_, d)| d);
+        let domain = domain.to_string();
+        if let Err(e) = self.email.send(message).await {
+            tracing::warn!(to_domain = %domain, error = %e, "email delivery failed; the person needs an administrator's help");
+        }
     }
 
     /// Confirms an address from the token in its email. The account then becomes active, or waits for

@@ -1,0 +1,19 @@
+[package]
+name = "pyn-smtp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait = "0.1.92"
+lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "aws-lc-rs", "webpki-roots"] }
+pyn-core = { version = "0.1.5", path = "../pyn-core" }
+tokio = { version = "1.53.2", features = ["time"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "io-util", "net"] }
+
+[lints]
+workspace = true

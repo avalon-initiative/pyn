@@ -146,8 +146,8 @@ the address the server uses for the account. The rules:
 
 - **Adding** an address (`POST /v1/me/emails`) leaves it **pending**: the server sends the same `{PYN_PUBLIC_URL}/verify-email?token=...`
   link as at sign-up, valid once for 24 hours, and the web page behind it calls the same `POST /v1/register/verify {token}`
-  (the answer is the account's status). Delivery goes through the same sender as sign-up, so today the link reaches the
-  log only (see [email delivery](#protecting-open-registration)). A pending address is not usable: it cannot be the primary and
+  (the answer is the account's status). Delivery goes through the same sender as sign-up (see [email delivery](#protecting-open-registration)); with no mailer
+  the link is not sent anywhere. A pending address is not usable: it cannot be the primary and
   is never written anywhere. `POST /v1/me/emails/{address}/resend` mails a fresh link (`404 email_not_found` once the address is
   verified); it counts against the same per-recipient mail limit as sign-up.
 - **Unique across accounts**, ignoring case (addresses are lowercased). An address another account holds, or has pending, is
@@ -388,9 +388,14 @@ does not lift a requirement: an account that must have a factor, past its deadli
 
 ## SSH keys
 
-SSH keys are how people sign in from the command line and, when the SSH transport arrives, how clone and push authenticate,
-as with git. Link a public key to your account with `pyn key add` (it uses `~/.ssh/id_ed25519.pub`, `id_ecdsa.pub` or
-`id_rsa.pub` if you do not name a file), see them with `pyn key list`, and remove one with `pyn key remove <id>`.
+Today a key can be linked, listed and removed, and nothing more: link a public key to your account with `pyn key add` (it uses
+`~/.ssh/id_ed25519.pub`, `id_ecdsa.pub` or `id_rsa.pub` if you do not name a file), see them with `pyn key list`, and remove one
+with `pyn key remove <id>`. Adding a key needs a fresh [second-factor](#two-factor-authentication) check when the account has a second factor. The command line signs in with
+`pyn login` (a password, and a second-factor code when the account has one) or with a token.
+
+Provisional: signing in and cloning over SSH wait for the SSH transport ([#68](https://github.com/avalon-initiative/pyn/issues/68)).
+The intent is that a linked key then authenticates people at the command line and for clone and push, as with git; until it
+ships, a linked key opens no session and authenticates no request.
 
 As on GitHub, a key belongs to exactly one account: its fingerprint, the same `SHA256:...` that `ssh-keygen -l` prints,
 is unique across the server, and linking a key that another account has is refused. Ed25519, ECDSA, security keys and RSA
@@ -481,12 +486,16 @@ repository's invitations stay `manage_users` actions in that repository.
 An open server attracts bots and password guessing, so it layers these protections. Each is server-side; clients only
 display what the server says. The mode default is `invite`.
 
-**Email verification** (`PYN_EMAIL_VERIFICATION`, on unless set to `false`). An open sign-up must carry an `email`. The
+**Email verification** (`PYN_EMAIL_VERIFICATION`; on when a [mailer](../deployment.md#email) is configured, off without one unless set explicitly, and `true` without a mailer is refused at start). With it on, an open sign-up must carry an `email`. The
 account is created `pending_verification` and cannot sign in. The server mails a link,
 `{PYN_PUBLIC_URL}/verify-email?token=...`, that works once for 24 hours; the web page behind it calls
 `POST /v1/register/verify {token}`. A pending account that never verifies, and has no live link, gives its name back after
 24 hours. Addresses are lowercased; an address can be verified by only one account. Invite-only and closed servers do not
-verify: the invitation or the administrator vouches for the person.
+verify: the invitation or the administrator vouches for the person. An open server with no mailer does not verify either: sign-up
+needs no address and the account is active at once (or waits for approval), which is how a fresh open server can create a
+second account before email is set up; `GET /v1/registration` reports `email_verification: false` then, and the server warns at start
+that sign-ups are not checked. If a message cannot be delivered the action that asked for it still succeeds and the failure is
+logged (one attempt, no retry); the person asks an administrator, who can see the log.
 
 **Approval** (`PYN_REQUIRE_APPROVAL=true`, off by default). After the address is verified (or at sign-up when verification
 is off) the account waits as `pending_approval` until a server administrator approves it.
@@ -530,10 +539,12 @@ API route ([recovery](../deployment.md#lost-administrator)).
 **Password hashing** runs on a blocking thread pool, at most `PYN_PASSWORD_HASHES` at a time (default: the number of CPUs;
 each argon2id hash uses about 19 MiB), so heavy sign-in or sign-up traffic cannot stall other requests.
 
-**Email delivery.** The only sender today (`PYN_EMAIL=log`) records that a message was queued, with the recipient's domain and
-the subject, and writes nothing else, which suffices for development and tests, not for real users. A developer who needs the
-verification link sets `PYN_EMAIL_LOG_BODIES=true`: bodies are then logged in full and the server warns at startup. The server logs a warning at startup when registration is open and verification
-is off, or on but nothing is delivered.
+**Email delivery.** `PYN_MAILER` chooses the sender: `none` (the default) sends nothing, `smtp` sends through the server in
+`PYN_SMTP_*` (STARTTLS by default; see [configuration](../configuration.md)), and `log` writes each whole message, links included, to the
+server log under `PYN-MAILER-LOG`. `log` is for testing: the links are secrets, so the server warns at every start and
+refuses it on a non-loopback `PYN_ADDR` unless `PYN_MAILER_LOG_ALLOW_NON_LOOPBACK=true`. Only the logging sender writes recipients and links to the log; the SMTP sender
+never logs a message body or the password. The server logs a warning at startup when registration is open and verification
+is off, or on but nothing is delivered (the `log` sender).
 
 ### Contract for clients
 
@@ -661,8 +672,8 @@ repository, and the role cuts off the rest at use time (contents `write` carries
 token checks in but cannot restore). A token used on a repository it does not cover (another owner's, or outside `selected`)
 is told the repository does not exist (`404 repo_not_found`); on a public one it holds `read` only. A token can rename or delete a
 repository, or create repositories and organizations, only when it is a token of its own account for all repositories and holds
-`administration` write. Tokens are meant for automation and CI; SSH keys and [OpenID Connect](external-sign-in.md) are for
-signing people in, and resolve to the same users and permissions.
+`administration` write. Tokens are meant for automation and CI; [OpenID Connect](external-sign-in.md) is for signing people in
+(and, once the SSH transport arrives, [SSH keys](#ssh-keys)), and resolves to the same users and permissions.
 
 A token for `all` repositories is also refused at creation (`403 forbidden`) when, for one of its grants, the creator holds none of the
 permissions the grant adds in any repository the owner has now: a token that could never do anything is an error, not a silent

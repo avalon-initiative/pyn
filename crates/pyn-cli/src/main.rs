@@ -1892,16 +1892,15 @@ fn run(cli: Cli) -> Result<()> {
     };
     let base = server.trim_end_matches('/').to_string();
     let token = credentials::token_for(cli.token, &base)?;
-    if token.is_some()
+    if matches!(cli.command, Command::Login { .. }) {
+        credentials::warn_cleartext(&base, true);
+    } else if token.is_some()
         || matches!(
             cli.command,
-            Command::Login { .. }
-                | Command::Setup { .. }
-                | Command::Register { .. }
-                | Command::Password { .. }
+            Command::Setup { .. } | Command::Register { .. } | Command::Password { .. }
         )
     {
-        credentials::warn_if_cleartext(&base);
+        credentials::warn_cleartext(&base, false);
     }
     let repo_name = repo.clone();
     let server_url = base.clone();
@@ -4385,6 +4384,7 @@ fn config_command(
             let settings =
                 userconfig::prompt(yours, &mut std::io::stdin().lock(), &mut std::io::stderr())?;
             settings.save(user_config)?;
+            warn_stored_server("server", &settings);
             println!("wrote {}", user_config.display());
         }
         ConfigCommand::List { global, local } => {
@@ -4422,16 +4422,24 @@ fn config_command(
                 let mut settings = yours.clone();
                 settings.set(&key, value)?;
                 settings.save(user_config)?;
+                warn_stored_server(&key, &settings);
             } else {
                 let w =
                     ws.context("not in a workspace; run `pyn clone <dir>` first, or use --global")?;
                 let mut settings = mine.clone();
                 settings.set(&key, value)?;
                 settings.save(&w.config_path())?;
+                warn_stored_server(&key, &settings);
             }
         }
     }
     Ok(())
+}
+
+fn warn_stored_server(key: &str, settings: &Settings) {
+    if let ("server", Some(server)) = (key, &settings.server) {
+        credentials::warn_cleartext(server, true);
+    }
 }
 
 /// The server ends the sign-in tokens `pyn login` issued when a password changes. If this CLI's token was one,
