@@ -92,6 +92,16 @@ warns while it is still set.
 Logs go to standard error as plain text; read them with `docker compose logs`. The port is
 published on loopback by default (`PYN_PUBLISH` in `.env`), so only a reverse proxy on the host reaches it.
 
+### Email
+
+pyn sends email only for address verification on an open-registration server. It is optional, and nothing is sent unless you configure it:
+
+- **none** (default): no mailer. Open sign-up then needs no email address and does no verification, so a second person can create an account at once. Pair open registration with `PYN_REQUIRE_APPROVAL=true` if you want a gate.
+- **log** (`PYN_MAILER=log`): for trying things out. Each message, with its verification link, is written to the server log (`docker compose logs server | grep -A8 PYN-MAILER-LOG`); nothing is delivered. The links are secrets, so the server warns at start and refuses it on a non-loopback `PYN_ADDR`. The container listens on `0.0.0.0`, so under Compose it also needs `PYN_MAILER_LOG_ALLOW_NON_LOOPBACK=true`, which is safe only while the port stays published on loopback and nobody else reads the log.
+- **smtp** (`PYN_MAILER=smtp`): real delivery through any SMTP server you can use, such as your provider's. Set `PYN_SMTP_HOST`, `PYN_SMTP_FROM`, usually `PYN_SMTP_USER` and `PYN_SMTP_PASSWORD`, and optionally `PYN_SMTP_PORT` (587) and `PYN_SMTP_TLS` (`starttls`, `tls` or `none`). Verification turns on by itself; the settings are in [configuration](configuration.md) and `deploy/.env.example`.
+
+A message that cannot be sent never blocks the sign-up that asked for it; the failure is logged (`email delivery failed`, the recipient's domain and the reason, never the password) and the person asks an administrator.
+
 ### The web app
 
 The web app is its own image, `ghcr.io/avalon-initiative/pyn-web:<tag>`, versioned and released on its own, separately from `pyn-core` (its tags are its own). It serves the
