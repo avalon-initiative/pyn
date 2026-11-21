@@ -29,6 +29,10 @@ It asks:
    configuration ships in the image.
 3. **Which release**: the latest release (the default), or a specific
    version you type: a full tag such as `v0.1.2-alpha`, or a bare `0.1.2`, which maps to the matching release tag. The entry is checked against the published releases, and the resolved tag is shown before anything starts.
+   For a web app it then picks the pyn-web release, which is versioned separately: by default the newest one that works with the chosen server
+   (each web release declares the oldest server it needs, in its `min-server.json` and its release notes; a release that declares none counts as compatible), and the plan names it next to the server's, for example
+   `pyn-web v0.1.8 (the newest web release that works with server 0.1.5)`. You can choose another one (a prompt like the server's, or `--web-version`); if the pair falls below that release's declared minimum the script warns that it may not work and asks to continue
+   (`--yes` continues with the warning). If the compatibility information cannot be read it uses the latest web release and says so.
 4. **Where it lives**: for Docker, the folder holding the Compose file and `.env` (default: the folder you ran the script
    from; if that is `/`, your home folder or a source checkout it warns and uses a `pyn` subfolder instead); for native,
    the env file (default `/etc/pyn/pyn.env`, or a `.env` in the current folder that already holds `PYN_DATABASE_URL` or
@@ -59,6 +63,7 @@ sudo bash install.sh --yes --shape server --method docker --version 0.1.2 --publ
 | `--shape full\|server\|web\|cli` | What to install (`full`) |
 | `--method docker\|native` | How to run it (`docker`; `cli` is always a binary) |
 | `--version TAG` | A full tag or bare version (the latest release) |
+| `--web-version TAG` | The pyn-web release, as a full tag or bare version (the newest one that works with the chosen server; warns below a release's declared minimum server) |
 | `--dir DIR` | Where the Docker files live (the current folder; `./pyn` inside `/`, home or a checkout) |
 | `--env-file PATH` | An existing env file to reuse: copied to `DIR/.env` (Docker; an existing `.env` is backed up), or referenced by the unit's `EnvironmentFile` (native) |
 | `--reuse use\|refresh\|fresh` | What to do with an existing install (`refresh`) |
@@ -145,7 +150,7 @@ curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/.
 ```
 
 Fill in the generated secrets and the two versions (a version is the tag without its suffix, as in step 1). The server and the
-web app are versioned separately, so `PYN_WEB_VERSION` is the latest release of [pyn-web](https://github.com/avalon-initiative/pyn-web/releases),
+web app are versioned separately, so `PYN_WEB_VERSION` is a release of [pyn-web](https://github.com/avalon-initiative/pyn-web/releases) (the installer picks the newest one that works with the server),
 which need not equal the server's (see [compatibility](deployment.md#compatibility)):
 
 ```bash
@@ -260,6 +265,13 @@ Point the command at the server once, then sign in. The web app's address works:
 pyn config set --global server http://192.168.1.20:8080     # your PYN_PUBLIC_URL
 pyn login <your user name>
 ```
+
+An `http://` address for a host other than this computer sends passwords and tokens in clear text, so `pyn login` and
+`pyn config set server` print a warning about it. It is shown once for each address (and again at the next login),
+never for `localhost`, `127.*` or `[::1]`, and later commands stay quiet. Put TLS in front of the server before
+using it beyond a trusted network (see [Reverse proxy and TLS](deployment.md#reverse-proxy-and-tls)). The address is
+stored in its normal form (`http:192.168.1.20:8080` becomes `http://192.168.1.20:8080`) and one that is not an
+`http://` or `https://` address is refused.
 
 Create a repository and take your first lock. A new repository treats every path as exclusive, so a file needs a lock
 before it can be changed:

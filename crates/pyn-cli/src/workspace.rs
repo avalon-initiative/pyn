@@ -70,7 +70,7 @@ impl Settings {
 
     pub fn set(&mut self, key: &str, value: String) -> Result<()> {
         match key {
-            "server" => self.server = Some(value),
+            "server" => self.server = Some(crate::address::normalize_server(&value)?),
             "user" => self.user = Some(value),
             "repo" => {
                 crate::address::split_repo(&value)?;

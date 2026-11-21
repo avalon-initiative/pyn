@@ -11,6 +11,24 @@ pub struct Source {
     pub repo: String,
 }
 
+/// A server address in its normal form: `http(s)://host[:port][/prefix]` with no trailing slash. A missing `//`
+/// after the scheme is repaired; anything that is not an http(s) address is refused.
+pub fn normalize_server(text: &str) -> Result<String> {
+    let url = reqwest::Url::parse(text.trim()).ok().filter(|u| {
+        matches!(u.scheme(), "http" | "https")
+            && u.host_str().is_some()
+            && u.query().is_none()
+            && u.fragment().is_none()
+            && u.username().is_empty()
+    });
+    match url {
+        Some(url) => Ok(url.as_str().trim_end_matches('/').to_string()),
+        None => bail!(
+            "{text:?} is not a server address; use http://host[:port] or https://host[:port], for example https://pyn.example.com"
+        ),
+    }
+}
+
 /// Splits `owner/name`, refusing anything else.
 pub fn split_repo(text: &str) -> Result<(&str, &str)> {
     match text.split_once('/') {
@@ -104,6 +122,30 @@ fn is_local_repository(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_addresses_are_normalised_or_refused() {
+        for (given, want) in [
+            ("http://h:1", "http://h:1"),
+            ("http:192.168.7.239:8080", "http://192.168.7.239:8080"),
+            ("https://Example.com/", "https://example.com"),
+            ("  http://h/pyn/ ", "http://h/pyn"),
+        ] {
+            assert_eq!(normalize_server(given).unwrap(), want, "{given}");
+        }
+        for bad in [
+            "",
+            "example.com",
+            "host:8080",
+            "not a url",
+            "ftp://h",
+            "http://",
+            "http://u:p@h",
+        ] {
+            let e = normalize_server(bad).unwrap_err().to_string();
+            assert!(e.contains("http://host"), "{bad}: {e}");
+        }
+    }
 
     #[test]
     fn a_source_is_a_server_and_a_repository_or_just_a_repository() {

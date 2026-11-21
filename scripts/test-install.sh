@@ -42,7 +42,7 @@ for t in $tags v1.0.0; do
   (cd "$d" && sha256sum pyn-*.tar.gz >SHA256SUMS)
 done
 sed -i 's/^[0-9a-f]\{64\}/0000000000000000000000000000000000000000000000000000000000000000/' "$fix/dl/v0.1.0-alpha/SHA256SUMS"
-for ref in v1.0.0 v0.1.2-alpha v0.1.1-alpha main; do
+for ref in v1.0.0 v0.1.2-alpha v0.1.1-alpha v0.1.0-alpha main; do
   mkdir -p "$fix/raw/$ref"
   for f in docker-compose.yml docker-compose.server.yml docker-compose.web.yml; do
     printf '# %s at %s\nservices:\n  server:\n    image: ghcr.io/avalon-initiative/pyn-core:x\n%s' "$f" "$ref" \
@@ -53,6 +53,7 @@ done
 printf '# web only\nservices:\n  web:\n    image: ghcr.io/avalon-initiative/pyn-web:x\n' >"$fix/raw/main/docker-compose.web.yml"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.2-alpha/"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.1-alpha/"
+cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.0-alpha/"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v1.0.0/"
 cat >"$work/env.example" <<'EOF'
 PYN_SERVER_VERSION=
@@ -68,10 +69,20 @@ cp "$work/env.example" "$fix/raw/main/.env.server.example"
 printf 'PYN_WEB_VERSION=\nPYN_API_URL=\n# PYN_WEB_PUBLISH=127.0.0.1:8080\n' >"$fix/raw/main/.env.web.example"
 cp "$work/env.example" "$fix/raw/v0.1.2-alpha/.env.example"
 cp "$work/env.example" "$fix/raw/v0.1.1-alpha/.env.example"
+cp "$work/env.example" "$fix/raw/v0.1.0-alpha/.env.example"
 cp "$work/env.example" "$fix/raw/v1.0.0/.env.example"
 printf '{\n  "tag_name": "v0.1.2-alpha"\n}\n' >"$fix/latest.json"
 printf '{\n  "tag_name": "v1.0.0"\n}\n' >"$fix/latest-v1.json"
 printf '{\n  "tag_name": "v0.3.0-alpha"\n}\n' >"$fix/latest-web.json"
+{
+  echo '['
+  sep=''
+  for t in v0.3.0-alpha v0.2.0-alpha v0.1.0-alpha; do printf '%s  {\n    "tag_name": "%s"\n  }' "$sep" "$t"; sep=$',\n'; done
+  echo; echo ']'
+} >"$fix/web-releases.json"
+mkdir -p "$fix/webmin"
+printf '{\n  "min_server": "0.1.2"\n}\n' >"$fix/webmin/v0.3.0-alpha"
+printf '{\n  "min_server": "0.1.1"\n}\n' >"$fix/webmin/v0.2.0-alpha"
 printf 'ID=ubuntu\nID_LIKE=debian\n' >"$fix/os-debian"
 printf 'ID=fedora\n' >"$fix/os-fedora"
 printf '#!/bin/sh\necho docker-installer >>"$LOG"\ncp "$FIX/stub-docker" "$BIN/docker"\n' >"$fix/get-docker.sh"
@@ -109,6 +120,8 @@ if [ -n "${FAKE_NET_DOWN:-}" ]; then [ -z "$wfmt" ] || printf 000; exit 6; fi
 code=200
 case $url in
   *api.github.com/repos/*/pyn-web/releases/latest) f=$FIX/latest-web.json ;;
+  *api.github.com/repos/*/pyn-web/releases?per_page=100) f=$FIX/web-releases.json; [ -z "${FAKE_WEBLIST_DOWN:-}" ] || f=/nonexistent ;;
+  *raw.githubusercontent.com/avalon-initiative/pyn-web/*/min-server.json) f=$FIX/webmin/$(basename "$(dirname "$url")"); [ -z "${FAKE_WEBMIN_DOWN:-}" ] || code=500 ;;
   *api.github.com*releases/latest) f=$FIX/latest.json; [ -z "${FAKE_LATEST_V1:-}" ] || f=$FIX/latest-v1.json; [ -z "${FAKE_NO_RELEASES:-}" ] || f=/nonexistent; code=${FAKE_API_CODE:-200} ;;
   *api.github.com*per_page=100) f=$FIX/releases.json; code=${FAKE_API_CODE:-200} ;;
   *github.com/*/releases/download/*) f=$FIX/dl/$(basename "$(dirname "$url")")/$(basename "$url") ;;
@@ -258,8 +271,12 @@ expect "default version is the newest release" ok_rc
 expect "newest: image tag drops the title suffix" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.2"
 expect "newest: Compose file comes from the newest tag" has "$c/log" "raw.githubusercontent.com/avalon-initiative/pyn/v0.1.2-alpha/deploy/docker-compose.yml"
 expect "newest: the web image is its own latest release, not the server's" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.3.0"
-expect "newest: asks the pyn-web latest-release endpoint" has "$c/log" "repos/avalon-initiative/pyn-web/releases/latest"
+expect "newest: asks the pyn-web release list" has "$c/log" "repos/avalon-initiative/pyn-web/releases?per_page=100"
 expect "newest: asks the latest-release endpoint" has "$c/log" "releases/latest"
+expect "default web pick: the plan names the web release next to the server's" has "$c/out" "plan: full via docker, release v0.1.2-alpha (image v0.1.2), pyn-web v0.3.0"
+expect "default web pick: says why" has "$c/out" "pyn-web v0.3.0 (the newest web release that works with server 0.1.2)"
+plan_line=$(grep -n 'plan:' "$c/out" | head -n1 | cut -d: -f1); web_line=$(grep -n 'newest web release' "$c/out" | head -n1 | cut -d: -f1)
+expect "default web pick: resolved before the plan" test "$web_line" -lt "$plan_line"
 
 # Docker writes under --dir, so give every Docker case its own directory.
 dock() { # dock NAME flags...: run a Docker install into $c/pyn
@@ -283,6 +300,38 @@ dock vw4 --shape server
 expect "a server-only install writes no web version" lacks "$c/pyn/.env" "PYN_WEB_VERSION=v"
 dock vw5 --shape web --api-url https://pyn.example.com
 expect "a web-only install writes only the web version" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.3.0"
+dock wc1 --shape full --version v0.1.1-alpha
+expect "an older server picks the older web release" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.2.0"
+expect "older server: says why" has "$c/out" "pyn-web v0.2.0 (the newest web release that works with server 0.1.1)"
+expect "older server: no warning" lacks "$c/out" "may not work"
+dock wc2 --shape full --version v0.1.0-alpha
+expect "a server older than every declared minimum picks the release with none" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.1.0"
+dock wc3 --shape full --version v0.1.1-alpha --web-version 0.3.0
+expect "below the declared minimum: --yes accepts" ok_rc
+expect "below the declared minimum: warns" has "$c/out" "needs a server at 0.1.2 or newer, and this is server 0.1.1"
+expect "below the declared minimum: the chosen release is used" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.3.0"
+dock wc4 --shape full --version v0.1.2-alpha --web-version v0.2.0-alpha
+expect "an override inside the minimum has no warning" lacks "$c/out" "may not work"
+expect "an override inside the minimum is used" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.2.0"
+case_start wc5; extra_env=(FAKE_WEBMIN_DOWN=1); run_install --dir "$c/pyn" --yes --shape full
+expect "unreadable metadata falls back to the latest release" ok_rc
+expect "fallback: uses the latest" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.3.0"
+expect "fallback: says so" has "$c/out" "the compatibility information could not be read"
+case_start wc6; extra_env=(FAKE_WEBLIST_DOWN=1); run_install --dir "$c/pyn" --yes --shape full
+expect "an unreadable release list falls back to the latest release" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.3.0"
+expect "list fallback: says so" has "$c/out" "the compatibility information could not be read"
+case_start wc7; extra_env=(); tty_file="$c/answers"
+printf 'full\ndocker\n%s\n\n\ntag\n0.3.0\n\n\nn\n' "$c/pyn" >"$tty_file"
+run_install --version v0.1.1-alpha
+expect "interactive: the menu offers the latest compatible release" has "$c/out" "Latest compatible release (v0.2.0-alpha)"
+expect "interactive: below the minimum asks, and no stops the install" bad_rc
+expect "interactive: declined, nothing is written" test ! -e "$c/pyn/.env"
+case_start wc8; extra_env=(); tty_file="$c/answers"
+printf 'full\ndocker\n%s\n\n\n\n\n\n' "$c/pyn" >"$tty_file"
+run_install --version v0.1.1-alpha
+expect "interactive: Enter takes the latest compatible release" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.2.0"
+dock wc9 --shape web --api-url https://pyn.example.com
+expect "web only: names the minimum server instead of comparing" has "$c/out" "needs a server at 0.1.2 or newer"
 dock v3 --shape full --version 0.1.1
 expect "bare version is accepted" ok_rc
 expect "bare version maps to the release tag" has "$c/log" "/v0.1.1-alpha/deploy/docker-compose.yml"
@@ -317,7 +366,7 @@ expect "server publish is opened for a non-local address" has "$c/pyn/.env" "PYN
 
 case_start p2
 tty_file="$c/answers"
-printf 'full\ndocker\n%s\n\n2\n0.1.1\nhttps://pyn.example.com\ny\n' "$c/pyn" >"$tty_file"
+printf 'full\ndocker\n%s\n\n2\n0.1.1\n\nhttps://pyn.example.com\ny\n' "$c/pyn" >"$tty_file"
 run_install
 expect "typed names, bare version and URL are taken" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
 expect "typed bare version selects its tag" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.1"
@@ -477,7 +526,7 @@ expect "full with native offers server-only, interactively" ok_rc
 expect "full with native explains Docker-only" has "$out" "Docker-only"
 expect "and installs the native server" test -x "$c/root/usr/local/bin/pyn-server"
 case_start w3; tty_file="$c/answers"
-printf 'web\nnative\n\n%s\n\n\nhttps://pyn.example.com\n\n\n' "$c/pyn" >"$tty_file"
+printf 'web\nnative\n\n%s\n\n\n\nhttps://pyn.example.com\n\n\n' "$c/pyn" >"$tty_file"
 run_install
 expect "web with native can switch to Docker interactively" has "$c/pyn/.env" "PYN_API_URL=https://pyn.example.com"
 
@@ -630,20 +679,20 @@ expect "fresh: writes a new env without the custom setting" lacks "$c/pyn/.env" 
 expect "fresh: generates new secrets" bash -c '! grep -qF "POSTGRES_PASSWORD=$0" "$1"' "$pw0" "$c/pyn/.env"
 expect "fresh: warns about the database volume" has "$c/out" "keeps the old password"
 seed e4
-tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n1\n\n' "$c/pyn" >"$tty_file"
+tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n\n1\n\n' "$c/pyn" >"$tty_file"
 run_install
 expect "prompted: asks what to do with the existing folder" has "$out" "An install already exists in $c/pyn"
 expect "prompted: offers all three answers" has "$out" "3) Start fresh"
 expect "prompted: use leaves the env untouched" cmp -s "$c/env.before" "$c/pyn/.env"
 expect "prompted: the address is taken from the existing env" lacks "$out" "Address people will use"
 seed e5
-tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n2\n\nn\n' "$c/pyn" >"$tty_file"
+tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n\n2\n\nn\n' "$c/pyn" >"$tty_file"
 run_install
 expect "prompted: refresh asks before moving PYN_SERVER_VERSION" has "$out" "Move PYN_SERVER_VERSION in $c/pyn/.env from v0.1.1 to v0.1.2"
 expect "prompted: declining keeps the old version" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.1"
 expect "prompted: declining is stated" has "$out" "PYN_SERVER_VERSION stays v0.1.1"
 seed e6
-tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n2\n\n\n' "$c/pyn" >"$tty_file"
+tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n\n2\n\n\n' "$c/pyn" >"$tty_file"
 run_install
 expect "prompted: accepting moves PYN_SERVER_VERSION" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.2"
 expect "prompted: the env is still the user's" has "$c/pyn/.env" "PYN_REGISTRATION=closed"
@@ -743,7 +792,7 @@ expect "default folder is the current directory" ok_rc
 expect "Compose file lands in the current directory" test -f "$c/cwd/docker-compose.yml"
 expect ".env lands in the current directory" test -f "$c/cwd/.env"
 case_start w_cwd2; extra_env=(); tty_file="$c/answers"
-printf 'full\ndocker\n\n\n\n\n' >"$tty_file"
+printf 'full\ndocker\n\n\n\n\n\n' >"$tty_file"
 run_install
 expect "the prompt shows the current directory as the default" has "$out" "Where should the deployment live (Compose and env files)? [$c/cwd]:"
 expect "accepting the default installs there" test -f "$c/cwd/.env"
@@ -849,7 +898,7 @@ run_install --yes --shape full --dir .
 expect "--dir . inside a checkout is guarded after resolving" test -f "$c/checkout/pyn/.env"
 expect "the guard says so" has "$out" "using $c/checkout/pyn instead"
 case_start q14; extra_env=(); tty_file="$c/answers"
-printf 'full\ndocker\n~/typed/dir\n\n\n\n' >"$tty_file"
+printf 'full\ndocker\n~/typed/dir\n\n\n\n\n' >"$tty_file"
 run_install
 expect "~ typed at the folder prompt is expanded" test -f "$c/home/typed/dir/.env"
 expect "~ typed at the prompt creates no folder named ~" bash -c '[ ! -e "$0/~" ]' "$c/cwd"

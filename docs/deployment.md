@@ -141,6 +141,11 @@ balancer). Requirements:
   request buffering for object routes.
 - Redirect HTTP to HTTPS and send HSTS from the proxy.
 
+Until TLS is in place, the CLI warns about the clear-text address: at `pyn login` and when `pyn config set server`
+stores an `http://` address for a host that is not loopback. The warning is shown once per address (stored in the user's
+configuration directory, next to the saved sign-ins) and again after a new login or a changed address; later commands
+print nothing extra, and `--json` output is unaffected.
+
 A minimal Caddy site, which handles certificates and the forwarded headers itself:
 
 ```
@@ -161,7 +166,9 @@ The server writes logs to standard output and does not know where they go. For a
 (one object per line; the fields are in [log fields](configuration.md#log-fields)), and optionally `PYN_AUDIT_LOG=true`
 to put audit events in the same stream. The access line has the request id, route template, status, latency and the
 signed-in account, so "who did what, and which request" is one search. Set `RUST_LOG=info` or finer: the `access` and
-`audit` lines are `info`.
+`audit` lines are `info`. Requests to `/healthz` (the compose health check calls it every few seconds) are never
+logged. To quiet the log further, set `PYN_ACCESS_LOG=false` to drop the access lines, or raise the `RUST_LOG` level
+(`warn`) to drop every `info` line; the access log stays on by default.
 
 The compose files under `deploy/` keep Docker's `json-file` driver and rotate it: each container keeps at most 5 files of
 10 MB, so the logs of a long-running server cannot fill the disk. Change `max-size` and `max-file` in the `x-logging` block at

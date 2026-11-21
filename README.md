@@ -47,7 +47,7 @@ An early, local proof of concept. What works today: a server hosting many reposi
 ([`pyn-web`](https://github.com/avalon-initiative/pyn-web)), shared and exclusive paths, leased locks, atomic
 multi-path commits, per-path and per-commit history, branches and merge (three-way text merge, whole-file conflicts for
 binaries, `pyn merge --abort`), diff and show, restore, chunked content storage, accounts,
-organizations and teams, roles, API tokens and SSH keys, optional OpenID Connect sign-in, and an audit log.
+organizations and teams, roles, API tokens, linking SSH keys (signing in over SSH waits for the SSH transport), optional OpenID Connect sign-in, and an audit log.
 
 Remotes (`push`, `pull`, `fetch`), tags, stash, per-branch policy and git import and export have landed too. A shared file's
 commit must be based on the revision its branch has, so a stale edit is rejected rather than silently overwriting someone
