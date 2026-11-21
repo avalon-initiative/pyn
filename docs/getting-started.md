@@ -285,6 +285,8 @@ the code. They install `pyn`, point it at the same server and run `pyn register 
 `pyn login <name>` and `pyn clone <you>/demo`. Two people locking the same exclusive file is the quickest way to see
 pyn work: the second gets `lock_held` until the first pushes or runs `pyn unlock`.
 
+With registration set to **open** and no [mailer](deployment.md#email), the second person just runs `pyn register <name>` (no email, no verification). Once you configure a mailer, sign-up asks for an address and mails a link to confirm it.
+
 ## Next
 
 - [Deployment](deployment.md): TLS and a reverse proxy, upgrades, backups and restore, several copies.

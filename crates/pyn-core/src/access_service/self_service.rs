@@ -175,17 +175,17 @@ impl AccessService {
             "{}/verify-email?token={raw}",
             self.public_url().trim_end_matches('/')
         );
-        self.email
-            .send(EmailMessage {
-                to: address.to_string(),
-                subject: "Confirm your email address".into(),
-                body: format!(
-                    "Confirm this address for the account {user} by opening this link:\n\n{link}\n\n\
-                     It works once and expires in {} hours. If you did not ask for it, ignore this message.",
-                    self.config.verification_ttl.num_hours()
-                ),
-            })
-            .await
+        self.deliver(EmailMessage {
+            to: address.to_string(),
+            subject: "Confirm your email address".into(),
+            body: format!(
+                "Confirm this address for the account {user} by opening this link:\n\n{link}\n\n\
+                 It works once and expires in {} hours. If you did not ask for it, ignore this message.",
+                self.config.verification_ttl.num_hours()
+            ),
+        })
+        .await;
+        Ok(())
     }
 
     /// Whether `name` can be given to an account; `NameReserved` while a purged account's name is held.

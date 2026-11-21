@@ -1016,3 +1016,30 @@ async fn wrong_current_passwords_are_counted_and_a_success_resets_the_count() {
         .await
         .unwrap();
 }
+
+struct BrokenMail;
+
+#[async_trait]
+impl pyn_core::EmailSender for BrokenMail {
+    async fn send(&self, _message: pyn_core::EmailMessage) -> pyn_core::Result<()> {
+        Err(PynError::EmailDeliveryFailed("connection refused".into()))
+    }
+}
+
+#[tokio::test]
+async fn a_failing_mailer_never_blocks_sign_up_or_resend() {
+    let w = world();
+    let svc = w.svc.with_email(Arc::new(BrokenMail));
+    let mut request = Registration::new("maya", PASSWORD);
+    request.email = Some("maya@example.org");
+    let up = svc.register(request).await.expect("sign-up still succeeds");
+    assert_eq!(up.status, AccountStatus::PendingVerification);
+    svc.resend_verification("maya@example.org", None)
+        .await
+        .expect("resend still answers");
+    let mut taken = Registration::new("other", PASSWORD);
+    taken.email = Some("maya@example.org");
+    svc.register(taken)
+        .await
+        .expect("the notice failing is quiet too");
+}
