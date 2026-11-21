@@ -15,6 +15,9 @@ pub struct Entry {
 
 #[derive(Default, Serialize, Deserialize)]
 struct File {
+    /// Server addresses the clear-text warning was already shown for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cleartext_warned: Vec<String>,
     #[serde(default)]
     servers: BTreeMap<String, Entry>,
 }
@@ -218,13 +221,36 @@ pub fn is_cleartext_remote(server: &str) -> bool {
         .map_or(true, |ip| !ip.is_loopback())
 }
 
-/// Prints the clear-text warning for `server` when it applies.
-pub fn warn_if_cleartext(server: &str) {
-    if is_cleartext_remote(server) {
-        eprintln!(
-            "warning: {server} is not using TLS; passwords and tokens sent to it are visible on the network. Use an https:// server."
-        );
+/// Prints the clear-text warning for `server` when it applies: always with `again`, else only if it was not
+/// shown for this address before. Remembering it is best effort.
+pub fn warn_cleartext(server: &str, again: bool) {
+    if !is_cleartext_remote(server) || (!again && warned(server)) {
+        return;
     }
+    eprintln!(
+        "warning: {server} is NOT using TLS.\n\
+         \x20 Passwords, tokens and everything this CLI sends to it can be read by anyone on the network path.\n\
+         \x20 Put TLS in front of the server and use an https:// address (see docs/deployment.md, \"Reverse proxy and TLS\").\n\
+         \x20 This is shown once per address; `pyn login` and `pyn config set server` show it again."
+    );
+    let _ = dir().and_then(|dir| mark_warned_in(&dir, server));
+}
+
+fn warned(server: &str) -> bool {
+    dir()
+        .and_then(|dir| read_in(&dir))
+        .is_ok_and(|f| f.cleartext_warned.iter().any(|s| s == server))
+}
+
+fn mark_warned_in(dir: &Path, server: &str) -> Result<()> {
+    create_private_dir(dir)?;
+    let _lock = Lock::acquire(dir)?;
+    let mut file = read_in(dir)?;
+    if !file.cleartext_warned.iter().any(|s| s == server) {
+        file.cleartext_warned.push(server.to_string());
+        write_in(dir, &file)?;
+    }
+    Ok(())
 }
 
 /// The token id inside a `pyn_<id>_<secret>` string.
