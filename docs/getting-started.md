@@ -291,6 +291,10 @@ pyn push                                # publishing releases your lock
 Change which paths are locked by editing the repository's policy, [`pyn.toml`](concepts/pyn-toml.md). The starter is the repository's own `.pyn/pyn.toml`, so open it and swap entries. To start a repository
 from your own file instead: `pyn repo create demo --policy my-policy.toml`.
 
+Creating a repository in a terminal asks one question: are paths no entry covers `shared` (edits are merged, like git) or
+`exclusive` (a lock is needed)? The answer sets `default` in the starter policy. Answer up front with
+`pyn repo create demo --default exclusive`; with no terminal (a script, CI) and no flag, `shared` applies and nothing is asked.
+
 ### A second person
 
 With registration set to **invite**, create an invitation for a repository (`pyn invite create --repo <you>/demo --role writer`), and send

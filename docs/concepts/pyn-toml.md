@@ -228,3 +228,9 @@ revision exists, a submission that claims to be the first is rejected as a stale
 `pyn repo create` without `--policy` checks in the starter text as the repository's first `.pyn/pyn.toml`, a visible file the owner
 edits (`pyn init` writes the same text into the work tree). `--policy <file>` checks in that file instead. `--no-policy` creates the
 repository with no policy file, so its initial policy applies.
+
+The starter's `default` is chosen at creation: `pyn repo create` in a terminal asks whether paths no entry covers are `shared`
+(edits are merged) or `exclusive` (a lock is needed), taking `shared`, `exclusive`, their first letters, or Enter for `shared`.
+`--default shared|exclusive` answers up front. With no terminal on standard input or output the answer is `shared` and
+nothing is asked. Only that one line changes; the exclusive list and the `[shared]` example stay. `--default` conflicts with
+`--policy` (the file decides) and with `--no-policy` (there is no file).

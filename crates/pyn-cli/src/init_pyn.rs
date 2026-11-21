@@ -80,6 +80,65 @@ paths = [
 ]
 "#;
 
+/// The mode of paths no policy entry covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum DefaultMode {
+    Shared,
+    Exclusive,
+}
+
+impl DefaultMode {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Exclusive => "exclusive",
+        }
+    }
+}
+
+/// The starter policy with `[meta] default` set; the first `default = ` line is the one in `[meta]`.
+pub(crate) fn starter_policy(mode: DefaultMode) -> String {
+    POLICY.replacen(
+        "default = \"shared\"",
+        &format!("default = \"{}\"", mode.word()),
+        1,
+    )
+}
+
+const ASK_ATTEMPTS: usize = 3;
+
+/// The flag wins; without a terminal the answer is `shared` and nothing is asked.
+pub(crate) fn choose_default(
+    flag: Option<DefaultMode>,
+    terminal: bool,
+    input: &mut impl BufRead,
+    out: &mut impl Write,
+) -> Result<DefaultMode> {
+    if let Some(mode) = flag {
+        return Ok(mode);
+    }
+    if !terminal {
+        return Ok(DefaultMode::Shared);
+    }
+    for _ in 0..ASK_ATTEMPTS {
+        write!(
+            out,
+            "Paths no entry covers are: shared (edits are merged, like git) or exclusive (a lock is needed)? [shared] "
+        )?;
+        out.flush()?;
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0 {
+            return Ok(DefaultMode::Shared);
+        }
+        match line.trim().to_ascii_lowercase().as_str() {
+            "" | "s" | "shared" => return Ok(DefaultMode::Shared),
+            "e" | "exclusive" => return Ok(DefaultMode::Exclusive),
+            other => writeln!(out, "`{other}` is not shared or exclusive")?,
+        }
+    }
+    anyhow::bail!("no valid answer; pass --default shared or --default exclusive")
+}
+
 #[derive(Debug, Args, PartialEq, Eq)]
 pub struct InitArgs {
     /// The folder to start the repository in; created if missing. The current folder if omitted.
@@ -206,6 +265,7 @@ fn create_on_server(
             max_locks: None,
             policy: Some(ws.dir.join("pyn.toml")),
             no_policy: false,
+            default: None,
         },
     )?;
     Settings {
@@ -225,6 +285,62 @@ mod tests {
     #[test]
     fn the_offline_starter_equals_the_servers() {
         assert_eq!(POLICY, pyn_core::rules::DEFAULT_INITIAL_POLICY);
+    }
+
+    #[test]
+    fn the_starter_takes_either_default_and_stays_valid_policy() {
+        for mode in [DefaultMode::Shared, DefaultMode::Exclusive] {
+            let text = starter_policy(mode);
+            pyn_core::rules::Rules::from_toml(&text).unwrap();
+            assert!(text.contains(&format!("default = \"{}\"", mode.word())));
+            assert_eq!(text.matches("default = ").count(), 1);
+            assert!(text.contains("\"**/*.png\""), "the exclusive list stays");
+        }
+        assert_eq!(starter_policy(DefaultMode::Shared), POLICY);
+    }
+
+    fn answer(text: &str, terminal: bool) -> (Result<DefaultMode>, String) {
+        let mut out = Vec::new();
+        let got = choose_default(None, terminal, &mut text.as_bytes(), &mut out);
+        (got, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn the_prompt_accepts_words_and_letters() {
+        for (text, want) in [
+            ("\n", DefaultMode::Shared),
+            ("s\n", DefaultMode::Shared),
+            ("Shared\n", DefaultMode::Shared),
+            ("e\n", DefaultMode::Exclusive),
+            (" EXCLUSIVE \n", DefaultMode::Exclusive),
+            ("", DefaultMode::Shared),
+            ("what\nexclusive\n", DefaultMode::Exclusive),
+        ] {
+            let (got, out) = answer(text, true);
+            assert_eq!(got.unwrap(), want, "{text:?}");
+            assert!(out.contains("[shared]"), "{out}");
+        }
+    }
+
+    #[test]
+    fn unrecognised_answers_are_bounded() {
+        let (got, _) = answer("x\ny\nz\nexclusive\n", true);
+        assert!(got.unwrap_err().to_string().contains("--default"));
+    }
+
+    #[test]
+    fn no_terminal_or_a_flag_asks_nothing() {
+        let (got, out) = answer("exclusive\n", false);
+        assert_eq!((got.unwrap(), out.as_str()), (DefaultMode::Shared, ""));
+        let mut out = Vec::new();
+        let flagged = choose_default(
+            Some(DefaultMode::Exclusive),
+            true,
+            &mut "".as_bytes(),
+            &mut out,
+        );
+        assert_eq!(flagged.unwrap(), DefaultMode::Exclusive);
+        assert!(out.is_empty());
     }
 
     #[test]
