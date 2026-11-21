@@ -20,7 +20,7 @@ use super::convert::warn_lfs_in_commit;
 use super::to_git::{ConvertArgs, fatal};
 use crate::backend::Backend;
 use crate::client::{Api, ApiError};
-use crate::init_pyn::{POLICY, Remote};
+use crate::init_pyn::Remote;
 use crate::pyn_server::PynServer;
 use crate::repo_tool::{self, RepoTool};
 use crate::transport::Method;
@@ -487,9 +487,21 @@ fn confirm(text: &str, yes: bool) {
     }
 }
 
+const SHARED_POLICY: &str = "\
+# Collaboration policy: which paths are shared (merged) and which are exclusive (locked).
+[meta]
+default = \"shared\"
+
+# [exclusive]
+# paths = [
+#   \"Content/\",
+#   \"**/*.uasset\",
+# ]
+";
+
 fn policy_text(globs: &[String]) -> String {
     if globs.is_empty() {
-        return POLICY.to_string();
+        return SHARED_POLICY.to_string();
     }
     let paths: Vec<String> = globs
         .iter()

@@ -2,7 +2,7 @@
 # See docs/concepts/pyn-toml.md.
 
 [meta]
-default = "exclusive"   # unlisted paths need a lock; use "shared" for mostly-code repositories
+default = "exclusive"   # unlisted paths need a lock; the built-in starter policy uses "shared" with a list of exclusive kinds
 
 [exclusive]
 paths = [
