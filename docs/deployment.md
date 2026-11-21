@@ -131,6 +131,11 @@ balancer). Requirements:
   request buffering for object routes.
 - Redirect HTTP to HTTPS and send HSTS from the proxy.
 
+Until TLS is in place, the CLI warns about the clear-text address: at `pyn login` and when `pyn config set server`
+stores an `http://` address for a host that is not loopback. The warning is shown once per address (stored in the user's
+configuration directory, next to the saved sign-ins) and again after a new login or a changed address; later commands
+print nothing extra, and `--json` output is unaffected.
+
 A minimal Caddy site, which handles certificates and the forwarded headers itself:
 
 ```

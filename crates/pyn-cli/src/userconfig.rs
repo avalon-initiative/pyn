@@ -26,7 +26,8 @@ pub fn prompt(
 ) -> Result<Settings> {
     let mut settings = current.clone();
     let server = current.server.as_deref().unwrap_or(DEFAULT_SERVER);
-    settings.server = Some(ask(input, out, "Server URL", Some(server))?.expect("has a default"));
+    let answer = ask(input, out, "Server URL", Some(server))?.expect("has a default");
+    settings.server = Some(crate::address::normalize_server(&answer)?);
     settings.user = ask(
         input,
         out,

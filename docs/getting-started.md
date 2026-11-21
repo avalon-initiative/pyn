@@ -261,6 +261,13 @@ pyn config set --global server http://192.168.1.20:8080     # your PYN_PUBLIC_UR
 pyn login <your user name>
 ```
 
+An `http://` address for a host other than this computer sends passwords and tokens in clear text, so `pyn login` and
+`pyn config set server` print a warning about it. It is shown once for each address (and again at the next login),
+never for `localhost`, `127.*` or `[::1]`, and later commands stay quiet. Put TLS in front of the server before
+using it beyond a trusted network (see [Reverse proxy and TLS](deployment.md#reverse-proxy-and-tls)). The address is
+stored in its normal form (`http:192.168.1.20:8080` becomes `http://192.168.1.20:8080`) and one that is not an
+`http://` or `https://` address is refused.
+
 Create a repository and take your first lock. A new repository treats every path as exclusive, so a file needs a lock
 before it can be changed:
 
