@@ -388,9 +388,14 @@ does not lift a requirement: an account that must have a factor, past its deadli
 
 ## SSH keys
 
-SSH keys are how people sign in from the command line and, when the SSH transport arrives, how clone and push authenticate,
-as with git. Link a public key to your account with `pyn key add` (it uses `~/.ssh/id_ed25519.pub`, `id_ecdsa.pub` or
-`id_rsa.pub` if you do not name a file), see them with `pyn key list`, and remove one with `pyn key remove <id>`.
+Today a key can be linked, listed and removed, and nothing more: link a public key to your account with `pyn key add` (it uses
+`~/.ssh/id_ed25519.pub`, `id_ecdsa.pub` or `id_rsa.pub` if you do not name a file), see them with `pyn key list`, and remove one
+with `pyn key remove <id>`. Adding a key needs a fresh [second-factor](#two-factor-authentication) check when the account has a second factor. The command line signs in with
+`pyn login` (a password, and a second-factor code when the account has one) or with a token.
+
+Provisional: signing in and cloning over SSH wait for the SSH transport ([#68](https://github.com/avalon-initiative/pyn/issues/68)).
+The intent is that a linked key then authenticates people at the command line and for clone and push, as with git; until it
+ships, a linked key opens no session and authenticates no request.
 
 As on GitHub, a key belongs to exactly one account: its fingerprint, the same `SHA256:...` that `ssh-keygen -l` prints,
 is unique across the server, and linking a key that another account has is refused. Ed25519, ECDSA, security keys and RSA
@@ -661,8 +666,8 @@ repository, and the role cuts off the rest at use time (contents `write` carries
 token checks in but cannot restore). A token used on a repository it does not cover (another owner's, or outside `selected`)
 is told the repository does not exist (`404 repo_not_found`); on a public one it holds `read` only. A token can rename or delete a
 repository, or create repositories and organizations, only when it is a token of its own account for all repositories and holds
-`administration` write. Tokens are meant for automation and CI; SSH keys and [OpenID Connect](external-sign-in.md) are for
-signing people in, and resolve to the same users and permissions.
+`administration` write. Tokens are meant for automation and CI; [OpenID Connect](external-sign-in.md) is for signing people in
+(and, once the SSH transport arrives, [SSH keys](#ssh-keys)), and resolves to the same users and permissions.
 
 A token for `all` repositories is also refused at creation (`403 forbidden`) when, for one of its grants, the creator holds none of the
 permissions the grant adds in any repository the owner has now: a token that could never do anything is an error, not a silent

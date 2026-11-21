@@ -4,8 +4,8 @@ A server can let people sign in with an OpenID Connect provider, such as a compa
 password. It is opt-in: with no provider configured nothing changes, no route behaves differently and no setting applies.
 The provider is only ever a way to prove who someone is. What they may do is decided by the same
 [accounts, roles and permissions](access.md) as for any account, and a session opened through the provider is the same
-web session as a password sign-in (cookie, CSRF token, expiry). Personal access tokens and SSH keys work as they do for
-every account, and the command line keeps using them.
+web session as a password sign-in (cookie, CSRF token, expiry). Personal access tokens work as they do for
+every account, and the command line keeps using them (and `pyn login`); [SSH keys](access.md#ssh-keys) can be linked but do not sign anyone in yet.
 
 ## Configuring a provider
 
