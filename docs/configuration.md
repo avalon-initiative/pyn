@@ -12,7 +12,7 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 | `PYN_CONFIG` | Initial policy of every repository created while it is set (stored with the repository), and the fallback of older repositories that have no `.pyn/pyn.toml`; unset means new repositories start shared and older ones are all-exclusive (`make dev` uses `scripts/demo.pyn.toml`) |
 | `RUST_LOG` | Log filter in `tracing` syntax (`debug`, `pyn_server=debug,info`); default `info`. An unparsable value falls back to the default |
 | `PYN_LOG_FORMAT` | `text` (default) or `json`: json writes one object per line on standard output with the fields in [log fields](#log-fields); any other value stops the server. The host-admin commands (`create-admin` and the like) keep writing logs to standard error whatever the format |
-| `PYN_ACCESS_LOG` | On unless `false`: one `info` line per request with target `access`; any other value stops the server. `RUST_LOG` must let the `access` target through (`info` does) |
+| `PYN_ACCESS_LOG` | On unless `false`: one `info` line per request with target `access`; any other value stops the server. `RUST_LOG` must let the `access` target through (`info` does). Requests to `/healthz` (health checks) are never logged |
 | `PYN_ACCESS_LOG_CLIENT` | `true` adds the client address (`X-Forwarded-For` when `PYN_TRUST_FORWARDED_FOR` is on) and the user agent to the access line; default `false`; any other value stops the server |
 | `PYN_AUDIT_LOG` | `true` also writes each audit event as a log line with target `audit`, so a log collector gets one stream; default `false`; any other value stops the server |
 | `PYN_ADDR` | Listen address, default `127.0.0.1:7878` |
