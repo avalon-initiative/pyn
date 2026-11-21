@@ -273,22 +273,23 @@ using it beyond a trusted network (see [Reverse proxy and TLS](deployment.md#rev
 stored in its normal form (`http:192.168.1.20:8080` becomes `http://192.168.1.20:8080`) and one that is not an
 `http://` or `https://` address is refused.
 
-Create a repository and take your first lock. A new repository treats every path as exclusive, so a file needs a lock
-before it can be changed:
+Create a repository and take your first lock. A new repository starts `shared` with a starter policy that locks the file
+kinds that cannot be merged (images, models, audio, archives and the like; see
+[the starter policy](concepts/pyn-toml.md#the-starter-policy)), so a `.png` needs a lock before it can be changed and a text
+file does not:
 
 ```bash
 pyn repo create demo                    # creates <you>/demo
 pyn clone <you>/demo && cd demo
-echo "hello" > notes.txt
-pyn lock notes.txt                      # fails with lock_held if someone else has it
-pyn add notes.txt
+cp ~/hero.png .                         # any image
+pyn lock hero.png                       # fails with lock_held if someone else has it
+pyn add hero.png
 pyn commit -m "First file"
 pyn push                                # publishing releases your lock
 ```
 
-Paths that can be merged should be `shared` instead of locked: list them in the repository's policy,
-[`pyn.toml`](concepts/pyn-toml.md) (`default = "shared"` makes every path shared, like git). To start a repository that
-way: `pyn repo create demo --policy shared.toml` with a file containing `[meta]` and `default = "shared"`.
+Change which paths are locked by editing the repository's policy, [`pyn.toml`](concepts/pyn-toml.md). The starter is the repository's own `.pyn/pyn.toml`, so open it and swap entries. To start a repository
+from your own file instead: `pyn repo create demo --policy my-policy.toml`.
 
 ### A second person
 

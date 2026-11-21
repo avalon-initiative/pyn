@@ -745,7 +745,7 @@ enum RepoCommand {
         /// Locks one user may hold at once; the server's default if omitted, and a limit in the policy file wins.
         #[arg(long)]
         max_locks: Option<u32>,
-        /// Use this file as the repository's first `.pyn/pyn.toml` instead of the default (everything exclusive).
+        /// Use this file as the repository's first `.pyn/pyn.toml` instead of the starter policy.
         #[arg(long, conflicts_with = "no_policy")]
         policy: Option<PathBuf>,
         /// Create the repository without a `.pyn/pyn.toml`; the repository's initial policy applies until one is added.
@@ -3618,8 +3618,6 @@ fn restore(
 
 const POLICY_PATH: &str = ".pyn/pyn.toml";
 
-const DEFAULT_POLICY: &str = "[meta]\ndefault = \"exclusive\"\n";
-
 /// Checks in the repository's first policy file, which the server accepts without a lock.
 fn submit_policy(api: &Api, repo: &str, bytes: Vec<u8>) -> Result<()> {
     let put: api::PutObjectResponse = api
@@ -3679,7 +3677,7 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 (Some(file), _) => Some(
                     std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?,
                 ),
-                (None, false) => Some(DEFAULT_POLICY.as_bytes().to_vec()),
+                (None, false) => Some(init_pyn::POLICY.as_bytes().to_vec()),
                 (None, true) => None,
             };
             let (owner, name) = match name.split_once('/') {

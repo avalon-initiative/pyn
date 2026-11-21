@@ -27,12 +27,38 @@ paths = [
 One entry per line keeps diffs readable. Every section is optional; a missing or empty file means everything is
 exclusive.
 
-## Default is exclusive
+## The starter policy
 
-A path that no entry covers is **exclusive**. That is the safe side: the worst outcome is someone has to check a file
-out, never two people silently editing something unmergeable. Mostly-code repositories will usually flip it with
-`default = "shared"` and list only the exclusive paths; asset-heavy repositories keep the default and list the shared
-ones. This differs from the original proposal, where unlisted paths were shared.
+A new repository starts `shared` with a policy that locks the file kinds that cannot be merged. `pyn repo create` checks the
+text in as `.pyn/pyn.toml` and `pyn init` writes it into the work tree, so it is a visible file to edit; the server uses the
+same text (`DEFAULT_INITIAL_POLICY`) as the initial policy of a repository that has no policy file and no `PYN_CONFIG`. In short:
+
+```toml
+[meta]
+default = "shared"
+
+[exclusive]
+paths = [
+  ".pyn/pyn.toml",     # the policy file stays exclusive: an exact entry beats the glob below
+  "**/*.psd",          # 3D models and art, images, audio and video, engine assets,
+  "**/*.png",          # archives and documents, compiled binaries: about 35 well-known kinds
+  "**/*.uasset",
+]
+
+[shared]
+paths = ["**/*.toml"]  # an example of a shared kind
+```
+
+Text, source and other mergeable files need no lock, so a code-only repository works without setup, while a binary that
+two people edit at once cannot be merged and is locked. Edit the file to fit the project: add a kind to `[exclusive]`
+to lock it, or add a path or glob to `[shared]` to release it. Precedence is the one described under
+[precedence](#precedence): a more specific entry (an exact file, then a glob, then the deepest folder) beats a
+less specific one, and between two globs `exclusive` wins. So `.pyn/pyn.toml` stays exclusive although `**/*.toml` is shared.
+
+The safety net is unchanged: a missing policy file, an empty one, or a file without `meta.default` means **everything is
+exclusive**. That is the safe side: the worst outcome is someone has to check a file out, never two people silently editing
+something unmergeable. Only the starter, written when a repository is created, says `shared`. This differs from the original
+proposal, where unlisted paths were shared.
 
 ## Lock limit
 
@@ -172,11 +198,13 @@ Each revision records the mode its path had when it was made (`mode` on the revi
 where it changed. Revisions made before this was recorded have no mode.
 
 A repository gets an **initial policy** when it is created, like an empty git repository starts with default settings. It is
-the server's `PYN_CONFIG` file if one is configured, and otherwise `[meta] default = "shared"`, so nothing needs a lock until
-the owner commits a policy. It is stored with the repository (not a commit, so the repository stays empty and its first push
+the server's `PYN_CONFIG` file if one is configured, and otherwise the [starter policy](#the-starter-policy), so mergeable files
+need no lock until the owner commits a policy. It is stored with the repository (not a commit, so the repository stays empty and its first push
 may be a parentless root) and applies to every branch that has no policy commit in its ancestry. A repository created before
 this existed has no stored initial policy and keeps using the server's `PYN_CONFIG` file, or everything exclusive. An
-initial policy stops applying once the repository has its own file; the two are never merged.
+initial policy stops applying once the repository has its own file; the two are never merged. So the operator's `PYN_CONFIG` policy
+is the fallback for a repository with no policy file (`pyn repo create --no-policy`, or one created through the API); a repository
+made with plain `pyn repo create` carries the starter file instead.
 
 ## `pyn.toml` is a tracked file
 
@@ -197,5 +225,6 @@ shared `pyn.toml`. Until it exists, the initial policy applies. The first revisi
 it declares for itself, like any other revision records the mode in force. Only the first revision skips the lock: once any
 revision exists, a submission that claims to be the first is rejected as a stale base.
 
-`pyn repo create` offers a default file when it creates a repository: `[meta] default = "exclusive"` and nothing else listed.
-The owner accepts it, replaces it with `--policy <file>`, or skips it with `--no-policy`.
+`pyn repo create` without `--policy` checks in the starter text as the repository's first `.pyn/pyn.toml`, a visible file the owner
+edits (`pyn init` writes the same text into the work tree). `--policy <file>` checks in that file instead. `--no-policy` creates the
+repository with no policy file, so its initial policy applies.

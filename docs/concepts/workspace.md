@@ -46,7 +46,7 @@ it, whereas the local settings layer in the order above.
 
 ## Starting a repository
 
-`pyn init [<dir>]` creates `.pyn/pyn.toml` (every path `shared`) and `.pyn/local_only/repo.toml` (`repo_tool = "pyn"`) in a folder that is not tracked yet, and refuses one inside a git repository or a pyn workspace. It does not need a server; see [git compatibility](git-compatibility.md) for the options that create the repository on one.
+`pyn init [<dir>]` creates `.pyn/pyn.toml` (the [starter policy](pyn-toml.md#the-starter-policy)) and `.pyn/local_only/repo.toml` (`repo_tool = "pyn"`) in a folder that is not tracked yet, and refuses one inside a git repository or a pyn workspace. It does not need a server; see [git compatibility](git-compatibility.md) for the options that create the repository on one.
 
 ## In a git repository
 

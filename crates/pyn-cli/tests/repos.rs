@@ -315,7 +315,7 @@ fn a_new_repository_starts_with_a_policy_file_the_owner_can_replace() {
         "alice",
         &["--repo", "alice/plain", "get", ".pyn/pyn.toml"],
     );
-    assert!(shown.contains("default = \"exclusive\""), "{shown}");
+    assert_eq!(shown, pyn_core::rules::DEFAULT_INITIAL_POLICY);
 
     let ws = env.dir("ws-plain");
     env.ok(
