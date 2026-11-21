@@ -20,8 +20,8 @@ Every answer has a flag; with --yes (or no terminal) a missing answer takes its 
   --shape full|server|web|cli   full: server and web app (default); server; web: web app only; cli: the pyn command only
   --method docker|native        docker (default); native runs the release pyn-server binary under systemd (server and cli only)
   --version TAG                 a full tag such as v0.1.2-alpha, or a bare version such as 0.1.2 (default: the latest release)
-  --web-version TAG             the pyn-web release for the web app image, as a tag or a bare version (default: the latest pyn-web
-                                release; the web app is versioned separately from the server)
+  --web-version TAG             the pyn-web release for the web app image, as a tag or a bare version (default: the newest pyn-web
+                                release that supports the chosen server; below its declared minimum it warns and asks)
   --dir DIR                     (paths may start with ~ or be relative to the current folder) where the Docker files live (default: the current folder; a subfolder pyn when that is / , your
                                 home or a source checkout)
   --env-file PATH               an existing env file to reuse: copied to DIR/.env for Docker, used in place as the service's
@@ -638,16 +638,106 @@ resolve_version() {
   say "resolved release: $tag (image tag v$ver)"
 }
 
-resolve_web_version() { # sets web_ver (X.Y.Z) from --web-version or the latest pyn-web release
-  local tag=$web_version_in
-  if [ -z "$tag" ]; then
-    tag=$(api_repo=avalon-initiative/pyn-web latest_release)
-    [ -n "$tag" ] || die "GitHub lists no pyn-web releases; pass --web-version"
+ver_lt() { # ver_lt A B: A is older than B (X.Y.Z)
+  local IFS=. i x y a b
+  read -ra a <<<"$1"
+  read -ra b <<<"$2"
+  for i in 0 1 2; do
+    x=${a[i]:-0} y=${b[i]:-0}
+    [ "$x" -eq "$y" ] || { [ "$x" -lt "$y" ]; return; }
+  done
+  return 1
+}
+
+web_tags() { # pyn-web release tags, newest first; empty when the list cannot be read
+  local code
+  code=$(curl -sSL -H 'Accept: application/vnd.github+json' -o "$tmp/web.json" -w '%{http_code}' \
+    "https://api.github.com/repos/avalon-initiative/pyn-web/releases?per_page=100" 2>/dev/null </dev/null) || return 0
+  [ "${code: -3}" = 200 ] || return 0
+  grep -o '"tag_name": *"[^"]*"' "$tmp/web.json" | sed 's/.*"\([^"]*\)"$/\1/'
+}
+
+# The oldest server a pyn-web release needs: X.Y.Z, "none" when it declares none (404), failure when unreadable
+web_min() {
+  local code m
+  code=$(curl -sSL -o "$tmp/min.json" -w '%{http_code}' \
+    "https://raw.githubusercontent.com/avalon-initiative/pyn-web/$1/min-server.json" 2>/dev/null </dev/null) || return 1
+  case ${code: -3} in
+    404) echo none ;;
+    200)
+      m=$(sed -n 's/.*"min_server"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' "$tmp/min.json" | head -n1)
+      echo "${m:-none}"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Sets web_ver (X.Y.Z): the newest pyn-web release that works with the chosen server, or --web-version, or a prompted choice
+resolve_web_version() {
+  local tags wtag="" t m pick="" choice="" newest="" known="" unreadable=0 pair=1
+  step "Resolving the web app release"
+  [ "$shape" != web ] || pair=0
+  tags=$(web_tags)
+  if [ -z "$web_version_in" ]; then
+    if [ -z "$tags" ]; then
+      newest=$(api_repo=avalon-initiative/pyn-web latest_release)
+      [ -n "$newest" ] || die "GitHub lists no pyn-web releases; pass --web-version"
+      pick=$newest unreadable=1
+    elif [ "$pair" -eq 0 ]; then
+      pick=${tags%%$'\n'*}
+    else
+      for t in $tags; do
+        [ -n "$newest" ] || newest=$t
+        if ! m=$(web_min "$t"); then unreadable=1; break; fi
+        if [ "$m" = none ] || ! ver_lt "$ver" "$m"; then pick=$t; break; fi
+      done
+      if [ "$unreadable" -eq 1 ]; then pick=$newest
+      elif [ -z "$pick" ]; then pick=$newest known=none
+      fi
+    fi
+    if [ "$pair" -eq 1 ]; then
+      menu choice "Which pyn-web release?" compat --web-version "compat|Latest compatible release ($pick)" "tag|A specific tag or version"
+    else
+      menu choice "Which pyn-web release?" compat --web-version "compat|Latest release ($pick)" "tag|A specific tag or version"
+    fi
+    case $choice in
+      compat) wtag=$pick ;;
+      tag) ask web_version_in "pyn-web tag (v0.1.3-alpha) or version (0.1.3)" "" --web-version ;;
+    esac
   fi
-  tag=${tag#v}
-  [[ $tag =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$ ]] || die "'$tag' is not a pyn-web version: use a tag like v0.1.3-alpha or a version like 0.1.3"
-  web_ver=${tag%%-*}
-  say "pyn-web release: v$web_ver"
+  if [ -n "$web_version_in" ]; then
+    wtag=${web_version_in#v}
+    [[ $wtag =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$ ]] || die "'$wtag' is not a pyn-web version: use a tag like v0.1.3-alpha or a version like 0.1.3"
+    [ -n "$tags" ] || tags=$(web_tags)
+    for t in $tags; do
+      if [ "${t#v}" = "$wtag" ]; then wtag=$t; break; fi
+      case ${t#v} in "$wtag"-*) wtag=$t; break ;; esac
+    done
+    [ "${wtag#v}" != "$wtag" ] || wtag=v$wtag
+    web_ver=${wtag#v}
+    web_ver=${web_ver%%-*}
+    say "pyn-web v$web_ver (chosen by you)"
+  else
+    web_ver=${wtag#v}
+    web_ver=${web_ver%%-*}
+    if [ "$unreadable" -eq 1 ]; then
+      say "pyn-web v$web_ver (the latest web release: the compatibility information could not be read)"
+    elif [ "$pair" -eq 0 ]; then
+      say "pyn-web v$web_ver (the latest web release, for a server running elsewhere)"
+    elif [ "$known" = none ]; then
+      say "pyn-web v$web_ver (the latest web release: none declares support for server $ver)"
+    else
+      say "pyn-web v$web_ver (the newest web release that works with server $ver)"
+    fi
+  fi
+  if m=$(web_min "$wtag") && [ "$m" != none ]; then
+    if [ "$pair" -eq 0 ]; then
+      say "pyn-web v$web_ver needs a server at $m or newer"
+    elif ver_lt "$ver" "$m"; then
+      warn "pyn-web v$web_ver needs a server at $m or newer, and this is server $ver: the web app may not work with it"
+      [ "$interactive" -eq 0 ] || confirm "Use it anyway?" n || die "stopped; nothing was changed"
+    fi
+  fi
 }
 
 # Downloads and checksums
@@ -816,7 +906,6 @@ docker_flow() {
 
   if [ "$shape" != web ]; then pin_version "$env_path" PYN_SERVER_VERSION "v$ver"; fi
   if [ "$shape" != server ]; then
-    resolve_web_version
     pin_version "$env_path" PYN_WEB_VERSION "v$web_ver"
   fi
 
@@ -1121,6 +1210,7 @@ main() {
   check_tools
   echo
   resolve_version
+  case $shape in full | web) resolve_web_version ;; esac
   if [ "$method" = docker ] && [ "$shape" != cli ]; then docker_prepare; fi
 
   case $shape in
@@ -1149,7 +1239,7 @@ main() {
   esac
 
   echo
-  say "plan: $shape via $method, release $tag (image v$ver)${reuse:+, existing install: $reuse}"
+  say "plan: $shape via $method, release $tag (image v$ver)${web_ver:+, pyn-web v$web_ver}${reuse:+, existing install: $reuse}"
   case $shape in
     cli) ;;
     *) if [ "$method" = docker ]; then say "deployment folder: $dir"; [ -z "$env_file" ] || say "env file to reuse: $env_file"; else say "env file: $native_env"; fi ;;
