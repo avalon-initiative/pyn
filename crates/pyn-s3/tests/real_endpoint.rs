@@ -1,7 +1,9 @@
-//! The shared contract against a real S3-compatible service:
+//! The shared contract against a real S3-compatible service, behind the `real-endpoint` feature:
 //! `PYN_S3_TEST_ENDPOINT=... PYN_S3_TEST_BUCKET=... PYN_S3_TEST_ACCESS_KEY_ID=... PYN_S3_TEST_SECRET_ACCESS_KEY=...
-//! cargo test -p pyn-s3 --test real_endpoint -- --ignored` (optional: `PYN_S3_TEST_REGION`, `PYN_S3_TEST_PATH_STYLE`).
+//! cargo test -p pyn-s3 --features real-endpoint --test real_endpoint -- --ignored` (optional: `PYN_S3_TEST_REGION`, `PYN_S3_TEST_PATH_STYLE`).
 //! Each test writes under its own random key prefix and leaves the objects there.
+
+#![cfg(feature = "real-endpoint")]
 
 use std::sync::Arc;
 

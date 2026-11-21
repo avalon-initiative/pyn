@@ -20,6 +20,10 @@ tokio = { version = "1.53.2", features = ["fs", "io-util", "rt", "time"] }
 tokio-util = { version = "0.7.19", features = ["io"] }
 tracing = "0.1.44"
 
+[features]
+# Compiles the tests that need a real S3-compatible service (tests/real_endpoint.rs); off so CI and `make test-live` never run them.
+real-endpoint = []
+
 [dev-dependencies]
 getrandom = "0.4.3"
 hex = "0.4.3"

@@ -161,7 +161,7 @@ its filesystem backend, a dev dependency; no Docker), and against any real endpo
 ```
 PYN_S3_TEST_ENDPOINT=https://nyc3.digitaloceanspaces.com PYN_S3_TEST_BUCKET=... \
 PYN_S3_TEST_ACCESS_KEY_ID=... PYN_S3_TEST_SECRET_ACCESS_KEY=... \
-cargo test -p pyn-s3 --test real_endpoint -- --ignored
+cargo test -p pyn-s3 --features real-endpoint --test real_endpoint -- --ignored
 ```
 
 `PYN_S3_TEST_REGION` (default `us-east-1`) and `PYN_S3_TEST_PATH_STYLE` (`true` for MinIO) are optional. Each test writes
