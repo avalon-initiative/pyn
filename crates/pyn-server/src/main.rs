@@ -350,7 +350,23 @@ async fn healthcheck(addr: &str) -> anyhow::Result<()> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("--help" | "-h") => {
+            println!("{}", pyn_server::host_admin::HELP);
+            return Ok(());
+        }
+        Some("--version" | "-V") => {
+            println!("pyn-server {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        _ => {}
+    }
     let host_command = pyn_server::host_admin::parse(&args)?;
+    if host_command.is_none()
+        && let Some(first) = args.first().filter(|a| *a != "--healthcheck")
+    {
+        anyhow::bail!("unknown argument {first}\n{}", pyn_server::host_admin::HELP);
+    }
     let addr = std::env::var("PYN_ADDR").unwrap_or_else(|_| "127.0.0.1:7878".into());
     if std::env::args().nth(1).as_deref() == Some("--healthcheck") {
         return healthcheck(&addr).await;

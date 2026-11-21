@@ -13,6 +13,9 @@ use crate::events::WebhookLimitEvents;
 
 pub const USAGE: &str = "usage:\n  pyn-server recover-admin <username> [--password-stdin]\n  pyn-server rotate-secret-key";
 
+/// What `--help` prints: the server runs in the foreground and takes its settings from `PYN_*` variables.
+pub const HELP: &str = "pyn-server: the pyn server, configured with PYN_* environment variables (docs/configuration.md).\n\nusage:\n  pyn-server                          run the server in the foreground\n  pyn-server --healthcheck            ask the server on PYN_ADDR whether it is healthy\n  pyn-server recover-admin <username> [--password-stdin]\n  pyn-server rotate-secret-key\n  pyn-server --help | -h              show this help\n  pyn-server --version | -V           show the version";
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum HostCommand {
     RecoverAdmin {

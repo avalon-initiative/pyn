@@ -66,7 +66,7 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 
 `pyn-server --healthcheck` does not start a server: it requests `/healthz` on `PYN_ADDR` (an unspecified address such as `0.0.0.0` is probed on loopback) with a 3 second timeout and exits 0 if it answers, non-zero otherwise. It never touches the database, so a container image can use it as its healthcheck without `curl`.
 
-`pyn-server recover-admin <username> [--password-stdin]` and `pyn-server rotate-secret-key` are host-level recovery commands that work on the database in `PYN_DATABASE_URL` and exit; see [recovery](deployment.md#recovery).
+`pyn-server --help` and `pyn-server --version` print the usage and the version without starting anything, and an unknown argument is refused. `pyn-server recover-admin <username> [--password-stdin]` and `pyn-server rotate-secret-key` are host-level recovery commands that work on the database in `PYN_DATABASE_URL` and exit; see [recovery](deployment.md#recovery).
 
 `make test-live` runs the tests that need a database (`PYN_DATABASE_URL`); each uses its own temporary schema.
 
