@@ -222,6 +222,65 @@ pub struct Branch {
     pub default: bool,
     pub created_at: DateTime<Utc>,
     pub created_by: String,
+    /// The committed time of the head commit; absent for a branch with no commits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompareStatus {
+    /// Neither side has a commit the other lacks.
+    Identical,
+    /// The head has commits the base lacks and no more.
+    Ahead,
+    /// The base has commits the head lacks and no more.
+    Behind,
+    /// Each side has commits the other lacks.
+    Diverged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompareChangeKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
+/// A path the head changes relative to the merge base.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CompareChange {
+    pub path: String,
+    pub kind: CompareChangeKind,
+}
+
+/// How far a head is from a base. Commits are counted as git does: the head's ahead are those reachable from it and
+/// not from the base, the behind the reverse.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BranchComparison {
+    /// The base as named in the request (the default branch when none was given).
+    pub base: String,
+    pub base_commit: String,
+    pub head: String,
+    pub head_commit: String,
+    /// The first (by id) of the lowest common ancestors; `changes` are measured from it. Absent for unrelated histories.
+    #[schema(required = true)]
+    pub merge_base: Option<String>,
+    pub status: CompareStatus,
+    /// Commits in the head and not in the base, at most `max_commits`.
+    pub ahead: u32,
+    /// Commits in the base and not in the head, at most `max_commits`.
+    pub behind: u32,
+    /// The limit on `ahead`, `behind` and the commits whose paths are examined.
+    pub max_commits: u32,
+    /// Either count reached `max_commits`: the real number is larger and `changes` covers only the oldest commits.
+    pub counts_capped: bool,
+    /// Paths the head adds, modifies or deletes relative to the merge base, by path, at most `max_changes`.
+    pub changes: Vec<CompareChange>,
+    pub max_changes: u32,
+    /// `changes` is incomplete: more paths changed than listed, or more commits than `max_commits`.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

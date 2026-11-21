@@ -275,6 +275,7 @@ struct RepoAddress {
         get_commit,
         snapshot,
         branch_api::list_branches,
+        branch_api::compare,
         branch_api::get_branch,
         branch_api::create_branch,
         branch_api::delete_branch,
@@ -294,6 +295,10 @@ struct RepoAddress {
         api::Commit,
         api::CommitPage,
         api::Branch,
+        api::BranchComparison,
+        api::CompareChange,
+        api::CompareChangeKind,
+        api::CompareStatus,
         api::CreateBranchRequest,
         api::RenameBranchRequest,
         api::MergeFastForward,
@@ -1676,12 +1681,15 @@ fn tree_entry_dto(e: pyn_core::TreeEntry) -> api::TreeEntry {
 #[derive(Deserialize)]
 struct SummaryQuery {
     activity: Option<usize>,
+    branch: Option<String>,
 }
 
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/summary",
-    params(RepoAddress, ("activity" = Option<usize>, Query, description = "recent activity entries, default 10, max 100")),
-    responses((status = 200, body = api::RepoSummary)))]
+    params(RepoAddress, ("activity" = Option<usize>, Query, description = "recent activity entries, default 10, max 100"),
+           ("branch" = Option<String>, Query, description = "the branch the file counts and time describe; the default branch if omitted")),
+    responses((status = 200, body = api::RepoSummary),
+              (status = 404, body = api::ErrorBody, description = "branch_not_found")))]
 async fn summary(
     State(s): State<AppState>,
     RepoReader { repo, .. }: RepoReader,
@@ -1689,7 +1697,7 @@ async fn summary(
 ) -> ApiResult<Json<api::RepoSummary>> {
     let summary = repo
         .service
-        .summary(q.activity.unwrap_or(10).clamp(1, 100))
+        .summary_on(q.branch.as_deref(), q.activity.unwrap_or(10).clamp(1, 100))
         .await?;
     let mut summary = api::RepoSummary {
         default_branch: summary.default_branch,

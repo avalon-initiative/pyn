@@ -1,8 +1,7 @@
 # Browsing a repository
 
-Two read-only routes feed a repository landing page: a folder listing and a summary. Both need `read`. The folder listing takes
-an optional `branch` (the default branch when omitted) and the summary describes the default branch; there is no other
-revision parameter yet.
+Two read-only routes feed a repository landing page: a folder listing and a summary. Both need `read`. Both take
+an optional `branch` (the default branch when omitted); there is no other revision parameter yet.
 
 ## Folder listing
 
@@ -28,7 +27,9 @@ nothing yet does not make a folder `mixed`.
 
 ## Summary
 
-`GET /v1/repos/{owner}/{name}/summary?activity=<n>` returns what a landing page's side panel needs:
+`GET /v1/repos/{owner}/{name}/summary?activity=<n>&branch=<name>` returns what a landing page's side panel needs. `branch` (the default
+branch when omitted; `404 branch_not_found` for an unknown one) picks the branch `files`, `exclusive_files`, `shared_files` and
+`updated_at` describe; `default_branch`, `branch_count`, `locks` and `activity` are repository-wide:
 
 - `default_branch` and `branch_count`: the default branch's name (`main`) and how many [branches](branches.md) the repository has.
   Tags are not counted.

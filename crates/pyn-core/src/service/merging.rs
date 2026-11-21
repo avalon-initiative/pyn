@@ -201,8 +201,14 @@ impl RepoService {
             Some(name) => self.branch(name).await?,
             None => self.branch(crate::branch::DEFAULT_BRANCH).await?,
         };
-        let spec = request.source.trim();
-        let (source, label) = match self.meta.get_branch(&self.repo, spec).await? {
+        let (source, label) = self.resolve_ref(&request.source).await?;
+        Ok((target, source, label))
+    }
+
+    /// A branch's head or a commit id or abbreviation, and the name it goes by in messages.
+    pub(super) async fn resolve_ref(&self, spec: &str) -> Result<(ObjectId, String)> {
+        let spec = spec.trim();
+        Ok(match self.meta.get_branch(&self.repo, spec).await? {
             Some(b) => (
                 b.head.ok_or_else(|| {
                     PynError::InvalidRequest(format!("the branch {spec} has no commits yet"))
@@ -213,8 +219,7 @@ impl RepoService {
                 let id = self.resolve_commit(spec).await?;
                 (id, format!("commit {}", &id.to_hex()[..10]))
             }
-        };
-        Ok((target, source, label))
+        })
     }
 
     async fn snapshot_tree(&self, commit: &ObjectId) -> Result<BTreeMap<RepoPath, Revision>> {

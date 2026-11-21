@@ -41,6 +41,8 @@ const RULES: &str = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Conte
 
 mod merging;
 pub use merging::*;
+mod compare;
+pub use compare::*;
 mod commit_filters;
 pub use commit_filters::*;
 mod branch_policy;
@@ -3350,6 +3352,13 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_conversion_on_the_default_branch_reaches_a_branch_when_it_picks_up_the_policy);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; verify_checks_every_branch_and_a_commit_names_its_parent);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; merge_bases_are_the_lowest_common_ancestors);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_diverged_branch_is_ahead_and_behind_its_merge_base);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fast_forwardable_equal_or_merged_branch_has_a_zero_side);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_comparison_names_an_unknown_branch_with_the_usual_error);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_comparison_lists_a_bounded_number_of_paths);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_comparison_caps_its_commit_counts);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_branch_reports_the_committed_time_of_its_head);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_summary_of_a_branch_counts_that_branchs_files);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; commit_filters_match_author_time_message_and_path);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; filtered_commit_pages_are_full_while_more_matches_exist);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_revision_range_lists_what_one_commit_has_and_the_other_lacks);
