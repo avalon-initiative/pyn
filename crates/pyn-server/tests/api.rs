@@ -2751,7 +2751,8 @@ async fn checkin_text(app: &axum::Router, repo: &str, token: &str, path: &str) {
     assert_eq!(r.status(), StatusCode::OK);
 }
 
-const READ_ROUTES: [&str; 6] = [
+const READ_ROUTES: [&str; 7] = [
+    "compare?head=main",
     "tree",
     "files",
     "summary",
@@ -4022,6 +4023,128 @@ async fn branches_are_created_committed_on_read_and_deleted() {
     )
     .await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_branch_is_compared_summarised_and_dated() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let base = "/v1/repos/alice/game";
+    let checkin = |branch: Option<&str>, path: &str, content: &str, rev: Option<u64>| {
+        serde_json::json!({"path": path, "content": content, "base_revision": rev,
+                           "message": "m", "branch": branch})
+    };
+    let (one, two) = (
+        put_blob(&app, "game", &alice, "one").await,
+        put_blob(&app, "game", &alice, "two").await,
+    );
+    for (branch, path, content, rev) in [
+        (None, "a.txt", &one, None),
+        (Some("topic"), "a.txt", &two, Some(1)),
+        (Some("topic"), "b.txt", &one, None),
+    ] {
+        if branch.is_some() && rev == Some(1) {
+            let made = serde_json::json!({"name": "topic"});
+            let r = send(
+                &app,
+                "POST",
+                &format!("{base}/branches"),
+                &alice,
+                Some(made),
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::OK);
+        }
+        let body = checkin(branch, path, content, rev);
+        let r = send(&app, "POST", &format!("{base}/checkin"), &alice, Some(body)).await;
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/compare?head=topic"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let c: api::BranchComparison = body_json(r).await;
+    assert_eq!((c.base.as_str(), c.head.as_str()), ("main", "topic"));
+    assert_eq!(
+        (c.ahead, c.behind, c.status),
+        (2, 0, api::CompareStatus::Ahead)
+    );
+    assert_eq!(c.merge_base.as_deref(), Some(c.base_commit.as_str()));
+    assert_eq!(
+        (c.max_commits, c.max_changes, c.counts_capped, c.truncated),
+        (1000, 1000, false, false)
+    );
+    assert_eq!(
+        c.changes
+            .iter()
+            .map(|c| (c.path.as_str(), c.kind))
+            .collect::<Vec<_>>(),
+        [
+            ("a.txt", api::CompareChangeKind::Modified),
+            ("b.txt", api::CompareChangeKind::Added)
+        ]
+    );
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/compare?base=topic&head=main"),
+        &alice,
+        None,
+    )
+    .await;
+    let c: api::BranchComparison = body_json(r).await;
+    assert_eq!(
+        (c.ahead, c.behind, c.status),
+        (0, 2, api::CompareStatus::Behind)
+    );
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/compare?head=nope"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    let r = send(&app, "GET", &format!("{base}/compare"), &alice, None).await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/summary?branch=topic"),
+        &alice,
+        None,
+    )
+    .await;
+    let topic: api::RepoSummary = body_json(r).await;
+    let r = send(&app, "GET", &format!("{base}/summary"), &alice, None).await;
+    let main: api::RepoSummary = body_json(r).await;
+    assert_eq!((main.files, topic.files), (1, 2));
+    assert_eq!(topic.default_branch, "main");
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/summary?branch=nope"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+    let r = send(&app, "GET", &format!("{base}/branches"), &alice, None).await;
+    let listed: Vec<api::Branch> = body_json(r).await;
+    assert!(listed.iter().all(|b| b.updated_at.is_some()));
+    let r = send(&app, "GET", &format!("{base}/branches/topic"), &alice, None).await;
+    let one_branch: api::Branch = body_json(r).await;
+    assert_eq!(one_branch.updated_at, listed[1].updated_at);
 }
 
 #[tokio::test]

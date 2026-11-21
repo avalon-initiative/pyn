@@ -7819,6 +7819,85 @@
         "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
+    "/v1/repos/{owner}/{name}/compare": {
+      "get": {
+        "tags": [
+          "branch_api"
+        ],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.\nHow far `head` is from `base`: commits ahead and behind, and the paths it changes since their merge base.",
+        "operationId": "compare",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "base",
+            "in": "query",
+            "description": "a branch, or a commit id or abbreviation; the default branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "head",
+            "in": "query",
+            "description": "a branch, or a commit id or abbreviation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BranchComparison"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a branch with no commits or a history too long to walk, ambiguous_commit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "commit_not_found: neither a branch nor a commit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      }
+    },
     "/v1/repos/{owner}/{name}/content": {
       "get": {
         "tags": [],
@@ -9873,6 +9952,15 @@
               "type": "integer",
               "minimum": 0
             }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "description": "the branch the file counts and time describe; the default branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -9881,6 +9969,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RepoSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -12078,6 +12176,96 @@
           },
           "name": {
             "type": "string"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The committed time of the head commit; absent for a branch with no commits."
+          }
+        }
+      },
+      "BranchComparison": {
+        "type": "object",
+        "description": "How far a head is from a base. Commits are counted as git does: the head's ahead are those reachable from it and\nnot from the base, the behind the reverse.",
+        "required": [
+          "base",
+          "base_commit",
+          "head",
+          "head_commit",
+          "merge_base",
+          "status",
+          "ahead",
+          "behind",
+          "max_commits",
+          "counts_capped",
+          "changes",
+          "max_changes",
+          "truncated"
+        ],
+        "properties": {
+          "ahead": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Commits in the head and not in the base, at most `max_commits`.",
+            "minimum": 0
+          },
+          "base": {
+            "type": "string",
+            "description": "The base as named in the request (the default branch when none was given)."
+          },
+          "base_commit": {
+            "type": "string"
+          },
+          "behind": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Commits in the base and not in the head, at most `max_commits`.",
+            "minimum": 0
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompareChange"
+            },
+            "description": "Paths the head adds, modifies or deletes relative to the merge base, by path, at most `max_changes`."
+          },
+          "counts_capped": {
+            "type": "boolean",
+            "description": "Either count reached `max_commits`: the real number is larger and `changes` covers only the oldest commits."
+          },
+          "head": {
+            "type": "string"
+          },
+          "head_commit": {
+            "type": "string"
+          },
+          "max_changes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "max_commits": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The limit on `ahead`, `behind` and the commits whose paths are examined.",
+            "minimum": 0
+          },
+          "merge_base": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The first (by id) of the lowest common ancestors; `changes` are measured from it. Absent for unrelated histories."
+          },
+          "status": {
+            "$ref": "#/components/schemas/CompareStatus"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "`changes` is incomplete: more paths changed than listed, or more commits than `max_commits`."
           }
         }
       },
@@ -12408,6 +12596,39 @@
             "description": "Pass as `before` to fetch the next, older page; null on the last page."
           }
         }
+      },
+      "CompareChange": {
+        "type": "object",
+        "description": "A path the head changes relative to the merge base.",
+        "required": [
+          "path",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/CompareChangeKind"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "CompareChangeKind": {
+        "type": "string",
+        "enum": [
+          "added",
+          "modified",
+          "deleted"
+        ]
+      },
+      "CompareStatus": {
+        "type": "string",
+        "enum": [
+          "identical",
+          "ahead",
+          "behind",
+          "diverged"
+        ]
       },
       "CreateBranchRequest": {
         "type": "object",

@@ -131,9 +131,10 @@ schemas only.
 
 | Request | Returns |
 | --- | --- |
-| `GET /v1/repos/{owner}/{name}/branches` | the branches, the default one first, then by name |
+| `GET /v1/repos/{owner}/{name}/branches` | the branches, the default one first, then by name; each has `name`, `commit`, `default`, `created_at`, `created_by` and `updated_at` (the committed time of its head commit, absent for a branch with no commits) |
+| `GET .../compare?base=&head=` | how far `head` is from `base` ([below](#comparing-branches)) |
 | `POST .../branches` `{name, start?}` | the new branch; `start` is a branch name, or a commit id or abbreviation, the default branch's head if omitted |
-| `GET .../branches/{branch}` | one branch (`404 branch_not_found`); a slash in the name may be sent as is or as `%2F` |
+| `GET .../branches/{branch}` | one branch, with `updated_at` (`404 branch_not_found`); a slash in the name may be sent as is or as `%2F` |
 | `PATCH .../branches/{branch}` `{name}` | the renamed branch |
 | `DELETE .../branches/{branch}?force=` | `204`; `409 branch_not_merged` without `force` for a branch that is not on the default branch |
 
@@ -142,8 +143,29 @@ The lock request is refused with `not_exclusive` unless the path is exclusive un
 default branch's. The response to checking in or restoring `.pyn/pyn.toml` on the default branch carries `stranded` (so does a [push](commits.md#pushed-commits) with a policy commit), and
 `policy/preview` and the merge report carry it too ([stranded versions](pyn-toml.md#stranded-versions)). `commits`, `snapshot`, `tree`, `files`,
 `history` and `content` take an optional `branch` query parameter; `snapshot` takes either `commit` or `branch`. Every one
-of them uses the default branch when none is named. `summary` describes the default branch and counts all branches. An
+of them uses the default branch when none is named. `summary` takes it too and then describes that branch's files (`branch_count` still counts all branches; locks and activity are repository-wide, because lock and audit events do not record a branch). An
 unknown branch is `404 branch_not_found`.
+
+### Comparing branches
+
+`GET /v1/repos/{owner}/{name}/compare?base=<ref>&head=<ref>` needs `read` (a public repository is readable without credentials, like
+the branch listing). `head` is required; `base` defaults to the default branch. Each is a branch name or a commit id or abbreviation
+of at least 4 digits, as in a [merge](merging.md); one that is neither is `404 commit_not_found`, and a branch with no commits
+yet is `400 invalid_request`. The answer:
+
+- `base`, `base_commit`, `head`, `head_commit`: the two sides as resolved.
+- `ahead` and `behind`: the commits reachable from the head and not from the base, and the reverse, as git counts them with
+  `base...head`. `status` summarises them: `identical`, `ahead`, `behind` or `diverged`. A merged branch is `behind` or `identical`.
+- `merge_base`: the first, by id, of the lowest common ancestors the [merge](merging.md) uses (null for unrelated histories).
+- `changes`: the paths the head adds, modifies or deletes relative to the merge base, by path, as `{path, kind}` with `kind` one
+  of `added`, `modified`, `deleted`. A path changed and changed back is not listed; a mode change counts as modified.
+
+The work is bounded for long histories. `ahead` and `behind` stop at `max_commits` (1000) and then `counts_capped` is true, the
+real counts being larger. `changes` is read from the head's commits that the base lacks, oldest first, at most `max_commits` of
+them, so past that cap it describes only those commits; it lists at most `max_changes` (1000) paths, and examines at most 10,000
+candidate paths. Whenever the list is not the whole set, `truncated` is true. A history that makes the walk examine more than
+1,000,000 commits is `400 invalid_request`. The request counts with the other expensive reads
+([limits](limits.md)).
 
 ## Command line
 

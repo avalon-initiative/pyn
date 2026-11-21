@@ -985,7 +985,7 @@ A read of a public repository skips the grant check: any caller, signed out or w
 | Resource and level | Routes |
 | --- | --- |
 | `metadata:read` | `GET /v1/repos/{owner}/{name}`, `.../me` |
-| `contents:read` | usage, files, tree, summary, content, history, verify, commits, snapshot, branches, fetch, objects, merge preview, and the LFS batch and object download (an upload batch needs `contents:write`, checked in the handler) |
+| `contents:read` | usage, files, tree, summary, content, history, verify, commits, snapshot, branches, compare, fetch, objects, merge preview, and the LFS batch and object download (an upload batch needs `contents:write`, checked in the handler) |
 | `contents:write` | checkin, changesets, restore, branch create, rename and delete, push, merge, object upload, chunk, missing and assemble, LFS object upload, verify and tus |
 | `locks:read` | the lock lists: `.../locks`, the lock change stream `.../locks/events`, LFS lock list and verify |
 | `locks:write` | checkout, release, LFS lock create and unlock |

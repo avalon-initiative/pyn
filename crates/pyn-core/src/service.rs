@@ -1,5 +1,6 @@
 const TREE_PAGE: usize = 5_000;
 
+mod compare;
 mod fetch;
 mod lfs;
 mod lfs_tus;
@@ -15,6 +16,7 @@ pub use lfs_tus::{
 };
 pub use uploads::DEFAULT_UNREFERENCED_UPLOAD_BYTES;
 
+pub use compare::{COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeKind, Comparison, PathChange};
 pub use fetch::{
     FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES, FETCH_MAX_LIMIT, FetchPage,
     FetchQuery, FetchedCommit,
@@ -25,7 +27,7 @@ pub use verify::VERIFY_BUDGET;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 
 use crate::access::{Permission, Principal};
 use crate::audit::{
@@ -1589,8 +1591,18 @@ impl RepoService {
 
     /// Counts, live locks and the newest `activity_limit` file and lock events. The counts are stored per commit.
     pub async fn summary(&self, activity_limit: usize) -> Result<RepoSummary> {
+        self.summary_on(None, activity_limit).await
+    }
+
+    /// `summary` with the file counts and time of `branch` (the default branch when `None`); locks and activity stay
+    /// repository-wide. `BranchNotFound` for an unknown branch.
+    pub async fn summary_on(
+        &self,
+        branch: Option<&str>,
+        activity_limit: usize,
+    ) -> Result<RepoSummary> {
         let mut counts = HeadCounts::default();
-        if let Some(head) = self.default_head().await? {
+        if let Some(head) = self.head_of(branch.unwrap_or(DEFAULT_BRANCH)).await? {
             counts = self.meta.head_counts(&self.repo, &head).await?;
             counts.exclusive_files = self.live_exclusive(&head, &counts).await?;
         }
@@ -1960,6 +1972,15 @@ impl RepoService {
     /// The head of `branch`; `BranchNotFound` unless it is the default branch, which exists from the start.
     pub async fn head_of(&self, branch: &str) -> Result<Option<ObjectId>> {
         Ok(self.branch(branch).await?.head)
+    }
+
+    /// The committed time of the branch's head commit; `None` for a branch with no commits.
+    pub async fn branch_updated_at(&self, branch: &Branch) -> Result<Option<DateTime<Utc>>> {
+        let Some(head) = &branch.head else {
+            return Ok(None);
+        };
+        let commit = self.meta.get_commit(&self.repo, head).await?;
+        Ok(commit.map(|c| c.created_at))
     }
 
     /// A branch by name. The default branch always exists, empty until its first commit.
