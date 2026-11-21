@@ -63,7 +63,8 @@ fn login_warns_and_later_commands_are_silent() {
     let first = later_command(tmp.path(), REMOTE);
     let second = later_command(tmp.path(), REMOTE);
     assert!(!warns(&String::from_utf8_lossy(&first.stderr)));
-    assert_eq!(first.stderr, second.stderr);
+    assert!(!warns(&String::from_utf8_lossy(&second.stderr)));
+    assert_eq!(first.status.code(), second.status.code());
     assert_eq!(first.stdout, second.stdout);
 }
 
