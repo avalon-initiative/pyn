@@ -11,17 +11,74 @@ use crate::repo_tool::{self, RepoTool};
 use crate::workspace::{Settings, Workspace, resolve};
 use crate::{RepoCommand, address, credentials, git_home, http_transport, userconfig};
 
-pub(crate) const POLICY: &str = "\
-# Collaboration policy: which paths are shared (merged) and which are exclusive (locked).
+/// The starter policy; a test keeps it equal to the server's `DEFAULT_INITIAL_POLICY`.
+pub(crate) const POLICY: &str = r#"# Collaboration policy: which paths are shared (merged, edited concurrently) and which are exclusive
+# (one editor at a time, through a lock). A path no entry covers uses `default`.
+# Most specific wins: an exact file, then a glob, then a folder (the deepest folder wins).
+# Between two globs, exclusive wins. See docs/concepts/pyn-toml.md.
 [meta]
-default = \"shared\"
+default = "shared"
 
-# [exclusive]
-# paths = [
-#   \"Content/\",
-#   \"**/*.uasset\",
-# ]
-";
+# File kinds that cannot be merged are exclusive. Add or remove entries as your project needs.
+[exclusive]
+paths = [
+  # Policy for this file itself: an exact entry beats the `**/*.toml` glob below.
+  ".pyn/pyn.toml",
+
+  # 3D models and art
+  "**/*.obj",
+  "**/*.fbx",
+  "**/*.blend",
+  "**/*.glb",
+  "**/*.psd",
+  "**/*.kra",
+  "**/*.ai",
+
+  # Images
+  "**/*.png",
+  "**/*.jpg",
+  "**/*.jpeg",
+  "**/*.tga",
+  "**/*.exr",
+  "**/*.tif",
+  "**/*.tiff",
+
+  # Audio and video
+  "**/*.wav",
+  "**/*.mp3",
+  "**/*.ogg",
+  "**/*.flac",
+  "**/*.mp4",
+  "**/*.mov",
+
+  # Engine assets
+  "**/*.uasset",
+  "**/*.umap",
+
+  # Archives and documents
+  "**/*.zip",
+  "**/*.7z",
+  "**/*.rar",
+  "**/*.docx",
+  "**/*.xlsx",
+  "**/*.pptx",
+  "**/*.pdf",
+
+  # Compiled
+  "**/*.dll",
+  "**/*.exe",
+  "**/*.so",
+  "**/*.dylib",
+  "**/*.a",
+  "**/*.lib",
+]
+
+# An example of a shared kind; `.pyn/pyn.toml` above is the exception to this glob.
+[shared]
+paths = [
+  "**/*.toml",
+]
+"#;
 
 #[derive(Debug, Args, PartialEq, Eq)]
 pub struct InitArgs {
@@ -164,6 +221,11 @@ fn create_on_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_offline_starter_equals_the_servers() {
+        assert_eq!(POLICY, pyn_core::rules::DEFAULT_INITIAL_POLICY);
+    }
 
     #[test]
     fn only_yes_answers_create() {

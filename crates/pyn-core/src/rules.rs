@@ -18,8 +18,74 @@ pub enum Mode {
 /// Where a repository keeps its policy file.
 pub const POLICY_PATH: &str = ".pyn/pyn.toml";
 
-/// The policy a new repository starts with when the operator configures none: nothing needs a lock.
-pub const DEFAULT_INITIAL_POLICY: &str = "[meta]\ndefault = \"shared\"\n";
+/// The policy a new repository starts with when the operator configures none: shared, with the unmergeable kinds locked.
+pub const DEFAULT_INITIAL_POLICY: &str = r#"# Collaboration policy: which paths are shared (merged, edited concurrently) and which are exclusive
+# (one editor at a time, through a lock). A path no entry covers uses `default`.
+# Most specific wins: an exact file, then a glob, then a folder (the deepest folder wins).
+# Between two globs, exclusive wins. See docs/concepts/pyn-toml.md.
+[meta]
+default = "shared"
+
+# File kinds that cannot be merged are exclusive. Add or remove entries as your project needs.
+[exclusive]
+paths = [
+  # Policy for this file itself: an exact entry beats the `**/*.toml` glob below.
+  ".pyn/pyn.toml",
+
+  # 3D models and art
+  "**/*.obj",
+  "**/*.fbx",
+  "**/*.blend",
+  "**/*.glb",
+  "**/*.psd",
+  "**/*.kra",
+  "**/*.ai",
+
+  # Images
+  "**/*.png",
+  "**/*.jpg",
+  "**/*.jpeg",
+  "**/*.tga",
+  "**/*.exr",
+  "**/*.tif",
+  "**/*.tiff",
+
+  # Audio and video
+  "**/*.wav",
+  "**/*.mp3",
+  "**/*.ogg",
+  "**/*.flac",
+  "**/*.mp4",
+  "**/*.mov",
+
+  # Engine assets
+  "**/*.uasset",
+  "**/*.umap",
+
+  # Archives and documents
+  "**/*.zip",
+  "**/*.7z",
+  "**/*.rar",
+  "**/*.docx",
+  "**/*.xlsx",
+  "**/*.pptx",
+  "**/*.pdf",
+
+  # Compiled
+  "**/*.dll",
+  "**/*.exe",
+  "**/*.so",
+  "**/*.dylib",
+  "**/*.a",
+  "**/*.lib",
+]
+
+# An example of a shared kind; `.pyn/pyn.toml` above is the exception to this glob.
+[shared]
+paths = [
+  "**/*.toml",
+]
+"#;
 
 /// The largest policy file the server reads or parses.
 pub const MAX_POLICY_BYTES: u64 = 1 << 20;
@@ -505,6 +571,26 @@ paths = ["Content/docs/", "**/*.md", "docs/"]
         ] {
             let err = Rules::from_toml(bad).unwrap_err();
             assert!(matches!(err, PynError::InvalidRules(_)), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_starter_locks_unmergeable_kinds_and_shares_the_rest() {
+        let rules = Rules::from_toml(DEFAULT_INITIAL_POLICY).unwrap();
+        let mode = |path: &str| rules.mode_for(&p(path));
+        for exclusive in [".pyn/pyn.toml", "x.png", "a/b.psd", "m.uasset", "bin/a.dll"] {
+            assert_eq!(mode(exclusive), Mode::Exclusive, "{exclusive}");
+        }
+        for shared in ["notes.txt", "src/a.rs", "a/b.toml", "Cargo.toml"] {
+            assert_eq!(mode(shared), Mode::Shared, "{shared}");
+        }
+    }
+
+    #[test]
+    fn no_policy_file_or_no_default_key_stays_exclusive() {
+        for text in ["", "[shared]\npaths = [\"docs/\"]\n"] {
+            let rules = Rules::from_toml(text).unwrap();
+            assert_eq!(rules.mode_for(&p("notes.txt")), Mode::Exclusive);
         }
     }
 }

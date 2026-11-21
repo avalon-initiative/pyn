@@ -16,7 +16,7 @@ use pyn_fs::FsObjectStore;
 use pyn_oidc::{HttpOidcProvider, OidcConfig};
 use pyn_postgres::{PgMetadataStore, TimeSource};
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
-use pyn_server::email::LogEmailSender;
+use pyn_server::email::{MailerSetting, check_log_mailer_bind};
 use pyn_server::observe::{LogConfig, LogFormat, LoggedAudit};
 use pyn_server::passwords::PooledPasswords;
 use pyn_server::request_limits::RequestLimits;
@@ -476,6 +476,19 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let mailer =
+        MailerSetting::from_env(|name| std::env::var(name).ok()).map_err(anyhow::Error::msg)?;
+    check_log_mailer_bind(
+        &addr,
+        mailer.is_log(),
+        strict_flag("PYN_MAILER_LOG_ALLOW_NON_LOOPBACK", false)?,
+    )
+    .map_err(anyhow::Error::msg)?;
+    if mailer.is_log() {
+        tracing::warn!(
+            "PYN_MAILER=log is on: every email, verification links included, is written to the log instead of sent; for testing only"
+        );
+    }
     let defaults = AccessConfig::default();
     let limit_defaults = RateLimits::default();
     let config = AccessConfig {
@@ -488,7 +501,11 @@ async fn main() -> anyhow::Result<()> {
             Err(_) => defaults.access_mode,
         },
         session_days: number("PYN_SESSION_DAYS", defaults.session_days)?,
-        require_email_verification: flag_or("PYN_EMAIL_VERIFICATION", true),
+        require_email_verification: pyn_server::email::email_verification(
+            strict_flag("PYN_EMAIL_VERIFICATION", mailer.is_configured())?,
+            &mailer,
+        )
+        .map_err(anyhow::Error::msg)?,
         require_approval: flag("PYN_REQUIRE_APPROVAL"),
         limits: RateLimits {
             sign_in_per_account: number(
@@ -561,16 +578,6 @@ async fn main() -> anyhow::Result<()> {
     let parallelism = std::thread::available_parallelism().map_or(2, |n| n.get());
     let hashes = number("PYN_PASSWORD_HASHES", parallelism)?;
     anyhow::ensure!(hashes >= 1, "PYN_PASSWORD_HASHES must be at least 1");
-    match std::env::var("PYN_EMAIL").as_deref() {
-        Ok("log") | Err(_) => {}
-        Ok(other) => anyhow::bail!("unknown PYN_EMAIL {other:?}; only \"log\" is available"),
-    }
-    let log_email_bodies = flag("PYN_EMAIL_LOG_BODIES");
-    if log_email_bodies {
-        tracing::warn!(
-            "PYN_EMAIL_LOG_BODIES is on: verification links are written to the log; for local development only"
-        );
-    }
     let supplied_token = std::env::var("PYN_SETUP_TOKEN").ok();
     let setup_token = match &supplied_token {
         Some(token) => token.clone(),
@@ -596,7 +603,7 @@ async fn main() -> anyhow::Result<()> {
             .with_registry(meta.clone())
             .with_audit(audit.clone())
             .with_rate_limits(limits)
-            .with_email(Arc::new(LogEmailSender::new(log_email_bodies)))
+            .with_email(mailer.sender().map_err(anyhow::Error::msg)?)
             .with_passwords(Arc::new(PooledPasswords::new(hashes)))
             .with_setup_token(&setup_token)?,
     );

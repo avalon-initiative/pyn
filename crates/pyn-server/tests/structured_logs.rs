@@ -163,16 +163,16 @@ async fn request_id_round_trip() {
     let (cap, _guard) = capture(LogFormat::Json);
     let app = app(LogConfig::default());
 
-    let res = get(&app, "/healthz", &[("x-request-id", "trace-42.abc")]).await;
+    let res = get(&app, "/nowhere", &[("x-request-id", "trace-42.abc")]).await;
     assert_eq!(res.headers()["x-request-id"], "trace-42.abc");
 
-    let res = get(&app, "/healthz", &[]).await;
+    let res = get(&app, "/nowhere", &[]).await;
     let generated = res.headers()["x-request-id"].to_str().unwrap();
     assert_eq!(generated.len(), 32);
     assert!(generated.bytes().all(|b| b.is_ascii_hexdigit()));
 
     for bad in ["has space", &"x".repeat(129)] {
-        let res = get(&app, "/healthz", &[("x-request-id", bad)]).await;
+        let res = get(&app, "/nowhere", &[("x-request-id", bad)]).await;
         let replaced = res.headers()["x-request-id"].to_str().unwrap();
         assert_ne!(replaced, bad);
         assert_eq!(replaced.len(), 32);
@@ -238,7 +238,7 @@ async fn client_details_are_opt_in() {
         client: true,
     });
     let mut req = Request::builder()
-        .uri("/healthz")
+        .uri("/nowhere")
         .header("user-agent", "pyn-test/1.0")
         .body(Body::empty())
         .unwrap();
@@ -270,14 +270,14 @@ async fn text_is_the_default_format() {
     assert_eq!(LogFormat::default(), LogFormat::Text);
     let (cap, _guard) = capture(LogFormat::default());
     let app = app(LogConfig::default());
-    get(&app, "/healthz", &[]).await;
+    get(&app, "/nowhere", &[]).await;
     let mut out = cap.text();
     while let Some(start) = out.find('\x1b') {
         let end = start + out[start..].find('m').unwrap() + 1;
         out.replace_range(start..end, "");
     }
     assert!(
-        out.contains("request_id=") && out.contains("route=\"/healthz\""),
+        out.contains("request_id=") && out.contains("route=\"unmatched\""),
         "{out}"
     );
     assert!(serde_json::from_str::<Value>(out.lines().next().unwrap()).is_err());
@@ -306,4 +306,22 @@ async fn audit_lines_name_the_event_without_its_detail() {
     assert_eq!(lines[0]["actor"], "root");
     assert_eq!(lines[0]["action"], "checkout");
     assert!(!cap.text().contains("example.com"));
+}
+
+#[tokio::test]
+async fn health_checks_are_not_logged_but_other_requests_are() {
+    for format in [LogFormat::Json, LogFormat::Text] {
+        let (cap, _guard) = capture(format);
+        let app = app(LogConfig::default());
+        let res = get(&app, "/healthz", &[]).await;
+        assert!(res.headers().contains_key("x-request-id"));
+        assert!(cap.text().is_empty(), "{}", cap.text());
+        get(&app, "/nowhere", &[]).await;
+        let out = cap.text();
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(
+            out.contains("unmatched") && !out.contains("/healthz"),
+            "{out}"
+        );
+    }
 }

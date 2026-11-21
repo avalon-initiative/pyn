@@ -745,7 +745,7 @@ enum RepoCommand {
         /// Locks one user may hold at once; the server's default if omitted, and a limit in the policy file wins.
         #[arg(long)]
         max_locks: Option<u32>,
-        /// Use this file as the repository's first `.pyn/pyn.toml` instead of the default (everything exclusive).
+        /// Use this file as the repository's first `.pyn/pyn.toml` instead of the starter policy.
         #[arg(long, conflicts_with = "no_policy")]
         policy: Option<PathBuf>,
         /// Create the repository without a `.pyn/pyn.toml`; the repository's initial policy applies until one is added.
@@ -1892,16 +1892,15 @@ fn run(cli: Cli) -> Result<()> {
     };
     let base = server.trim_end_matches('/').to_string();
     let token = credentials::token_for(cli.token, &base)?;
-    if token.is_some()
+    if matches!(cli.command, Command::Login { .. }) {
+        credentials::warn_cleartext(&base, true);
+    } else if token.is_some()
         || matches!(
             cli.command,
-            Command::Login { .. }
-                | Command::Setup { .. }
-                | Command::Register { .. }
-                | Command::Password { .. }
+            Command::Setup { .. } | Command::Register { .. } | Command::Password { .. }
         )
     {
-        credentials::warn_if_cleartext(&base);
+        credentials::warn_cleartext(&base, false);
     }
     let repo_name = repo.clone();
     let server_url = base.clone();
@@ -3619,8 +3618,6 @@ fn restore(
 
 const POLICY_PATH: &str = ".pyn/pyn.toml";
 
-const DEFAULT_POLICY: &str = "[meta]\ndefault = \"exclusive\"\n";
-
 /// Checks in the repository's first policy file, which the server accepts without a lock.
 fn submit_policy(api: &Api, repo: &str, bytes: Vec<u8>) -> Result<()> {
     let put: api::PutObjectResponse = api
@@ -3680,7 +3677,7 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 (Some(file), _) => Some(
                     std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?,
                 ),
-                (None, false) => Some(DEFAULT_POLICY.as_bytes().to_vec()),
+                (None, false) => Some(init_pyn::POLICY.as_bytes().to_vec()),
                 (None, true) => None,
             };
             let (owner, name) = match name.split_once('/') {
@@ -4387,6 +4384,7 @@ fn config_command(
             let settings =
                 userconfig::prompt(yours, &mut std::io::stdin().lock(), &mut std::io::stderr())?;
             settings.save(user_config)?;
+            warn_stored_server("server", &settings);
             println!("wrote {}", user_config.display());
         }
         ConfigCommand::List { global, local } => {
@@ -4424,16 +4422,24 @@ fn config_command(
                 let mut settings = yours.clone();
                 settings.set(&key, value)?;
                 settings.save(user_config)?;
+                warn_stored_server(&key, &settings);
             } else {
                 let w =
                     ws.context("not in a workspace; run `pyn clone <dir>` first, or use --global")?;
                 let mut settings = mine.clone();
                 settings.set(&key, value)?;
                 settings.save(&w.config_path())?;
+                warn_stored_server(&key, &settings);
             }
         }
     }
     Ok(())
+}
+
+fn warn_stored_server(key: &str, settings: &Settings) {
+    if let ("server", Some(server)) = (key, &settings.server) {
+        credentials::warn_cleartext(server, true);
+    }
 }
 
 /// The server ends the sign-in tokens `pyn login` issued when a password changes. If this CLI's token was one,

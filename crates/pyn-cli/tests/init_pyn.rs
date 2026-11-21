@@ -96,17 +96,15 @@ fn init_creates_the_folder_and_the_workspace_files() {
 }
 
 #[test]
-fn the_policy_file_is_valid_and_shares_every_path() {
+fn the_policy_file_is_the_servers_starter() {
     let rig = Rig::new();
     rig.ok(&rig.work(), &["init"]);
     let policy = fs::read_to_string(rig.work().join(".pyn/pyn.toml")).unwrap();
-    assert!(policy.contains("default = \"shared\""), "{policy}");
-    assert!(policy.contains("# [exclusive]"), "{policy}");
+    assert_eq!(policy, pyn_core::rules::DEFAULT_INITIAL_POLICY);
     let rules = pyn_core::Rules::from_toml(&policy).unwrap();
-    assert_eq!(
-        rules.mode_for(&pyn_core::RepoPath::new("anything/at/all.bin").unwrap()),
-        pyn_core::Mode::Shared
-    );
+    let mode = |p: &str| rules.mode_for(&pyn_core::RepoPath::new(p).unwrap());
+    assert_eq!(mode("anything/at/all.bin"), pyn_core::Mode::Shared);
+    assert_eq!(mode("art/hero.png"), pyn_core::Mode::Exclusive);
 }
 
 #[test]

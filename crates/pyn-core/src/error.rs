@@ -202,6 +202,8 @@ pub enum PynError {
     ExternalSignInFailed(String),
     #[error("the sign-in provider could not be reached: {0}")]
     ExternalProviderUnavailable(String),
+    #[error("the email could not be delivered: {0}")]
+    EmailDeliveryFailed(String),
     #[error(
         "no account is linked to that provider identity; sign in with your password and link it in your account settings"
     )]
@@ -423,6 +425,7 @@ impl PynError {
             Self::OidcNotConfigured => "oidc_not_configured",
             Self::ExternalSignInFailed(_) => "external_sign_in_failed",
             Self::ExternalProviderUnavailable(_) => "external_provider_unavailable",
+            Self::EmailDeliveryFailed(_) => "email_delivery_failed",
             Self::ExternalNotLinked => "external_account_not_linked",
             Self::ExternalIdentityTaken => "external_identity_taken",
             Self::ExternalIdentityNotFound(_) => "external_identity_not_found",
