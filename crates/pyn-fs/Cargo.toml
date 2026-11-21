@@ -19,6 +19,7 @@ futures-core = "0.3"
 futures-util = { version = "0.3.32", default-features = false }
 
 [dev-dependencies]
+pyn-core = { path = "../pyn-core", features = ["contract"] }
 pyn-object = { path = "../pyn-object" }
 tempfile = "3"
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }

@@ -86,6 +86,88 @@ directory, created exclusively, and links it into place without replacing an obj
 removed on every outcome, including a dropped connection. Temp files older than an hour, left by a process that died,
 are removed at start and every 15 minutes.
 
+## S3-compatible store
+
+`pyn-s3` implements `ObjectStore` for any S3-compatible service (AWS S3, DigitalOcean Spaces, Cloudflare R2, MinIO), so
+several server copies can share one bucket instead of a shared volume. It is provisional: the crate and its settings
+exist, and choosing it at server start, health reporting and migrating an existing filesystem store are separate work
+(decision #208, issues #1222 and #1223).
+
+The client is written in house on `reqwest` (rustls) with AWS Signature Version 4: no AWS SDK and no new runtime
+dependency. It sends only the headers it chooses: `Authorization`, `x-amz-date` and the plain full-payload
+`x-amz-content-sha256`, never `aws-chunked`, `x-amz-checksum-*` or `Expect: 100-continue`, which several S3-compatible
+services mishandle. Requests are virtual-host style (`https://<bucket>.<host>/<key>`) by default and path style
+(`https://<host>/<bucket>/<key>`) by option; `http://` endpoints are allowed for local test servers. Redirects are not
+followed. The secret key is never logged, and the settings' `Debug` output redacts it.
+
+Operations used: PutObject, GetObject (with `Range`), HeadObject, DeleteObject, and for a spooled put over 5 GiB the
+multipart calls (create, upload part, complete, abort). Nothing lists a bucket, so a key with no list permission is enough.
+The store sits behind `ChunkedStore`, so it only sees whole objects up to 1 MiB, chunks up to 4 MiB and manifests.
+
+### Keys
+
+An object is stored at `<prefix><first two hex digits>/<rest>`, the layout of the filesystem store, and a manifest beside
+it at the same key plus `.cm`. The optional prefix lets one bucket serve several installations. Compression is not
+applied: the bytes stored are the bytes of the object.
+
+### Why a put is hash-then-PUT
+
+The key is the content hash and S3 can neither rename nor create an object only if its key matches its bytes, so a put
+cannot stream into a temporary key and move it. The store reads the stream while hashing (the same hashing as the
+filesystem store) into memory up to a threshold (8 MiB by default), and past it into a temporary spool file
+(`.s3spool-` and a random 128-bit suffix in the configured directory). The declared length and the size limit are checked
+before any request, so a refused put sends nothing. Then one HeadObject on the final key: when the object exists nothing
+is uploaded and the put reports nothing created; otherwise one PutObject of the final key, from memory or from the spool
+file. Content over 5 GiB (the single-PUT limit) goes up by multipart upload from the spool file at the final key, in
+parts of 64 MiB or more, never more than 10000; a failed multipart upload is aborted. The spool file is removed on every
+exit, including a dropped connection, and spool files older than an hour, left by a process that died, are removed at start.
+Two servers putting the same new content at once both upload it and both report it created; the bytes are identical, so
+the object is the same.
+
+Reads use one GetObject with a `Range` header, clamped as the trait says; an object that does not exist is `None`.
+`exists` and `size` are one HeadObject (`exists` also looks for the manifest when the object is absent), and `delete`
+removes the object and its manifest. Chunks are not removed when an object is deleted, as with every store
+([garbage collection](#chunking)).
+
+### Failure behaviour
+
+Every request has a connect timeout and an idle timeout, and calls without a large body a total timeout. Connection
+errors, timeouts, `429` and `500`, `502`, `503` (including `SlowDown`) and `504` are retried with exponential backoff
+and jitter, five attempts by default. A put of identical content, a HEAD, a GET, a DELETE, an upload part and an abort are
+safe to repeat and are retried; creating and completing a multipart upload are not repeated blindly. Anything else is not
+retried. An unreachable or refusing store is a `storage_error` that names the operation, the HTTP status and the S3 error
+code, for example `S3 PutObject failed: HTTP 403 AccessDenied: Access Denied`. A failure while a read body is already
+streaming surfaces to the reader and is not retried.
+
+### Provider notes
+
+- A bucket's access policy decides what a HEAD of a missing key answers: without `s3:ListBucket` AWS answers `403`
+  rather than `404`, which this store reports as an error. Grant list permission on the bucket, or the store cannot tell
+  absent from forbidden.
+- DigitalOcean Spaces is the first hosted target. Spaces documents `x-amz-content-sha256` and ranged reads like S3; this
+  client avoids the behaviours the documentation is silent on (`aws-chunked`, `x-amz-checksum-*`,
+  `Expect: 100-continue`, conditional PUT, `UploadPartCopy`). Region for signing is the Space's region (`nyc3`, `ams3`);
+  the endpoint is `https://<region>.digitaloceanspaces.com`. Not yet confirmed against a real Space: run the opt-in suite
+  below with a throwaway Space.
+- Parts must be at least 5 MiB except the last, and a multipart upload holds provider storage until completed or aborted;
+  set a lifecycle rule that aborts incomplete uploads if a server can die mid-upload.
+
+### Tests
+
+`FsObjectStore`, `MemoryObjectStore` and `S3ObjectStore` all run one shared suite (`object_store_contract_tests!` in
+`pyn-core`, behind its `contract` feature). The S3 store runs it every time against an in-process S3 server (`s3s` with
+its filesystem backend, a dev dependency; no Docker), and against any real endpoint on request:
+
+```
+PYN_S3_TEST_ENDPOINT=https://nyc3.digitaloceanspaces.com PYN_S3_TEST_BUCKET=... \
+PYN_S3_TEST_ACCESS_KEY_ID=... PYN_S3_TEST_SECRET_ACCESS_KEY=... \
+cargo test -p pyn-s3 --test real_endpoint -- --ignored
+```
+
+`PYN_S3_TEST_REGION` (default `us-east-1`) and `PYN_S3_TEST_PATH_STYLE` (`true` for MinIO) are optional. Each test writes
+under its own random `pyn-s3-test/` prefix and leaves its objects there. The signing code is checked against the
+published Signature Version 4 examples for S3.
+
 ## Migration from SHA-256 content hashes
 
 Before decision #245 content was keyed by the plain SHA-256 of its bytes. At startup against PostgreSQL the server

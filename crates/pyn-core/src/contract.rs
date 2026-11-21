@@ -89,6 +89,8 @@ mod profiles;
 pub use profiles::*;
 mod two_factor;
 pub use two_factor::*;
+mod object_store;
+pub use object_store::*;
 
 struct Harness {
     store: Store,
