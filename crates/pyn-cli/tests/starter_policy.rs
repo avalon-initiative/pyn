@@ -57,3 +57,62 @@ fn no_policy_leaves_the_operators_configured_policy_in_force() {
     let err = lock(&server, "x.png").expect_err("neither the starter nor a client default applies");
     assert!(err.contains("not_exclusive"), "{err}");
 }
+
+fn created_with(extra: &[&str], input: Option<&str>) -> (Server, std::process::Output) {
+    let server = Server::with_game_env(&[]);
+    let cwd = server.dir("work");
+    let args = [&["repo", "create", "plain"][..], extra].concat();
+    let out = server.run_with(&cwd, "alice", &args, input);
+    (server, out)
+}
+
+fn default_of(server: &Server) -> String {
+    let cwd = server.dir("work");
+    server.ok(
+        &cwd,
+        "alice",
+        &[&["get", ".pyn/pyn.toml"][..], &REPO].concat(),
+    )
+}
+
+#[test]
+fn the_default_flag_sets_the_starter_default_and_the_lock_behaviour() {
+    let (server, out) = created_with(&["--default", "exclusive"], None);
+    assert!(out.status.success());
+    assert!(default_of(&server).contains("default = \"exclusive\""));
+    lock(&server, "notes.txt").expect("an exclusive default needs a lock");
+    lock(&server, "x.png").expect("the listed kinds stay exclusive");
+
+    let (server, out) = created_with(&["--default", "shared"], None);
+    assert!(out.status.success());
+    assert!(default_of(&server).contains("default = \"shared\""));
+    let err = lock(&server, "notes.txt").expect_err("shared needs no lock");
+    assert!(err.contains("not_exclusive"), "{err}");
+}
+
+#[test]
+fn without_a_terminal_nothing_is_asked_and_shared_applies() {
+    let (server, out) = created_with(&[], Some("exclusive\n"));
+    assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("shared (edits"));
+    assert_eq!(default_of(&server), pyn_core::rules::DEFAULT_INITIAL_POLICY);
+}
+
+#[test]
+fn the_default_flag_conflicts_with_policy_options_and_rejects_bad_values() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("p.toml");
+    std::fs::write(&file, "[meta]\ndefault = \"shared\"\n").unwrap();
+    let file = file.to_str().unwrap();
+    for extra in [
+        vec!["--default", "shared", "--policy", file],
+        vec!["--default", "shared", "--no-policy"],
+        vec!["--default", "sometimes"],
+    ] {
+        let (server, out) = created_with(&extra, None);
+        assert_eq!(out.status.code(), Some(129), "{extra:?}");
+        let cwd = server.dir("work");
+        let list = server.ok(&cwd, "alice", &["repo", "list"]);
+        assert!(!list.contains("plain"), "nothing was created: {list}");
+    }
+}

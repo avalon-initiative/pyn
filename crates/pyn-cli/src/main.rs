@@ -751,6 +751,10 @@ enum RepoCommand {
         /// Create the repository without a `.pyn/pyn.toml`; the repository's initial policy applies until one is added.
         #[arg(long)]
         no_policy: bool,
+        /// Whether paths no policy entry covers are `shared` or `exclusive` in the starter policy. Asked in a terminal
+        /// when omitted; `shared` otherwise. Not with `--policy` or `--no-policy`.
+        #[arg(long, value_enum, conflicts_with_all = ["policy", "no_policy"])]
+        default: Option<init_pyn::DefaultMode>,
     },
     /// List the repositories you belong to.
     List {
@@ -3672,12 +3676,21 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             max_locks,
             policy,
             no_policy,
+            default,
         } => {
             let policy = match (policy, no_policy) {
                 (Some(file), _) => Some(
                     std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?,
                 ),
-                (None, false) => Some(init_pyn::POLICY.as_bytes().to_vec()),
+                (None, false) => {
+                    let mode = init_pyn::choose_default(
+                        default,
+                        interactive(),
+                        &mut std::io::stdin().lock(),
+                        &mut std::io::stderr(),
+                    )?;
+                    Some(init_pyn::starter_policy(mode).into_bytes())
+                }
                 (None, true) => None,
             };
             let (owner, name) = match name.split_once('/') {
