@@ -64,6 +64,7 @@ fn server(updates: Option<Arc<UpdateChecker>>) -> Router {
         trust_forwarded: false,
         updates,
         storage: Default::default(),
+        ready: Default::default(),
     })
 }
 

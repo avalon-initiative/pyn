@@ -75,6 +75,7 @@ async fn server_parts(
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     });
     (app, access)
 }

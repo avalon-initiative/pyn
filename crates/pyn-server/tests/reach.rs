@@ -361,6 +361,7 @@ fn state(mode: AccessMode) -> AppState {
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     }
 }
 

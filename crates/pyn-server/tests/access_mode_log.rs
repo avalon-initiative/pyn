@@ -80,6 +80,7 @@ async fn a_change_of_mode_is_logged() {
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     });
     let r = app
         .oneshot(

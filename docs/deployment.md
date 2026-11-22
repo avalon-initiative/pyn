@@ -157,7 +157,68 @@ pyn.example.com {
 ### Health and monitoring
 
 `GET /healthz` answers 200 once the process is up, including before setup. Docker uses it for the container health
-(`docker compose ps`); point an uptime monitor at the public URL. Watch free space on the `pyn-objects` and `pyn-db`
+(`docker compose ps`); point an uptime monitor at the public URL. It is a liveness check only and never looks at the
+database or the object store.
+
+`GET /readyz` is the readiness check: whether this copy should be sent traffic. It needs no credentials, is exempt from rate limits and
+answers before setup too. The body is `{"status": ..., "checks": [{"name": ..., "status": ..., "detail": ...}]}` with no secrets or addresses:
+
+| Answer | Meaning |
+| --- | --- |
+| `200` `status: "ok"` | The metadata store answered a cheap query (a 2 second limit, the answer reused for 3 seconds so a storm of probes costs one query) and the object store is not `degraded` (the probe behind `GET /v1/admin/settings`, about every 30 seconds for a bucket; the memory and filesystem stores have no probe and count as ok). |
+| `503` `status: "unavailable"` | A check failed; the one in `checks` with `status: "failing"` names it (`metadata_store` or `object_store`). |
+| `503` `status: "draining"` | The server got a stop signal and is shutting down ([below](#stopping-and-restarting)). |
+
+Which to point at what:
+
+- A container health check or a process supervisor that restarts on failure: `/healthz`. A database or bucket outage
+  should not restart pyn, because a restart fixes neither.
+- A load balancer, Kubernetes `readinessProbe` or other thing that decides where to send requests: `/readyz`, so a copy
+  that cannot reach its stores, or is shutting down, gets no traffic. With several copies a shared outage makes every copy
+  not ready at once; that is the check working, though a balancer that treats "none ready" as an emergency should be set
+  to keep serving or show its own error page.
+- A Kubernetes `livenessProbe` and `startupProbe`: `/healthz`.
+
+The balancer's own health check interval decides how soon it stops sending: the server answers `503` only on connections that are still open when
+it starts draining, and then closes its listener, so a new probe gets a refused connection, which balancers also count as a failure.
+
+### Stopping and restarting
+
+On `SIGTERM` (what `docker stop`, `docker compose stop`, systemd and Kubernetes send) or `SIGINT` (Ctrl-C) the server:
+
+1. marks itself draining, so `/readyz` answers `503 draining` at once, and stops accepting new connections;
+2. lets requests already running finish, for up to `PYN_SHUTDOWN_GRACE_SECS` (default 30; whole seconds; `0` means no
+   grace: stop at once after step 1);
+3. ends [lock streams](concepts/events.md) (`GET /v1/repos/{owner}/{name}/locks/events`) immediately with the page it has,
+   without holding the shutdown for the rest of its wait. `pyn locks --watch` reconnects from its cursor on its own,
+   retrying with backoff until a server answers, so a restart is a short pause, not a lost event;
+4. stops the background loops (webhook delivery, the expiry and cleanup sweeps, the object store probe and the update
+   check) so they start no new pass. A pass already running is not waited on: webhook deliveries are claimed with a
+   lease and are picked up again, and the sweeps are idempotent;
+5. exits `0`.
+
+If the grace period ends first, or a second signal arrives, the server exits immediately with status `1` and logs how many requests were
+cut off. Idle keep-alive connections are not requests: when none was running the exit is `0`. A cut-off upload
+is simply retried by the client; no partial state is committed.
+
+The container runtime must wait longer than the grace period before it kills the process, or the setting means nothing.
+Docker's default `stop_grace_period` is 10 seconds and Kubernetes' default `terminationGracePeriodSeconds` is 30, both
+too short for the default; set them above `PYN_SHUTDOWN_GRACE_SECS`:
+
+```yaml
+# docker-compose.yml, on the server service (the compose files here set it)
+stop_grace_period: 45s
+```
+
+```yaml
+# Kubernetes pod spec
+terminationGracePeriodSeconds: 45
+```
+
+systemd waits 90 seconds by default (`TimeoutStopSec`), which already covers the default grace. Behind a load balancer
+that needs time to notice a copy is leaving, the draining `503` and the refused connections are what it sees; keep the grace
+at least as long as your longest push or upload you want to let finish.
+ Watch free space on the `pyn-objects` and `pyn-db`
 volumes (with an S3 bucket, `GET /v1/admin/settings` reports whether the store answers): content is only added, and [limits](concepts/limits.md) are off by default on a self-hosted server.
 
 ### Shipping logs

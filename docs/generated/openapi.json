@@ -28,6 +28,38 @@
         "x-pyn-reach": "open"
       }
     },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "ready"
+        ],
+        "summary": "200 when the metadata store answers and the object store's last probe passed; 503 otherwise, and 503 `draining` during shutdown.",
+        "operationId": "readyz",
+        "responses": {
+          "200": {
+            "description": "ready for traffic",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessReport"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "a check failed, or the server is draining",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessReport"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "open"
+      }
+    },
     "/v1/account/deletion": {
       "get": {
         "tags": [
@@ -8511,7 +8543,7 @@
         "tags": [
           "lock_stream_api"
         ],
-        "summary": "Lock changes of the repository after a cursor, oldest first. Waits up to `wait` seconds for one when there is none.",
+        "summary": "Lock changes of the repository after a cursor, oldest first. Waits up to `wait` seconds for one when there is none, or less when the server starts shutting down.",
         "operationId": "lock_events",
         "parameters": [
           {
@@ -15661,6 +15693,64 @@
           "repository",
           "organization",
           "default"
+        ]
+      },
+      "ReadinessCheck": {
+        "type": "object",
+        "required": [
+          "name",
+          "status"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the check failed; absent when it passed."
+          },
+          "name": {
+            "type": "string",
+            "description": "`metadata_store` or `object_store`."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReadinessCheckStatus"
+          }
+        }
+      },
+      "ReadinessCheckStatus": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "failing"
+        ]
+      },
+      "ReadinessReport": {
+        "type": "object",
+        "description": "Whether this server copy should receive traffic. Carries no secrets: check names and short fixed details only.",
+        "required": [
+          "status",
+          "checks"
+        ],
+        "properties": {
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReadinessCheck"
+            },
+            "description": "Every check that ran; empty while `draining`."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReadinessStatus"
+          }
+        }
+      },
+      "ReadinessStatus": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "unavailable",
+          "draining"
         ]
       },
       "RecoveryCodes": {

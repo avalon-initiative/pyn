@@ -6,6 +6,8 @@ use std::time::Duration;
 use pyn_proto as api;
 use pyn_s3::{S3ObjectStore, S3Settings};
 
+use crate::shutdown::Drain;
+
 const S3_VARIABLES: [&str; 13] = [
     "PYN_S3_ENDPOINT",
     "PYN_S3_REGION",
@@ -250,13 +252,17 @@ fn endpoint_host(endpoint: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Probes the store every `every` and records whether it answered; logs only when the state changes.
-pub fn spawn_monitor(store: Arc<S3ObjectStore>, report: Arc<StorageReport>, every: Duration) {
+/// Probes the store every `every` until draining starts and records whether it answered; logs only when the state changes.
+pub fn spawn_monitor(
+    store: Arc<S3ObjectStore>,
+    report: Arc<StorageReport>,
+    every: Duration,
+    drain: Drain,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(every);
         tick.tick().await;
-        loop {
-            tick.tick().await;
+        while drain.tick(&mut tick).await {
             let result = store.probe().await;
             let was = report.degraded.swap(result.is_err(), Ordering::Relaxed);
             match result {
@@ -267,7 +273,7 @@ pub fn spawn_monitor(store: Arc<S3ObjectStore>, report: Arc<StorageReport>, ever
                 _ => {}
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]

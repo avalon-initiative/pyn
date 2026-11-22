@@ -199,6 +199,7 @@ fn build_full(
         trust_forwarded: false,
         updates,
         storage: Default::default(),
+        ready: Default::default(),
     });
     let url = runtime.block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

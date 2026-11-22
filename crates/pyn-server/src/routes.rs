@@ -164,6 +164,7 @@ verbs!(get => GET, post => POST, put => PUT, patch => PATCH, delete => DELETE, h
 fn table() -> Vec<Entry> {
     vec![
         get("/healthz", Reach::Open, crate::health),
+        get("/readyz", Reach::Open, crate::ready::readyz),
         get("/v1/capabilities", Reach::Open, crate::capabilities),
         get("/openapi.json", Reach::Open, || async { Json(openapi()) }),
         get("/v1/setup", Reach::Open, setup_api::setup_status),

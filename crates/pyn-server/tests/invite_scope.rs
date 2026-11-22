@@ -77,6 +77,7 @@ async fn server(mode: RegistrationMode, require_approval: bool) -> (Router, Arc<
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     });
     (app, access)
 }

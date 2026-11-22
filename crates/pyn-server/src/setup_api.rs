@@ -63,9 +63,9 @@ pub(crate) async fn complete_setup(
     ))
 }
 
-/// Refuses every route but setup and the health check until the server is initialised.
+/// Refuses every route but setup and the health checks until the server is initialised.
 pub(crate) async fn guard(State(s): State<AppState>, req: Request, next: Next) -> Response {
-    if matches!(req.uri().path(), "/healthz" | "/v1/setup") {
+    if matches!(req.uri().path(), "/healthz" | "/readyz" | "/v1/setup") {
         return next.run(req).await;
     }
     match s.access.is_initialised().await {

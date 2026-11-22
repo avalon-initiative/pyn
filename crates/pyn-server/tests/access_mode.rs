@@ -70,6 +70,7 @@ async fn world(mode: AccessMode) -> World {
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     };
     access.admin_for_tests(&UserId::new("root")).await.unwrap();
     let app = router(state.clone());

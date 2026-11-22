@@ -197,6 +197,7 @@ async fn world() -> World {
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     });
     let receiver = Receiver::new(clock.clone());
     let worker = DeliveryWorker::new(

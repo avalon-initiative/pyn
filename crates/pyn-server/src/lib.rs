@@ -49,6 +49,7 @@ mod passkeys_api;
 pub mod passwords;
 mod profile_api;
 mod push_api;
+pub mod ready;
 mod repo_api;
 mod repo_policy_api;
 pub mod request_limits;
@@ -57,6 +58,7 @@ pub mod routes;
 mod self_service_api;
 mod session_api;
 mod setup_api;
+pub mod shutdown;
 pub mod storage;
 mod team_api;
 pub mod tus_sweep;
@@ -85,6 +87,8 @@ pub struct AppState {
     pub updates: Option<Arc<update_check::UpdateChecker>>,
     /// Which object store is in use and its last probe result.
     pub storage: Arc<storage::StorageReport>,
+    /// The draining flag and the cached readiness check.
+    pub ready: ready::Readiness,
 }
 
 /// The `{owner}` and `{name}` of every repository route.
@@ -102,6 +106,7 @@ struct RepoAddress {
 #[openapi(
     paths(
         health,
+        ready::readyz,
         capabilities,
         setup_api::setup_status,
         setup_api::complete_setup,
@@ -505,6 +510,10 @@ struct RepoAddress {
         api::StorageSettings,
         api::StorageKind,
         api::StorageStatus,
+        api::ReadinessReport,
+        api::ReadinessStatus,
+        api::ReadinessCheck,
+        api::ReadinessCheckStatus,
         api::AccountDeletionScheduledData,
         api::AccountDeletionRestoredData,
         api::AccountDeletedData,
@@ -549,8 +558,10 @@ pub fn router_with_log(
     limits: request_limits::RequestLimits,
     log: observe::LogConfig,
 ) -> Router {
+    let drain = state.ready.drain.clone();
     let app = request_limits::apply(routes(state.clone()), limits);
     observe::layer(app, state, log)
+        .layer(axum::middleware::from_fn_with_state(drain, shutdown::track))
 }
 
 fn routes(state: AppState) -> Router {

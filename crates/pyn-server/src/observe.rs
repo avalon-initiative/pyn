@@ -135,7 +135,7 @@ pub(crate) async fn route_info(
     response
 }
 
-/// Outermost layer: the request id, its span and the access log line (not for `/healthz`, which health checks poll); `LogConfig` comes from an `Extension` layer.
+/// Outermost layer: the request id, its span and the access log line (not for `/healthz` and `/readyz`, which health checks poll); `LogConfig` comes from an `Extension` layer.
 pub(crate) async fn request_log(
     Extension(config): Extension<LogConfig>,
     client: Client,
@@ -149,7 +149,7 @@ pub(crate) async fn request_log(
         .filter(|v| well_formed(v));
     let id = supplied.map_or_else(generate_id, str::to_string);
     let method = request.method().clone();
-    let probe = request.uri().path() == "/healthz";
+    let probe = matches!(request.uri().path(), "/healthz" | "/readyz");
     let user_agent = (config.access && config.client)
         .then(|| {
             request

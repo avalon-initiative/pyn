@@ -539,6 +539,8 @@ It is a cursor long-poll rather than a server-sent stream. A client holds one re
 
 The response is `{"events": [{"cursor", "event"}], "cursor"}`. `event` is the webhook envelope above (`lock.acquired`, `lock.released`, `lock.expired` or `lock.forced`; ignore a type you do not know). `cursor` on the response is where to resume: the last returned event's, or `after` unchanged when there was none. A cursor is an opaque string that only grows; a malformed one is `invalid_request`. Lock events are visible in cursor order, so resuming from the last cursor never skips an event. Events are kept for 30 days like the rest of the outbox: a cursor older than that resumes at the oldest event still kept. The stream carries only lock events, whatever webhook subscriptions exist, and it does not depend on any being configured.
 
+When the server is shutting down it answers a waiting request at once with the events it has (often none, with `cursor` unchanged) rather than holding the shutdown for the rest of `wait`; the client reconnects, which reaches another copy or the restarted server ([stopping](../deployment.md#stopping-and-restarting)).
+
 `pyn locks --watch` is the client for it, and what an editor or engine integration should run instead of polling ([CLI JSON output](../cli-json.md#locks---watch)).
 
 ### `lock.acquired`

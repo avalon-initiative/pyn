@@ -66,6 +66,7 @@ async fn build(mode: AccessMode, limits: RateLimits, trust_forwarded: bool) -> R
         trust_forwarded,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     })
 }
 

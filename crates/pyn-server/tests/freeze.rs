@@ -64,6 +64,7 @@ async fn server() -> Router {
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     })
 }
 

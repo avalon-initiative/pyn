@@ -27,6 +27,7 @@ services:
   server:
     image: ghcr.io/avalon-initiative/pyn-core:${PYN_SERVER_VERSION:?set PYN_SERVER_VERSION in .env (for example v0.0.2)}
     restart: unless-stopped
+    stop_grace_period: 45s
     logging: *logging
     depends_on:
       db:

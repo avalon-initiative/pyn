@@ -441,6 +441,7 @@ fn app_over(objects: Arc<dyn ObjectStore>, shared: &Shared) -> Router {
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     })
 }
 

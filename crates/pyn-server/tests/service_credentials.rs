@@ -64,6 +64,7 @@ fn build(trust_forwarded: bool) -> Router {
         trust_forwarded,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     })
 }
 

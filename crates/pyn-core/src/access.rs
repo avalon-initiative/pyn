@@ -1082,7 +1082,7 @@ pub mod account {
     const MAX_EMAIL_LENGTH: usize = 254;
 
     /// Names that routes or pages use, so no user or organization may take them.
-    pub const RESERVED_NAMES: [&str; 24] = [
+    pub const RESERVED_NAMES: [&str; 25] = [
         "_",
         "-",
         "about",
@@ -1099,6 +1099,7 @@ pub mod account {
         "openapi",
         "orgs",
         "pricing",
+        "readyz",
         "register",
         "search",
         "settings",
