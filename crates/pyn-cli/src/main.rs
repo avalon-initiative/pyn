@@ -3089,7 +3089,7 @@ fn run(cli: Cli) -> Result<()> {
                     vec![
                         e.id.to_string(),
                         time::local(e.at),
-                        commit_format::shown_name(&e.actor, e.actor_current.as_deref()),
+                        commit_format::actor_with_admin(e),
                         e.action.clone(),
                         e.path.clone().unwrap_or_else(|| "-".into()),
                         time::localize(&commit_format::audit_detail_line(&e.detail)),

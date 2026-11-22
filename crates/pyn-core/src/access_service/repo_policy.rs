@@ -67,7 +67,7 @@ impl AccessService {
             let detail = format!("members may create: {old} -> {base}");
             self.record(
                 AuditScope::Org(org.clone()),
-                &actor.user,
+                actor.into(),
                 AuditAction::RepoCreationPolicyChanged,
                 detail,
             )
@@ -119,7 +119,7 @@ impl AccessService {
         let detail = format!("{} {} for {}", rule.effect, rule.scope, rule.subject);
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::RepoCreationRuleSet,
             detail,
         )
@@ -149,7 +149,7 @@ impl AccessService {
         let detail = format!("{effect} {scope} for {subject} removed");
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::RepoCreationRuleRemoved,
             detail,
         )

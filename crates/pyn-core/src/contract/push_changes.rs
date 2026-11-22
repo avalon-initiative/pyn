@@ -382,6 +382,7 @@ pub async fn changing_the_policy_in_a_push_needs_the_policy_permission(store: St
         user: user("wanda"),
         permissions: BTreeSet::from([Permission::Read, Permission::Checkin]),
         email: None,
+        acting_admin: None,
     };
     let err = push(&h, &writer, "main", &[&commit]).await.unwrap_err();
     assert!(
@@ -488,6 +489,7 @@ pub async fn a_policy_file_pushed_to_another_branch_is_just_a_file(store: Store)
         user: user("wanda"),
         permissions: BTreeSet::from([Permission::Read, Permission::Checkin]),
         email: None,
+        acting_admin: None,
     };
     let policy_path = path(POLICY);
     h.svc

@@ -83,6 +83,7 @@ fn writer(name: &str) -> Principal {
         user: UserId::new(name),
         permissions: BTreeSet::from([Permission::Read, Permission::Lock, Permission::Checkin]),
         email: None,
+        acting_admin: None,
     }
 }
 

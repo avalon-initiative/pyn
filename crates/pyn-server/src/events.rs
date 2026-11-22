@@ -294,6 +294,7 @@ impl LimitEvents for WebhookLimitEvents {
                 path,
                 holder,
                 expires_at,
+                acting_admin,
             } => EventData::LockAcquired(LockAcquiredData {
                 owner: name(owner),
                 owner_id: owner_id.to_string(),
@@ -302,6 +303,7 @@ impl LimitEvents for WebhookLimitEvents {
                 path: path.to_string(),
                 holder: name(holder),
                 expires_at,
+                acting_admin: acting_admin.map(name),
             }),
             DomainEvent::LockReleased {
                 owner,
@@ -311,6 +313,7 @@ impl LimitEvents for WebhookLimitEvents {
                 path,
                 holder,
                 reason,
+                acting_admin,
             } => EventData::LockReleased(LockReleasedData {
                 owner: name(owner),
                 owner_id: owner_id.to_string(),
@@ -319,6 +322,7 @@ impl LimitEvents for WebhookLimitEvents {
                 path: path.to_string(),
                 holder: name(holder),
                 reason,
+                acting_admin: acting_admin.map(name),
             }),
             DomainEvent::LockExpired {
                 owner,
@@ -346,6 +350,7 @@ impl LimitEvents for WebhookLimitEvents {
                 holder,
                 actor,
                 reason,
+                acting_admin,
             } => EventData::LockForced(LockForcedData {
                 owner: name(owner),
                 owner_id: owner_id.to_string(),
@@ -355,6 +360,7 @@ impl LimitEvents for WebhookLimitEvents {
                 holder: name(holder),
                 actor: name(actor),
                 reason,
+                acting_admin: acting_admin.map(name),
             }),
         };
         Ok(EventDraft {

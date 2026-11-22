@@ -377,6 +377,7 @@ pub async fn a_pushed_merge_names_commits_the_server_has(store: Store) {
         user: user("wes"),
         permissions: [Permission::Read].into(),
         email: None,
+        acting_admin: None,
     };
     let err = h
         .svc
@@ -481,6 +482,7 @@ pub async fn a_policy_file_a_pushed_merge_adopts_applies_on_the_default_branch(s
         user: user("wes"),
         permissions: [Permission::Read, Permission::Checkin].into(),
         email: None,
+        acting_admin: None,
     };
     let err = h
         .svc

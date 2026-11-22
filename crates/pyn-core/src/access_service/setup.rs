@@ -246,7 +246,7 @@ impl AccessService {
             request.registration.as_str(),
             access.as_str()
         );
-        self.record_server(&user, AuditAction::ServerSetupCompleted, detail)
+        self.record_server((&user).into(), AuditAction::ServerSetupCompleted, detail)
             .await?;
         Ok(user)
     }
@@ -282,7 +282,7 @@ impl AccessService {
             "server access mode changed"
         );
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::ServerAccessModeChanged,
             format!(
                 "access mode changed from {} to {}",
@@ -335,7 +335,7 @@ impl AccessService {
             None => "two-factor authentication no longer required of every account".to_string(),
         };
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::ServerTwoFactorRequirementChanged,
             detail,
         )

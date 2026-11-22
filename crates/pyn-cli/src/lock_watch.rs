@@ -360,6 +360,7 @@ mod tests {
                     repo_id: "r1".into(),
                     path: path.into(),
                     holder: holder.into(),
+                    acting_admin: None,
                     expires_at: t(480),
                 }),
             ),

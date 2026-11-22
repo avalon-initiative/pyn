@@ -167,6 +167,14 @@ pub struct Identity {
 }
 
 impl Identity {
+    /// The administrator behind an access-session credential; `None` for every other credential.
+    pub fn acting_admin(&self) -> Option<&UserId> {
+        match &self.credential {
+            Credential::AccessSession(record) => Some(&record.admin),
+            _ => None,
+        }
+    }
+
     /// A session, an unrestricted credential, or a sign-in token. A fine-grained token never is, whatever it holds.
     pub fn is_full_scope(&self) -> bool {
         match &self.credential {
@@ -278,6 +286,8 @@ pub struct Principal {
     pub permissions: BTreeSet<Permission>,
     /// The account's email, recorded as the author's in the commits the caller makes.
     pub email: Option<String>,
+    /// The administrator acting as `user` in an access session; audit and webhook events name it beside `user`.
+    pub acting_admin: Option<UserId>,
 }
 
 impl Principal {
@@ -304,6 +314,7 @@ impl Principal {
             user,
             permissions: Permission::ALL.into(),
             email: None,
+            acting_admin: None,
         }
     }
 

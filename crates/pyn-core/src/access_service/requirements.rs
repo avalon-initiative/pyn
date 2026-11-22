@@ -109,7 +109,7 @@ impl AccessService {
         };
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::OrgTwoFactorRequirementChanged,
             detail,
         )
@@ -146,7 +146,7 @@ impl AccessService {
             })
             .await?;
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::TwoFactorReset,
             format!("{user}'s second factors reset, {removed} removed"),
         )

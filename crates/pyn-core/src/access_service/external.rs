@@ -220,7 +220,7 @@ impl AccessService {
                     return Err(PynError::ExternalIdentityTaken);
                 }
                 let action = AuditAction::ExternalIdentityLinked;
-                self.record(AuditScope::Server, &user, action, detail)
+                self.record(AuditScope::Server, (&user).into(), action, detail)
                     .await?;
             }
         }
@@ -309,7 +309,7 @@ impl AccessService {
                             claims.issuer, claims.subject
                         );
                         let action = AuditAction::ExternalAccountCreated;
-                        self.record(AuditScope::Server, &user, action, detail)
+                        self.record(AuditScope::Server, (&user).into(), action, detail)
                             .await?;
                         return Ok(user);
                     }
@@ -358,7 +358,7 @@ impl AccessService {
         );
         self.record(
             AuditScope::Server,
-            &actor.user,
+            actor.into(),
             AuditAction::ExternalIdentityUnlinked,
             detail,
         )

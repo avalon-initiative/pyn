@@ -860,7 +860,7 @@ impl RepoService {
             .fast_forward_branch(&self.repo, &target.name, target.head.as_ref(), &plan.source)
             .await?;
         self.record_repo(
-            &who.user,
+            who.into(),
             AuditAction::BranchMerged,
             format!(
                 "{label} into {} (fast-forward to {})",
@@ -966,14 +966,14 @@ impl RepoService {
             )
             .await?;
         self.record_repo(
-            &who.user,
+            who.into(),
             AuditAction::BranchMerged,
             format!("{label} into {} at {}", target.name, written.commit),
         )
         .await?;
         for rev in &written.revisions {
             self.record(
-                &who.user,
+                who.into(),
                 AuditAction::Checkin,
                 &rev.path,
                 format!(

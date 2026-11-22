@@ -78,7 +78,9 @@ pub use access_session::{
 pub use account_self::{
     AccountEmail, EmailAdd, EmailRemove, NameSpan, PrimaryChange, RenameOutcome,
 };
-pub use audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
+pub use audit::{
+    Actor, AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent,
+};
 pub use auth::AuthProvider;
 pub use branch::{Branch, DEFAULT_BRANCH, validate_branch_name};
 pub use chunking::ChunkedStore;

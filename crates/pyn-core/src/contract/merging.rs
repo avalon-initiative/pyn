@@ -953,6 +953,7 @@ pub async fn a_merge_needs_the_checkin_permission_and_an_existing_source(store: 
         user: user("rae"),
         permissions: [Permission::Read].into(),
         email: None,
+        acting_admin: None,
     };
     let err = h
         .svc
@@ -1016,6 +1017,7 @@ pub async fn a_policy_file_arriving_by_merge_is_policy_on_the_default_branch(sto
         user: user("wes"),
         permissions: [Permission::Read, Permission::Checkin].into(),
         email: None,
+        acting_admin: None,
     };
     let err = h
         .svc
