@@ -75,6 +75,7 @@ async fn server(mode: RegistrationMode, require_approval: bool) -> (Router, Arc<
         }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
+        trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
         ready: Default::default(),

@@ -56,7 +56,7 @@ Any copy can answer any request, so the balancer needs no session affinity and m
 | `PYN_DATABASE_URL` | The same PostgreSQL database |
 | `PYN_S3_BUCKET` and its endpoint, region and keys (or one shared `PYN_DATA_DIR`) | The same content storage ([several copies on a bucket](deployment.md#several-copies-on-a-bucket)) |
 | `PYN_PUBLIC_URL` | The balancer's https address, for the `Secure` cookie flag, links and sign-in origin checks |
-| `PYN_TRUST_FORWARDED_FOR` | The same value everywhere ([client addresses](#client-addresses)) |
+| `PYN_TRUST_FORWARDED_FOR` and `PYN_TRUSTED_PROXIES` | The same values everywhere ([client addresses](#client-addresses)) |
 
 Keep clocks in sync (NTP). `PYN_WEBHOOK_WORKER=false` keeps a copy out of webhook delivery, but at least one copy must deliver.
 
@@ -83,34 +83,32 @@ Settings to start from, then tune:
 | Unhealthy threshold | 2 to 3 consecutive failures |
 | Healthy threshold | 2 consecutive successes |
 
-A copy that is draining answers `503 draining` to a probe on a connection that was already open, then closes its listener, so a new probe gets a refused connection. Both count as failures. Nothing in the server serves new connections during a drain, see [draining](#draining-and-the-stop-grace-period).
+A copy that is draining answers `503 draining` to every probe for as long as `PYN_SHUTDOWN_DRAIN_DELAY_SECS` lasts, then closes its listener, so a new probe gets a refused connection. Both count as failures. With the default delay of 0 the listener closes at once, see [draining](#draining-and-the-stop-grace-period).
 
 ## Draining and the stop grace period
 
-On `SIGTERM` or `SIGINT` the server marks itself draining, stops accepting connections, lets running requests finish for `PYN_SHUTDOWN_GRACE_SECS` (default 30, whole seconds), ends lock streams at once with the page it has (`pyn locks --watch` reconnects from its cursor), and exits `0`, or `1` if requests were cut off. The sequence is in [stopping and restarting](deployment.md#stopping-and-restarting).
+On `SIGTERM` or `SIGINT` the server marks itself draining (`/readyz` answers `503 draining`), keeps accepting connections for `PYN_SHUTDOWN_DRAIN_DELAY_SECS` (default 0, whole seconds, at most 3600), then stops accepting and lets running requests finish for `PYN_SHUTDOWN_GRACE_SECS` (default 30, whole seconds). The grace counts from the moment the listener closes, so a stop takes at most delay plus grace. Lock streams end at once, at the start of the delay, with the page they have (`pyn locks --watch` reconnects from its cursor), and the process exits `0`, or `1` if requests were cut off. A second signal during the delay skips the rest of it. During the delay every request other than the readiness probe is served in full and counts as in flight. The sequence is in [stopping and restarting](deployment.md#stopping-and-restarting).
 
-Because the listener closes at once, a request the balancer sends before it notices fails with a refused connection. To avoid that, take the copy out of the balancer first and stop it afterwards:
+With the default delay of 0 the listener closes at once, so a request the balancer sends before it notices fails with a refused connection. Set the delay instead of sleeping in the runtime:
 
-1. Remove the copy from the balancer's pool, or let the balancer's deregistration (connection draining) delay run, before the stop signal. The delay must be longer than the balancer's health check detection time (interval times unhealthy threshold) when the copy is only marked unhealthy, and longer than the requests the balancer still has in flight to it. Check the provider's documentation for what its deregistration delay does.
-2. Send the stop signal. Running requests finish within `PYN_SHUTDOWN_GRACE_SECS`; set it to at least the longest push or upload that should be allowed to finish.
-3. Give the runtime a stop timeout longer than that: Compose `stop_grace_period` (the deploy files set `45s`), Kubernetes `terminationGracePeriodSeconds` (default 30, too short for the default grace of 30 plus the preStop sleep), or systemd `TimeoutStopSec` (90 by default).
+1. Set `PYN_SHUTDOWN_DRAIN_DELAY_SECS` a little above the balancer's health check detection time: interval times unhealthy threshold (5 seconds times 3 failures is 15, so 20). The copy fails its checks while it still answers, the balancer takes it out, and no request meets a closed listener.
+2. Set `PYN_SHUTDOWN_GRACE_SECS` to at least the longest push or upload that should be allowed to finish.
+3. Give the runtime a stop timeout longer than delay plus grace: Compose `stop_grace_period` (the deploy files set `45s`, which covers the default 30 second grace and no delay, so raise it when you set a delay), Kubernetes `terminationGracePeriodSeconds` (default 30), or systemd `TimeoutStopSec` (90 by default).
 
-In Kubernetes the pod is removed from a Service's endpoints and sent `SIGTERM` at about the same time, so add a `preStop` sleep to run the balancer's deregistration before the signal arrives:
+What remains true: the delay does not remove the need for the balancer to act on failed checks (a balancer that ignores readiness keeps sending until the listener closes), and a balancer's own deregistration delay (connection draining) still decides how long it keeps sending requests it already routed. If the balancer or an orchestrator takes the copy out of rotation before sending the signal (a Kubernetes Service removing the pod's endpoint, or deregistering the copy yourself), a delay is still harmless. Kubernetes removes the pod from a Service's endpoints and sends `SIGTERM` at about the same time, so the delay replaces the `preStop` sleep:
 
 ```yaml
-terminationGracePeriodSeconds: 75
+terminationGracePeriodSeconds: 60
 containers:
   - name: pyn-server
-    lifecycle:
-      preStop:
-        exec:
-          command: ["sleep", "15"]
     env:
+      - name: PYN_SHUTDOWN_DRAIN_DELAY_SECS
+        value: "20"
       - name: PYN_SHUTDOWN_GRACE_SECS
         value: "30"
 ```
 
-The grace period covers the preStop sleep and the drain together (here 15 plus 30, plus margin). The server image is based on `debian:bookworm-slim`, which has `sleep`. Restart copies one at a time so the others keep serving. A cut-off upload is retried by the client, and no partial state is committed.
+Restart copies one at a time so the others keep serving. A cut-off upload is retried by the client, and no partial state is committed.
 
 ## Timeouts
 
@@ -123,12 +121,14 @@ The grace period covers the preStop sleep and the drain together (here 15 plus 3
 | Request buffering | Off | The web container does not buffer requests (`request_buffers 0`) and streams responses (`flush_interval -1`); a balancer that buffers a whole body before forwarding it adds delay and needs disk or memory for it |
 | Upload body idle time | At or above 30 seconds | The server fails an upload body that sends nothing for `PYN_BODY_IDLE_TIMEOUT_SECS` (default 30), so slow clients are cut by the server first |
 | Protocol to the backend | HTTP/1.1 with keep-alive | Nothing needs HTTP/2 to the backend |
+| Stop timeout of the runtime | Above `PYN_SHUTDOWN_DRAIN_DELAY_SECS` plus `PYN_SHUTDOWN_GRACE_SECS` | The runtime kills the process when it ends, cutting off whatever still runs ([draining](#draining-and-the-stop-grace-period)) |
+| Deregistration delay, when the balancer has one | Above the longest request it already routed | It is separate from the server's delay; the server's delay covers the time the balancer needs to notice failed health checks |
 
 The API uses plain request and response HTTP. There is no WebSocket or server-sent events endpoint: the lock stream is a long poll, so a balancer needs no upgrade handling. If `PYN_REQUEST_TIMEOUT_SECS` is set below about 26, the server itself cuts lock streams short with `503 request_timeout`, so leave it at 60 or more.
 
 ## Client addresses
 
-The server uses the client address for per-client rate limits, signed-out directory limits and the source ranges of service credentials. With `PYN_TRUST_FORWARDED_FOR=true` it takes the address from the last entry of the `X-Forwarded-For` header (`address` in `crates/pyn-server/src/client.rs`: the text after the last comma, trimmed), and falls back to the connection's peer when the header is absent or empty. It also trusts `X-Forwarded-Host` and `X-Forwarded-Proto` for LFS URLs. There is no setting to count several hops: the entry is always the last one (counting proxy hops is #1225, open).
+The server uses the client address for per-client rate limits, signed-out directory limits and the source ranges of service credentials. With `PYN_TRUST_FORWARDED_FOR=true` it takes the address from the `X-Forwarded-For` header (`address` in `crates/pyn-server/src/client.rs`): the entry `PYN_TRUSTED_PROXIES` positions from the right (default 1, the last entry; 1 to 16), after combining several header lines in order and trimming each entry. It falls back to the connection's peer when the header is absent, has fewer entries than the setting, or that entry is empty. `PYN_TRUSTED_PROXIES` without `PYN_TRUST_FORWARDED_FOR=true` stops the server at start. `X-Forwarded-Host` and `X-Forwarded-Proto` are also trusted for LFS URLs; they are not counted by hops.
 
 Set it to `true` only when every request arrives through a proxy that sets the header; anyone who can reach the server directly can send any value.
 
@@ -136,7 +136,7 @@ Set it to `true` only when every request arrives through a proxy that sets the h
 
 When Cloudflare proxies to the balancer, the client comes from `CF-Connecting-IP`, which a listed proxy is trusted to set. That is safe only when the balancer accepts connections from Cloudflare alone; otherwise a client can send the header itself. [Public address and client addresses per layout](deployment.md#public-address-and-client-addresses-per-layout) lists the other cases.
 
-**Servers straight behind the balancer.** The last entry must be the real client, so the balancer must append the connecting address to `X-Forwarded-For`, not pass a client-supplied value through unchanged. Check the provider's documentation for how it treats the header. With a CDN in front of the balancer the last entry would be the CDN's, and there is no hop setting yet, so put the web container's logic (or a proxy that rewrites the header to one entry) between them, or leave `PYN_TRUST_FORWARDED_FOR` off and accept that limits are keyed by the balancer's address.
+**Servers straight behind the balancer.** The last entry must be the real client, so the balancer must append the connecting address to `X-Forwarded-For`, not pass a client-supplied value through unchanged. Check the provider's documentation for how it treats the header. With a CDN in front of the balancer, both appending, the header ends `client, cdn`: set `PYN_TRUSTED_PROXIES=2` so the client is the second entry from the right. Count only proxies you know append the address they saw (a hop that replaces the header does not add an entry), and only accept connections from the CDN at the balancer; otherwise a client can put its own entries in the list. The web container replaces the header with one entry, so behind it the default `1` stays right whatever is in front of the container. [Layouts and values](deployment.md#public-address-and-client-addresses-per-layout).
 
 ## TLS
 
@@ -181,10 +181,10 @@ A Compose file for two servers and one web container is not given here: the web 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Sign-in works on some requests and fails on others, or two-factor and webhook secrets fail on one copy | The copies have different `PYN_SECRET_KEY` values | Set the same key everywhere and restart; secrets written under another key stay unreadable until re-entered |
-| Everyone shares one client address; a handful of users hit rate limits together | The web container or the server takes the balancer as the client: `PYN_TRUSTED_PROXY_RANGES` does not list the balancer, or the servers are behind a proxy that does not append to `X-Forwarded-For` | List the balancer's addresses on the web containers; with servers directly behind the balancer, make it append the client as the last entry ([client addresses](#client-addresses)) |
+| Everyone shares one client address; a handful of users hit rate limits together | The web container or the server takes the balancer as the client: `PYN_TRUSTED_PROXY_RANGES` does not list the balancer, or the servers are behind a proxy that does not append to `X-Forwarded-For` | List the balancer's addresses on the web containers; with servers directly behind the balancer, make it append the client as the last entry, and set `PYN_TRUSTED_PROXIES` to the number of appending proxies when there are several ([client addresses](#client-addresses)) |
 | Uploads or pushes fail after a fixed number of seconds | The balancer's idle, read or request-duration timeout, or a body size limit | Raise the timeouts to 300 seconds, remove the body limit, turn off request buffering ([timeouts](#timeouts)) |
 | `pyn locks --watch` reconnects every few seconds | The balancer's idle timeout is below the 25 second lock stream wait | Raise it above 30 seconds, preferably 120 |
 | Copies flap between ready and unready | The metadata store is slow or down, or the bucket probe fails (`/readyz` names the check) | Look at the `checks` in the `/readyz` body, then the database connection limit or the bucket's credentials and endpoint; `/healthz` stays `200` throughout |
-| `502` during deploys | The balancer sends requests to a copy that already closed its listener, or the runtime killed the process before the grace period ended | Deregister before stopping, a `preStop` sleep, a stop timeout above `PYN_SHUTDOWN_GRACE_SECS` ([draining](#draining-and-the-stop-grace-period)) |
+| `502` during deploys | The balancer sends requests to a copy that already closed its listener, or the runtime killed the process before the grace period ended | Set `PYN_SHUTDOWN_DRAIN_DELAY_SECS` above the balancer's health check interval times its unhealthy threshold, and a stop timeout above delay plus `PYN_SHUTDOWN_GRACE_SECS`; a balancer that ignores `/readyz` still needs deregistering first ([draining](#draining-and-the-stop-grace-period)) |
 | Web app loads but sign-in is refused with a cross-origin error | `PYN_PUBLIC_URL` is the old `http://` address, or the web app's origin is not in `PYN_ALLOWED_ORIGINS` | Set `PYN_PUBLIC_URL` to the balancer's https address on every server |
 | A `/readyz` check always passes, or does not show the database failing | The check goes through the web container, which proxies only `/v1` and `/healthz`; any other path is answered with the app's page | Point the check at the server's port, or use `/healthz` knowing it is liveness only |

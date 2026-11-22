@@ -58,7 +58,12 @@ impl Call<'_> {
 fn req<'a>(parts: &'a Parts, state: &AppState) -> Req<'a> {
     Req {
         headers: &parts.headers,
-        source: source_ip(&parts.headers, &parts.extensions, state.trust_forwarded),
+        source: source_ip(
+            &parts.headers,
+            &parts.extensions,
+            state.trust_forwarded,
+            state.trusted_proxies,
+        ),
         call: parts.extensions.get::<Declared>().map(|c| Call {
             method: &parts.method,
             route: c.1,

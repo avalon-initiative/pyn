@@ -10,10 +10,12 @@ use axum::middleware::Next;
 use axum::response::Response;
 use tokio::sync::{mpsc, watch};
 
-/// Whether the server is shutting down, plus how many requests are in flight. Clones share state.
+/// Whether the server is shutting down, whether its listener has closed, and how many requests are in flight.
+/// Clones share state.
 #[derive(Clone)]
 pub struct Drain {
     flag: Arc<watch::Sender<bool>>,
+    closed: Arc<watch::Sender<bool>>,
     in_flight: Arc<AtomicUsize>,
 }
 
@@ -21,6 +23,7 @@ impl Default for Drain {
     fn default() -> Self {
         Self {
             flag: Arc::new(watch::channel(false).0),
+            closed: Arc::new(watch::channel(false).0),
             in_flight: Arc::default(),
         }
     }
@@ -39,6 +42,17 @@ impl Drain {
     pub async fn started(&self) {
         let mut rx = self.flag.subscribe();
         let _ = rx.wait_for(|draining| *draining).await;
+    }
+
+    /// Tells the server to stop accepting connections; draining alone keeps it accepting.
+    pub fn close(&self) {
+        self.closed.send_replace(true);
+    }
+
+    /// Resolves once the listener should close; at once if it already should.
+    pub async fn closed(&self) {
+        let mut rx = self.closed.subscribe();
+        let _ = rx.wait_for(|closed| *closed).await;
     }
 
     pub fn in_flight(&self) -> usize {
@@ -89,11 +103,13 @@ pub enum Outcome {
     Forced { cut_off: usize },
 }
 
-/// Runs `server` until the first message on `signals`, starts draining, then waits up to `grace` for `server`
-/// (which must stop accepting on `drain.started()`) to finish. A second signal, or the end of the grace, forces the exit.
+/// Runs `server` until the first message on `signals`, starts draining, keeps serving for `delay` (a second signal
+/// ends it early), then closes the listener and waits up to `grace`, counted from that moment, for `server` (which
+/// must stop accepting on `drain.closed()`) to finish. A second signal during the grace, or its end, forces the exit.
 pub async fn run<F>(
     server: F,
     drain: &Drain,
+    delay: Duration,
     grace: Duration,
     mut signals: mpsc::UnboundedReceiver<()>,
 ) -> std::io::Result<Outcome>
@@ -108,12 +124,28 @@ where
         }
         _ = signals.recv() => {}
     }
+    drain.start();
+    if !delay.is_zero() {
+        tracing::info!(
+            delay_secs = delay.as_secs(),
+            "shutting down: not ready, still accepting connections until the drain delay ends"
+        );
+        tokio::select! {
+            biased;
+            done = &mut server => {
+                done?;
+                return Ok(Outcome::Clean);
+            }
+            () = tokio::time::sleep(delay) => {}
+            _ = signals.recv() => tracing::info!("a second signal arrived: ending the drain delay"),
+        }
+    }
     tracing::info!(
         in_flight = drain.in_flight(),
         grace_secs = grace.as_secs(),
         "shutting down: not accepting new connections, waiting for requests in flight"
     );
-    drain.start();
+    drain.close();
     tokio::select! {
         biased;
         done = &mut server => {
@@ -216,7 +248,7 @@ mod tests {
     fn server(drain: &Drain, finish_after: Duration) -> impl Future<Output = std::io::Result<()>> {
         let drain = drain.clone();
         async move {
-            drain.started().await;
+            drain.closed().await;
             tokio::time::sleep(finish_after).await;
             Ok(())
         }
@@ -230,6 +262,7 @@ mod tests {
         let out = run(
             server(&drain, Duration::from_secs(5)),
             &drain,
+            Duration::ZERO,
             Duration::from_secs(30),
             rx,
         )
@@ -248,6 +281,7 @@ mod tests {
         let out = run(
             server(&drain, Duration::from_secs(60)),
             &drain,
+            Duration::ZERO,
             Duration::from_secs(30),
             rx,
         )
@@ -266,6 +300,7 @@ mod tests {
         let out = run(
             server(&drain, Duration::from_secs(60)),
             &drain,
+            Duration::ZERO,
             Duration::from_secs(30),
             rx,
         )
@@ -279,9 +314,15 @@ mod tests {
         let drain = Drain::default();
         let (tx, rx) = mpsc::unbounded_channel();
         tx.send(()).unwrap();
-        let out = run(server(&drain, Duration::ZERO), &drain, Duration::ZERO, rx)
-            .await
-            .unwrap();
+        let out = run(
+            server(&drain, Duration::ZERO),
+            &drain,
+            Duration::ZERO,
+            Duration::ZERO,
+            rx,
+        )
+        .await
+        .unwrap();
         assert_eq!(out, Outcome::Clean);
     }
 
@@ -293,11 +334,91 @@ mod tests {
         let out = run(
             server(&drain, Duration::from_secs(60)),
             &drain,
+            Duration::ZERO,
             Duration::from_secs(30),
             rx,
         )
         .await
         .unwrap();
         assert_eq!(out, Outcome::Clean);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_listener_stays_open_for_the_delay_and_the_grace_counts_from_its_close() {
+        let drain = Drain::default();
+        drain.in_flight.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(()).unwrap();
+        let started = tokio::time::Instant::now();
+        let watcher = tokio::spawn({
+            let drain = drain.clone();
+            async move {
+                drain.started().await;
+                let draining_at = started.elapsed();
+                drain.closed().await;
+                (draining_at, started.elapsed())
+            }
+        });
+        let out = run(
+            server(&drain, Duration::from_secs(600)),
+            &drain,
+            Duration::from_secs(20),
+            Duration::from_secs(30),
+            rx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, Outcome::Forced { cut_off: 1 });
+        let (draining_at, closed_at) = watcher.await.unwrap();
+        assert_eq!(draining_at, Duration::ZERO);
+        assert_eq!(closed_at, Duration::from_secs(20));
+        assert_eq!(started.elapsed(), Duration::from_secs(50));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_second_signal_during_the_delay_skips_it_and_the_grace_still_applies() {
+        let drain = Drain::default();
+        drain.in_flight.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(()).unwrap();
+        let started = tokio::time::Instant::now();
+        let second = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            tx.send(()).unwrap();
+            tx
+        });
+        let out = run(
+            server(&drain, Duration::from_secs(600)),
+            &drain,
+            Duration::from_secs(20),
+            Duration::from_secs(30),
+            rx,
+        )
+        .await
+        .unwrap();
+        let _tx = second.await.unwrap();
+        assert_eq!(out, Outcome::Forced { cut_off: 1 });
+        assert_eq!(started.elapsed(), Duration::from_secs(35));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_server_that_ends_during_the_delay_is_clean() {
+        let drain = Drain::default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(()).unwrap();
+        let out = run(
+            async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                Ok(())
+            },
+            &drain,
+            Duration::from_secs(20),
+            Duration::from_secs(30),
+            rx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, Outcome::Clean);
+        assert!(drain.is_draining());
     }
 }

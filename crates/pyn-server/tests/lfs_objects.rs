@@ -104,6 +104,7 @@ async fn world_with(trust_forwarded: bool, visibility: &str) -> World {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded,
+        trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
         ready: Default::default(),

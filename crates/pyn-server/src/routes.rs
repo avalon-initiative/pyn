@@ -1097,6 +1097,7 @@ async fn enforce_access_mode(
             request.headers(),
             request.extensions(),
             state.trust_forwarded,
+            state.trusted_proxies,
         ),
         call: None,
     };

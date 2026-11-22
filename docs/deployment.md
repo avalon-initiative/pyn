@@ -84,7 +84,7 @@ warns while it is still set.
 | `PYN_SECRET_KEY` | Encrypts webhook secrets at rest; compose refuses to start without it |
 | `PYN_ACCESS` | `private` (default) refuses every signed-out request except sign-in, sign-up and setup; `public` lets signed-out visitors read public repositories and profiles. Used by first-run setup and as the default until it; after setup the stored value wins and an administrator changes it at runtime (see [server access mode](concepts/access.md#server-access-mode)) |
 | `PYN_REGISTRATION` | `invite` (default) or `closed` for a private server; `open` needs the [sign-up protections](concepts/access.md#protecting-open-registration) |
-| `PYN_TRUST_FORWARDED_FOR=true` | Only behind a proxy that sets `X-Forwarded-For`, so rate limits see client addresses. The Compose files set it, and the web container sends exactly one entry (the real client): see [the layouts](#public-address-and-client-addresses-per-layout) |
+| `PYN_TRUST_FORWARDED_FOR=true` | Only behind a proxy that sets `X-Forwarded-For`, so rate limits see client addresses. The Compose files set it, and the web container sends exactly one entry (the real client). With another proxy between the client and the server, count the proxies with `PYN_TRUSTED_PROXIES`: see [the layouts](#public-address-and-client-addresses-per-layout) |
 | `PYN_ALLOWED_ORIGINS` | Required for a web app served from another origin, such as a web-only deployment pointing here (its address, no path) |
 | `PYN_DISABLED_ACCOUNT_RETENTION_DAYS` | Disabled accounts are [deleted](concepts/access.md#deleting-an-account) after 90 days by default (`0` keeps them forever); the server runs the task itself (hourly), so nothing is scheduled outside it |
 | never `PYN_DEV_AUTH` | It accepts any user header with every permission |
@@ -239,6 +239,16 @@ List only the addresses the proxy really connects from, never a range that inclu
 | Cloudflare proxied (orange cloud) with an origin certificate | `PYN_TLS=files` with the origin certificate and key, `PYN_SITE` the name, Cloudflare SSL mode Full (strict) | `https://<name>` | [Cloudflare's published ranges](https://www.cloudflare.com/ips/), kept up to date by you |
 | A managed load balancer that terminates TLS, in front of `PYN_TLS=off` containers | `PYN_TLS=off`, `PYN_WEB_PUBLISH` on the private interface | The load balancer's https address | The load balancer's addresses (its subnet only if nothing else can reach the container) |
 
+**Servers reached without the web container.** The web container replaces `X-Forwarded-For` with one entry, so behind it the server's default `PYN_TRUSTED_PROXIES=1` is right whatever stands in front of the container. When a proxy talks to the server directly, each proxy that appends the address it saw adds one entry, and `PYN_TRUSTED_PROXIES` must equal the number of proxies you trust to append. The entry that many positions from the right is the client; anything further left is client-supplied and never used.
+
+| What reaches the server | `PYN_TRUSTED_PROXIES` | Header the server sees |
+| --- | --- | --- |
+| One proxy or balancer that appends the client (nginx, Caddy, Traefik, a managed balancer) | `1` (default) | `client` |
+| A CDN or TLS proxy in front of a balancer, both appending | `2` | `client, cdn` |
+| A CDN in front of a balancer in front of a proxy, all appending | `3` | `client, cdn, balancer` |
+
+Check the documentation of each hop for whether it appends or replaces the header, and count only the ones that append. Too low a value makes every client look like an outer proxy and share its rate limits; too high a value picks an entry the client may have written, or falls back to the peer address when the list is shorter. `PYN_TRUSTED_PROXIES` needs `PYN_TRUST_FORWARDED_FOR=true`.
+
 A Cloudflare tunnel or proxy limits request bodies (100 MB on the lower plans) and carries HTTP only, so it does not suit large files or the planned SSH transport; prefer the direct layouts for those. When another proxy
 terminates TLS, add the web app's public address to the server's `PYN_ALLOWED_ORIGINS` only for a web app served from another origin.
 
@@ -294,31 +304,36 @@ Which to point at what:
   to keep serving or show its own error page.
 - A Kubernetes `livenessProbe` and `startupProbe`: `/healthz`.
 
-The balancer's own health check interval decides how soon it stops sending: the server answers `503` only on connections that are still open when
-it starts draining, and then closes its listener, so a new probe gets a refused connection, which balancers also count as a failure.
+The balancer's own health check interval decides how soon it stops sending. Without a drain delay the server answers `503` only on connections that are still open when
+it starts draining, and then closes its listener, so a new probe gets a refused connection, which balancers also count as a failure. With `PYN_SHUTDOWN_DRAIN_DELAY_SECS` the listener stays open and `/readyz` answers `503 draining` on new connections too, until the delay ends.
 
 ### Stopping and restarting
 
 On `SIGTERM` (what `docker stop`, `docker compose stop`, systemd and Kubernetes send) or `SIGINT` (Ctrl-C) the server:
 
-1. marks itself draining, so `/readyz` answers `503 draining` at once, and stops accepting new connections;
-2. lets requests already running finish, for up to `PYN_SHUTDOWN_GRACE_SECS` (default 30; whole seconds; `0` means no
-   grace: stop at once after step 1);
-3. ends [lock streams](concepts/events.md) (`GET /v1/repos/{owner}/{name}/locks/events`) immediately with the page it has,
+1. marks itself draining, so `/readyz` answers `503 draining` at once;
+2. keeps accepting connections for `PYN_SHUTDOWN_DRAIN_DELAY_SECS` (default 0; whole seconds, at most 3600), then stops
+   accepting. During the delay every request other than the readiness probe is served in full and counts as in flight,
+   so a balancer that has not noticed yet still gets answers. A second signal during the delay skips the rest of it;
+3. lets requests already running finish, for up to `PYN_SHUTDOWN_GRACE_SECS` (default 30; whole seconds; `0` means no
+   grace: stop at once after step 2). The grace counts from the moment the listener closes, not from the signal, so
+   the longest a stop takes is delay plus grace;
+4. ends [lock streams](concepts/events.md) (`GET /v1/repos/{owner}/{name}/locks/events`) immediately with the page it has,
    without holding the shutdown for the rest of its wait. `pyn locks --watch` reconnects from its cursor on its own,
-   retrying with backoff until a server answers, so a restart is a short pause, not a lost event;
-4. stops the background loops (webhook delivery, the expiry and cleanup sweeps, the object store probe and the update
+   retrying with backoff until a server answers, so a restart is a short pause, not a lost event. This happens in step 1,
+   at the start of the delay;
+5. stops the background loops (webhook delivery, the expiry and cleanup sweeps, the object store probe and the update
    check) so they start no new pass. A pass already running is not waited on: webhook deliveries are claimed with a
    lease and are picked up again, and the sweeps are idempotent;
-5. exits `0`.
+6. exits `0`.
 
-If the grace period ends first, or a second signal arrives, the server exits immediately with status `1` and logs how many requests were
+If the grace period ends first, or a second signal arrives during it, the server exits immediately with status `1` and logs how many requests were
 cut off. Idle keep-alive connections are not requests: when none was running the exit is `0`. A cut-off upload
 is simply retried by the client; no partial state is committed.
 
-The container runtime must wait longer than the grace period before it kills the process, or the setting means nothing.
+The container runtime must wait longer than the delay plus the grace period before it kills the process, or the settings mean nothing.
 Docker's default `stop_grace_period` is 10 seconds and Kubernetes' default `terminationGracePeriodSeconds` is 30, both
-too short for the default; set them above `PYN_SHUTDOWN_GRACE_SECS`:
+too short for the default grace; set them above `PYN_SHUTDOWN_DRAIN_DELAY_SECS` plus `PYN_SHUTDOWN_GRACE_SECS`:
 
 ```yaml
 # docker-compose.yml, on the server service (the compose files here set it)
@@ -330,9 +345,23 @@ stop_grace_period: 45s
 terminationGracePeriodSeconds: 45
 ```
 
-systemd waits 90 seconds by default (`TimeoutStopSec`), which already covers the default grace. Behind a load balancer
-that needs time to notice a copy is leaving, the draining `503` and the refused connections are what it sees; keep the grace
+systemd waits 90 seconds by default (`TimeoutStopSec`), which already covers the default grace. Keep the grace
 at least as long as your longest push or upload you want to let finish.
+
+Behind a load balancer that needs time to notice a copy is leaving, set `PYN_SHUTDOWN_DRAIN_DELAY_SECS` a little above the balancer's
+health check interval times its unhealthy threshold (for example 5 seconds times 3 failures is 15, so 20). The copy then fails
+its readiness checks while it still answers, the balancer takes it out of rotation, and no request meets a closed listener. The default is `0`, so nothing
+changes until you set it, and the `stop_grace_period: 45s` in the Compose files is unchanged (it covers the default 30 second grace). If you set a delay, raise it to above delay plus grace:
+
+```yaml
+# delay 20 plus grace 30, with margin
+stop_grace_period: 60s
+```
+
+```yaml
+# Kubernetes pod spec, with PYN_SHUTDOWN_DRAIN_DELAY_SECS=20 and PYN_SHUTDOWN_GRACE_SECS=30
+terminationGracePeriodSeconds: 60
+```
  Watch free space on the `pyn-objects` and `pyn-db`
 volumes (with an S3 bucket, `GET /v1/admin/settings` reports whether the store answers): content is only added, and [limits](concepts/limits.md) are off by default on a self-hosted server.
 

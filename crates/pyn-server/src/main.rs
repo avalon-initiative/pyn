@@ -356,6 +356,51 @@ fn shutdown_grace() -> anyhow::Result<Duration> {
     }
 }
 
+/// `PYN_SHUTDOWN_DRAIN_DELAY_SECS`: seconds the server stays up and not ready before closing its listener, default 0.
+fn drain_delay() -> anyhow::Result<Duration> {
+    drain_delay_value(
+        std::env::var("PYN_SHUTDOWN_DRAIN_DELAY_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn drain_delay_value(value: Option<&str>) -> anyhow::Result<Duration> {
+    const NAME: &str = "PYN_SHUTDOWN_DRAIN_DELAY_SECS";
+    const MAX: u64 = 3600;
+    let Some(v) = value else {
+        return Ok(Duration::ZERO);
+    };
+    let secs = whole_number(NAME, v)?;
+    anyhow::ensure!(secs <= MAX, "{NAME} must be at most {MAX} seconds");
+    Ok(Duration::from_secs(secs))
+}
+
+/// `PYN_TRUSTED_PROXIES`: how many proxies append to `X-Forwarded-For`, 1 to 16, default 1; needs forwarded headers trusted.
+fn trusted_proxies(trust_forwarded: bool) -> anyhow::Result<usize> {
+    trusted_proxies_value(
+        trust_forwarded,
+        std::env::var("PYN_TRUSTED_PROXIES").ok().as_deref(),
+    )
+}
+
+fn trusted_proxies_value(trust_forwarded: bool, value: Option<&str>) -> anyhow::Result<usize> {
+    const NAME: &str = "PYN_TRUSTED_PROXIES";
+    let Some(v) = value else {
+        return Ok(1);
+    };
+    anyhow::ensure!(
+        trust_forwarded,
+        "{NAME} only applies with PYN_TRUST_FORWARDED_FOR=true"
+    );
+    let hops = whole_number(NAME, v)?;
+    anyhow::ensure!(
+        (1..=16).contains(&hops),
+        "{NAME} must be a whole number from 1 to 16"
+    );
+    Ok(hops as usize)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -408,6 +453,9 @@ async fn main() -> anyhow::Result<()> {
     )
     .map_err(anyhow::Error::msg)?;
     let grace = shutdown_grace()?;
+    let delay = drain_delay()?;
+    let trust_forwarded = flag("PYN_TRUST_FORWARDED_FOR");
+    let trusted_proxies = trusted_proxies(trust_forwarded)?;
     let drain = Drain::default();
     let signals = shutdown::watch_signals()?;
     let mut tasks: Vec<JoinHandle<()>> = Vec::new();
@@ -768,7 +816,8 @@ async fn main() -> anyhow::Result<()> {
             access: access.clone(),
             auth: Arc::new(BearerAuth { access }),
             dev_auth,
-            trust_forwarded: flag("PYN_TRUST_FORWARDED_FOR"),
+            trust_forwarded,
+            trusted_proxies,
             updates,
             storage,
             ready: Readiness::new(drain.clone()),
@@ -785,10 +834,10 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_graceful_shutdown({
         let drain = drain.clone();
-        async move { drain.started().await }
+        async move { drain.closed().await }
     })
     .into_future();
-    let outcome = shutdown::run(server, &drain, grace, signals).await?;
+    let outcome = shutdown::run(server, &drain, delay, grace, signals).await?;
     for task in &tasks {
         task.abort();
     }
@@ -803,7 +852,10 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{loopback_mode, on_off_value, update_checker, whole_number};
+    use super::{
+        drain_delay_value, loopback_mode, on_off_value, trusted_proxies_value, update_checker,
+        whole_number,
+    };
 
     #[test]
     fn a_whole_number_parses_including_zero() {
@@ -856,5 +908,37 @@ mod tests {
         assert!(loopback_mode(true, false).is_err());
         assert!(loopback_mode(true, true).unwrap());
         assert!(!loopback_mode(false, false).unwrap());
+    }
+
+    #[test]
+    fn the_drain_delay_defaults_to_zero_and_is_bounded() {
+        assert_eq!(drain_delay_value(None).unwrap().as_secs(), 0);
+        assert_eq!(drain_delay_value(Some("20")).unwrap().as_secs(), 20);
+        assert_eq!(drain_delay_value(Some("3600")).unwrap().as_secs(), 3600);
+        for bad in ["soon", "-1", "1.5", "", "3601", "99999999999"] {
+            let err = drain_delay_value(Some(bad)).unwrap_err().to_string();
+            assert!(
+                err.contains("PYN_SHUTDOWN_DRAIN_DELAY_SECS"),
+                "{bad:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_proxies_are_one_to_sixteen_and_need_forwarded_headers_trusted() {
+        assert_eq!(trusted_proxies_value(false, None).unwrap(), 1);
+        assert_eq!(trusted_proxies_value(true, None).unwrap(), 1);
+        assert_eq!(trusted_proxies_value(true, Some("2")).unwrap(), 2);
+        assert_eq!(trusted_proxies_value(true, Some("16")).unwrap(), 16);
+        for bad in ["0", "17", "two", "-1", "", "1.5"] {
+            let err = trusted_proxies_value(true, Some(bad))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("PYN_TRUSTED_PROXIES"), "{bad:?}: {err}");
+        }
+        let err = trusted_proxies_value(false, Some("2"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("PYN_TRUST_FORWARDED_FOR=true"), "{err}");
     }
 }
