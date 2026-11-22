@@ -43,7 +43,7 @@ It asks:
 5. **Caddy for HTTPS** (web app, Docker): "Put Caddy in front for HTTPS? (adds a caddy container on the official image)". Press Enter for plain HTTP on this host's port 8080, the right choice for a trial on one computer.
    With yes it asks only for the domain name or address people use, and picks the certificate kind and says why in one sentence: a public name gets Let's Encrypt certificates (ports 80 and 443 must be
    reachable from the internet, and it says so), an IP address or a private name gets Caddy's own local authority (each device trusts its root once, and it copies the root to `pyn-root.crt` and prints how). It checks that ports 80 and 443 are free on this host,
-   refuses a Compose file without the persistent `caddy-data` volume, writes `./Caddyfile`, and sets `COMPOSE_PROFILES=caddy`, `PYN_SITE`, `PYN_PUBLIC_URL`, `PYN_TRUST_FORWARDED_FOR=true` and `PYN_TRUSTED_PROXIES=2` in `.env`.
+   refuses a Compose file without the persistent `caddy-data` volume, writes `./Caddyfile`, and sets only `COMPOSE_PROFILES=caddy`, `PYN_SITE` and `PYN_TRUSTED_PROXIES=2` in `.env`: the Compose file derives `PYN_PUBLIC_URL` (`https://<name>`) from `PYN_SITE`, and trusts forwarded headers by default.
    With an IP address it says that passkeys need a host name over https. Details and the other layouts (your own proxy, a managed balancer, a tunnel): [HTTPS](deployment.md#https).
 6. **The address people will use** (`PYN_PUBLIC_URL`), asked only when Caddy was not chosen (with Caddy it is `https://<name>`). The browser's address must match it exactly.
 
@@ -79,10 +79,14 @@ sudo bash install.sh --yes --shape full --caddy --site 192.168.1.20      # addre
 | `--site NAME` | With Caddy: the domain name or address people use, without scheme or port (implies `--caddy`). The certificate kind follows from it |
 | `--api-url URL` | Web only: `PYN_API_URL`. CLI: the server to print the config step for |
 | `--database-url URL` | Native: an existing PostgreSQL (`postgres://...`) instead of a local one |
+| `--check` | Only check the `.env` and Compose file in `--dir` (the current folder) and exit: the command to run before an upgrade ([what it checks](deployment.md#checking-your-env-before-an-upgrade)) |
+| `--no-check` | Skip the check of the written `.env` that otherwise runs before the stack starts |
 | `--yes`, `--no-install`, `--help` | Never ask; never install; usage |
 | `--color`, `--no-color` | Force colour on or off. By default colour is used only on a terminal, and not with `NO_COLOR` set or `TERM=dumb` |
 
 The script prints only its own status lines: the output of the tools it runs (curl, apt, tar, systemctl and so on) is captured and shown only if a step fails, with the command and its exit status. Pulling images and installing packages stream as an indented block.
+
+Before it starts anything, the installer checks the `.env` it wrote (`scripts/check-env.sh`): problems stop it with what to change and nothing started, warnings are shown and it goes on. The same check runs on its own with `scripts/install.sh --check`, or `scripts/check-env.sh [DIR]`.
 
 Running it again on an existing install is an upgrade: `.env` (or `pyn.env`) and every secret are kept, only the version
 moves after you confirm it (Docker: `PYN_SERVER_VERSION` for the server and `PYN_WEB_VERSION` for the web app, each on its own; native: the binary is replaced and the service restarted), and it says
@@ -175,7 +179,7 @@ On macOS use `sed -i ''` instead of `sed -i`. Then edit `.env` for your network:
 | --- | --- |
 | `PYN_PUBLIC_URL` | The address you will type in the browser, for example `http://192.168.1.20:8080` or `https://pyn.example.com`. Keep `http://localhost:8080` if you only use this computer. |
 | `POSTGRES_VERSION` | Optional. The PostgreSQL major version, `16` unless set. A database created on one major version cannot be opened by another, so change it only with a [dump and restore](deployment.md#backups). |
-| `COMPOSE_PROFILES`, `PYN_SITE` | Optional, to put Caddy in front for https: `COMPOSE_PROFILES=caddy`, with `PYN_SITE` the host name or address people use (no scheme or port), a `./Caddyfile` and `PYN_TRUSTED_PROXIES=2`. The installer does all of it ([HTTPS](deployment.md#https)). Ports 80 and 443 must be free on this computer. Leave them unset for plain HTTP. |
+| `COMPOSE_PROFILES`, `PYN_SITE` | Optional, to put Caddy in front for https: `COMPOSE_PROFILES=caddy`, with `PYN_SITE` the host name or address people use (no scheme or port), a `./Caddyfile` and `PYN_TRUSTED_PROXIES=2`; delete the `PYN_PUBLIC_URL` line then, because Compose uses `https://<PYN_SITE>`. The installer does all of it ([HTTPS](deployment.md#https)). Ports 80 and 443 must be free on this computer. Leave them unset for plain HTTP. |
 | `PYN_WEB_PUBLISH` | Remove the `#` and set `0.0.0.0:8080` so other computers can reach it. Leave it commented to keep the server on this computer only. |
 
 `.env` holds secrets and must not be committed or shared. Copy `PYN_SECRET_KEY` somewhere safe: webhook secrets stored in
@@ -183,6 +187,8 @@ the database cannot be read without it. Also keep a copy of `.env` itself, and a
 if the only one is lost, [recovery](deployment.md#recovery) explains the way back.
 
 ## 4. Start it
+
+Optionally check what you wrote first (it needs only `bash` and, for the server's own check on a release that has one, Docker): `scripts/check-env.sh .` from a checkout, or download [`scripts/check-env.sh`](../scripts/check-env.sh) next to the files ([what it checks](deployment.md#checking-your-env-before-an-upgrade)).
 
 ```bash
 docker compose up --detach --wait

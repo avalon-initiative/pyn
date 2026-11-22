@@ -53,7 +53,7 @@ volumes:
 for ref in v1.0.0 v0.1.2-alpha v0.1.1-alpha v0.1.0-alpha main; do
   mkdir -p "$fix/raw/$ref"
   for f in docker-compose.yml docker-compose.server.yml docker-compose.web.yml; do
-    printf '# %s at %s\nservices:\n  server:\n    image: ghcr.io/avalon-initiative/pyn-core:x\n%s' "$f" "$ref" \
+    printf '# %s at %s\nservices:\n  server:\n    image: ghcr.io/avalon-initiative/pyn-core:x\n    environment:\n      PYN_PUBLIC_URL: ${PYN_PUBLIC_URL:-${PYN_SITE:+https://}${PYN_SITE:-http://localhost:8080}}\n%s' "$f" "$ref" \
       "$([ "$f" != docker-compose.server.yml ] && printf '  web:\n    image: ghcr.io/avalon-initiative/pyn-web:x\n%s\n' "$caddy_svc")" >"$fix/raw/$ref/$f"
   done
 done
@@ -78,6 +78,7 @@ cp "$work/env.example" "$fix/raw/v0.1.2-alpha/.env.example"
 cp "$work/env.example" "$fix/raw/v0.1.1-alpha/.env.example"
 cp "$work/env.example" "$fix/raw/v0.1.0-alpha/.env.example"
 cp "$work/env.example" "$fix/raw/v1.0.0/.env.example"
+cp "$src/scripts/check-env.sh" "$fix/check-env.sh"
 printf '{\n  "tag_name": "v0.1.2-alpha"\n}\n' >"$fix/latest.json"
 printf '{\n  "tag_name": "v1.0.0"\n}\n' >"$fix/latest-v1.json"
 printf '{\n  "tag_name": "v0.3.0-alpha"\n}\n' >"$fix/latest-web.json"
@@ -133,6 +134,7 @@ case $url in
   *api.github.com*releases/latest) f=$FIX/latest.json; [ -z "${FAKE_LATEST_V1:-}" ] || f=$FIX/latest-v1.json; [ -z "${FAKE_NO_RELEASES:-}" ] || f=/nonexistent; code=${FAKE_API_CODE:-200} ;;
   *api.github.com*per_page=100) f=$FIX/releases.json; code=${FAKE_API_CODE:-200} ;;
   *github.com/*/releases/download/*) f=$FIX/dl/$(basename "$(dirname "$url")")/$(basename "$url") ;;
+  *raw.githubusercontent.com/*/scripts/check-env.sh) f=$FIX/check-env.sh ;;
   *raw.githubusercontent.com/*/deploy/*) ref=${url#*githubusercontent.com/avalon-initiative/pyn/}; ref=${ref%%/*}; f=$FIX/raw/$ref/${url##*/} ;;
   *get.docker.com*) f=$FIX/get-docker.sh ;;
   *healthz*) [ -z "${FAKE_HEALTH_FAIL:-}" ]; exit ;;
@@ -1023,6 +1025,7 @@ printf 'full\ndocker\n%s\n\n\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install
 expect "piping the script into bash still reads prompts from the terminal file" ok_rc
 expect "and completes the install" test -f "$c/pyn/.env"
+expect "a piped install downloads the check script and runs it" has "$c/out" "pyn-check: ok"
 
 # Caddy: --caddy, --no-caddy, --site
 freeport() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
@@ -1033,8 +1036,8 @@ case_start s_auto; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes -
 expect "--caddy --site with a public name succeeds" ok_rc
 expect "--site: PYN_SITE is written" has "$c/pyn/.env" "PYN_SITE=Pyn.Example.com"
 expect "the caddy profile is switched on in .env" has "$c/pyn/.env" "COMPOSE_PROFILES=caddy"
-expect "the address becomes https://<site>" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://Pyn.Example.com"
-expect "forwarded headers are trusted" has "$c/pyn/.env" "PYN_TRUST_FORWARDED_FOR=true"
+expect "the address is derived from PYN_SITE, so no PYN_PUBLIC_URL is written" lacks "$c/pyn/.env" "PYN_PUBLIC_URL="
+expect "forwarded headers are trusted by the Compose default, so the key is not written" lacks "$c/pyn/.env" "PYN_TRUST_FORWARDED_FOR"
 expect "two proxies are counted (Caddy and the web container)" has "$c/pyn/.env" "PYN_TRUSTED_PROXIES=2"
 expect "PYN_CADDY_IMAGE is left as a comment" has "$c/pyn/.env" "# PYN_CADDY_IMAGE="
 expect "a public name: one plain sentence says why" has "$c/out" "Pyn.Example.com is a public name, so Caddy gets them from Let's Encrypt"
@@ -1054,7 +1057,8 @@ expect "says where to look when https does not answer" has "$c/out" "docker comp
 expect "the stack is started once, with the profile from .env" has "$c/log" "compose up --detach --wait"
 
 case_start s_ip; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --caddy --site 192.168.1.5
-expect "an IP address: https public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://192.168.1.5"
+expect "an IP address: the https address is derived, not written" lacks "$c/pyn/.env" "PYN_PUBLIC_URL="
+expect "an IP address: PYN_SITE is the address" has "$c/pyn/.env" "PYN_SITE=192.168.1.5"
 expect "an IP address: one plain sentence says why" has "$c/out" "192.168.1.5 is an address or a private name, so Caddy signs them with its own local authority"
 expect "an IP address: tls internal in the Caddyfile" has "$c/pyn/Caddyfile" "tls internal"
 expect "an IP address: default_sni is the address" has "$c/pyn/Caddyfile" "default_sni 192.168.1.5"
@@ -1086,7 +1090,7 @@ expect "prompted: asks the Caddy question in plain words" has "$c/out" "Put Cadd
 expect "prompted: asks only for the name or address" has "$c/out" "Domain name or address people use"
 expect "prompted: does not ask for the public address again" lacks "$c/out" "Address people will use (PYN_PUBLIC_URL)"
 expect "prompted: Caddy is set up" has "$c/pyn/.env" "COMPOSE_PROFILES=caddy"
-expect "prompted: https public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+expect "prompted: https public address is derived from PYN_SITE" has "$c/pyn/.env" "PYN_SITE=pyn.example.com"
 
 case_start s_tty2; extra_env=("${probe[@]}"); tty_file="$c/answers"
 printf 'full\ndocker\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
@@ -1194,13 +1198,14 @@ expect "an existing .env keeps its public address" has "$c/pyn/.env" "PYN_PUBLIC
 expect "an existing .env keeps its web publish" has "$c/pyn/.env" "PYN_WEB_PUBLISH=0.0.0.0:8080"
 run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com
 expect "adding --site to an existing install turns Caddy on" has "$c/pyn/.env" "COMPOSE_PROFILES=caddy"
-expect "adding --site moves the public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+expect "adding --site drops the old explicit address (it is derived now)" lacks "$c/pyn/.env" "PYN_PUBLIC_URL="
+expect "adding --site says the address is derived" has "$c/out" "which Compose derives from PYN_SITE"
 expect "adding --site keeps the other settings" has "$c/pyn/.env" "PYN_REGISTRATION=closed"
 expect "adding --site keeps the secrets" has "$c/pyn/.env" "POSTGRES_PASSWORD=pw"
 run_install --dir "$c/pyn" --yes --shape full
 expect "a re-run of a Caddy install keeps the site" has "$c/pyn/.env" "PYN_SITE=pyn.example.com"
 expect "a re-run of a Caddy install keeps the profile" has "$c/pyn/.env" "COMPOSE_PROFILES=caddy"
-expect "a re-run of a Caddy install keeps the address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+expect "a re-run of a Caddy install adds no explicit address" lacks "$c/pyn/.env" "PYN_PUBLIC_URL="
 expect "a re-run keeps the Caddyfile" has "$c/out" "keeping the existing Caddyfile"
 expect "a re-run does not repeat the profile" bash -c '[ "$(grep -c "^COMPOSE_PROFILES=" "$0")" = 1 ]' "$c/pyn/.env"
 run_install --dir "$c/pyn" --yes --shape full --no-caddy
@@ -1226,6 +1231,59 @@ rm -f "$c/pyn/Caddyfile"
 run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com
 expect "a larger proxy count is kept" has "$c/pyn/.env" "PYN_TRUSTED_PROXIES=3"
 expect "and says so" has "$c/out" "keeping PYN_TRUSTED_PROXIES=3"
+
+# Smaller .env with Caddy, and the configuration check
+case_start d_old; extra_env=("${probe[@]}"); mkdir -p "$c/pyn"
+printf '# old compose\nservices:\n  server:\n    image: ghcr.io/avalon-initiative/pyn-core:x\n  web:\n    image: x\n  caddy:\n    profiles: [caddy]\n    volumes:\n      - caddy-data:/data\nvolumes:\n  caddy-data:\n' >"$c/pyn/docker-compose.yml"
+printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=pw\nPYN_SECRET_KEY=sk\nPYN_PUBLIC_URL=http://h:8080\n' >"$c/pyn/.env"; chmod 600 "$c/pyn/.env"
+run_install --dir "$c/pyn" --yes --shape full --reuse use --site pyn.example.com
+expect "a Compose file that cannot derive the address still gets it written" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+
+case_start d_keep; extra_env=("${probe[@]}"); mkdir -p "$c/pyn"
+printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=pw\nPYN_SECRET_KEY=sk\nPYN_PUBLIC_URL=https://pyn.example.com\nPYN_TRUST_FORWARDED_FOR=true\nPYN_TRUSTED_PROXIES=2\nCOMPOSE_PROFILES=caddy\nPYN_SITE=pyn.example.com\n' >"$c/pyn/.env"; chmod 600 "$c/pyn/.env"
+run_install --dir "$c/pyn" --yes --shape full --reuse refresh
+expect "an .env with the explicit keys keeps them" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+expect "and keeps the explicit trust key" has "$c/pyn/.env" "PYN_TRUST_FORWARDED_FOR=true"
+
+case_start c_run; extra_env=("${probe[@]}")
+run_install --dir "$c/pyn" --yes --shape full --caddy --site pyn.example.com
+expect "the written .env is checked before the stack starts" has "$c/out" "Checking the configuration"
+expect "a clean check ends with ok" has "$c/out" "pyn-check: ok"
+expect "the check runs before the images are pulled" bash -c 'grep -n "Checking the configuration" "$0" >/dev/null && ! grep -q "problem:" "$0"' "$c/out"
+expect "the port probe is left to the installer's own step" lacks "$c/out" "already in use"
+
+case_start c_bad; extra_env=(); mkdir -p "$c/pyn"
+printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=pw\nPYN_SECRET_KEY=sk\nPYN_PUBLIC_URL=http://h:8080\nPYN_TRUSTED_PROXIES=3\nPYN_TRUST_FORWARDED_FOR=false\n' >"$c/pyn/.env"; chmod 600 "$c/pyn/.env"
+run_install --dir "$c/pyn" --yes --shape full --reuse use
+expect "a problem in .env stops the install" bad_rc
+expect "the problem says what to change" has "$c/out" "PYN_TRUSTED_PROXIES is set but PYN_TRUST_FORWARDED_FOR=false"
+expect "the stop says nothing was started" has "$c/err" "nothing was started"
+expect "nothing is pulled or started" lacks "$c/log" "compose pull"
+run_install --dir "$c/pyn" --yes --shape full --reuse use --no-check
+expect "--no-check skips the check" ok_rc
+expect "--no-check prints no check" lacks "$c/out" "Checking the configuration"
+expect "--no-check goes on to start the stack" has "$c/log" "compose up --detach --wait"
+
+case_start c_warn; extra_env=(); mkdir -p "$c/pyn"
+printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=pw\nPYN_SECRET_KEY=sk\nPYN_PUBLIC_URL=http://h:8080\nPYN_TLS=auto\n' >"$c/pyn/.env"; chmod 600 "$c/pyn/.env"
+run_install --dir "$c/pyn" --yes --shape full --reuse use
+expect "warnings alone do not stop the install" ok_rc
+expect "the warning is shown" has "$c/out" "PYN_TLS was never part of a release"
+
+case_start c_only; extra_env=(); mkdir -p "$c/pyn"
+printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=pw\nPYN_SECRET_KEY=sk\nPYN_PUBLIC_URL=http://h:8080\n' >"$c/pyn/.env"; chmod 600 "$c/pyn/.env"
+cp "$fix/raw/main/docker-compose.yml" "$c/pyn/docker-compose.yml"
+run_install --check --dir "$c/pyn"
+expect "--check on a good install exits 0" ok_rc
+expect "--check reports ok" has "$c/out" "pyn-check: ok"
+expect "--check starts and pulls nothing" lacks "$c/log" "compose pull"
+expect "--check asks no questions and installs nothing" lacks "$c/log" "apt-get"
+printf 'PYN_SERVER_VERSION=v0.1.2\nPOSTGRES_PASSWORD=pw\n' >"$c/pyn/.env"
+run_install --check --dir "$c/pyn"
+expect "--check on a bad install exits 1" bad_rc
+expect "--check names what is missing" has "$c/out" "PYN_SECRET_KEY is missing or empty"
+run_cwd="$c/pyn"; run_install --check
+expect "--check defaults to the current folder" has "$c/out" "problem:"
 
 # Flags
 case_start f1

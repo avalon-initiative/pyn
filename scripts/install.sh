@@ -7,7 +7,7 @@ repo=avalon-initiative/pyn
 shape="" method="" version_in="" web_version_in="" web_ver="" dir="" public_url="" api_url="" database_url="" env_file="" reuse=""
 site="" caddy="" cert="" public_url_flag=""
 os_kind="" os_id="" arch="" native_env="" start_dir="" dir_default="" dir_warn=""
-yes=0 no_install=0 interactive=0 tmp=""
+yes=0 no_install=0 interactive=0 tmp="" check_only=0 no_check=0 derive_url=0 check_script=""
 root=${PYN_INSTALL_ROOT:-}
 bin_dir="$root/usr/local/bin" etc_dir="$root/etc/pyn" unit_dir="$root/etc/systemd/system" state_dir="$root/var/lib/pyn"
 
@@ -37,6 +37,9 @@ Every answer has a flag; with --yes (or no terminal) a missing answer takes its 
                                 name gets Let's Encrypt certificates, an address or a private name gets Caddy's own local authority
   --api-url URL                 web: the pyn server the web app talks to (PYN_API_URL); cli: the server to point the command at
   --database-url URL            native: use this PostgreSQL (postgres://...) instead of creating a local database
+  --check                       only check the .env and Compose file in DIR (default: the current folder) and exit; the command to run
+                                before an upgrade (see scripts/check-env.sh)
+  --no-check                    skip the check of the written .env that otherwise runs before the stack starts
   --yes                         never ask: take defaults, and install missing tools without asking
   --no-install                  never install anything; only report what is missing
   --color, --no-color           force colour on, or off (default: on only for a terminal, off with NO_COLOR or TERM=dumb)
@@ -148,6 +151,8 @@ while [ $# -gt 0 ]; do
     --no-caddy) caddy=no; shift ;;
     --api-url) api_url=${2:?--api-url needs a value}; shift 2 ;;
     --database-url) database_url=${2:?--database-url needs a value}; shift 2 ;;
+    --check) check_only=1; shift ;;
+    --no-check) no_check=1; shift ;;
     --yes | -y) yes=1; shift ;;
     --no-install) no_install=1; shift ;;
     --color) color_flag=always; shift ;;
@@ -373,6 +378,13 @@ set_env() { # set_env FILE KEY VALUE: replaces the active line, else the first c
 }
 
 get_env() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1 || true; }
+
+unset_env() { # unset_env FILE KEY: drops the active line
+  local t="$1.tmp"
+  grep -v "^$2=" "$1" >"$t" || true
+  cat "$t" >"$1"
+  rm -f "$t"
+}
 
 pin_version() { # pin_version FILE KEY TAG: sets an image tag, asking before it moves an existing one
   local old
@@ -924,10 +936,14 @@ write_caddy_env() { # write_caddy_env ENVFILE
   cur=$(get_env "$f" COMPOSE_PROFILES)
   has_caddy_profile "$f" || set_env "$f" COMPOSE_PROFILES "${cur:+$cur,}caddy"
   [ "$(get_env "$f" PYN_SITE)" = "$site" ] || set_env "$f" PYN_SITE "$site"
-  [ "$(get_env "$f" PYN_PUBLIC_URL)" = "$public_url" ] || { set_env "$f" PYN_PUBLIC_URL "$public_url"; say "set PYN_PUBLIC_URL $public_url"; }
+  cur=$(get_env "$f" PYN_PUBLIC_URL)
+  if [ "$derive_url" -eq 1 ]; then
+    if [ -n "$cur" ] && [ "$cur" != "$public_url" ]; then unset_env "$f" PYN_PUBLIC_URL; say "PYN_PUBLIC_URL is now https://$site, which Compose derives from PYN_SITE; removed the old line"; fi
+  elif [ "$cur" != "$public_url" ]; then
+    set_env "$f" PYN_PUBLIC_URL "$public_url"; say "set PYN_PUBLIC_URL $public_url"
+  fi
   grep -q '^#* *PYN_CADDY_IMAGE=' "$f" || printf '# PYN_CADDY_IMAGE=\n' >>"$f"
   if [ "$shape" = full ]; then
-    set_env "$f" PYN_TRUST_FORWARDED_FOR true
     cur=$(get_env "$f" PYN_TRUSTED_PROXIES)
     case $cur in
       "" | 1) set_env "$f" PYN_TRUSTED_PROXIES 2 ;;
@@ -961,6 +977,32 @@ caddy_after_up() {
   fi
 }
 
+# Configuration check
+
+# Finds check-env.sh next to this script, else downloads the release's (or main's) copy; sets check_script, empty when unavailable
+find_check_script() {
+  local here=""
+  [ -z "$check_script" ] || return 0
+  if [ -f "${BASH_SOURCE[0]:-}" ]; then here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd); fi
+  if [ -n "$here" ] && [ -f "$here/check-env.sh" ]; then check_script=$here/check-env.sh; return 0; fi
+  if try_quiet curl -fsSL -o "$tmp/check-env.sh" "https://raw.githubusercontent.com/$repo/${tag:-main}/scripts/check-env.sh" ||
+    try_quiet curl -fsSL -o "$tmp/check-env.sh" "https://raw.githubusercontent.com/$repo/main/scripts/check-env.sh"; then
+    check_script=$tmp/check-env.sh
+  fi
+}
+
+# run_check DIR [options]: stops on problems; a missing script only warns
+run_check() {
+  local d=$1 color=--no-color
+  shift
+  [ "$no_check" -eq 0 ] || return 0
+  find_check_script
+  if [ -z "$check_script" ]; then warn "check-env.sh could not be found or downloaded, so the .env was not checked"; return 0; fi
+  [ -z "$c_reset" ] || color=--color
+  step "Checking the configuration"
+  bash "$check_script" "$color" "$@" "$d" || die "the configuration has problems (above); fix them and re-run (nothing was started), or skip the check with --no-check"
+}
+
 # Docker
 
 choose_reuse() { # choose_reuse docker|native: asks what to do with an install that is already there
@@ -983,6 +1025,7 @@ preload_from_env() {
   [ -n "$public_url" ] || public_url=$(get_env "$1" PYN_PUBLIC_URL)
   [ "$shape" != web ] || [ -n "$api_url" ] || api_url=$(get_env "$1" PYN_API_URL)
   if [ -z "$site" ] && [ "$caddy" != no ] && [ "$shape" != server ] && has_caddy_profile "$1"; then site=$(get_env "$1" PYN_SITE); fi
+  if [ -z "$public_url" ] && [ -n "$site" ] && [ "$caddy" != no ] && has_caddy_profile "$1"; then public_url=https://$site; fi
 }
 
 docker_prepare() {
@@ -1031,6 +1074,7 @@ docker_flow() {
     cat "$tmp/compose.yml" >"$dc"
   fi
   if [ "$shape" != server ]; then check_caddy_volume "$dc"; fi
+  if [ "$caddy" = yes ] && [ "$public_url" = "https://$site" ] && { [ "$shape" = web ] || grep -q 'PYN_SITE:+https' "$dc"; }; then derive_url=1; fi
 
   if [ -n "$env_file" ]; then
     check_env_perms "$env_file"
@@ -1060,14 +1104,14 @@ docker_flow() {
   if [ "$shape" != web ]; then
     fill_secret "$env_path" POSTGRES_PASSWORD 24
     fill_secret "$env_path" PYN_SECRET_KEY 32
-    fill_key "$env_path" PYN_PUBLIC_URL "$public_url"
+    [ "$derive_url" -eq 1 ] || fill_key "$env_path" PYN_PUBLIC_URL "$public_url"
   else
     fill_key "$env_path" PYN_API_URL "$api_url"
   fi
   if [ "$new_env" -eq 1 ]; then
     if ! is_local_url "$public_url" && [ "${public_url#https://}" = "$public_url" ]; then bind=0.0.0.0; fi
     case $shape in
-      full) set_env "$env_path" PYN_PUBLIC_URL "$public_url"; [ -z "$bind" ] || set_env "$env_path" PYN_WEB_PUBLISH "$bind:8080" ;;
+      full) [ "$derive_url" -eq 1 ] || set_env "$env_path" PYN_PUBLIC_URL "$public_url"; [ -z "$bind" ] || set_env "$env_path" PYN_WEB_PUBLISH "$bind:8080" ;;
       server) set_env "$env_path" PYN_PUBLIC_URL "$public_url"; [ -z "$bind" ] || set_env "$env_path" PYN_SERVER_PUBLISH "$bind:7878" ;;
       web) set_env "$env_path" PYN_API_URL "$api_url"; [ -z "$bind" ] || set_env "$env_path" PYN_WEB_PUBLISH "$bind:8080" ;;
     esac
@@ -1085,8 +1129,10 @@ docker_flow() {
   elif [ "$shape" = server ]; then
     check_required "$env_path" PYN_SERVER_VERSION POSTGRES_PASSWORD PYN_SECRET_KEY PYN_PUBLIC_URL
   else
-    check_required "$env_path" PYN_SERVER_VERSION PYN_WEB_VERSION POSTGRES_PASSWORD PYN_SECRET_KEY PYN_PUBLIC_URL
+    check_required "$env_path" PYN_SERVER_VERSION PYN_WEB_VERSION POSTGRES_PASSWORD PYN_SECRET_KEY
+    [ "$derive_url" -eq 1 ] || check_required "$env_path" PYN_PUBLIC_URL
   fi
+  run_check "$dir" --no-ports --shape "$shape"
   run_stream "Pulling the images" compose_in pull || die "the images could not be pulled; see the output above"
   run_stream "Starting the stack" compose_in up --detach --wait ||
     die "the stack did not come up; see: cd $dir && docker compose logs"
@@ -1283,6 +1329,15 @@ main() {
   local method_default=docker shape_default=full platform="" tag="" ver="" newshape="" o ok=0 compose="" reason=""
   local shape_opts=() env_default=""
   setup_color
+  if [ "$check_only" -eq 1 ]; then
+    start_dir=$(pwd -P)
+    dir=$(normalize_path "${dir:-.}" "--dir")
+    find_check_script
+    [ -n "$check_script" ] || die "check-env.sh could not be found or downloaded"
+    local color=--no-color
+    [ -z "$c_reset" ] || color=--color
+    exec bash "$check_script" "$color" "$dir"
+  fi
   open_terminal
   pick_default_dir
   [ -z "$dir" ] || dir=$(normalize_path "$dir" "--dir")

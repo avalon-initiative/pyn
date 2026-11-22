@@ -94,7 +94,24 @@ Logs go to standard error as plain text; read them with `docker compose logs`. T
 
 ### Checking the configuration
 
-Before `docker compose up`, or after editing `.env`, run `docker compose run --rm --no-deps server pyn-server --check-config`. It starts nothing and lists every wrong or inconsistent `PYN_*` setting, and any `PYN_` variable the server does not read. See [checking a configuration](configuration.md#checking-a-configuration).
+Before `docker compose up`, or after editing `.env`, run `scripts/check-env.sh` ([below](#checking-your-env-before-an-upgrade)), which also runs `docker compose run --rm --no-deps server pyn-server --check-config` on a release that has it. It starts nothing and lists every wrong or inconsistent `PYN_*` setting, and any `PYN_` variable the server does not read. See [checking a configuration](configuration.md#checking-a-configuration).
+
+### Checking your .env before an upgrade
+
+`scripts/check-env.sh [DIR]` (or `scripts/install.sh --check [--dir DIR]`, which is the same check and can be run from a copy of the installer) reads `DIR/.env` (default: the current folder) and the Compose file next to it, and prints every problem and warning with what to change, such as `PYN_TRUSTED_PROXIES=1 is wrong with Caddy on: set PYN_TRUSTED_PROXIES=2`. It exits 0 when there are no problems and 1 when there are; warnings alone do not fail unless you pass `--strict`. Run it before an upgrade, after editing `.env`, and before `docker compose up`; the installer runs it on the `.env` it has written before it starts anything (`--no-check` skips that, and problems stop the install while warnings are shown and it goes on).
+
+It checks, without Docker:
+
+- `.env` exists and is not readable by group or others (a warning, with the `chmod 600` command);
+- the keys the Compose file needs are set: `POSTGRES_PASSWORD`, `PYN_SECRET_KEY`, `PYN_SERVER_VERSION`, `PYN_WEB_VERSION` for the full stack, without the web version for a server-only file, and `PYN_WEB_VERSION` with `PYN_API_URL` for a web-only file; `PYN_PUBLIC_URL` is needed unless `PYN_SITE` supplies it;
+- version tags are written as the image tag, `v` and the version with no title suffix: `v0.2.0`, not `0.2.0` or `v0.2.0-alpha`;
+- renamed or removed keys: `PYN_VERSION` (now `PYN_SERVER_VERSION` and `PYN_WEB_VERSION`), `PYN_IMAGE` and `PYN_WEB_IMAGE` (the same tags), and `PYN_TLS`, `PYN_TRUSTED_PROXY_RANGES`, `PYN_CF_TOKEN_FILE` and `PYN_EMAIL`, which are not settings, each with what to do instead;
+- a Compose file older than the installer's expectations (it still reads `PYN_VERSION`, or has Caddy without the persistent `caddy-data` volume);
+- with the `caddy` profile on: `./Caddyfile`, `PYN_SITE` as a bare host, a Compose file with the `caddy` service, an https `PYN_PUBLIC_URL` (an https address without Caddy is only a warning, since a TLS proxy elsewhere is valid), `PYN_TRUSTED_PROXIES` of 2 or more, and ports 80 and 443 free (a warning, skipped while this install's own `caddy` container is running);
+- `PYN_TRUSTED_PROXIES` needs `PYN_TRUST_FORWARDED_FOR=true`, as the server also requires;
+- `PYN_*` keys the server does not read, with a suggestion for a misspelling. The known names are a list inside the script, kept equal to the server's by a test, so the server's own check stays authoritative.
+
+Then, when Docker and the Compose file are available and `PYN_SERVER_VERSION` is a release that has `--check-config` (0.2.0 or later), it runs `docker compose run --rm --no-deps -T server pyn-server --check-config` with a 60 second limit and shows its output ([checking a configuration](configuration.md#checking-a-configuration)); exit 1 from it counts as problems. An older release treats an unknown argument as a start-up request, so the script never calls it there: it says the server-side check needs a newer release and skips it. The server-side check also runs only after the file checks pass, and it pulls the image first if it is missing, so run it after setting the new tag you are upgrading to.
 
 ### Email
 
@@ -215,14 +232,16 @@ In this order of preference:
 
 - picks the certificate kind from the name and says why: a public name gets automatic certificates (Let's Encrypt, with a second public authority enabled as a fallback), an IP address or a private name (a single label, or one ending in `.lan`, `.local`, `.home.arpa`, `.internal`, `.test` or `.localhost`) gets Caddy's own local authority (`tls internal`), whose root each device trusts once ([below](#trusting-the-internal-root));
 - checks that ports 80 and 443 are free on the host (and for a public name says they must be reachable from the internet), and refuses a Compose file that has no `caddy` service with its persistent `caddy-data` volume;
-- writes `./Caddyfile` next to the Compose file, sets `COMPOSE_PROFILES=caddy`, `PYN_SITE`, `PYN_PUBLIC_URL=https://<name>`, `PYN_TRUST_FORWARDED_FOR=true` and `PYN_TRUSTED_PROXIES=2` in `.env`, and starts the stack;
+- writes `./Caddyfile` next to the Compose file, sets only `COMPOSE_PROFILES=caddy`, `PYN_SITE` and `PYN_TRUSTED_PROXIES=2` in `.env` (the address and the forwarded-header trust are derived, see the table below), checks the result ([below](#checking-your-env-before-an-upgrade)) and starts the stack;
 - for the local authority, copies the root out of the container to `./pyn-root.crt` and prints how to trust it.
 
 The `caddy` service is in the Compose file behind the profile `caddy`: `docker compose up -d` without the profile is exactly the plain HTTP stack, and `COMPOSE_PROFILES=caddy` in `.env` is all that switches it on, for the installer and by hand. Its pieces:
 
 | Setting | Meaning |
 | --- | --- |
-| `PYN_SITE` | The host name or IP address people use, with no scheme or port. Read by the installer when it re-runs; the Caddyfile holds the name |
+| `PYN_SITE` | The host name or IP address people use, with no scheme or port. The Compose file derives the server's `PYN_PUBLIC_URL` from it (`https://<PYN_SITE>`) when `.env` has no `PYN_PUBLIC_URL`; an explicit `PYN_PUBLIC_URL` always wins. The installer reads it when it re-runs; the Caddyfile holds the name |
+| `PYN_TRUST_FORWARDED_FOR` | Defaults to `true` in the Compose files (the server sits behind the web container's proxy), so `.env` need not set it; a value in `.env` wins |
+| `PYN_TRUSTED_PROXIES` | `2` with Caddy (Caddy, then the web container). Not derived: the Compose file cannot leave a variable unset, and the server rejects an empty one, so the installer writes it |
 | `PYN_CADDY_IMAGE` | The image, `caddy:2.11` pinned by digest by default. A build with a DNS provider module goes here ([recipe 7](#choosing-a-recipe)) |
 | `PYN_WEB_PUBLISH_HTTP`, `PYN_WEB_PUBLISH_TLS` | Where ports 80 and 443 (and 443/udp, HTTP/3) are published: `ip:port` for each, default all interfaces on 80 and 443 |
 | `PYN_WEB_PUBLISH` | The plain HTTP port of the web container, `127.0.0.1:8080` by default; leave it on loopback so https is the only way in |
@@ -281,8 +300,7 @@ Provisional: the `pyn` command is expected to read the operating system's trust 
 
 #### Public address and client addresses per layout
 
-`PYN_PUBLIC_URL` is the address people type, `https://<name>` without a port for the default 443. Sign-in, cookies and passkeys follow it. `PYN_TRUST_FORWARDED_FOR=true` (set
-by the Compose files) lets the server's rate limits use the client address from `X-Forwarded-For`, and `PYN_TRUSTED_PROXIES` says how many proxies append to it.
+`PYN_PUBLIC_URL` is the address people type, `https://<name>` without a port for the default 443. Sign-in, cookies and passkeys follow it. `PYN_TRUST_FORWARDED_FOR=true` (the Compose files' default) lets the server's rate limits use the client address from `X-Forwarded-For`, and `PYN_TRUSTED_PROXIES` says how many proxies append to it.
 
 Each proxy that appends puts the address it saw at the end of the header. The web container is one of them: its nginx sets `X-Forwarded-For` to the incoming value plus the address of whoever connected to it
 (`$proxy_add_x_forwarded_for`, `docker/nginx/default.conf.template` in `pyn-web`), and keeps an `X-Forwarded-Proto` and `X-Forwarded-Host` it already received. The server takes the entry `PYN_TRUSTED_PROXIES` positions from the right
@@ -297,7 +315,7 @@ Each proxy that appends puts the address it saw at the end of the header. The we
 | A CDN in front of a balancer in front of the web container, all appending | The public https address | `client, cdn, balancer` | `3` |
 | A Cloudflare tunnel (`cloudflared` forwarding to `http://web:8080`) | `https://<the tunnel's host name>` | `client, cloudflared` | `2`, verified with a request you can see in the server log, since the tunnel's header handling is Cloudflare's |
 
-Check each hop's documentation for whether it appends or replaces the header, and count only the ones that append and that you control: a hop that replaces the header does not add an entry. Too low a value makes every client look like the outer proxy and share its rate limits; too high a value picks an entry the client may have written, or falls back to the peer address when the list is shorter. `PYN_TRUSTED_PROXIES` needs `PYN_TRUST_FORWARDED_FOR=true`. The installer sets `PYN_TRUSTED_PROXIES=2` with the Caddy option. When the web app runs on its own host in front of a server elsewhere, set the value on that server's `.env`.
+Check each hop's documentation for whether it appends or replaces the header, and count only the ones that append and that you control: a hop that replaces the header does not add an entry. Too low a value makes every client look like the outer proxy and share its rate limits; too high a value picks an entry the client may have written, or falls back to the peer address when the list is shorter. `PYN_TRUSTED_PROXIES` needs `PYN_TRUST_FORWARDED_FOR=true` (the default in the Compose files). The installer sets `PYN_TRUSTED_PROXIES=2` with the Caddy option. When the web app runs on its own host in front of a server elsewhere, set the value on that server's `.env`.
 
 **Servers reached without the web container.** When a proxy talks to the server directly, each proxy that appends the address it saw adds one entry, and `PYN_TRUSTED_PROXIES` equals the number of proxies you trust to append (the web container is not in the chain, so there is no extra one):
 
@@ -356,7 +374,7 @@ When it is `expiring` or `unreachable`, follow the renewal checklist above: `doc
 
 An install whose `.env` has no `COMPOSE_PROFILES=caddy` is unchanged: the web container stays plain HTTP on 8080, the Compose file starts no `caddy` service and publishes nothing on 80 or 443, and `PYN_PUBLIC_URL` and the 8080 mapping are used as before. To turn https on with the Caddy option,
 refresh the Compose file (it adds the `caddy` service and its volumes) and re-run the installer with `--caddy --site NAME` (it writes the Caddyfile, moves `PYN_PUBLIC_URL` and sets the proxy count, and keeps the rest); by hand, write the Caddyfile, add `COMPOSE_PROFILES=caddy`,
-`PYN_SITE`, `PYN_PUBLIC_URL=https://<name>`, `PYN_TRUST_FORWARDED_FOR=true` and `PYN_TRUSTED_PROXIES=2` to `.env`, and run `docker compose up -d`. If your own proxy already serves the name, change nothing but `PYN_TRUSTED_PROXIES` ([layouts](#public-address-and-client-addresses-per-layout)). Both the server and the web app address people use change when you move to https: update the CLI's saved address (`pyn config set --global server https://<name>`) and any web app that lists this one in `PYN_ALLOWED_ORIGINS`.
+`PYN_SITE` and `PYN_TRUSTED_PROXIES=2` to `.env` (delete any old `PYN_PUBLIC_URL` line, or set it to `https://<name>`; `PYN_TRUST_FORWARDED_FOR` is on by default), run `scripts/check-env.sh`, then `docker compose up -d`. If your own proxy already serves the name, change nothing but `PYN_TRUSTED_PROXIES` ([layouts](#public-address-and-client-addresses-per-layout)). Both the server and the web app address people use change when you move to https: update the CLI's saved address (`pyn config set --global server https://<name>`) and any web app that lists this one in `PYN_ALLOWED_ORIGINS`.
 
 ### Health and monitoring
 

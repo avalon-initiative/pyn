@@ -85,7 +85,7 @@ base = {
     "PYN_API_URL": "https://pyn.example.com",
 }
 old_env = dict(base, PYN_PUBLIC_URL="http://192.168.1.20:8080", PYN_WEB_PUBLISH="0.0.0.0:8080")
-removed = re.compile(r"PYN_SITE|PYN_TLS|PYN_TRUSTED_PROXY_RANGES|CF_API_TOKEN|CF_TOKEN|pyn-tls|secrets:|sysctls|ip_unprivileged_port_start")
+removed = re.compile(r"PYN_TLS|PYN_TRUSTED_PROXY_RANGES|CF_API_TOKEN|CF_TOKEN|pyn-tls|secrets:|sysctls|ip_unprivileged_port_start")
 
 for name, plain in (("docker-compose.yml", {"db", "server", "web"}), ("docker-compose.web.yml", {"web"})):
     doc = load(name, base)
@@ -129,8 +129,23 @@ for name, plain in (("docker-compose.yml", {"db", "server", "web"}), ("docker-co
 
 full = "docker-compose.yml"
 server = load(full, base)["services"]["server"]
-check("PYN_PUBLIC_URL comes from .env only, not from the Compose file", "PYN_PUBLIC_URL" not in server["environment"])
-check("PYN_TRUST_FORWARDED_FOR stays on", server["environment"]["PYN_TRUST_FORWARDED_FOR"] == "true")
+def server_env(env, name=full):
+    return load(name, env)["services"]["server"]["environment"]
+
+
+check("no PYN_SITE and no PYN_PUBLIC_URL: the plain trial address", server["environment"]["PYN_PUBLIC_URL"] == "http://localhost:8080")
+check("an existing .env keeps its explicit PYN_PUBLIC_URL", server_env(old_env)["PYN_PUBLIC_URL"] == "http://192.168.1.20:8080")
+check("PYN_SITE alone derives the https address", server_env(dict(base, PYN_SITE="pyn.example.com"))["PYN_PUBLIC_URL"] == "https://pyn.example.com")
+check("an IP address site derives the same way", server_env(dict(base, PYN_SITE="192.168.1.5"))["PYN_PUBLIC_URL"] == "https://192.168.1.5")
+check("an explicit PYN_PUBLIC_URL wins over PYN_SITE",
+      server_env(dict(base, PYN_SITE="pyn.example.com", PYN_PUBLIC_URL="https://other.example.com"))["PYN_PUBLIC_URL"] == "https://other.example.com")
+check("an empty PYN_SITE and PYN_PUBLIC_URL fall back to the plain address", server_env(dict(base, PYN_SITE="", PYN_PUBLIC_URL=""))["PYN_PUBLIC_URL"] == "http://localhost:8080")
+check("PYN_TRUST_FORWARDED_FOR is on by default", server["environment"]["PYN_TRUST_FORWARDED_FOR"] == "true")
+check("an explicit PYN_TRUST_FORWARDED_FOR wins", server_env(dict(base, PYN_TRUST_FORWARDED_FOR="false"))["PYN_TRUST_FORWARDED_FOR"] == "false")
+check("PYN_TRUSTED_PROXIES is not set by the Compose file (the server rejects an empty value)", "PYN_TRUSTED_PROXIES" not in server["environment"])
+check("the server-only file trusts forwarded headers by default and lets .env override",
+      server_env(base, "docker-compose.server.yml")["PYN_TRUST_FORWARDED_FOR"] == "true"
+      and server_env(dict(base, PYN_TRUST_FORWARDED_FOR="false"), "docker-compose.server.yml")["PYN_TRUST_FORWARDED_FOR"] == "false")
 check("the server publish and volumes are as before",
       server["ports"] == ["127.0.0.1:7878:7878"] and "pyn-objects:/data" in server["volumes"])
 check("the full file's volumes are the database, objects and caddy's", set(load(full, base)["volumes"]) == {"pyn-db", "pyn-objects", "caddy-data", "caddy-config"})
@@ -140,9 +155,45 @@ for example in (".env.example", ".env.web.example"):
         txt = f.read()
     check(f"{example}: no TLS-mode settings remain", not re.search(r"PYN_TLS|PYN_TRUSTED_PROXY_RANGES|CF_TOKEN|PYN_ACCESS_LOG|pyn-tls", txt))
     check(f"{example}: the Caddy settings are present and commented", "# COMPOSE_PROFILES=caddy" in txt and "# PYN_CADDY_IMAGE=" in txt)
+    check(f"{example}: the Caddy block lists only the profile and the site as settings to write",
+          "# COMPOSE_PROFILES=caddy" in txt and "# PYN_SITE=pyn.example.com" in txt and "PYN_TRUST_FORWARDED_FOR" not in re.sub(r"(?m)^#.*$", "", txt))
 
 with open(os.path.join(root, "docker-compose.server.yml")) as f:
     check("the server-only file has no web, caddy or nginx settings", not re.search(r"PYN_SITE|caddy|nginx|pyn-web", f.read()))
+
+
+def real_render(env_lines):
+    """With Docker present, renders the full file for real and returns the server's environment; None when Docker is missing."""
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    if shutil.which("docker") is None or subprocess.run(["docker", "compose", "version"], capture_output=True).returncode != 0:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        shutil.copy(os.path.join(root, "docker-compose.yml"), d)
+        with open(os.path.join(d, ".env"), "w") as f:
+            f.write("\n".join(env_lines) + "\n")
+        out = subprocess.run(["docker", "compose", "--project-directory", d, "config", "--format", "json"], capture_output=True, text=True, cwd=d)
+        if out.returncode != 0:
+            print(out.stderr, file=sys.stderr)
+            return {}
+        return json.loads(out.stdout)["services"]["server"]["environment"]
+
+
+required = ["PYN_SERVER_VERSION=v0.1.2", "PYN_WEB_VERSION=v0.1.5", "POSTGRES_PASSWORD=x", "PYN_SECRET_KEY=y"]
+for label, extra, want in (
+    ("plain", [], "http://localhost:8080"),
+    ("site", ["PYN_SITE=pyn.example.com"], "https://pyn.example.com"),
+    ("explicit", ["PYN_SITE=pyn.example.com", "PYN_PUBLIC_URL=https://other.example.com"], "https://other.example.com"),
+    ("old", ["PYN_PUBLIC_URL=http://192.168.1.20:8080"], "http://192.168.1.20:8080"),
+):
+    got = real_render(required + extra)
+    if got is None:
+        print("skip real docker compose config (Docker not available)")
+        break
+    check(f"docker compose config ({label}): PYN_PUBLIC_URL is {want}", got.get("PYN_PUBLIC_URL") == want and got.get("PYN_TRUST_FORWARDED_FOR") == "true")
 
 if failures:
     print(f"{failures} test(s) failed", file=sys.stderr)
