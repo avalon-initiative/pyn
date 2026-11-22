@@ -3,51 +3,31 @@ use std::time::Duration;
 
 use tokio::task::JoinHandle;
 
-use pyn_core::gate::{DEFAULT_UPLOADS_PER_SERVER, DEFAULT_UPLOADS_PER_USER};
 use pyn_core::memory::{
     MemoryAccessStore, MemoryAuditStore, MemoryMetadataStore, MemoryObjectStore,
     MemoryRateLimitStore, MemoryWebhookStore,
 };
-use pyn_core::merge::default_concurrent_merges;
 use pyn_core::{
-    AccessConfig, AccessService, AccessStore, AuditStore, AuthProvider, ChunkedStore, Clock,
-    ExternalPolicy, Limits, MetadataStore, ObjectStore, RandomJitter, RateLimitStore, RateLimits,
-    Repositories, Rules, ScaledClock, SecretKey, SystemClock, WebhookSettings, WebhookStore,
-    generate_setup_token,
+    AccessService, AccessStore, AuditStore, AuthProvider, ChunkedStore, Clock, MetadataStore,
+    ObjectStore, RandomJitter, RateLimitStore, Repositories, ScaledClock, SystemClock,
+    WebhookSettings, WebhookStore, generate_setup_token,
 };
 use pyn_fs::FsObjectStore;
-use pyn_oidc::{HttpOidcProvider, OidcConfig};
 use pyn_postgres::{PgMetadataStore, TimeSource};
 use pyn_proto::StorageKind;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
-use pyn_server::email::{MailerSetting, check_log_mailer_bind};
-use pyn_server::observe::{LogConfig, LogFormat, LoggedAudit};
+use pyn_server::known_settings::unknown_in_environment;
+use pyn_server::observe::LoggedAudit;
 use pyn_server::passwords::PooledPasswords;
 use pyn_server::ready::Readiness;
-use pyn_server::request_limits::RequestLimits;
+use pyn_server::settings::{Collector, Database, Problem, Settings, WebhookWorker, parse_logging};
 use pyn_server::shutdown::{self, Drain, Outcome};
 use pyn_server::storage::{ObjectStoreSetting, StorageReport};
 use pyn_server::update_check::{GithubReleases, ReleaseSource, UpdateChecker};
 use pyn_server::webhook_delivery::{DeliveryWorker, SafeSender, WorkerConfig};
 use pyn_server::{AppState, router_with_log};
 
-fn flag(name: &str) -> bool {
-    flag_or(name, false)
-}
-
-fn flag_or(name: &str, default: bool) -> bool {
-    std::env::var(name).map_or(default, |v| v == "true")
-}
-
-fn number<T: std::str::FromStr>(name: &str, default: T) -> anyhow::Result<T>
-where
-    T::Err: std::error::Error + Send + Sync + 'static,
-{
-    match std::env::var(name) {
-        Ok(v) => Ok(v.parse()?),
-        Err(_) => Ok(default),
-    }
-}
+const NOT_CHECKED: &str = "not checked: that PYN_DATABASE_URL is reachable, that the S3 bucket exists and its keys work, that PYN_DATA_DIR is writable, and that PYN_ADDR is free to bind";
 
 struct Stores {
     meta: Arc<dyn MetadataStore>,
@@ -60,11 +40,11 @@ struct Stores {
 }
 
 /// PostgreSQL when `PYN_DATABASE_URL` is set, otherwise in-memory.
-async fn stores(time: TimeSource) -> anyhow::Result<Stores> {
-    Ok(match std::env::var("PYN_DATABASE_URL") {
-        Ok(url) => {
+async fn stores(database: Option<&Database>, time: TimeSource) -> anyhow::Result<Stores> {
+    Ok(match database {
+        Some(db) => {
             let pg = Arc::new(
-                PgMetadataStore::connect(&url, flag("PYN_CREATE_DATABASE"))
+                PgMetadataStore::connect(&db.url, db.create)
                     .await?
                     .with_time_source(time),
             );
@@ -78,7 +58,7 @@ async fn stores(time: TimeSource) -> anyhow::Result<Stores> {
                 kind: "postgres",
             }
         }
-        Err(_) => {
+        None => {
             let hooks = Arc::new(MemoryWebhookStore::new());
             Stores {
                 meta: Arc::new(MemoryMetadataStore::new().with_outbox(hooks.clone())),
@@ -91,108 +71,6 @@ async fn stores(time: TimeSource) -> anyhow::Result<Stores> {
             }
         }
     })
-}
-
-/// `PYN_DEV_CLOCK_SPEED`: a clock running that many times faster than real time, for exercising lease expiry.
-/// Needs `PYN_DEV_AUTH`; it also moves sessions and rate windows.
-fn dev_clock() -> anyhow::Result<(Arc<dyn Clock>, TimeSource)> {
-    let Ok(raw) = std::env::var("PYN_DEV_CLOCK_SPEED") else {
-        return Ok((Arc::new(SystemClock), TimeSource::Database));
-    };
-    let speed: f64 = raw
-        .parse()
-        .map_err(|_| anyhow::anyhow!("PYN_DEV_CLOCK_SPEED must be a number, got {raw:?}"))?;
-    anyhow::ensure!(
-        speed.is_finite() && speed >= 1.0,
-        "PYN_DEV_CLOCK_SPEED must be at least 1"
-    );
-    anyhow::ensure!(
-        flag("PYN_DEV_AUTH"),
-        "PYN_DEV_CLOCK_SPEED needs PYN_DEV_AUTH=true: a fast clock is for development only"
-    );
-    tracing::warn!(
-        speed,
-        "PYN_DEV_CLOCK_SPEED is on: leases, sessions and rate windows run on a clock {speed} times faster than real time; development only"
-    );
-    Ok((Arc::new(ScaledClock::new(speed)), TimeSource::Caller))
-}
-
-/// A limit that stays unset, meaning unlimited, unless the variable is present.
-/// A whole number of days, 0 or more.
-fn day_count(name: &str, default: i64) -> anyhow::Result<i64> {
-    match std::env::var(name) {
-        Ok(v) => i64::try_from(whole_number(name, &v)?)
-            .map_err(|_| anyhow::anyhow!("{name} is too large")),
-        Err(_) => Ok(default),
-    }
-}
-
-fn optional_number(name: &str) -> anyhow::Result<Option<u64>> {
-    std::env::var(name)
-        .ok()
-        .map(|v| whole_number(name, &v))
-        .transpose()
-}
-
-fn whole_number(name: &str, value: &str) -> anyhow::Result<u64> {
-    value
-        .parse()
-        .map_err(|_| anyhow::anyhow!("{name} must be a non-negative whole number"))
-}
-
-/// A time limit in whole seconds; 0 turns it off.
-fn seconds(
-    name: &str,
-    default: Option<std::time::Duration>,
-) -> anyhow::Result<Option<std::time::Duration>> {
-    match std::env::var(name) {
-        Ok(v) => Ok(match whole_number(name, &v)? {
-            0 => None,
-            n => Some(std::time::Duration::from_secs(n)),
-        }),
-        Err(_) => Ok(default),
-    }
-}
-
-fn request_limits() -> anyhow::Result<RequestLimits> {
-    let defaults = RequestLimits::default();
-    let max_expensive = match std::env::var("PYN_MAX_CONCURRENT_EXPENSIVE") {
-        Ok(v) => whole_number("PYN_MAX_CONCURRENT_EXPENSIVE", &v)? as usize,
-        Err(_) => defaults.max_expensive,
-    };
-    anyhow::ensure!(
-        max_expensive >= 1,
-        "PYN_MAX_CONCURRENT_EXPENSIVE must be at least 1"
-    );
-    Ok(RequestLimits {
-        request_timeout: seconds("PYN_REQUEST_TIMEOUT_SECS", defaults.request_timeout)?,
-        body_idle_timeout: seconds("PYN_BODY_IDLE_TIMEOUT_SECS", defaults.body_idle_timeout)?,
-        max_expensive,
-    })
-}
-
-/// `true` or `false`; anything else is an error rather than a silent default.
-fn strict_flag(name: &str, default: bool) -> anyhow::Result<bool> {
-    match std::env::var(name).as_deref() {
-        Err(_) => Ok(default),
-        Ok("true") => Ok(true),
-        Ok("false") => Ok(false),
-        Ok(_) => anyhow::bail!("{name} must be true or false"),
-    }
-}
-
-/// `on` or `off`; anything else is an error rather than a silent default.
-fn on_off(name: &str, default: bool) -> anyhow::Result<bool> {
-    on_off_value(name, std::env::var(name).ok().as_deref(), default)
-}
-
-fn on_off_value(name: &str, value: Option<&str>, default: bool) -> anyhow::Result<bool> {
-    match value {
-        None => Ok(default),
-        Some("on") => Ok(true),
-        Some("off") => Ok(false),
-        Some(_) => anyhow::bail!("{name} must be on or off"),
-    }
 }
 
 /// The release lookup, only when `on`; off by default, and then no source is even built and nothing is contacted.
@@ -225,19 +103,14 @@ fn update_checker(
 /// Watches the certificate at the public address unless it is switched off or there is nothing public to check.
 fn start_certificate_check(
     public_url: &str,
+    every: Option<Duration>,
     drain: &Drain,
     tasks: &mut Vec<JoinHandle<()>>,
-) -> anyhow::Result<Arc<pyn_server::certificate::CertificateReport>> {
-    use pyn_server::certificate::{CertificateReport, Target, interval_from, spawn_monitor};
+) -> Arc<pyn_server::certificate::CertificateReport> {
+    use pyn_server::certificate::{CertificateReport, Target, spawn_monitor};
     let report = Arc::new(CertificateReport::default());
-    let every = interval_from(
-        std::env::var("PYN_CERT_CHECK_INTERVAL_SECS")
-            .ok()
-            .as_deref(),
-    )
-    .map_err(anyhow::Error::msg)?;
     let Some(every) = every else {
-        return Ok(report);
+        return report;
     };
     match Target::from_public_url(public_url) {
         Ok(target) => {
@@ -256,120 +129,46 @@ fn start_certificate_check(
         }
         Err(skip) => tracing::debug!("the TLS certificate is not checked: {}", skip.reason()),
     }
-    Ok(report)
+    report
 }
 
-/// `PYN_WEBHOOKS_ALLOW_LOOPBACK` is refused unless plain-http development mode is on too.
-fn allow_loopback() -> anyhow::Result<bool> {
-    loopback_mode(
-        strict_flag("PYN_WEBHOOKS_ALLOW_LOOPBACK", false)?,
-        strict_flag("PYN_WEBHOOKS_ALLOW_HTTP", false)?,
-    )
-}
-
-fn loopback_mode(on: bool, allow_http: bool) -> anyhow::Result<bool> {
-    anyhow::ensure!(
-        !on || allow_http,
-        "PYN_WEBHOOKS_ALLOW_LOOPBACK is for development and needs PYN_WEBHOOKS_ALLOW_HTTP=true"
-    );
-    Ok(on)
-}
-
-fn webhook_settings() -> anyhow::Result<WebhookSettings> {
-    allow_loopback()?;
-    let secret_key = match std::env::var("PYN_SECRET_KEY") {
-        Ok(text) => {
-            Some(SecretKey::from_hex(&text).map_err(|e| anyhow::anyhow!("PYN_SECRET_KEY: {e}"))?)
-        }
-        Err(std::env::VarError::NotPresent) => None,
-        Err(_) => anyhow::bail!("PYN_SECRET_KEY is not valid text"),
-    };
-    match &secret_key {
-        Some(key) => tracing::info!(
-            key_id = key.key_id(),
-            "webhook secrets and two-factor seeds are encrypted at rest"
-        ),
-        None => tracing::warn!(
-            "PYN_SECRET_KEY is not set: webhook signing secrets and two-factor seeds are stored unencrypted"
-        ),
-    }
-    Ok(WebhookSettings {
-        secret_key,
-        allow_http: strict_flag("PYN_WEBHOOKS_ALLOW_HTTP", false)?,
-    })
-}
-
-/// Starts the loop that delivers queued webhook events, unless `PYN_WEBHOOK_WORKER` is `false`. Every copy of the
+/// Starts the loop that delivers queued webhook events unless `PYN_WEBHOOK_WORKER` is `false`. Every copy of the
 /// server may run one: deliveries are claimed with row locks and a lease.
 fn start_webhook_delivery(
     store: Arc<dyn WebhookStore>,
     clock: Arc<dyn Clock>,
     settings: &WebhookSettings,
+    worker: Option<WebhookWorker>,
     public_url: String,
     drain: &Drain,
-) -> anyhow::Result<Option<JoinHandle<()>>> {
-    if !strict_flag("PYN_WEBHOOK_WORKER", true)? {
+) -> Option<JoinHandle<()>> {
+    let Some(worker) = worker else {
         tracing::info!("PYN_WEBHOOK_WORKER is false: this copy does not deliver webhooks");
-        return Ok(None);
-    }
-    let allowed_hosts: Vec<String> = std::env::var("PYN_WEBHOOKS_ALLOWED_HOSTS")
-        .map(|v| v.split(',').map(str::to_string).collect())
-        .unwrap_or_default();
+        return None;
+    };
     let config = WorkerConfig {
-        concurrency: number(
-            "PYN_WEBHOOKS_CONCURRENCY",
-            WorkerConfig::default().concurrency,
-        )?,
+        concurrency: worker.concurrency,
         ..WorkerConfig::default()
     };
-    anyhow::ensure!(
-        config.concurrency >= 1,
-        "PYN_WEBHOOKS_CONCURRENCY must be at least 1"
-    );
-    let mut sender = SafeSender::new(settings.allow_http, allowed_hosts);
-    if allow_loopback()? {
+    let mut sender = SafeSender::new(settings.allow_http, worker.allowed_hosts);
+    if worker.allow_loopback {
         tracing::warn!(
             "PYN_WEBHOOKS_ALLOW_LOOPBACK is on: webhooks may be delivered to loopback addresses; development only"
         );
         sender = sender.allowing_loopback();
     }
-    let handle = Arc::new(DeliveryWorker::new(
-        store,
-        clock,
-        Arc::new(sender),
-        Arc::new(RandomJitter),
-        settings.secret_key.clone(),
-        public_url,
-        config,
-    ))
-    .spawn(drain.clone());
-    Ok(Some(handle))
-}
-
-/// OpenID Connect sign-in, only when the issuer, client id and client secret are all set.
-fn oidc_provider() -> anyhow::Result<Option<Arc<HttpOidcProvider>>> {
-    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
-    let (issuer, id, secret) = (
-        var("PYN_OIDC_ISSUER"),
-        var("PYN_OIDC_CLIENT_ID"),
-        var("PYN_OIDC_CLIENT_SECRET"),
-    );
-    let (Some(issuer), Some(id), Some(secret)) = (issuer.clone(), id.clone(), secret.clone())
-    else {
-        anyhow::ensure!(
-            issuer.is_none() && id.is_none() && secret.is_none(),
-            "PYN_OIDC_ISSUER, PYN_OIDC_CLIENT_ID and PYN_OIDC_CLIENT_SECRET must be set together"
-        );
-        return Ok(None);
-    };
-    let mut config = OidcConfig::new(&issuer, &id, &secret);
-    if let Some(name) = var("PYN_OIDC_NAME") {
-        config.display_name = name;
-    }
-    if let Some(claim) = var("PYN_OIDC_USERNAME_CLAIM") {
-        config.username_claim = claim;
-    }
-    Ok(Some(Arc::new(HttpOidcProvider::new(config)?)))
+    Some(
+        Arc::new(DeliveryWorker::new(
+            store,
+            clock,
+            Arc::new(sender),
+            Arc::new(RandomJitter),
+            settings.secret_key.clone(),
+            public_url,
+            config,
+        ))
+        .spawn(drain.clone()),
+    )
 }
 
 /// Asks this server's own `/healthz` on the configured address; an unspecified bind address is probed on loopback.
@@ -382,60 +181,43 @@ async fn healthcheck(addr: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `PYN_SHUTDOWN_GRACE_SECS`: seconds in-flight requests get to finish after a stop signal, default 30; 0 is no grace.
-fn shutdown_grace() -> anyhow::Result<Duration> {
-    match std::env::var("PYN_SHUTDOWN_GRACE_SECS") {
-        Ok(v) => Ok(Duration::from_secs(whole_number(
-            "PYN_SHUTDOWN_GRACE_SECS",
-            &v,
-        )?)),
-        Err(_) => Ok(Duration::from_secs(30)),
+/// The first problem as the start-up failure, with a pointer when there are more.
+fn first_problem(problems: Vec<Problem>) -> anyhow::Error {
+    let more = problems.len() - 1;
+    let first = &problems[0].message;
+    if more == 0 {
+        anyhow::anyhow!("{first}")
+    } else {
+        anyhow::anyhow!(
+            "{first}\n({more} more problem(s); run pyn-server --check-config to list every one)"
+        )
     }
 }
 
-/// `PYN_SHUTDOWN_DRAIN_DELAY_SECS`: seconds the server stays up and not ready before closing its listener, default 0.
-fn drain_delay() -> anyhow::Result<Duration> {
-    drain_delay_value(
-        std::env::var("PYN_SHUTDOWN_DRAIN_DELAY_SECS")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn drain_delay_value(value: Option<&str>) -> anyhow::Result<Duration> {
-    const NAME: &str = "PYN_SHUTDOWN_DRAIN_DELAY_SECS";
-    const MAX: u64 = 3600;
-    let Some(v) = value else {
-        return Ok(Duration::ZERO);
+/// Runs every start-up parse without starting anything and prints what it found.
+fn check_config() -> anyhow::Result<()> {
+    let result = Settings::load();
+    for line in unknown_in_environment() {
+        println!("warning: {line}");
+    }
+    let failed = match &result {
+        Ok(_) => {
+            println!("configuration ok");
+            false
+        }
+        Err(problems) => {
+            for problem in problems {
+                println!("{}", problem.line());
+            }
+            println!("{} problem(s) found", problems.len());
+            true
+        }
     };
-    let secs = whole_number(NAME, v)?;
-    anyhow::ensure!(secs <= MAX, "{NAME} must be at most {MAX} seconds");
-    Ok(Duration::from_secs(secs))
-}
-
-/// `PYN_TRUSTED_PROXIES`: how many proxies append to `X-Forwarded-For`, 1 to 16, default 1; needs forwarded headers trusted.
-fn trusted_proxies(trust_forwarded: bool) -> anyhow::Result<usize> {
-    trusted_proxies_value(
-        trust_forwarded,
-        std::env::var("PYN_TRUSTED_PROXIES").ok().as_deref(),
-    )
-}
-
-fn trusted_proxies_value(trust_forwarded: bool, value: Option<&str>) -> anyhow::Result<usize> {
-    const NAME: &str = "PYN_TRUSTED_PROXIES";
-    let Some(v) = value else {
-        return Ok(1);
-    };
-    anyhow::ensure!(
-        trust_forwarded,
-        "{NAME} only applies with PYN_TRUST_FORWARDED_FOR=true"
-    );
-    let hops = whole_number(NAME, v)?;
-    anyhow::ensure!(
-        (1..=16).contains(&hops),
-        "{NAME} must be a whole number from 1 to 16"
-    );
-    Ok(hops as usize)
+    println!("{NOT_CHECKED}");
+    if failed {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -450,6 +232,14 @@ async fn main() -> anyhow::Result<()> {
             println!("pyn-server {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        Some("--check-config") => {
+            anyhow::ensure!(
+                args.len() == 1,
+                "--check-config takes no arguments\n{}",
+                pyn_server::host_admin::HELP
+            );
+            return check_config();
+        }
         _ => {}
     }
     let host_command = pyn_server::host_admin::parse(&args)?;
@@ -458,68 +248,83 @@ async fn main() -> anyhow::Result<()> {
     {
         anyhow::bail!("unknown argument {first}\n{}", pyn_server::host_admin::HELP);
     }
-    let addr = std::env::var("PYN_ADDR").unwrap_or_else(|_| "127.0.0.1:7878".into());
     if std::env::args().nth(1).as_deref() == Some("--healthcheck") {
+        let addr = std::env::var("PYN_ADDR").unwrap_or_else(|_| "127.0.0.1:7878".into());
         return healthcheck(&addr).await;
     }
+    let (settings, logging) = if host_command.is_some() {
+        let mut collector = Collector::default();
+        let logging = parse_logging(&mut collector);
+        collector.finish().map_err(first_problem)?;
+        (None, logging)
+    } else {
+        let settings = Settings::load().map_err(first_problem)?;
+        let logging = settings.logging;
+        (Some(settings), logging)
+    };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let log_format = match std::env::var("PYN_LOG_FORMAT") {
-        Ok(v) => v.parse::<LogFormat>().map_err(anyhow::Error::msg)?,
-        Err(_) => LogFormat::default(),
-    };
-    let log_config = LogConfig {
-        access: strict_flag("PYN_ACCESS_LOG", true)?,
-        client: strict_flag("PYN_ACCESS_LOG_CLIENT", false)?,
-    };
-    let audit_log = strict_flag("PYN_AUDIT_LOG", false)?;
     let subscriber = if host_command.is_some() {
         // Standard output carries a generated password and nothing else.
-        pyn_server::observe::subscriber(log_format, filter, std::io::stderr)
+        pyn_server::observe::subscriber(logging.format, filter, std::io::stderr)
     } else {
-        pyn_server::observe::subscriber(log_format, filter, std::io::stdout)
+        pyn_server::observe::subscriber(logging.format, filter, std::io::stdout)
     };
     tracing::subscriber::set_global_default(subscriber)?;
     if let Some(command) = host_command {
         return pyn_server::host_admin::run(command).await;
     }
-    pyn_server::check_dev_auth_bind(
-        &addr,
-        flag("PYN_DEV_AUTH"),
-        strict_flag("PYN_DEV_AUTH_ALLOW_NON_LOOPBACK", false)?,
-    )
-    .map_err(anyhow::Error::msg)?;
-    let grace = shutdown_grace()?;
-    let delay = drain_delay()?;
-    let trust_forwarded = flag("PYN_TRUST_FORWARDED_FOR");
-    let trusted_proxies = trusted_proxies(trust_forwarded)?;
+    let Some(settings) = settings else {
+        unreachable!("a server start always has settings");
+    };
+    for line in unknown_in_environment() {
+        tracing::warn!("{line}");
+    }
+    let Settings {
+        addr,
+        logging: _,
+        dev_auth,
+        grace,
+        delay,
+        trust_forwarded,
+        trusted_proxies,
+        clock_speed,
+        rules,
+        initial_policy,
+        request_limits,
+        content: content_setting,
+        database,
+        instances: _,
+        mailer,
+        email,
+        access: config,
+        oidc,
+        password_hashes: hashes,
+        supplied_setup_token: supplied_token,
+        webhooks: hook_settings,
+        webhook_worker,
+        max_locks,
+        unreferenced_upload_cap,
+        uploads_per_user,
+        uploads_per_server,
+        merges,
+        update_check,
+        cert_interval,
+    } = settings;
+    let log_config = logging.config;
     let drain = Drain::default();
     let signals = shutdown::watch_signals()?;
     let mut tasks: Vec<JoinHandle<()>> = Vec::new();
-    let (clock, time) = dev_clock()?;
-    let (rules, initial_policy) = match std::env::var("PYN_CONFIG") {
-        Ok(path) => {
-            let size = std::fs::metadata(&path)?.len();
-            anyhow::ensure!(
-                size <= pyn_core::rules::MAX_POLICY_BYTES,
-                "PYN_CONFIG is larger than {} bytes",
-                pyn_core::rules::MAX_POLICY_BYTES
+    let (clock, time): (Arc<dyn Clock>, TimeSource) = match clock_speed {
+        Some(speed) => {
+            tracing::warn!(
+                speed,
+                "PYN_DEV_CLOCK_SPEED is on: leases, sessions and rate windows run on a clock {speed} times faster than real time; development only"
             );
-            let text = std::fs::read_to_string(path)?;
-            (Rules::from_toml(&text)?, text)
+            (Arc::new(ScaledClock::new(speed)), TimeSource::Caller)
         }
-        Err(_) => (
-            Rules::empty(),
-            pyn_core::rules::DEFAULT_INITIAL_POLICY.to_string(),
-        ),
+        None => (Arc::new(SystemClock), TimeSource::Database),
     };
-
-    let request_limits = request_limits()?;
-    let content_setting = ObjectStoreSetting::from_env(
-        |name| std::env::var(name).ok(),
-        |path| std::fs::read_to_string(path),
-    )
-    .map_err(anyhow::Error::msg)?;
 
     let Stores {
         meta,
@@ -529,20 +334,13 @@ async fn main() -> anyhow::Result<()> {
         webhooks,
         postgres,
         kind: meta_kind,
-    } = stores(time).await?;
-    let audit: Arc<dyn AuditStore> = if audit_log {
+    } = stores(database.as_ref(), time).await?;
+    let audit: Arc<dyn AuditStore> = if logging.audit {
         Arc::new(LoggedAudit(audit))
     } else {
         audit
     };
-    let instances: u32 = number("PYN_INSTANCES", 1)?;
-    anyhow::ensure!(instances >= 1, "PYN_INSTANCES must be at least 1");
-    pyn_server::storage::check_instances(
-        instances,
-        meta_kind == "postgres",
-        content_setting.is_shared(),
-    )
-    .map_err(anyhow::Error::msg)?;
+
     let (objects, storage): (Arc<dyn ObjectStore>, Arc<StorageReport>) = match content_setting {
         ObjectStoreSetting::Filesystem(dir) => {
             let fs = FsObjectStore::open(dir).await?;
@@ -600,114 +398,24 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let mailer =
-        MailerSetting::from_env(|name| std::env::var(name).ok()).map_err(anyhow::Error::msg)?;
-    check_log_mailer_bind(
-        &addr,
-        mailer.is_log(),
-        strict_flag("PYN_MAILER_LOG_ALLOW_NON_LOOPBACK", false)?,
-    )
-    .map_err(anyhow::Error::msg)?;
     if mailer.is_log() {
         tracing::warn!(
             "PYN_MAILER=log is on: every email, verification links included, is written to the log instead of sent; for testing only"
         );
     }
-    let defaults = AccessConfig::default();
-    let limit_defaults = RateLimits::default();
-    let config = AccessConfig {
-        registration: match std::env::var("PYN_REGISTRATION") {
-            Ok(mode) => mode.parse()?,
-            Err(_) => defaults.registration,
-        },
-        access_mode: match std::env::var("PYN_ACCESS") {
-            Ok(mode) => mode.parse()?,
-            Err(_) => defaults.access_mode,
-        },
-        session_days: number("PYN_SESSION_DAYS", defaults.session_days)?,
-        require_email_verification: pyn_server::email::email_verification(
-            strict_flag("PYN_EMAIL_VERIFICATION", mailer.is_configured())?,
-            &mailer,
-        )
-        .map_err(anyhow::Error::msg)?,
-        require_approval: flag("PYN_REQUIRE_APPROVAL"),
-        limits: RateLimits {
-            sign_in_per_account: number(
-                "PYN_RATE_SIGN_IN_ACCOUNT",
-                limit_defaults.sign_in_per_account,
-            )?,
-            sign_in_per_client: number(
-                "PYN_RATE_SIGN_IN_CLIENT",
-                limit_defaults.sign_in_per_client,
-            )?,
-            register_per_client: number(
-                "PYN_RATE_REGISTER_CLIENT",
-                limit_defaults.register_per_client,
-            )?,
-            mail_per_email: number("PYN_RATE_MAIL_PER_EMAIL", limit_defaults.mail_per_email)?,
-            people_per_client: number("PYN_RATE_PEOPLE_CLIENT", limit_defaults.people_per_client)?,
-            service_per_credential: number(
-                "PYN_RATE_SERVICE_CREDENTIAL",
-                limit_defaults.service_per_credential,
-            )?,
-        },
-        public_url: std::env::var("PYN_PUBLIC_URL").unwrap_or_else(|_| format!("http://{addr}")),
-        allowed_origins: match std::env::var("PYN_ALLOWED_ORIGINS") {
-            Ok(list) => pyn_server::origin::parse_list(&list)
-                .map_err(|e| anyhow::anyhow!("PYN_ALLOWED_ORIGINS: {e}"))?,
-            Err(_) => Vec::new(),
-        },
-        webauthn_rp_id: std::env::var("PYN_WEBAUTHN_RP_ID")
-            .ok()
-            .filter(|id| !id.trim().is_empty()),
-        verification_ttl: defaults.verification_ttl,
-        org_creation: match std::env::var("PYN_ORG_CREATION") {
-            Ok(mode) => mode.parse()?,
-            Err(_) => defaults.org_creation,
-        },
-        org_member_add: match std::env::var("PYN_ORG_MEMBER_ADD") {
-            Ok(mode) => mode.parse()?,
-            Err(_) => defaults.org_member_add,
-        },
-        org_invitation_ttl: match optional_number("PYN_ORG_INVITATION_DAYS")? {
-            Some(0) => anyhow::bail!("PYN_ORG_INVITATION_DAYS must be at least 1"),
-            Some(days) => chrono::Duration::days(i64::try_from(days)?),
-            None => defaults.org_invitation_ttl,
-        },
-        default_limits: Limits {
-            repositories: optional_number("PYN_DEFAULT_MAX_REPOSITORIES")?,
-            members: optional_number("PYN_DEFAULT_MAX_ORG_MEMBERS")?,
-            storage_bytes: optional_number("PYN_DEFAULT_MAX_STORAGE_BYTES")?,
-        }
-        .validate()?,
-        external: ExternalPolicy {
-            create_accounts: flag("PYN_OIDC_CREATE_ACCOUNTS"),
-            password_sign_in: flag_or("PYN_PASSWORD_SIGN_IN", true),
-            redirect_url: std::env::var("PYN_OIDC_REDIRECT_URL").ok(),
-        },
-        deletion_window_days: day_count(
-            "PYN_ACCOUNT_DELETION_WINDOW_DAYS",
-            defaults.deletion_window_days,
-        )?,
-        disabled_retention_days: day_count(
-            "PYN_DISABLED_ACCOUNT_RETENTION_DAYS",
-            defaults.disabled_retention_days,
-        )?,
-    };
-    let oidc = oidc_provider()?;
-    anyhow::ensure!(
-        oidc.is_some() || config.external.password_sign_in,
-        "PYN_PASSWORD_SIGN_IN=false needs an OpenID Connect provider (PYN_OIDC_ISSUER)"
-    );
-    let parallelism = std::thread::available_parallelism().map_or(2, |n| n.get());
-    let hashes = number("PYN_PASSWORD_HASHES", parallelism)?;
-    anyhow::ensure!(hashes >= 1, "PYN_PASSWORD_HASHES must be at least 1");
-    let supplied_token = std::env::var("PYN_SETUP_TOKEN").ok();
+    match &hook_settings.secret_key {
+        Some(key) => tracing::info!(
+            key_id = key.key_id(),
+            "webhook secrets and two-factor seeds are encrypted at rest"
+        ),
+        None => tracing::warn!(
+            "PYN_SECRET_KEY is not set: webhook signing secrets and two-factor seeds are stored unencrypted"
+        ),
+    }
     let setup_token = match &supplied_token {
         Some(token) => token.clone(),
         None => generate_setup_token()?,
     };
-    let hook_settings = webhook_settings()?;
     let mut service = AccessService::new(
         access_store,
         clock.clone(),
@@ -727,7 +435,7 @@ async fn main() -> anyhow::Result<()> {
             .with_registry(meta.clone())
             .with_audit(audit.clone())
             .with_rate_limits(limits)
-            .with_email(mailer.sender().map_err(anyhow::Error::msg)?)
+            .with_email(email)
             .with_passwords(Arc::new(PooledPasswords::new(hashes)))
             .with_setup_token(&setup_token)?,
     );
@@ -780,21 +488,13 @@ async fn main() -> anyhow::Result<()> {
         rules,
     )
     .with_initial_policy(&initial_policy)?;
-    if let Ok(limit) = std::env::var("PYN_MAX_LOCKS_ALLOWED_PER_USER") {
-        repos = repos.with_default_max_locks(limit.parse()?)?;
+    if let Some(limit) = max_locks {
+        repos = repos.with_default_max_locks(limit)?;
     }
-    if let Some(bytes) = optional_number("PYN_MAX_UNREFERENCED_UPLOAD_BYTES")? {
+    if let Some(bytes) = unreferenced_upload_cap {
         repos = repos.with_unreferenced_upload_cap(bytes);
     }
-    let uploads_per_user: u32 = number("PYN_MAX_UPLOADS_PER_USER", DEFAULT_UPLOADS_PER_USER)?;
-    let uploads_per_server: u32 = number("PYN_MAX_UPLOADS", DEFAULT_UPLOADS_PER_SERVER)?;
-    anyhow::ensure!(
-        uploads_per_user >= 1 && uploads_per_server >= 1,
-        "PYN_MAX_UPLOADS_PER_USER and PYN_MAX_UPLOADS must be at least 1"
-    );
     repos = repos.with_upload_limits(uploads_per_user, uploads_per_server);
-    let merges: usize = number("PYN_MAX_CONCURRENT_MERGES", default_concurrent_merges())?;
-    anyhow::ensure!(merges >= 1, "PYN_MAX_CONCURRENT_MERGES must be at least 1");
     repos = repos.with_max_concurrent_merges(merges);
     tracing::info!(
         bytes = repos.unreferenced_upload_cap(),
@@ -803,20 +503,22 @@ async fn main() -> anyhow::Result<()> {
     let repos = Arc::new(repos);
 
     let updates = update_checker(
-        on_off("PYN_UPDATE_CHECK", false)?,
+        update_check,
         || Ok(Arc::new(GithubReleases::new()?)),
         clock.clone(),
         &drain,
         &mut tasks,
     )?;
-    let certificate = start_certificate_check(&access.public_url(), &drain, &mut tasks)?;
+    let certificate =
+        start_certificate_check(&access.public_url(), cert_interval, &drain, &mut tasks);
     tasks.extend(start_webhook_delivery(
         webhooks,
         clock,
         &hook_settings,
+        webhook_worker,
         access.public_url(),
         &drain,
-    )?);
+    ));
     tasks.push(pyn_server::account_deletion::spawn(
         access.clone(),
         Duration::from_secs(3600),
@@ -838,7 +540,7 @@ async fn main() -> anyhow::Result<()> {
         drain.clone(),
     ));
 
-    let dev_auth: Option<Arc<dyn AuthProvider>> = if flag("PYN_DEV_AUTH") {
+    let dev_auth: Option<Arc<dyn AuthProvider>> = if dev_auth {
         tracing::warn!(
             addr,
             "PYN_DEV_AUTH is on: anyone who can reach this server can act as any user"
@@ -888,46 +590,9 @@ async fn main() -> anyhow::Result<()> {
         Outcome::Forced { .. } => std::process::exit(1),
     }
 }
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        drain_delay_value, loopback_mode, on_off_value, trusted_proxies_value, update_checker,
-        whole_number,
-    };
-
-    #[test]
-    fn a_whole_number_parses_including_zero() {
-        assert_eq!(whole_number("X", "0").unwrap(), 0);
-        assert_eq!(whole_number("X", "1073741824").unwrap(), 1 << 30);
-    }
-
-    #[test]
-    fn anything_else_is_refused_naming_the_variable() {
-        for bad in ["", "-1", "1.5", "32G", "ten", " 5"] {
-            let err = whole_number("PYN_MAX_UNREFERENCED_UPLOAD_BYTES", bad).unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                "PYN_MAX_UNREFERENCED_UPLOAD_BYTES must be a non-negative whole number",
-                "{bad:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_update_check_takes_only_on_or_off() {
-        assert!(!on_off_value("X", None, false).unwrap());
-        assert!(on_off_value("X", Some("on"), false).unwrap());
-        assert!(!on_off_value("X", Some("off"), true).unwrap());
-        for bad in ["true", "ON", "", "1", "yes"] {
-            let err = on_off_value("PYN_UPDATE_CHECK", Some(bad), false).unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                "PYN_UPDATE_CHECK must be on or off",
-                "{bad:?}"
-            );
-        }
-    }
+    use super::update_checker;
 
     #[test]
     fn an_off_update_check_builds_no_source() {
@@ -940,44 +605,5 @@ mod tests {
             &mut Vec::new(),
         );
         assert!(checker.unwrap().is_none());
-    }
-
-    #[test]
-    fn loopback_delivery_needs_the_http_development_mode() {
-        assert!(loopback_mode(true, false).is_err());
-        assert!(loopback_mode(true, true).unwrap());
-        assert!(!loopback_mode(false, false).unwrap());
-    }
-
-    #[test]
-    fn the_drain_delay_defaults_to_zero_and_is_bounded() {
-        assert_eq!(drain_delay_value(None).unwrap().as_secs(), 0);
-        assert_eq!(drain_delay_value(Some("20")).unwrap().as_secs(), 20);
-        assert_eq!(drain_delay_value(Some("3600")).unwrap().as_secs(), 3600);
-        for bad in ["soon", "-1", "1.5", "", "3601", "99999999999"] {
-            let err = drain_delay_value(Some(bad)).unwrap_err().to_string();
-            assert!(
-                err.contains("PYN_SHUTDOWN_DRAIN_DELAY_SECS"),
-                "{bad:?}: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn trusted_proxies_are_one_to_sixteen_and_need_forwarded_headers_trusted() {
-        assert_eq!(trusted_proxies_value(false, None).unwrap(), 1);
-        assert_eq!(trusted_proxies_value(true, None).unwrap(), 1);
-        assert_eq!(trusted_proxies_value(true, Some("2")).unwrap(), 2);
-        assert_eq!(trusted_proxies_value(true, Some("16")).unwrap(), 16);
-        for bad in ["0", "17", "two", "-1", "", "1.5"] {
-            let err = trusted_proxies_value(true, Some(bad))
-                .unwrap_err()
-                .to_string();
-            assert!(err.contains("PYN_TRUSTED_PROXIES"), "{bad:?}: {err}");
-        }
-        let err = trusted_proxies_value(false, Some("2"))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("PYN_TRUST_FORWARDED_FOR=true"), "{err}");
     }
 }
