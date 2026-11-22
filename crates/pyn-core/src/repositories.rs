@@ -8,7 +8,7 @@ use chrono::Duration;
 
 use crate::access::{AccountKind, Credential, Identity, OrgRole, Permission, Principal, Role};
 use crate::access_service::{AccessService, OwnerLimits};
-use crate::audit::{AuditAction, AuditScope, AuditStore, NewAuditEvent};
+use crate::audit::{Actor, AuditAction, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::limit_events::DomainEvent;
@@ -195,13 +195,14 @@ impl Repositories {
     async fn record(
         &self,
         record: &RepoRecord,
-        actor: &UserId,
+        actor: Actor<'_>,
         action: AuditAction,
         detail: String,
     ) -> Result<()> {
         let event = NewAuditEvent {
             at: self.clock.now(),
-            actor: actor.clone(),
+            actor: actor.user.clone(),
+            acting_admin: actor.acting_admin.cloned(),
             action,
             path: None,
             detail,
@@ -347,6 +348,7 @@ impl Repositories {
                 user: who.map_or_else(|| UserId::new(""), |w| w.user.clone()),
                 permissions: [Permission::Read].into(),
                 email: None,
+                acting_admin: None,
             }),
             _ => None,
         })
@@ -428,7 +430,7 @@ impl Repositories {
         );
         self.record(
             &updated,
-            &actor.user,
+            actor.into(),
             AuditAction::RepoStorageCapChanged,
             detail,
         )
@@ -545,7 +547,7 @@ impl Repositories {
             record.settings.lease_hours,
             limit_detail(&record.settings)
         );
-        self.record(&record, &actor.user, AuditAction::RepoCreated, detail)
+        self.record(&record, actor.into(), AuditAction::RepoCreated, detail)
             .await?;
         Ok(record)
     }
@@ -749,7 +751,7 @@ impl Repositories {
             updated.settings.lease_hours,
             limit_detail(&updated.settings)
         );
-        self.record(&updated, &actor.user, AuditAction::RepoUpdated, detail)
+        self.record(&updated, actor.into(), AuditAction::RepoUpdated, detail)
             .await?;
         Ok(updated)
     }
@@ -759,7 +761,7 @@ impl Repositories {
         self.require_owner_admin(actor, record).await?;
         self.access.ensure_owner_writable(&record.owner).await?;
         let detail = format!("deleted {}", record.address());
-        self.record(record, &actor.user, AuditAction::RepoDeleted, detail)
+        self.record(record, actor.into(), AuditAction::RepoDeleted, detail)
             .await?;
         let owner_id = self.access.account_id(&record.owner).await?;
         let deleted = self.access.draft(DomainEvent::RepositoryDeleted {

@@ -158,13 +158,13 @@ impl AccessService {
         if account.kind == AccountKind::Org {
             self.record(
                 AuditScope::Org(owner.clone()),
-                &actor.user,
+                actor.into(),
                 AuditAction::OwnerLimitsChanged,
                 detail.clone(),
             )
             .await?;
         }
-        self.record_server(&actor.user, AuditAction::OwnerLimitsChanged, detail)
+        self.record_server(actor.into(), AuditAction::OwnerLimitsChanged, detail)
             .await?;
         self.limits_of(&account).await
     }

@@ -223,6 +223,9 @@ pub struct LockAcquiredData {
     pub path: String,
     pub holder: String,
     pub expires_at: DateTime<Utc>,
+    /// The administrator who acted as `holder` in an access session; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acting_admin: Option<String>,
 }
 
 /// `lock.released`: the holder released the lock, or a check-in consumed it.
@@ -237,6 +240,9 @@ pub struct LockReleasedData {
     /// `checkin` when a revision of the path consumed the lock; null for an explicit release.
     #[schema(required = true)]
     pub reason: Option<String>,
+    /// The administrator who acted as `holder` in an access session; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acting_admin: Option<String>,
 }
 
 /// `lock.expired`: a lease had lapsed when the path was locked again; observed lazily, not at the expiry instant.
@@ -266,6 +272,9 @@ pub struct LockForcedData {
     pub actor: String,
     #[schema(required = true)]
     pub reason: Option<String>,
+    /// The administrator who acted as `actor` in an access session; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acting_admin: Option<String>,
 }
 
 /// One lock change in a repository's stream.

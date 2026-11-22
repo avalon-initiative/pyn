@@ -300,6 +300,7 @@ async fn audit_lines_name_the_event_without_its_detail() {
                 action: AuditAction::Checkout,
                 path: None,
                 detail: "secret@example.com".into(),
+                acting_admin: None,
             },
         )
         .await
@@ -309,7 +310,31 @@ async fn audit_lines_name_the_event_without_its_detail() {
     assert_eq!(lines[0]["target"], "audit");
     assert_eq!(lines[0]["actor"], "root");
     assert_eq!(lines[0]["action"], "checkout");
+    assert!(lines[0].get("acting_admin").is_none(), "{}", lines[0]);
     assert!(!cap.text().contains("example.com"));
+}
+
+#[tokio::test]
+async fn an_audit_line_names_the_acting_administrator() {
+    let (cap, _guard) = capture(LogFormat::Json);
+    let store = LoggedAudit(Arc::new(MemoryAuditStore::new()));
+    store
+        .record(
+            &AuditScope::Server,
+            NewAuditEvent {
+                at: chrono::Utc::now(),
+                actor: UserId::new("alice"),
+                acting_admin: Some(UserId::new("root")),
+                action: AuditAction::Checkout,
+                path: None,
+                detail: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let lines = cap.json_lines();
+    assert_eq!(lines[0]["actor"], "alice");
+    assert_eq!(lines[0]["acting_admin"], "root");
 }
 
 #[tokio::test]

@@ -240,7 +240,7 @@ impl AccessService {
         };
         let fresh_until = self.mark_credential_fresh(actor, cookie).await?;
         self.record_server(
-            user,
+            user.into(),
             AuditAction::PasskeyAdded,
             format!("{user} added the passkey {:?}", passkey.name),
         )
@@ -291,7 +291,7 @@ impl AccessService {
                 } else {
                     format!("{user} removed a passkey, so two-factor authentication is off")
                 };
-                self.record_server(user, AuditAction::PasskeyRemoved, detail)
+                self.record_server(user.into(), AuditAction::PasskeyRemoved, detail)
                     .await
             }
         }
@@ -481,7 +481,7 @@ impl AccessService {
             })
             .await?;
         self.record_server(
-            user,
+            user.into(),
             AuditAction::PasskeyCloneSuspected,
             format!(
                 "the passkey {:?} of {user} was refused for a counter that did not increase",

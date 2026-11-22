@@ -267,6 +267,15 @@ pub fn shown_name(written: &str, current: Option<&str>) -> String {
     }
 }
 
+/// An audit entry's actor, with the administrator who acted as it in an access session.
+pub fn actor_with_admin(e: &api::AuditEntry) -> String {
+    let who = shown_name(&e.actor, e.actor_current.as_deref());
+    match &e.acting_admin {
+        Some(admin) => format!("{who} (as administrator {admin})"),
+        None => who,
+    }
+}
+
 fn person(p: &api::Person, time: i64) -> Signature {
     Signature {
         name: p.name.clone().into_bytes(),
@@ -804,6 +813,26 @@ fn join(items: impl Iterator<Item = String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_audit_actor_names_the_acting_administrator() {
+        let mut e = api::AuditEntry {
+            id: 1,
+            at: chrono::DateTime::UNIX_EPOCH,
+            actor: "alice".into(),
+            actor_current: None,
+            actor_public: None,
+            acting_admin: None,
+            action: "checkout".into(),
+            path: None,
+            detail: String::new(),
+            hash: String::new(),
+            previous: None,
+        };
+        assert_eq!(actor_with_admin(&e), "alice");
+        e.acting_admin = Some("root".into());
+        assert_eq!(actor_with_admin(&e), "alice (as administrator root)");
+    }
 
     #[test]
     fn relative_dates_round_like_git() {

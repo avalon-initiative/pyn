@@ -82,6 +82,7 @@ pub(crate) async fn backfill(pool: &PgPool) -> Result<()> {
                         id: r.get("id"),
                         at: r.get("at"),
                         actor: UserId::new(r.get::<String, _>("actor")),
+                        acting_admin: None,
                         action: AuditAction::from_str(r.get("action"))?,
                         path: r
                             .get::<Option<String>, _>("path")

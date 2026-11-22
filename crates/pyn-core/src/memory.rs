@@ -4321,6 +4321,7 @@ impl AuditStore for MemoryAuditStore {
                 id,
                 at: event.at,
                 actor: event.actor,
+                acting_admin: event.acting_admin,
                 action: event.action,
                 path: event.path,
                 detail: event.detail,

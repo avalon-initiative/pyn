@@ -443,6 +443,7 @@ async fn role_definitions_need_a_role_in_the_repository() {
         user: user("x"),
         permissions: perms(&[Read]),
         email: None,
+        acting_admin: None,
     };
     assert!(matches!(
         w.svc.role_definitions(&outsider, &w.repo, "a/game").await,

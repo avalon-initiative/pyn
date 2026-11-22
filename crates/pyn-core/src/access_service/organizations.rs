@@ -84,7 +84,7 @@ impl AccessService {
         let detail = format!("{org} created, owner {}", actor.user);
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::OrgCreated,
             detail,
         )
@@ -125,12 +125,12 @@ impl AccessService {
         let detail = format!("{org} created, owner {owner}");
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::OrgCreated,
             detail.clone(),
         )
         .await?;
-        self.record_server(&actor.user, AuditAction::OrgCreated, detail)
+        self.record_server(actor.into(), AuditAction::OrgCreated, detail)
             .await?;
         self.org(&org).await
     }
@@ -143,7 +143,7 @@ impl AccessService {
         self.org(name).await?;
         self.delete_org_unchecked(actor, name).await?;
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::OrgDeleted,
             format!("{name} deleted"),
         )
@@ -197,7 +197,7 @@ impl AccessService {
         let detail = format!("{name} deleted");
         self.record(
             AuditScope::Org(name.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::OrgDeleted,
             detail,
         )
@@ -261,7 +261,7 @@ impl AccessService {
             let detail = format!("{user}: {old} -> {role}");
             self.record(
                 AuditScope::Org(org.clone()),
-                &actor.user,
+                actor.into(),
                 AuditAction::OrgMemberRoleChanged,
                 detail,
             )
@@ -317,7 +317,7 @@ impl AccessService {
         detail.push_str(&rules);
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::OrgMemberRemoved,
             detail,
         )

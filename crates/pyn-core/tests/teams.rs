@@ -423,6 +423,7 @@ async fn team_access_answers_alike_for_a_missing_and_an_existing_team_to_a_non_m
         user: user("mallory"),
         permissions: [Permission::ManageUsers].into(),
         email: None,
+        acting_admin: None,
     };
     let mut seen = Vec::new();
     for slug in ["art", "ghost"] {
@@ -454,6 +455,7 @@ async fn team_access_answers_alike_for_a_missing_and_an_existing_team_to_a_non_m
         user: user("bob"),
         permissions: [Permission::ManageUsers, Permission::Read].into(),
         email: None,
+        acting_admin: None,
     };
     let err = w
         .access

@@ -766,6 +766,7 @@ pub async fn a_push_needs_the_checkin_permission(store: Store) {
         user: user("rita"),
         permissions: BTreeSet::from([Permission::Read]),
         email: None,
+        acting_admin: None,
     };
     let err = h
         .svc

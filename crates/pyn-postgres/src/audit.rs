@@ -37,7 +37,7 @@ impl AuditStore for PgMetadataStore {
         .flatten();
         let hash = event.hash(scope, previous.as_deref());
         sqlx::query(
-            "INSERT INTO audit_events (repo, at, actor, action, path, detail, hash, previous_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "INSERT INTO audit_events (repo, at, actor, action, path, detail, hash, previous_hash, acting_admin) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(scope.key())
         .bind(event.at)
@@ -47,6 +47,7 @@ impl AuditStore for PgMetadataStore {
         .bind(&event.detail)
         .bind(&hash)
         .bind(&previous)
+        .bind(event.acting_admin.as_ref().map(UserId::as_str))
         .execute(&mut *tx)
         .await
         .map_err(db)?;
@@ -56,7 +57,7 @@ impl AuditStore for PgMetadataStore {
 
     async fn list(&self, scope: &AuditScope, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
         let rows = sqlx::query(
-            "SELECT id, at, actor, action, path, detail, hash, previous_hash FROM audit_events
+            "SELECT id, at, actor, acting_admin, action, path, detail, hash, previous_hash FROM audit_events
              WHERE repo = $1
                AND ($2::text IS NULL OR path = $2)
                AND ($3::text IS NULL OR actor = $3)
@@ -81,6 +82,7 @@ impl AuditStore for PgMetadataStore {
                     id: r.get("id"),
                     at: r.get("at"),
                     actor: UserId::new(r.get::<String, _>("actor")),
+                    acting_admin: r.get::<Option<String>, _>("acting_admin").map(UserId::new),
                     action: AuditAction::from_str(r.get("action"))?,
                     path: r
                         .get::<Option<String>, _>("path")

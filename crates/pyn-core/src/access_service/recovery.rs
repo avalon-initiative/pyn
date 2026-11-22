@@ -86,14 +86,14 @@ impl AccessService {
             (false, false) => "password reset",
         };
         self.record_server(
-            &host,
+            (&host).into(),
             AuditAction::AdminGranted,
             format!("{user} made an administrator by host recovery ({how})"),
         )
         .await?;
         if reenabled {
             self.record_server(
-                &host,
+                (&host).into(),
                 AuditAction::AccountEnabled,
                 format!("{user} enabled by host recovery"),
             )

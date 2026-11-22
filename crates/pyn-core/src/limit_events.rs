@@ -143,6 +143,8 @@ pub enum DomainEvent {
         path: RepoPath,
         holder: UserId,
         expires_at: DateTime<Utc>,
+        /// The administrator acting as `holder` in an access session.
+        acting_admin: Option<UserId>,
     },
     LockReleased {
         owner: UserId,
@@ -153,6 +155,7 @@ pub enum DomainEvent {
         holder: UserId,
         /// `checkin` when a revision consumed the lock; none for an explicit release.
         reason: Option<String>,
+        acting_admin: Option<UserId>,
     },
     /// A lease that lapsed and was taken over; `expires_at` is when it ran out.
     LockExpired {
@@ -173,6 +176,8 @@ pub enum DomainEvent {
         holder: UserId,
         actor: UserId,
         reason: Option<String>,
+        /// The administrator acting as `actor` in an access session.
+        acting_admin: Option<UserId>,
     },
 }
 

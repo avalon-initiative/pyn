@@ -194,7 +194,8 @@ pub(crate) async fn request_log(
     response
 }
 
-/// Writes each recorded audit event as a log line with target `audit`: scope, actor, action and path, never the detail.
+/// Writes each recorded audit event as a log line with target `audit`: scope, actor, acting administrator, action and
+/// path, never the detail.
 pub struct LoggedAudit(pub Arc<dyn AuditStore>);
 
 #[async_trait]
@@ -203,6 +204,7 @@ impl AuditStore for LoggedAudit {
         let line = (
             scope.key(),
             event.actor.to_string(),
+            event.acting_admin.as_ref().map(ToString::to_string),
             event.action.to_string(),
             event.path.as_ref().map(ToString::to_string),
         );
@@ -211,8 +213,9 @@ impl AuditStore for LoggedAudit {
             target: "audit",
             scope = %line.0,
             actor = %line.1,
-            action = %line.2,
-            path = line.3.as_deref(),
+            acting_admin = line.2.as_deref(),
+            action = %line.3,
+            path = line.4.as_deref(),
             "audit"
         );
         Ok(())
