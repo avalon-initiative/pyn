@@ -103,6 +103,7 @@ async fn world(mode: AccessMode) -> World {
         trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     };
     let app = router(state);

@@ -67,6 +67,7 @@ fn server_with(trust_forwarded: bool, config: impl FnOnce(&mut AccessConfig)) ->
         trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     });
     Server { app, mail }

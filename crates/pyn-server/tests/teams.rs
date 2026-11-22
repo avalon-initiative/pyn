@@ -62,6 +62,7 @@ async fn server_with_root(org_creation: OrgCreation) -> (Router, String) {
         trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     });
     (app, root)

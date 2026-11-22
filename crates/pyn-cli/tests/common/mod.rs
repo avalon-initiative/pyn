@@ -200,6 +200,7 @@ fn build_full(
         trusted_proxies: 1,
         updates,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     });
     let url = runtime.block_on(async {

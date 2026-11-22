@@ -55,6 +55,7 @@ fn app(storage: Arc<StorageReport>, ready: Readiness) -> Router {
         trusted_proxies: 1,
         updates: None,
         storage,
+        certificate: Default::default(),
         ready,
     })
 }

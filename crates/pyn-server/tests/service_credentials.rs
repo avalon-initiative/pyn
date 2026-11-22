@@ -69,6 +69,7 @@ fn build_with(trust_forwarded: bool, trusted_proxies: usize) -> Router {
         trusted_proxies,
         updates: None,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     })
 }

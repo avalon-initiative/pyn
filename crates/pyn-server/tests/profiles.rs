@@ -67,6 +67,7 @@ async fn build(mode: AccessMode, limits: RateLimits, trust_forwarded: bool) -> R
         trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     })
 }
