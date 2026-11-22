@@ -462,7 +462,7 @@ start without `PYN_DATABASE_URL` and shared content storage (a bucket, below, or
 - All copies use the same PostgreSQL database and the same content storage: one S3 bucket ([below](#several-copies-on-a-bucket)),
   or the same `PYN_DATA_DIR` on shared storage (a network file system that supports atomic rename and hard links). They also
   share the same `PYN_SECRET_KEY` and the same `PYN_SETUP_TOKEN` until set up.
-- Put a load balancer in front; sessions and CSRF live in the database, so any copy can answer any request.
+- Put a load balancer in front; sessions and CSRF live in the database, so any copy can answer any request. [Load balancing](load-balancing.md) covers the layouts, health checks, draining, timeouts and client addresses.
 - Keep clocks in sync (NTP). Set `PYN_WEBHOOK_WORKER=false` on copies that should not deliver webhooks, but leave at least
   one delivering.
 - The caps on concurrent uploads, expensive requests and merges are per process on purpose: each bounds one copy's memory and CPU, so N copies allow N times the cap ([scale-out](concepts/scale-out.md)).

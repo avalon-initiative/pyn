@@ -15,6 +15,7 @@ Markdown, plus the generated OpenAPI document; `make docs-check` verifies relati
 - [Events: the lifecycle event schema](concepts/events.md)
 - [Webhooks: subscriptions, secrets and rotation](concepts/webhooks.md)
 - [Running several server copies: what is safe and what is not](concepts/scale-out.md)
+- [Load balancing: layouts, health checks, draining, timeouts, client addresses and a DigitalOcean example](load-balancing.md)
 - [Content storage: streaming, ranges and the chunked format](concepts/storage.md)
 - [The `.pyn/` folder](concepts/workspace.md)
 - [Git compatibility: where the CLI follows git and where it deliberately differs](concepts/git-compatibility.md)
