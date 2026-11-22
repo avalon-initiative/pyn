@@ -92,6 +92,10 @@ warns while it is still set.
 Logs go to standard error as plain text; read them with `docker compose logs`. The API port
 7878 is published on loopback only; browsers reach the web container, which serves https itself ([HTTPS](#https)).
 
+### Checking the configuration
+
+Before `docker compose up`, or after editing `.env`, run `docker compose run --rm --no-deps server pyn-server --check-config`. It starts nothing and lists every wrong or inconsistent `PYN_*` setting, and any `PYN_` variable the server does not read. See [checking a configuration](configuration.md#checking-a-configuration).
+
 ### Email
 
 pyn sends email only for address verification on an open-registration server. It is optional, and nothing is sent unless you configure it:
