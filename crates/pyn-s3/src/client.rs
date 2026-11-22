@@ -281,6 +281,33 @@ impl Client {
         }
     }
 
+    /// One ListObjectsV2 page under `prefix`: the keys and the token for the next page.
+    pub async fn list(
+        &self,
+        prefix: &str,
+        token: Option<&str>,
+        max_keys: usize,
+    ) -> Result<(Vec<String>, Option<String>)> {
+        let mut call = Call::new("ListObjectsV2", Method::GET, "");
+        call.query.push(("list-type", "2".into()));
+        call.query.push(("max-keys", max_keys.to_string()));
+        call.query.push(("prefix", prefix.to_owned()));
+        if let Some(token) = token {
+            call.query.push(("continuation-token", token.to_owned()));
+        }
+        let resp = self.send(&call).await?;
+        if !resp.status().is_success() {
+            return Err(self.refused("ListObjectsV2", resp).await);
+        }
+        let body = resp.text().await.map_err(|e| {
+            PynError::Storage(format!("S3 ListObjectsV2 failed: {}", e.without_url()))
+        })?;
+        let next = (xml::tag(&body, "IsTruncated").as_deref() == Some("true"))
+            .then(|| xml::tag(&body, "NextContinuationToken"))
+            .flatten();
+        Ok((xml::tags(&body, "Key"), next))
+    }
+
     pub async fn put(&self, key: &str, body: Body, sha256: String) -> Result<()> {
         let mut call = Call::new("PutObject", Method::PUT, key);
         call.bounded =

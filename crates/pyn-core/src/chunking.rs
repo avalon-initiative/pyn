@@ -311,6 +311,10 @@ impl ObjectStore for ChunkedStore {
         self.inner.exists(hash).await
     }
 
+    async fn list_keys(&self, after: Option<&str>, limit: usize) -> Result<crate::KeyPage> {
+        self.inner.list_keys(after, limit).await
+    }
+
     async fn size(&self, hash: &ObjectId) -> Result<Option<u64>> {
         match self.manifest(hash).await? {
             Some(m) => Ok(Some(m.total)),

@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use pyn_core::object::clamp_range;
 use pyn_core::{
-    KeyHasher, Keying, ObjectId, ObjectRead, ObjectReader, ObjectStore, PynError, REPO_ALGORITHM,
-    Result, Stored,
+    KeyHasher, KeyPage, Keying, ObjectId, ObjectRead, ObjectReader, ObjectStore, PynError,
+    REPO_ALGORITHM, Result, Stored, StoredKey,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -116,6 +116,15 @@ impl FsObjectStore {
         let store = Self { root };
         store.sweep_stale_temp(STALE_TEMP_AGE).await?;
         Ok(store)
+    }
+
+    /// Opens an existing store for reading: creates nothing and sweeps nothing.
+    pub async fn open_existing(root: impl Into<PathBuf>) -> Result<Self> {
+        let root = root.into();
+        if !tokio::fs::metadata(&root).await.map_err(storage)?.is_dir() {
+            return Err(storage(format!("{} is not a directory", root.display())));
+        }
+        Ok(Self { root })
     }
 
     /// Removes temp files in the root last modified more than `age` ago; returns how many.
@@ -335,6 +344,48 @@ impl ObjectStore for FsObjectStore {
             }
         }
         Ok(removed)
+    }
+
+    async fn list_keys(&self, after: Option<&str>, limit: usize) -> Result<KeyPage> {
+        let limit = limit.max(1);
+        let mut shards = Vec::new();
+        let mut top = tokio::fs::read_dir(&self.root).await.map_err(storage)?;
+        while let Some(entry) = top.next_entry().await.map_err(storage)? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.len() == 2 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+                shards.push(name);
+            }
+        }
+        shards.sort();
+        let mut keys = Vec::new();
+        for shard in shards {
+            if after.is_some_and(|a| a.get(..2).is_some_and(|p| shard.as_str() < p)) {
+                continue;
+            }
+            let mut names = std::collections::BTreeSet::new();
+            let mut dir = tokio::fs::read_dir(self.root.join(&shard))
+                .await
+                .map_err(storage)?;
+            while let Some(entry) = dir.next_entry().await.map_err(storage)? {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                let file = file.strip_suffix(".zst").unwrap_or(&file);
+                names.insert(format!("{shard}{file}"));
+            }
+            for key in names.iter().filter_map(|n| StoredKey::from_name(n)) {
+                if after.is_none_or(|a| key.name().as_str() > a) {
+                    keys.push(key);
+                }
+            }
+            if keys.len() >= limit {
+                break;
+            }
+        }
+        keys.sort_by_cached_key(StoredKey::name);
+        keys.truncate(limit);
+        let next = (keys.len() == limit)
+            .then(|| keys.last().map(StoredKey::name))
+            .flatten();
+        Ok(KeyPage { keys, next })
     }
 
     async fn exists(&self, hash: &ObjectId) -> Result<bool> {

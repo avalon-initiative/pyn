@@ -66,6 +66,8 @@ keep needs at least `PYN_DATABASE_URL` and either `PYN_DATA_DIR` or an S3 bucket
 
 `pyn-server --healthcheck` does not start a server: it requests `/healthz` on `PYN_ADDR` (an unspecified address such as `0.0.0.0` is probed on loopback) with a 3 second timeout and exits 0 if it answers, non-zero otherwise. It never touches the database, so a container image can use it as its healthcheck without `curl`.
 
+`pyn-server migrate-objects` copies the object store between a data directory and the bucket named by the `PYN_S3_*` variables below (in either direction) and exits; it takes no new variables. It reads `PYN_S3_*` for the bucket side and the directory from its own `--from-data-dir` / `--to-data-dir` flag (it does not read `PYN_DATA_DIR`, so both can be set up for the move), and `PYN_ADDR` to notice a running server. See [moving the object store](deployment.md#moving-the-object-store).
+
 `pyn-server --help` and `pyn-server --version` print the usage and the version without starting anything, and an unknown argument is refused. `pyn-server recover-admin <username> [--password-stdin]` and `pyn-server rotate-secret-key` are host-level recovery commands that work on the database in `PYN_DATABASE_URL` and exit; see [recovery](deployment.md#recovery).
 
 `make test-live` runs the tests that need a database (`PYN_DATABASE_URL`); each uses its own temporary schema.

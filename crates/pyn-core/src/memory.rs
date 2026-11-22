@@ -2063,6 +2063,15 @@ impl ObjectStore for MemoryObjectStore {
         Ok(self.manifests.lock().unwrap().get(key).cloned())
     }
 
+    async fn list_keys(&self, after: Option<&str>, limit: usize) -> Result<crate::KeyPage> {
+        let key = |kind| move |id: &ObjectId| crate::StoredKey { id: *id, kind };
+        let mut keys: Vec<_> = (self.objects.lock().unwrap().keys())
+            .map(key(crate::StoredKind::Object))
+            .collect();
+        keys.extend((self.manifests.lock().unwrap().keys()).map(key(crate::StoredKind::Manifest)));
+        Ok(crate::page_of_keys(keys, after, limit))
+    }
+
     async fn exists(&self, hash: &ObjectId) -> Result<bool> {
         Ok(self.objects.lock().unwrap().contains_key(hash)
             || self.manifests.lock().unwrap().contains_key(hash))

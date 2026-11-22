@@ -11,10 +11,10 @@ use pyn_postgres::PgMetadataStore;
 
 use crate::events::WebhookLimitEvents;
 
-pub const USAGE: &str = "usage:\n  pyn-server recover-admin <username> [--password-stdin]\n  pyn-server rotate-secret-key";
+pub const USAGE: &str = "usage:\n  pyn-server recover-admin <username> [--password-stdin]\n  pyn-server rotate-secret-key\n  pyn-server migrate-objects (--from-data-dir PATH | --from-s3) (--to-data-dir PATH | --to-s3) [--dry-run] [--verify] [--jobs N] [--force]";
 
 /// What `--help` prints: the server runs in the foreground and takes its settings from `PYN_*` variables.
-pub const HELP: &str = "pyn-server: the pyn server, configured with PYN_* environment variables (docs/configuration.md).\n\nusage:\n  pyn-server                          run the server in the foreground\n  pyn-server --healthcheck            ask the server on PYN_ADDR whether it is healthy\n  pyn-server recover-admin <username> [--password-stdin]\n  pyn-server rotate-secret-key\n  pyn-server --help | -h              show this help\n  pyn-server --version | -V           show the version";
+pub const HELP: &str = "pyn-server: the pyn server, configured with PYN_* environment variables (docs/configuration.md).\n\nusage:\n  pyn-server                          run the server in the foreground\n  pyn-server --healthcheck            ask the server on PYN_ADDR whether it is healthy\n  pyn-server recover-admin <username> [--password-stdin]\n  pyn-server rotate-secret-key\n  pyn-server migrate-objects (--from-data-dir PATH | --from-s3) (--to-data-dir PATH | --to-s3) [--dry-run] [--verify] [--jobs N] [--force]\n  pyn-server --help | -h              show this help\n  pyn-server --version | -V           show the version";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum HostCommand {
@@ -23,6 +23,7 @@ pub enum HostCommand {
         password_stdin: bool,
     },
     RotateSecretKey,
+    MigrateObjects(crate::migrate_objects::Args),
 }
 
 /// `None` when `args` (after the program name) name no host command, so the server starts normally.
@@ -56,8 +57,29 @@ pub fn parse(args: &[String]) -> anyhow::Result<Option<HostCommand>> {
             );
             Ok(Some(HostCommand::RotateSecretKey))
         }
+        Some("migrate-objects") => Ok(Some(HostCommand::MigrateObjects(
+            crate::migrate_objects::Args::parse(rest)?,
+        ))),
         _ => Ok(None),
     }
+}
+
+/// The `/healthz` URL of a server bound to `addr`; an unspecified bind address is reached on loopback.
+pub fn healthz_url(addr: &str) -> anyhow::Result<String> {
+    let (host, port) = addr
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("PYN_ADDR must be host:port"))?;
+    let host = match host.trim_matches(['[', ']']) {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        other => other,
+    };
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    Ok(format!("http://{host}:{port}/healthz"))
 }
 
 /// The first line of `input` without its line ending.
@@ -116,6 +138,7 @@ fn key_from_env(name: &str) -> anyhow::Result<Option<SecretKey>> {
 
 pub async fn run(command: HostCommand) -> anyhow::Result<()> {
     match command {
+        HostCommand::MigrateObjects(args) => crate::migrate_objects::run(args).await?,
         HostCommand::RecoverAdmin {
             username,
             password_stdin,

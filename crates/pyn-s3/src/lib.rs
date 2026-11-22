@@ -20,8 +20,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use pyn_core::object::clamp_range;
 use pyn_core::{
-    KeyHasher, Keying, ObjectId, ObjectRead, ObjectReader, ObjectStore, PynError, REPO_ALGORITHM,
-    Result, Stored,
+    KeyHasher, KeyPage, Keying, ObjectId, ObjectRead, ObjectReader, ObjectStore, PynError,
+    REPO_ALGORITHM, Result, Stored, StoredKey,
 };
 use reqwest::Method;
 use sha2::{Digest, Sha256};
@@ -123,6 +123,13 @@ impl S3ObjectStore {
             return Err(PynError::ObjectMissing(h));
         }
         Ok(format!("{}{}/{}", self.prefix, &h[..2], &h[2..]))
+    }
+
+    /// The stored key an S3 key names; `None` for anything else under the prefix (the probe marker, strays).
+    fn stored_key(&self, s3_key: &str) -> Option<StoredKey> {
+        let rest = s3_key.strip_prefix(&self.prefix)?;
+        let (shard, tail) = rest.split_once('/')?;
+        StoredKey::from_name(&format!("{shard}{tail}"))
     }
 
     fn manifest_key(&self, hash: &ObjectId) -> Result<String> {
@@ -309,6 +316,23 @@ impl ObjectStore for S3ObjectStore {
             total,
             range,
         }))
+    }
+
+    async fn list_keys(&self, after: Option<&str>, limit: usize) -> Result<KeyPage> {
+        let limit = limit.clamp(1, 1000);
+        let mut token = after.map(str::to_owned);
+        let mut keys = Vec::new();
+        loop {
+            let (names, next) = self
+                .client
+                .list(&self.prefix, token.as_deref(), limit - keys.len())
+                .await?;
+            keys.extend(names.iter().filter_map(|n| self.stored_key(n)));
+            token = next;
+            if token.is_none() || keys.len() >= limit {
+                return Ok(KeyPage { keys, next: token });
+            }
+        }
     }
 
     async fn exists(&self, hash: &ObjectId) -> Result<bool> {

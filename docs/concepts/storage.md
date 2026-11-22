@@ -89,8 +89,8 @@ are removed at start and every 15 minutes.
 ## S3-compatible store
 
 `pyn-s3` implements `ObjectStore` for any S3-compatible service (AWS S3, DigitalOcean Spaces, Cloudflare R2, MinIO), so
-several server copies can share one bucket instead of a shared volume. It is provisional: migrating an existing
-filesystem store into a bucket is separate work (decision #208, issue #1223).
+several server copies can share one bucket instead of a shared volume. It is provisional. An existing filesystem store
+moves into a bucket (and back) with [`pyn-server migrate-objects`](#moving-between-stores).
 
 ### Choosing the store
 
@@ -111,7 +111,8 @@ services mishandle. Requests are virtual-host style (`https://<bucket>.<host>/<k
 followed. The secret key is never logged, and the settings' `Debug` output redacts it.
 
 Operations used: PutObject, GetObject (with `Range`), HeadObject, DeleteObject, and for a spooled put over 5 GiB the
-multipart calls (create, upload part, complete, abort). Nothing lists a bucket, so a key with no list permission is enough.
+multipart calls (create, upload part, complete, abort). The running server never lists a bucket; only
+[`migrate-objects`](#moving-between-stores) does (ListObjectsV2), so it needs list permission on the bucket it reads or writes.
 The store sits behind `ChunkedStore`, so it only sees whole objects up to 1 MiB, chunks up to 4 MiB and manifests.
 
 ### Keys
@@ -119,6 +120,24 @@ The store sits behind `ChunkedStore`, so it only sees whole objects up to 1 MiB,
 An object is stored at `<prefix><first two hex digits>/<rest>`, the layout of the filesystem store, and a manifest beside
 it at the same key plus `.cm`. The optional prefix lets one bucket serve several installations. Compression is not
 applied: the bytes stored are the bytes of the object.
+
+### Moving between stores
+
+`ObjectStore::list_keys(after, limit)` pages through every key a store holds: an object (a blob or a chunk, by its id) or a
+chunk manifest (by the id of the whole object it describes). The cursor is opaque. The memory, filesystem and S3 stores
+implement it (S3 with ListObjectsV2 and continuation tokens, under the configured prefix, ignoring anything that is not an
+object key) and the shared contract suite checks it. `ChunkedStore` passes it through, so the listing is of the layer
+beneath it: whole objects up to 1 MiB, chunks, and manifests.
+
+`pyn-server migrate-objects` uses it to copy one store into another at that layer, which is what keeps chunks and manifests
+exactly as they are. For each object it reads the source, rehashes it to find how its id derives from the bytes (a git
+blob id for a whole object, the raw SHA-256 for a chunk; bytes that match neither are a failure, never copied), and skips it
+when the destination already holds the same size and rehashes to the same id. Otherwise it streams the object through
+`put_stream`, which hashes again at the destination. Objects go first and manifests last, so a manifest never lands before
+its chunks and an interrupted run leaves nothing pointing at a missing chunk. An object already present under the same id
+is never rewritten and an existing destination object with different content is a reported failure, not an overwrite (both
+stores ignore a put of an id they hold, and the command deletes nothing on either side). The full usage is in
+[deployment](../deployment.md#moving-the-object-store).
 
 ### Why a put is hash-then-PUT
 

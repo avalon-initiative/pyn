@@ -82,6 +82,61 @@ pub struct Stored {
     pub created: Vec<ObjectId>,
 }
 
+/// What a store keeps under an id: the object's bytes, or the chunk manifest of a whole object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StoredKind {
+    Object,
+    Manifest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StoredKey {
+    pub id: ObjectId,
+    pub kind: StoredKind,
+}
+
+impl StoredKey {
+    /// The key's sortable name: the id's hex, plus `.cm` for a manifest.
+    pub fn name(&self) -> String {
+        match self.kind {
+            StoredKind::Object => self.id.to_hex(),
+            StoredKind::Manifest => format!("{}.cm", self.id.to_hex()),
+        }
+    }
+
+    /// The key a name from `name` stands for; `None` for any other text.
+    pub fn from_name(name: &str) -> Option<Self> {
+        let (hex, kind) = match name.strip_suffix(".cm") {
+            Some(hex) => (hex, StoredKind::Manifest),
+            None => (name, StoredKind::Object),
+        };
+        if hex.len() != 64 || !hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return None;
+        }
+        let id = ObjectId::from_hex(REPO_ALGORITHM, hex).ok()?;
+        Some(Self { id, kind })
+    }
+}
+
+/// A page of `keys` in name order, starting after the name `after`; for stores that hold their keys in memory.
+pub fn page_of_keys(mut keys: Vec<StoredKey>, after: Option<&str>, limit: usize) -> KeyPage {
+    keys.sort_by_cached_key(StoredKey::name);
+    let start = after.map_or(0, |a| keys.partition_point(|k| k.name().as_str() <= a));
+    let limit = limit.max(1);
+    let page: Vec<StoredKey> = keys.into_iter().skip(start).take(limit).collect();
+    let next = (page.len() == limit)
+        .then(|| page.last().map(StoredKey::name))
+        .flatten();
+    KeyPage { keys: page, next }
+}
+
+/// One page of `list_keys`; `next` is the cursor for the following page, `None` after the last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyPage {
+    pub keys: Vec<StoredKey>,
+    pub next: Option<String>,
+}
+
 /// Content-addressed storage, so `put` is idempotent. A whole object is keyed by its blob id, a chunk by the raw
 /// SHA-256 of its bytes (`Keying`).
 #[async_trait]
@@ -136,6 +191,12 @@ pub trait ObjectStore: Send + Sync {
     /// The chunk blobs an object is made of; empty for a whole object.
     async fn chunks_of(&self, _hash: &ObjectId) -> Result<Vec<ObjectId>> {
         Ok(Vec::new())
+    }
+
+    /// Up to `limit` (at least 1) stored keys after the opaque cursor `after` (`None` to start). Walking every page
+    /// yields each key once, in no promised order; keys written during a walk may or may not appear.
+    async fn list_keys(&self, _after: Option<&str>, _limit: usize) -> Result<KeyPage> {
+        Err(PynError::Storage("this store cannot list its keys".into()))
     }
 
     async fn put(&self, bytes: Vec<u8>) -> Result<ObjectId> {
