@@ -14,34 +14,45 @@ services:
     logging: *logging
     environment:
       PYN_API_URL: ${PYN_API_URL:?set PYN_API_URL in .env (the server address, for example https://pyn.example.com)}
-      PYN_SITE: ${PYN_SITE:-}
-      PYN_TLS: ${PYN_TLS:-}
-      PYN_TRUSTED_PROXY_RANGES: ${PYN_TRUSTED_PROXY_RANGES:-}
-      PYN_ACCESS_LOG: ${PYN_ACCESS_LOG:-off}
-      CF_API_TOKEN_FILE: /run/secrets/cf_api_token
-    # 8080 is plain HTTP (PYN_TLS=off). With PYN_SITE set, 80, 443 and 443/udp are published on all interfaces; without it they
-    # map to unused host ports, so an install without PYN_SITE never takes 80 or 443 from the host.
     ports:
       - "${PYN_WEB_PUBLISH:-127.0.0.1:8080}:8080"
-      - "${PYN_WEB_PUBLISH_HTTP:-0.0.0.0:${PYN_SITE:+80}}:80"
-      - "${PYN_WEB_PUBLISH_TLS:-0.0.0.0:${PYN_SITE:+443}}:443"
-      - "${PYN_WEB_PUBLISH_TLS:-0.0.0.0:${PYN_SITE:+443}}:443/udp"
-    volumes:
-      - pyn-tls:/data
-    secrets:
-      - cf_api_token
-    sysctls:
-      net.ipv4.ip_unprivileged_port_start: 0
     read_only: true
     tmpfs:
       - /tmp
+      - /etc/nginx/conf.d:uid=101,gid=101
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
 
-volumes:
-  pyn-tls:
+  # Optional HTTPS in front of the web service (COMPOSE_PROFILES=caddy, set by the installer's Caddy option). Without the
+  # profile this service does not exist and nothing takes ports 80 or 443. The Caddyfile is generated next to this file.
+  caddy:
+    profiles: [caddy]
+    image: ${PYN_CADDY_IMAGE:-caddy:2.11@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b}
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      - web
+    ports:
+      - "${PYN_WEB_PUBLISH_HTTP:-0.0.0.0:80}:80"
+      - "${PYN_WEB_PUBLISH_TLS:-0.0.0.0:443}:443"
+      - "${PYN_WEB_PUBLISH_TLS:-0.0.0.0:443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    # The official binary carries cap_net_bind_service as a file capability, so it must stay in the bounding set or exec fails
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
 
-secrets:
-  cf_api_token:
-    file: ${PYN_CF_TOKEN_FILE:-/dev/null}
+volumes:
+  caddy-data:
+  caddy-config:

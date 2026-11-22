@@ -42,19 +42,22 @@ for t in $tags v1.0.0; do
   (cd "$d" && sha256sum pyn-*.tar.gz >SHA256SUMS)
 done
 sed -i 's/^[0-9a-f]\{64\}/0000000000000000000000000000000000000000000000000000000000000000/' "$fix/dl/v0.1.0-alpha/SHA256SUMS"
+caddy_svc='  caddy:
+    profiles: [caddy]
+    image: caddy:2
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+volumes:
+  caddy-data:'
 for ref in v1.0.0 v0.1.2-alpha v0.1.1-alpha v0.1.0-alpha main; do
   mkdir -p "$fix/raw/$ref"
   for f in docker-compose.yml docker-compose.server.yml docker-compose.web.yml; do
     printf '# %s at %s\nservices:\n  server:\n    image: ghcr.io/avalon-initiative/pyn-core:x\n%s' "$f" "$ref" \
-      "$([ "$f" != docker-compose.server.yml ] && echo '  web:
-    image: ghcr.io/avalon-initiative/pyn-web:x
-    volumes:
-      - pyn-tls:/data
-volumes:
-  pyn-tls:')" >"$fix/raw/$ref/$f"
+      "$([ "$f" != docker-compose.server.yml ] && printf '  web:\n    image: ghcr.io/avalon-initiative/pyn-web:x\n%s\n' "$caddy_svc")" >"$fix/raw/$ref/$f"
   done
 done
-printf '# web only\nservices:\n  web:\n    image: ghcr.io/avalon-initiative/pyn-web:x\n    volumes:\n      - pyn-tls:/data\nvolumes:\n  pyn-tls:\n' >"$fix/raw/main/docker-compose.web.yml"
+printf '# web only\nservices:\n  web:\n    image: ghcr.io/avalon-initiative/pyn-web:x\n%s\n' "$caddy_svc" >"$fix/raw/main/docker-compose.web.yml"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.2-alpha/"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.1-alpha/"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.0-alpha/"
@@ -100,6 +103,7 @@ echo "docker[$PWD] $*" >>"$LOG"
 case "$*" in
   "compose version") [ -z "${FAKE_NO_COMPOSE:-}" ] ;;
   "compose logs server") bash "$FIX/token.sh" ;;
+  "compose cp "*) [ -n "${FAKE_CP_FAIL:-}" ] && exit 1; echo "-----BEGIN CERTIFICATE-----" >"${!#}" ;;
   "compose pull") echo PULL-PROGRESS; [ -z "${FAKE_DOCKER_EXIT:-}" ] || { echo "pull denied" >&2; exit "$FAKE_DOCKER_EXIT"; } ;;
   *) exit "${FAKE_DOCKER_EXIT:-0}" ;;
 esac
@@ -1020,90 +1024,94 @@ run_install
 expect "piping the script into bash still reads prompts from the terminal file" ok_rc
 expect "and completes the install" test -f "$c/pyn/.env"
 
-# HTTPS: --site, --tls, --cf-token-file
+# Caddy: --caddy, --no-caddy, --site
 freeport() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 p1=$(freeport); p2=$(freeport)
 probe=(PYN_INSTALL_PROBE_PORTS="$p1 $p2")
-token=cfTokenValue0123456789abcdefghijklmnop
-printf '%s\n' "$token" >"$work/cf.token"
 
-case_start s_auto; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site Pyn.Example.com
-expect "--site with a public name succeeds" ok_rc
+case_start s_auto; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --caddy --site Pyn.Example.com
+expect "--caddy --site with a public name succeeds" ok_rc
 expect "--site: PYN_SITE is written" has "$c/pyn/.env" "PYN_SITE=Pyn.Example.com"
-expect "a public name picks auto" has "$c/pyn/.env" "PYN_TLS=auto"
+expect "the caddy profile is switched on in .env" has "$c/pyn/.env" "COMPOSE_PROFILES=caddy"
 expect "the address becomes https://<site>" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://Pyn.Example.com"
-expect "auto: one plain sentence says why" has "$c/out" "TLS auto: Pyn.Example.com is a public name, so certificates come from Let's Encrypt"
-expect "auto: says the ports must be reachable from the internet" has "$c/out" "must be reachable from the internet"
+expect "forwarded headers are trusted" has "$c/pyn/.env" "PYN_TRUST_FORWARDED_FOR=true"
+expect "two proxies are counted (Caddy and the web container)" has "$c/pyn/.env" "PYN_TRUSTED_PROXIES=2"
+expect "PYN_CADDY_IMAGE is left as a comment" has "$c/pyn/.env" "# PYN_CADDY_IMAGE="
+expect "a public name: one plain sentence says why" has "$c/out" "Pyn.Example.com is a public name, so Caddy gets them from Let's Encrypt"
+expect "a public name: says the ports must be reachable from the internet" has "$c/out" "must be reachable from the internet"
 expect "the pre-check reports the ports as free" has "$c/out" "ports 80 and 443 are free"
+expect "Caddyfile: the site block" has "$c/pyn/Caddyfile" "Pyn.Example.com {"
+expect "Caddyfile: reverse proxy to the web service" has "$c/pyn/Caddyfile" "reverse_proxy web:8080 {"
+expect "Caddyfile: streaming" has "$c/pyn/Caddyfile" "flush_interval -1"
+expect "Caddyfile: no compression or timeout overrides" lacks "$c/pyn/Caddyfile" "encode"
+expect "Caddyfile: the site is the default server name" has "$c/pyn/Caddyfile" "default_sni Pyn.Example.com"
+expect "Caddyfile: a public name keeps automatic certificates" lacks "$c/pyn/Caddyfile" "tls internal"
+expect "Caddyfile is readable by the container's root without DAC override" test "$(mode_of "$c/pyn/Caddyfile")" = 644
 expect "https keeps the plain port on loopback" lacks "$c/pyn/.env" "PYN_WEB_PUBLISH=0.0.0.0"
-expect "auto: no root certificate talk" lacks "$c/out" "pyn-root.crt"
-expect "auto: no token file is made" test ! -e "$c/pyn/secrets"
-expect ".env stays mode 600 with TLS" test "$(mode_of "$c/pyn/.env")" = 600
-expect "auto: says where to look when https does not answer" has "$c/out" "docker compose logs web"
+expect "automatic: no root certificate talk" lacks "$c/out" "pyn-root.crt"
+expect ".env stays mode 600 with Caddy" test "$(mode_of "$c/pyn/.env")" = 600
+expect "says where to look when https does not answer" has "$c/out" "docker compose logs caddy"
+expect "the stack is started once, with the profile from .env" has "$c/log" "compose up --detach --wait"
 
-case_start s_ip; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site 192.168.1.5
-expect "an IP address picks internal" has "$c/pyn/.env" "PYN_TLS=internal"
+case_start s_ip; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --caddy --site 192.168.1.5
 expect "an IP address: https public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://192.168.1.5"
-expect "internal: one plain sentence says why" has "$c/out" "TLS internal: 192.168.1.5 is an address or a private name"
+expect "an IP address: one plain sentence says why" has "$c/out" "192.168.1.5 is an address or a private name, so Caddy signs them with its own local authority"
+expect "an IP address: tls internal in the Caddyfile" has "$c/pyn/Caddyfile" "tls internal"
+expect "an IP address: default_sni is the address" has "$c/pyn/Caddyfile" "default_sni 192.168.1.5"
 expect "an IP address says passkeys need a host name over https" has "$c/out" "passkeys need a host name over https"
-expect "internal: the root is fetched from the container" has "$c/log" "compose cp web:/data/caddy/pki/authorities/local/root.crt"
+expect "internal: the root is copied out of the caddy container" has "$c/log" "compose cp caddy:/data/caddy/pki/authorities/local/root.crt $c/pyn/pyn-root.crt"
+expect "internal: the root file exists" test -s "$c/pyn/pyn-root.crt"
 expect "internal: how to trust it is printed" has "$c/out" "trust it once on each device"
 expect "internal: ports are not needed from the internet" lacks "$c/out" "must be reachable from the internet"
 
-case_start s_lan; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.lan
-expect "a private name picks internal" has "$c/pyn/.env" "PYN_TLS=internal"
+case_start s_cpfail; extra_env=("${probe[@]}" FAKE_CP_FAIL=1); run_install --dir "$c/pyn" --yes --shape full --caddy --site 192.168.1.5
+expect "internal: a failed copy still succeeds and prints the command" ok_rc
+expect "internal: the command to fetch the root is printed" has "$c/out" "docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./pyn-root.crt"
+
+case_start s_lan; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --caddy --site pyn.lan
+expect "a private name: tls internal" has "$c/pyn/Caddyfile" "tls internal"
 expect "a private name does not mention passkeys limits" lacks "$c/out" "passkeys need a host name"
-
-case_start s_dns; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --cf-token-file "$work/cf.token"
-expect "a token file picks dns-cloudflare" has "$c/pyn/.env" "PYN_TLS=dns-cloudflare"
-expect "dns-cloudflare: one plain sentence says why" has "$c/out" "TLS dns-cloudflare: certificates are issued through your Cloudflare DNS"
-expect "the token lands in DIR/secrets" has "$c/pyn/secrets/cloudflare-token" "$token"
-expect "the token file is mode 600" test "$(mode_of "$c/pyn/secrets/cloudflare-token")" = 600
-expect "the secrets folder is mode 700" test "$(mode_of "$c/pyn/secrets")" = 700
-expect "the token is handed to the container's user" has "$c/log" "chown 65532:65532 $c/pyn/secrets/cloudflare-token"
-expect ".env names the file" has "$c/pyn/.env" "PYN_CF_TOKEN_FILE=./secrets/cloudflare-token"
-expect "the token is not in .env" bash -c '! grep -qF "$1" "$2"' _ "$token" "$c/pyn/.env"
-expect "the token is never printed or logged" bash -c '! grep -qF "$1" "$2" "$3" "$4"' _ "$token" "$c/out" "$c/err" "$c/log"
-expect "dns-cloudflare: no internet exposure warning" lacks "$c/out" "must be reachable from the internet"
-run_install --dir "$c/pyn" --yes --shape full
-expect "a re-run keeps the mode and the token" has "$c/pyn/.env" "PYN_TLS=dns-cloudflare"
-expect "a re-run keeps the token file" has "$c/pyn/secrets/cloudflare-token" "$token"
-expect "a re-run names the kept token without printing it" has "$c/out" "keeping the Cloudflare token"
-
-case_start s_dnsu; extra_env=("${probe[@]}" FAKE_UID=1000); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --cf-token-file "$work/cf.token"
-expect "without root the owner change is explained, not hidden" has "$c/out" "sudo chown 65532:65532"
+case_start s_lan2; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pynbox
+expect "a single-label name is private; --site alone implies Caddy" has "$c/pyn/Caddyfile" "tls internal"
+expect "--site alone sets the profile" has "$c/pyn/.env" "COMPOSE_PROFILES=caddy"
+case_start s_v6; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --caddy --site "[fd00::5]"
+expect "an IPv6 address: the site block keeps the brackets" has "$c/pyn/Caddyfile" "[fd00::5] {"
+expect "an IPv6 address: default_sni has none" has "$c/pyn/Caddyfile" "default_sni fd00::5"
 
 case_start s_tty; extra_env=("${probe[@]}"); tty_file="$c/answers"
-printf 'full\ndocker\n%s\n\npyn.example.com\ny\n%s\n\n' "$c/pyn" "$token" >"$tty_file"
+printf 'full\ndocker\n%s\n\ny\npyn.example.com\n\n' "$c/pyn" >"$tty_file"
 run_install --version v0.1.2-alpha --web-version 0.2.0
-expect "prompted: a site, the private-network question and a token" ok_rc
-expect "prompted: asks for the site" has "$c/out" "Domain name or address people will use"
-expect "prompted: asks about a private network behind Cloudflare" has "$c/out" "behind a Cloudflare domain"
-expect "prompted: asks for the token without showing it" has "$c/out" "Cloudflare API token (not shown)"
-expect "prompted: explains the token scope" has "$c/out" "Zone Read and DNS Edit"
-expect "prompted: picks dns-cloudflare" has "$c/pyn/.env" "PYN_TLS=dns-cloudflare"
-expect "prompted: the typed token is stored" has "$c/pyn/secrets/cloudflare-token" "$token"
-expect "prompted: the typed token is not echoed" bash -c '! grep -qF "$1" "$2" "$3" "$4"' _ "$token" "$c/out" "$c/err" "$c/pyn/.env"
+expect "prompted: yes to Caddy, a site and Proceed" ok_rc
+expect "prompted: asks the Caddy question in plain words" has "$c/out" "Put Caddy in front for HTTPS? (adds a caddy container on the official image)"
+expect "prompted: asks only for the name or address" has "$c/out" "Domain name or address people use"
+expect "prompted: does not ask for the public address again" lacks "$c/out" "Address people will use (PYN_PUBLIC_URL)"
+expect "prompted: Caddy is set up" has "$c/pyn/.env" "COMPOSE_PROFILES=caddy"
+expect "prompted: https public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
 
 case_start s_tty2; extra_env=("${probe[@]}"); tty_file="$c/answers"
-printf 'full\ndocker\n%s\n\nhome.example.org\n\n\n' "$c/pyn" >"$tty_file"
-run_install --version v0.1.2-alpha --web-version 0.2.0
-expect "prompted: a public name, no to the private network, picks auto" has "$c/pyn/.env" "PYN_TLS=auto"
-
-case_start s_tty3; extra_env=("${probe[@]}"); tty_file="$c/answers"
 printf 'full\ndocker\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install --version v0.1.2-alpha --web-version 0.2.0
-expect "prompted: Enter on the site keeps plain HTTP" ok_rc
+expect "prompted: Enter on the Caddy question keeps plain HTTP" ok_rc
 expect "plain HTTP: no PYN_SITE" lacks "$c/pyn/.env" "PYN_SITE="
-expect "plain HTTP: no PYN_TLS" lacks "$c/pyn/.env" "PYN_TLS="
+expect "plain HTTP: no caddy profile" lacks "$c/pyn/.env" "COMPOSE_PROFILES"
+expect "plain HTTP: no Caddyfile" test ! -e "$c/pyn/Caddyfile"
 expect "plain HTTP: the address is asked as before" has "$c/out" "Address people will use (PYN_PUBLIC_URL)"
+case_start s_tty3; extra_env=("${probe[@]}"); tty_file="$c/answers"
+printf 'full\ndocker\n%s\n\nn\n\n\n' "$c/pyn" >"$tty_file"
+run_install --version v0.1.2-alpha --web-version 0.2.0
+expect "prompted: an explicit no keeps plain HTTP" lacks "$c/pyn/.env" "COMPOSE_PROFILES"
 
 dock s_plain --shape full
-expect "unattended without --site keeps plain HTTP" lacks "$c/pyn/.env" "PYN_SITE="
+expect "unattended without --caddy keeps plain HTTP" lacks "$c/pyn/.env" "PYN_SITE="
+expect "unattended plain: no caddy profile" lacks "$c/pyn/.env" "COMPOSE_PROFILES"
+expect "unattended plain: no Caddyfile" test ! -e "$c/pyn/Caddyfile"
 expect "unattended plain: no https talk" lacks "$c/out" "https: "
+expect "unattended plain: no TRUSTED_PROXIES" lacks "$c/pyn/.env" "PYN_TRUSTED_PROXIES"
 dock s_plain2 --shape full --public-url https://pyn.example.com
-expect "--public-url alone does not turn TLS on" lacks "$c/pyn/.env" "PYN_SITE="
+expect "--public-url alone does not turn Caddy on" lacks "$c/pyn/.env" "COMPOSE_PROFILES"
 expect "--public-url alone keeps the address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+dock s_plain3 --shape full --no-caddy
+expect "--no-caddy is plain HTTP" lacks "$c/pyn/.env" "COMPOSE_PROFILES"
 
 case_start s_pu; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --public-url https://pyn.example.com/
 expect "--public-url equal to the site is accepted quietly" lacks "$c/out" "differs from"
@@ -1111,52 +1119,29 @@ case_start s_pu2; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --
 expect "--public-url that differs is kept" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://other.example.com"
 expect "--public-url that differs warns" has "$c/out" "differs from https://pyn.example.com"
 
-case_start s_off; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls off
-expect "--tls off succeeds" ok_rc
-expect "--tls off writes PYN_TLS=off" has "$c/pyn/.env" "PYN_TLS=off"
-expect "--tls off does not set PYN_SITE" lacks "$c/pyn/.env" "PYN_SITE="
-expect "--tls off uses the site as the public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
-expect "--tls off keeps 8080 on loopback" lacks "$c/pyn/.env" "PYN_WEB_PUBLISH=0.0.0.0"
-expect "--tls off says to put a proxy in front" has "$c/out" "your own proxy, tunnel or load balancer"
-case_start s_off2; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --tls off
-expect "--tls off without a site is fine" ok_rc
-
-case_start s_ovr; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls internal
-expect "--tls overrides the choice made from the site" has "$c/pyn/.env" "PYN_TLS=internal"
-
-case_start s_web; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape web --api-url https://api.example.com --site pyn.example.com
+case_start s_web; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape web --api-url https://api.example.com --caddy --site pyn.example.com
 expect "the web-only shape takes --site too" has "$c/pyn/.env" "PYN_SITE=pyn.example.com"
+expect "web-only: the Caddyfile is written" has "$c/pyn/Caddyfile" "reverse_proxy web:8080 {"
 expect "web-only: the web address is named for PYN_ALLOWED_ORIGINS" has "$c/out" "https://pyn.example.com"
+expect "web-only: the server is told to count two proxies" has "$c/out" "PYN_TRUSTED_PROXIES=2"
+expect "web-only: its own .env does not carry the server's settings" lacks "$c/pyn/.env" "PYN_TRUSTED_PROXIES"
 
 case_start s_e1; run_install --dir "$c/pyn" --yes --shape full --site "https://x.example.com"
 expect "--site with a scheme fails" bad_rc
 case_start s_e2; run_install --dir "$c/pyn" --yes --shape full --site "x.example.com:8443"
 expect "--site with a port fails" bad_rc
-case_start s_e3; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site 10.0.0.5 --tls auto
-expect "--tls auto with an IP address fails" bad_rc
-expect "--tls auto with an IP address says why" has "$c/err" "needs a public host name"
-case_start s_e4; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls dns-cloudflare
-expect "--tls dns-cloudflare without a token fails" bad_rc
-expect "and names --cf-token-file" has "$c/err" "--cf-token-file"
-case_start s_e5; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls files
-expect "--tls files is refused with a pointer" has "$c/err" "set by hand"
-case_start s_e6; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls nonsense
-expect "--tls nonsense fails" bad_rc
-case_start s_e7; run_install --dir "$c/pyn" --yes --shape server --site pyn.example.com
+case_start s_e3; run_install --dir "$c/pyn" --yes --shape full --caddy
+expect "--caddy without a site fails unattended and names --site" has "$c/err" "--site"
+case_start s_e4; run_install --dir "$c/pyn" --yes --shape server --site pyn.example.com
 expect "--site with a server-only install fails" bad_rc
-case_start s_e8; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls auto --cf-token-file "$work/cf.token"
-expect "--cf-token-file with another mode fails" bad_rc
-case_start s_e9; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.lan --cf-token-file "$work/cf.token"
-expect "--cf-token-file with a private name fails" bad_rc
-case_start s_e10; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --cf-token-file "$work/missing"
-expect "--cf-token-file that does not exist fails" bad_rc
-printf 'short\n' >"$work/bad.token"
-case_start s_e11; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --cf-token-file "$work/bad.token"
-expect "a token that is not a token fails" bad_rc
-case_start s_e12; run_install --dir "$c/pyn" --yes --shape full --tls internal
-expect "--tls internal without a site fails and names --site" has "$c/err" "--site"
-case_start s_e13; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site 10.0.0.5 --tls dns-cloudflare --cf-token-file "$work/cf.token"
-expect "dns-cloudflare with an IP address fails" bad_rc
+case_start s_e5; run_install --yes --shape full --method native --caddy --site pyn.example.com --database-url postgres://u:p@h:5432/d
+expect "--caddy with a native install fails" bad_rc
+case_start s_e6; run_install --dir "$c/pyn" --yes --shape full --no-caddy --site pyn.example.com
+expect "--no-caddy with --site fails" bad_rc
+case_start s_e7; run_install --dir "$c/pyn" --yes --shape full --tls internal
+expect "--tls is gone" bad_rc
+case_start s_e8; run_install --dir "$c/pyn" --yes --shape full --cf-token-file "$work/x"
+expect "--cf-token-file is gone" bad_rc
 
 # A busy port, a stale Compose file, and a re-run that holds the ports itself
 python3 -c 'import socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(1); time.sleep(60)' "$p1" &
@@ -1167,14 +1152,14 @@ expect "a busy port stops an unattended install" bad_rc
 expect "a busy port is named" has "$out" "port $p1 already in use"
 expect "a busy port: nothing was started" lacks "$c/log" "compose up"
 expect "a busy port: nothing was written" test ! -e "$c/pyn/.env"
-expect "a busy port points at --tls off" has "$out" "--tls off"
-case_start s_busy2; extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls off
-expect "--tls off ignores busy ports" ok_rc
-case_start s_busy3; extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); tty_file="$c/answers"; printf 'docker\n\nn\nn\n' >"$tty_file"
+expect "a busy port points at running without Caddy" has "$out" "run without Caddy"
+case_start s_busy2; extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); run_install --dir "$c/pyn" --yes --shape full --no-caddy
+expect "no Caddy ignores busy ports" ok_rc
+case_start s_busy3; extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); tty_file="$c/answers"; printf 'docker\n\nn\n' >"$tty_file"
 run_install --dir "$c/pyn" --shape full --site pyn.example.com --version v0.1.2-alpha --web-version 0.2.0
 expect "prompted: declining at a busy port stops" bad_rc
 expect "prompted: declining at a busy port asks first" has "$c/out" "Continue anyway"
-case_start s_busy4; extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); tty_file="$c/answers"; printf 'docker\n\nn\ny\ny\n' >"$tty_file"
+case_start s_busy4; extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); tty_file="$c/answers"; printf 'docker\n\ny\ny\n' >"$tty_file"
 run_install --dir "$c/pyn" --shape full --site pyn.example.com --version v0.1.2-alpha --web-version 0.2.0
 expect "prompted: continuing anyway is possible" ok_rc
 p3=$(freeport); p4=$(freeport)
@@ -1189,23 +1174,58 @@ case_start s_vol; extra_env=("${probe[@]}"); mkdir -p "$c/pyn"
 printf '# old\nservices:\n  web:\n    image: ghcr.io/avalon-initiative/pyn-web:x\n' >"$c/pyn/docker-compose.yml"
 printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=x\nPYN_SECRET_KEY=y\nPYN_PUBLIC_URL=http://h:8080\n' >"$c/pyn/.env"; chmod 600 "$c/pyn/.env"
 run_install --dir "$c/pyn" --yes --shape full --reuse use --site pyn.example.com
-expect "a Compose file without the pyn-tls volume is refused for TLS" bad_rc
-expect "the refusal explains the lost certificates" has "$c/err" "no persistent pyn-tls volume"
+expect "a Compose file without the caddy volume is refused for Caddy" bad_rc
+expect "the refusal explains the lost certificates" has "$c/err" "no caddy service with a persistent caddy-data volume"
 expect "the refusal starts nothing" lacks "$c/log" "compose up"
+expect "the refusal writes no Caddyfile" test ! -e "$c/pyn/Caddyfile"
 run_install --dir "$c/pyn" --yes --shape full --reuse use
-expect "the same stale file is fine while TLS is off" ok_rc
+expect "the same stale file is fine while Caddy is off" ok_rc
 
+# Existing installs: unchanged without Caddy, kept with it
 case_start s_up; extra_env=("${probe[@]}"); mkdir -p "$c/pyn"
 printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=pw\nPYN_SECRET_KEY=sk\nPYN_PUBLIC_URL=http://10.0.0.5:8080\nPYN_WEB_PUBLISH=0.0.0.0:8080\nPYN_REGISTRATION=closed\n' >"$c/pyn/.env"; chmod 600 "$c/pyn/.env"
+cp "$c/pyn/.env" "$work/before.env"
 run_install --dir "$c/pyn" --yes --shape full
-expect "an existing .env without PYN_SITE stays plain" lacks "$c/pyn/.env" "PYN_SITE="
-expect "an existing .env without PYN_SITE gets no PYN_TLS" lacks "$c/pyn/.env" "PYN_TLS="
+expect "an existing .env without the new keys stays plain" lacks "$c/pyn/.env" "PYN_SITE="
+expect "an existing .env gets no caddy profile" lacks "$c/pyn/.env" "COMPOSE_PROFILES"
+expect "an existing .env gets no TRUSTED_PROXIES" lacks "$c/pyn/.env" "PYN_TRUSTED_PROXIES"
+expect "an existing .env gets no Caddyfile" test ! -e "$c/pyn/Caddyfile"
 expect "an existing .env keeps its public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=http://10.0.0.5:8080"
+expect "an existing .env keeps its web publish" has "$c/pyn/.env" "PYN_WEB_PUBLISH=0.0.0.0:8080"
 run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com
-expect "upgrading with --site adds TLS to an existing install" has "$c/pyn/.env" "PYN_TLS=auto"
-expect "upgrading with --site moves the public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
-expect "upgrading keeps the other settings" has "$c/pyn/.env" "PYN_REGISTRATION=closed"
-expect "upgrading keeps the secrets" has "$c/pyn/.env" "POSTGRES_PASSWORD=pw"
+expect "adding --site to an existing install turns Caddy on" has "$c/pyn/.env" "COMPOSE_PROFILES=caddy"
+expect "adding --site moves the public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+expect "adding --site keeps the other settings" has "$c/pyn/.env" "PYN_REGISTRATION=closed"
+expect "adding --site keeps the secrets" has "$c/pyn/.env" "POSTGRES_PASSWORD=pw"
+run_install --dir "$c/pyn" --yes --shape full
+expect "a re-run of a Caddy install keeps the site" has "$c/pyn/.env" "PYN_SITE=pyn.example.com"
+expect "a re-run of a Caddy install keeps the profile" has "$c/pyn/.env" "COMPOSE_PROFILES=caddy"
+expect "a re-run of a Caddy install keeps the address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+expect "a re-run keeps the Caddyfile" has "$c/out" "keeping the existing Caddyfile"
+expect "a re-run does not repeat the profile" bash -c '[ "$(grep -c "^COMPOSE_PROFILES=" "$0")" = 1 ]' "$c/pyn/.env"
+run_install --dir "$c/pyn" --yes --shape full --no-caddy
+expect "--no-caddy on a Caddy install leaves it as it is and says so" has "$c/out" "already runs Caddy"
+expect "--no-caddy keeps the profile" has "$c/pyn/.env" "COMPOSE_PROFILES=caddy"
+
+case_start s_hand; extra_env=("${probe[@]}"); mkdir -p "$c/pyn"
+printf 'pyn.example.com {\n\ttls {\n\t\tdns cloudflare {env.CF_API_TOKEN}\n\t}\n\treverse_proxy web:8080\n}\n' >"$c/pyn/Caddyfile"
+run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com
+expect "a hand-edited Caddyfile for the same site is kept" has "$c/pyn/Caddyfile" "dns cloudflare"
+printf 'old.example.com {\n\treverse_proxy web:8080\n}\n' >"$c/pyn/Caddyfile"
+run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com
+expect "a Caddyfile for another site is replaced" has "$c/pyn/Caddyfile" "pyn.example.com {"
+expect "and backed up first" bash -c 'ls "$0"/Caddyfile.bak.* >/dev/null' "$c/pyn"
+
+case_start s_pr; extra_env=("${probe[@]}"); mkdir -p "$c/pyn"
+printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=pw\nPYN_SECRET_KEY=sk\nPYN_PUBLIC_URL=http://h:8080\nCOMPOSE_PROFILES=web\nPYN_TRUSTED_PROXIES=1\n' >"$c/pyn/.env"; chmod 600 "$c/pyn/.env"
+run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com
+expect "an existing profile list gains caddy" has "$c/pyn/.env" "COMPOSE_PROFILES=web,caddy"
+expect "a proxy count of 1 becomes 2" has "$c/pyn/.env" "PYN_TRUSTED_PROXIES=2"
+printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=pw\nPYN_SECRET_KEY=sk\nPYN_PUBLIC_URL=http://h:8080\nPYN_TRUSTED_PROXIES=3\n' >"$c/pyn/.env"
+rm -f "$c/pyn/Caddyfile"
+run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com
+expect "a larger proxy count is kept" has "$c/pyn/.env" "PYN_TRUSTED_PROXIES=3"
+expect "and says so" has "$c/out" "keeping PYN_TRUSTED_PROXIES=3"
 
 # Flags
 case_start f1
