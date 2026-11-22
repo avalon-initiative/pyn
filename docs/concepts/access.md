@@ -514,8 +514,8 @@ is off) the account waits as `pending_approval` until a server administrator app
 
 A refused request is 429 `too_many_attempts` with a `Retry-After` header in seconds. The per-recipient limit never
 changes the response: past it a sign-up still answers as usual and simply sends nothing. The client address is the
-connection's peer address; behind a reverse proxy set `PYN_TRUST_FORWARDED_FOR=true` to use the last entry of
-`X-Forwarded-For` instead (only when the proxy sets it; otherwise anyone could pick their own address). IPv6 addresses are
+connection's peer address; behind a reverse proxy set `PYN_TRUST_FORWARDED_FOR=true` to use `X-Forwarded-For` instead: the last entry, or with several proxies in front of
+the server the entry `PYN_TRUSTED_PROXIES` positions from the right (only when the proxies set it; otherwise anyone could pick their own address). IPv6 addresses are
 limited per /64. Counters are in memory, or in PostgreSQL when `PYN_DATABASE_URL` is set, so restarts and several servers
 do not reset them.
 
@@ -892,7 +892,7 @@ for every request, after the secret itself.
 | Last use | The listing shows `last_used_at` and `last_used_from`, the address of the last accepted request (absent when the address is unknown) |
 | Audit | A refused request of an identified credential (revoked, expired, from a disallowed source, a missing scope, or a route a service credential cannot reach) adds a `service_credential_refused` entry to the server audit log with actor `@service:<name>`, the reason and the address. It never contains the secret. A wrong or unknown secret identifies nobody and is not logged, and rate-limit refusals are not logged either, so a flood cannot fill the log |
 
-The address is the one used for every other rate limit: the connection's peer, or the last `X-Forwarded-For` entry when
+The address is the one used for every other rate limit: the connection's peer, or the `X-Forwarded-For` entry `PYN_TRUSTED_PROXIES` positions from the right (default 1, the last) when
 `PYN_TRUST_FORWARDED_FOR=true` (only behind a proxy that sets it). Source restriction is only as good as that setting, so
 behind a proxy that does not overwrite the header it must not be relied on, and without one that the header is ignored.
 

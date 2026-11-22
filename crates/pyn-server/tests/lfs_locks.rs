@@ -115,6 +115,7 @@ async fn world() -> World {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: None,
         trust_forwarded: true,
+        trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
         ready: Default::default(),

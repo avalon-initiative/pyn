@@ -81,8 +81,10 @@ pub struct AppState {
     pub auth: Arc<dyn AuthProvider>,
     /// Accepts the `X-Pyn-User` header; present only when development auth is switched on.
     pub dev_auth: Option<Arc<dyn AuthProvider>>,
-    /// Takes the caller's address from `X-Forwarded-For` (the last entry), for a server behind a trusted proxy.
+    /// Takes the caller's address from `X-Forwarded-For`, for a server behind a trusted proxy.
     pub trust_forwarded: bool,
+    /// How many proxies append to `X-Forwarded-For`: the address is that many entries from the right (1 to 16).
+    pub trusted_proxies: usize,
     /// The release lookup; `None` when `PYN_UPDATE_CHECK` is off.
     pub updates: Option<Arc<update_check::UpdateChecker>>,
     /// Which object store is in use and its last probe result.

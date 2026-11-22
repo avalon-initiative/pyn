@@ -30,6 +30,10 @@ fn app_behind_proxy() -> Router {
 }
 
 fn build(trust_forwarded: bool) -> Router {
+    build_with(trust_forwarded, 1)
+}
+
+fn build_with(trust_forwarded: bool, trusted_proxies: usize) -> Router {
     let clock = Arc::new(SystemClock);
     let objects = Arc::new(MemoryObjectStore::new());
     let audit = Arc::new(MemoryAuditStore::new());
@@ -62,6 +66,7 @@ fn build(trust_forwarded: bool) -> Router {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded,
+        trusted_proxies,
         updates: None,
         storage: Default::default(),
         ready: Default::default(),
@@ -573,6 +578,43 @@ async fn the_source_comes_from_the_trusted_forwarded_address_and_is_recorded() {
     assert_eq!(log.len(), 2);
     assert!(log[0].starts_with("@service:billing:") && log[0].contains("198.51.100.1"));
     assert!(log.iter().all(|l| !l.contains(&secret)));
+}
+
+#[tokio::test]
+async fn two_trusted_proxies_take_the_second_entry_from_the_right() {
+    let app = build_with(true, 2);
+    let (secret, _) = mint_with(
+        &app,
+        "billing",
+        json!({"allowed_sources": ["192.0.2.0/24"]}),
+    )
+    .await;
+    let svc = bearer(&secret);
+    let get = |address: &'static str| {
+        let (app, svc) = (app.clone(), svc.clone());
+        async move { call_from(&app, &svc, "GET", "/v1/admin/users", None, address).await }
+    };
+
+    assert_eq!(
+        get("192.0.2.44, 203.0.113.7").await.status,
+        StatusCode::OK,
+        "the client is the entry before the outer proxy's"
+    );
+    assert_eq!(
+        get("198.51.100.1, 192.0.2.44").await.status,
+        StatusCode::UNAUTHORIZED,
+        "the last entry is the outer proxy, not the client"
+    );
+    assert_eq!(
+        get("192.0.2.44, 198.51.100.1, 203.0.113.7").await.status,
+        StatusCode::UNAUTHORIZED,
+        "a spoofed leading entry is never used"
+    );
+    assert_eq!(
+        get("192.0.2.44").await.status,
+        StatusCode::UNAUTHORIZED,
+        "a list shorter than the setting falls back to the peer, unknown here"
+    );
 }
 
 #[tokio::test]

@@ -82,6 +82,7 @@ async fn start(env: &[(&str, &str)]) -> Running {
         .env_remove("PYN_INSTANCES")
         .env_remove("PYN_MAILER")
         .env_remove("PYN_SHUTDOWN_GRACE_SECS")
+        .env_remove("PYN_SHUTDOWN_DRAIN_DELAY_SECS")
         .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(File::create(dir.path().join("out.log")).unwrap())
@@ -290,4 +291,153 @@ fn a_bad_grace_value_stops_the_server_at_start() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("PYN_SHUTDOWN_GRACE_SECS"));
+}
+
+async fn wait_refused(server: &Running, within: Duration) {
+    let deadline = Instant::now() + within;
+    while server.accepts() {
+        assert!(Instant::now() < deadline, "the listener stayed open");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn during_the_drain_delay_the_server_is_unready_but_serves_and_then_closes_after_the_grace() {
+    let mut server = start(&[
+        ("PYN_SHUTDOWN_DRAIN_DELAY_SECS", "3"),
+        ("PYN_SHUTDOWN_GRACE_SECS", "5"),
+    ])
+    .await;
+    let http = reqwest::Client::new();
+    let signalled = Instant::now();
+    server.signal("-TERM");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let ready = http.get(server.url("/readyz")).send().await.unwrap();
+    assert_eq!(ready.status().as_u16(), 503);
+    assert!(ready.text().await.unwrap().contains("draining"));
+    let live = http.get(server.url("/healthz")).send().await.unwrap();
+    assert!(live.status().is_success());
+    let api = http
+        .get(server.url("/v1/repos/root/r"))
+        .header("x-pyn-user", "root")
+        .send()
+        .await
+        .unwrap();
+    assert!(api.status().is_success(), "{}", api.status());
+
+    // Begun during the delay, so it counts as in flight and gets the grace that starts when the listener closes.
+    let upload = SlowUpload::begin(&server);
+    wait_refused(&server, Duration::from_secs(5)).await;
+    assert!(
+        signalled.elapsed() >= Duration::from_millis(2800),
+        "the listener closed before the delay ended"
+    );
+    assert!(server.child.try_wait().unwrap().is_none());
+    let response = upload.finish();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert_eq!(
+        server.exit(Duration::from_secs(10)).code(),
+        Some(0),
+        "{}",
+        server.log()
+    );
+}
+
+#[tokio::test]
+async fn the_grace_counts_from_the_close_of_the_listener_not_from_the_signal() {
+    let mut server = start(&[
+        ("PYN_SHUTDOWN_DRAIN_DELAY_SECS", "2"),
+        ("PYN_SHUTDOWN_GRACE_SECS", "1"),
+    ])
+    .await;
+    let signalled = Instant::now();
+    server.signal("-TERM");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _upload = SlowUpload::begin(&server);
+    let status = server.exit(Duration::from_secs(10));
+    assert_eq!(status.code(), Some(1), "{}", server.log());
+    assert!(
+        signalled.elapsed() >= Duration::from_millis(2800),
+        "forced before delay plus grace: {:?}",
+        signalled.elapsed()
+    );
+    assert!(
+        server
+            .log()
+            .contains("1 request(s) were still running and are cut off"),
+        "{}",
+        server.log()
+    );
+}
+
+#[tokio::test]
+async fn a_second_signal_during_the_delay_skips_the_rest_of_it_and_keeps_the_grace() {
+    let mut server = start(&[
+        ("PYN_SHUTDOWN_DRAIN_DELAY_SECS", "60"),
+        ("PYN_SHUTDOWN_GRACE_SECS", "30"),
+    ])
+    .await;
+    let upload = SlowUpload::begin(&server);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    server.signal("-TERM");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(server.accepts(), "the delay should still be running");
+    server.signal("-TERM");
+    wait_refused(&server, Duration::from_secs(5)).await;
+    assert!(
+        server.child.try_wait().unwrap().is_none(),
+        "the second signal during the delay must not force the exit"
+    );
+    let response = upload.finish();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert_eq!(
+        server.exit(Duration::from_secs(10)).code(),
+        Some(0),
+        "{}",
+        server.log()
+    );
+}
+
+#[tokio::test]
+async fn an_idle_server_with_a_long_delay_and_a_second_signal_exits_zero_at_once() {
+    let mut server = start(&[("PYN_SHUTDOWN_DRAIN_DELAY_SECS", "60")]).await;
+    server.signal("-INT");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(server.child.try_wait().unwrap().is_none());
+    server.signal("-INT");
+    assert_eq!(
+        server.exit(Duration::from_secs(5)).code(),
+        Some(0),
+        "{}",
+        server.log()
+    );
+}
+
+#[test]
+fn a_bad_drain_delay_stops_the_server_at_start() {
+    for bad in ["soon", "-1", "3601", ""] {
+        let out = Command::new(env!("CARGO_BIN_EXE_pyn-server"))
+            .env("PYN_ADDR", format!("127.0.0.1:{}", free_port()))
+            .env("PYN_SHUTDOWN_DRAIN_DELAY_SECS", bad)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{bad:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("PYN_SHUTDOWN_DRAIN_DELAY_SECS"),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn trusted_proxies_without_trusting_forwarded_for_stops_the_server_at_start() {
+    let out = Command::new(env!("CARGO_BIN_EXE_pyn-server"))
+        .env("PYN_ADDR", format!("127.0.0.1:{}", free_port()))
+        .env("PYN_TRUSTED_PROXIES", "2")
+        .env_remove("PYN_TRUST_FORWARDED_FOR")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("PYN_TRUSTED_PROXIES"));
 }

@@ -86,6 +86,7 @@ fn spawn(vars: &[(String, String)]) -> Copy {
         .env_remove("PYN_DEV_AUTH")
         .env_remove("PYN_MAILER")
         .env_remove("PYN_SHUTDOWN_GRACE_SECS")
+        .env_remove("PYN_SHUTDOWN_DRAIN_DELAY_SECS")
         .envs(vars.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(File::create(dir.path().join("out.log")).unwrap())

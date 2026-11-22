@@ -52,6 +52,7 @@ fn app(storage: Arc<StorageReport>, ready: Readiness) -> Router {
         auth: Arc::new(BearerAuth { access }),
         dev_auth: None,
         trust_forwarded: false,
+        trusted_proxies: 1,
         updates: None,
         storage,
         ready,
