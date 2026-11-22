@@ -24,9 +24,23 @@ page records the current state, as of 2026-10-30.
 | Rolling restarts and deploys | `SIGTERM` handling, `GET /readyz` | A copy that gets a stop signal turns `/readyz` to `503 draining`, stops accepting connections, lets running requests finish for `PYN_SHUTDOWN_GRACE_SECS` (default 30), ends lock streams so clients reconnect to another copy, stops its background loops and exits 0 (1 if requests were cut off). `/readyz` also fails while the metadata store does not answer or the object store failed its probe, so a balancer can keep traffic off a copy that cannot serve it; `/healthz` stays a pure liveness check. Restart copies one at a time so the others keep serving. See [deployment](../deployment.md#stopping-and-restarting). |
 | Password hashing limit | Per process | Holds no correctness state. |
 
+## Proven by a test with two copies
+
+`crates/pyn-server/tests/two_copies.rs` and `crates/pyn-cli/tests/two_copies.rs` start two real `pyn-server` processes on one PostgreSQL schema and one S3 bucket (`PYN_INSTANCES=2`, the same `PYN_SECRET_KEY` and `PYN_SETUP_TOKEN`) and check from the outside. They need `PYN_DATABASE_URL`, so `make test-live` runs them.
+
+- Setup done on one copy is seen by the other at once (setup status, root sign-in, admin settings), as are accounts registered on either.
+- A token or a cookie session made on one copy is accepted by the other.
+- A lock taken on one copy is refused to another user on the other copy (`lock_held`) and listed there; a release on one copy frees the path on the other.
+- A lock stream request held open on one copy wakes for a lock taken on the other (events are read from the database, polled twice a second).
+- A resumable upload started on one copy continues and finishes on the other, and the object downloads from both.
+- A push through one copy is cloned through the other, and the objects land in the bucket.
+- `SIGTERM` to one copy exits 0 while the other keeps answering `/readyz` and API calls.
+- A copy whose bucket stops answering turns `/readyz` to 503 (within the 30 second probe interval) while `/healthz` stays 200.
+
 ## Not safe yet
 
 | State | Problem | Issue |
 | --- | --- | --- |
 | Setup token | One generated token per process unless `PYN_SETUP_TOKEN` is shared; any one completes setup. Documented in [access](access.md). | #182 |
 | Filesystem and in-memory object stores | Single-process or not durable. `pyn-server migrate-objects` moves an existing filesystem store into a bucket and back (see [deployment](../deployment.md#moving-the-object-store)). Setting `PYN_INSTANCES` above 1 makes the server refuse to start without `PYN_DATABASE_URL` and shared content storage: `PYN_S3_BUCKET` (every copy shares the bucket, see [deployment](../deployment.md#several-copies-on-a-bucket)), or `PYN_DATA_DIR`, which must then be shared storage. | #183 |
+| Upload and expensive-request limits | The limits on uploads and other expensive requests are per process, so N copies allow about N times the limit. | #1233 |
