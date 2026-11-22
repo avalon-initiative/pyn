@@ -116,7 +116,7 @@ impl AccessService {
         let detail = format!("team {} created", record.slug);
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::TeamCreated,
             detail,
         )
@@ -150,7 +150,7 @@ impl AccessService {
         let detail = format!("team {slug} updated");
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::TeamUpdated,
             detail,
         )
@@ -182,7 +182,7 @@ impl AccessService {
             let mut addresses = Vec::new();
             for (id, role) in &repos {
                 let note = format!("team {slug} removed with the team (was {role})");
-                self.record(id, &actor.user, AuditAction::TeamAccessRemoved, note)
+                self.record(id, actor.into(), AuditAction::TeamAccessRemoved, note)
                     .await?;
                 if let Some(record) = registry.get_repo(id).await? {
                     addresses.push(record.address());
@@ -192,7 +192,7 @@ impl AccessService {
         }
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::TeamDeleted,
             detail,
         )
@@ -221,7 +221,7 @@ impl AccessService {
         let detail = format!("{user} added to team {slug}");
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::TeamMemberAdded,
             detail,
         )
@@ -247,7 +247,7 @@ impl AccessService {
         let detail = format!("{user} removed from team {slug}");
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::TeamMemberRemoved,
             detail,
         )
@@ -343,12 +343,12 @@ impl AccessService {
         };
         self.record(
             AuditScope::Org(org),
-            &actor.user,
+            actor.into(),
             AuditAction::TeamAccessSet,
             org_note,
         )
         .await?;
-        self.record(repo, &actor.user, AuditAction::TeamAccessSet, repo_note)
+        self.record(repo, actor.into(), AuditAction::TeamAccessSet, repo_note)
             .await
     }
 
@@ -381,12 +381,17 @@ impl AccessService {
         let repo_note = format!("team {slug} removed (was {old})");
         self.record(
             AuditScope::Org(org),
-            &actor.user,
+            actor.into(),
             AuditAction::TeamAccessRemoved,
             org_note,
         )
         .await?;
-        self.record(repo, &actor.user, AuditAction::TeamAccessRemoved, repo_note)
-            .await
+        self.record(
+            repo,
+            actor.into(),
+            AuditAction::TeamAccessRemoved,
+            repo_note,
+        )
+        .await
     }
 }

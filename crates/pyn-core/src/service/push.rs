@@ -309,7 +309,7 @@ impl RepoService {
         let now = self.clock.now();
         let cap = self.storage_cap().await?;
         self.ensure_writable().await?;
-        let events = self.lock_events(None).await;
+        let events = self.lock_events(Some(who.into()), None).await;
         let revs = self
             .limit_result(
                 self.meta
@@ -328,7 +328,7 @@ impl RepoService {
         if created {
             let head = commits_ids.last().expect("a push has commits");
             self.record_repo(
-                &who.user,
+                who.into(),
                 AuditAction::BranchCreated,
                 format!("{branch} at {head} (push)"),
             )
@@ -344,7 +344,7 @@ impl RepoService {
                 AuditAction::Checkin
             };
             self.record(
-                &who.user,
+                who.into(),
                 action,
                 &rev.path,
                 format!("r{}: {} (push)", rev.id, brief(&rev.message)),
@@ -361,7 +361,7 @@ impl RepoService {
         }
         for (commit, other) in &merges {
             self.record_repo(
-                &who.user,
+                who.into(),
                 AuditAction::BranchMerged,
                 format!("{other} into {branch} at {commit} (push)"),
             )

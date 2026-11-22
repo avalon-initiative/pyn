@@ -173,7 +173,7 @@ impl AccessService {
             .await?;
         if old.description != description {
             let (scope, action) = (AuditScope::Org(org.clone()), AuditAction::OrgProfileUpdated);
-            self.record(scope, &actor.user, action, "description".into())
+            self.record(scope, actor.into(), action, "description".into())
                 .await?;
         }
         self.store.org_profile(org).await
@@ -204,7 +204,7 @@ impl AccessService {
         };
         if let Some(action) = action {
             let scope = AuditScope::Org(org.clone());
-            self.record(scope, &actor.user, action, "avatar".into())
+            self.record(scope, actor.into(), action, "avatar".into())
                 .await?;
         }
         self.store.org_profile(org).await

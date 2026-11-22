@@ -164,13 +164,13 @@ impl AccessService {
         if account.kind == AccountKind::Org {
             self.record(
                 AuditScope::Org(account.user.clone()),
-                &actor.user,
+                actor.into(),
                 action,
                 detail.clone(),
             )
             .await?;
         }
-        self.record_server(&actor.user, action, detail).await
+        self.record_server(actor.into(), action, detail).await
     }
 }
 

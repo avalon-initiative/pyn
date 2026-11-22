@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::access::{Identity, Principal};
 use crate::access_service::SERVER_AUDIT_ID;
 use crate::error::{PynError, Result};
 use crate::types::{AccountId, RepoId, RepoPath, UserId};
@@ -328,11 +329,55 @@ impl FromStr for AuditAction {
     }
 }
 
+/// Who an audited action is attributed to: the account, and the administrator acting as it in an access session.
+/// Every audit helper takes this, so a caller that holds an identity cannot record the account alone by omission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Actor<'a> {
+    pub user: &'a UserId,
+    pub acting_admin: Option<&'a UserId>,
+}
+
+/// An actor outside any access session.
+impl<'a> From<&'a UserId> for Actor<'a> {
+    fn from(user: &'a UserId) -> Self {
+        Self {
+            user,
+            acting_admin: None,
+        }
+    }
+}
+
+impl<'a> From<&'a Identity> for Actor<'a> {
+    fn from(who: &'a Identity) -> Self {
+        Self {
+            user: &who.user,
+            acting_admin: who.acting_admin(),
+        }
+    }
+}
+
+impl<'a> From<&'a Principal> for Actor<'a> {
+    fn from(who: &'a Principal) -> Self {
+        Self {
+            user: &who.user,
+            acting_admin: who.acting_admin.as_ref(),
+        }
+    }
+}
+
+impl<'a> From<&'a Actor<'a>> for Actor<'a> {
+    fn from(who: &'a Actor<'a>) -> Self {
+        *who
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditEvent {
     pub id: i64,
     pub at: DateTime<Utc>,
     pub actor: UserId,
+    /// The administrator who acted as `actor` in an access session; covered by the hash.
+    pub acting_admin: Option<UserId>,
     pub action: AuditAction,
     pub path: Option<RepoPath>,
     pub detail: String,
@@ -345,6 +390,7 @@ pub struct AuditEvent {
 pub struct NewAuditEvent {
     pub at: DateTime<Utc>,
     pub actor: UserId,
+    pub acting_admin: Option<UserId>,
     pub action: AuditAction,
     pub path: Option<RepoPath>,
     pub detail: String,

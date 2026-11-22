@@ -68,7 +68,7 @@ impl AccessService {
         );
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::OrgMemberInvited,
             detail,
         )
@@ -98,7 +98,7 @@ impl AccessService {
         let detail = format!("{user} added as {role}");
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::OrgMemberAdded,
             detail,
         )
@@ -142,7 +142,7 @@ impl AccessService {
         }
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::OrgInvitationCancelled,
             format!("invitation of {user} cancelled"),
         )
@@ -172,7 +172,7 @@ impl AccessService {
         };
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::OrgInvitationAccepted,
             format!("{} joined as {role}", actor.user),
         )
@@ -196,7 +196,7 @@ impl AccessService {
         }
         self.record(
             AuditScope::Org(org.clone()),
-            &actor.user,
+            actor.into(),
             AuditAction::OrgInvitationDeclined,
             format!("{} declined", actor.user),
         )
@@ -221,7 +221,7 @@ impl AccessService {
             );
             self.record(
                 AuditScope::Org(i.org.clone()),
-                &i.org,
+                (&i.org).into(),
                 AuditAction::OrgInvitationExpired,
                 detail,
             )

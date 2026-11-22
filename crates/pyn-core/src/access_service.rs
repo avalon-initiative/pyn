@@ -20,7 +20,9 @@ use crate::access_session::{
     AccessSessionView, ReachNote, session_credential,
 };
 use crate::account_self::{AccountEmail, EmailAdd, EmailRemove, PrimaryChange, RenameOutcome};
-use crate::audit::{AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent};
+use crate::audit::{
+    Actor, AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent,
+};
 use crate::clock::Clock;
 use crate::deletion::{
     AccountDeletion, AccountPurge, DeletionSchedule, DeletionSweep, NAME_RESERVATION_DAYS,
@@ -1346,7 +1348,7 @@ impl AccessService {
     async fn record(
         &self,
         scope: impl Into<AuditScope>,
-        actor: &UserId,
+        actor: Actor<'_>,
         action: AuditAction,
         detail: String,
     ) -> Result<()> {
@@ -1355,7 +1357,8 @@ impl AccessService {
         };
         let event = NewAuditEvent {
             at: self.clock.now(),
-            actor: actor.clone(),
+            actor: actor.user.clone(),
+            acting_admin: actor.acting_admin.cloned(),
             action,
             path: None,
             detail,
@@ -1446,6 +1449,7 @@ impl AccessService {
             user: user.clone(),
             permissions: self.role_permissions(repo, user).await?,
             email: self.account_email(user).await?,
+            acting_admin: None,
         })
     }
 
@@ -1562,13 +1566,16 @@ impl AccessService {
     pub async fn principal_in(&self, repo: &RepoId, who: &Identity) -> Result<Principal> {
         match &who.credential {
             Credential::Unrestricted => Ok(Principal::unrestricted(who.user.clone())),
-            Credential::Session | Credential::AccessSession(_) => {
-                self.principal(repo, &who.user).await
-            }
+            Credential::Session => self.principal(repo, &who.user).await,
+            Credential::AccessSession(_) => Ok(Principal {
+                acting_admin: who.acting_admin().cloned(),
+                ..self.principal(repo, &who.user).await?
+            }),
             Credential::Service(_) => Ok(Principal {
                 user: who.user.clone(),
                 permissions: BTreeSet::new(),
                 email: None,
+                acting_admin: None,
             }),
             Credential::Token(record) => {
                 if !self.token_covers(record, repo).await? {
@@ -1579,6 +1586,7 @@ impl AccessService {
                     user: who.user.clone(),
                     permissions: record.permissions().intersection(&role).copied().collect(),
                     email: self.account_email(&who.user).await?,
+                    acting_admin: None,
                 })
             }
         }
@@ -1614,6 +1622,7 @@ impl AccessService {
             user: who.user.clone(),
             permissions: BTreeSet::new(),
             email: None,
+            acting_admin: None,
         })
     }
 
@@ -1687,7 +1696,7 @@ impl AccessService {
                 .expires_at
                 .map_or("never".to_string(), |t| t.to_rfc3339()),
         );
-        self.record_token_event(&record, &actor.user, AuditAction::TokenCreated, detail)
+        self.record_token_event(&record, actor.into(), AuditAction::TokenCreated, detail)
             .await?;
         Ok((record, full))
     }
@@ -1775,7 +1784,7 @@ impl AccessService {
     async fn record_token_event(
         &self,
         record: &TokenRecord,
-        actor: &UserId,
+        actor: Actor<'_>,
         action: AuditAction,
         detail: String,
     ) -> Result<()> {
@@ -1893,6 +1902,7 @@ impl AccessService {
             user: actor.user.clone(),
             permissions: own.permissions(),
             email: None,
+            acting_admin: None,
         };
         Self::require_grants_held(&held, grants)?;
         if !own.sign_in && own.owner != req.owner {
@@ -2044,7 +2054,7 @@ impl AccessService {
         };
         self.store.revoke_token(id, self.clock.now()).await?;
         let detail = format!("token {} {:?} of {}", record.id, record.name, record.user);
-        self.record_token_event(&record, &actor.user, AuditAction::TokenRevoked, detail)
+        self.record_token_event(&record, actor.into(), AuditAction::TokenRevoked, detail)
             .await?;
         Ok(())
     }
@@ -2124,14 +2134,14 @@ impl AccessService {
         }
         let before = self.store.role_of(repo, user).await?;
         self.store.set_role(repo, user, role).await?;
-        self.record_role(repo, &actor.user, user, before, role)
+        self.record_role(repo, actor.into(), user, before, role)
             .await
     }
 
     async fn record_role(
         &self,
         repo: &RepoId,
-        actor: &UserId,
+        actor: Actor<'_>,
         user: &UserId,
         before: Option<Role>,
         role: Role,
@@ -2232,7 +2242,7 @@ impl AccessService {
         );
         self.record(
             repo,
-            &actor.user,
+            actor.into(),
             AuditAction::RolePermissionsChanged,
             detail,
         )
@@ -2539,8 +2549,13 @@ impl AccessService {
                 .set_role(&invite.repo, &user, invite.role)
                 .await?;
             let detail = format!("{user} registered as {}", invite.role);
-            self.record(&invite.repo, &user, AuditAction::MemberAdded, detail)
-                .await?;
+            self.record(
+                &invite.repo,
+                (&user).into(),
+                AuditAction::MemberAdded,
+                detail,
+            )
+            .await?;
         }
         let status = match signup {
             SignupStage::PendingApproval => AccountStatus::PendingApproval,
@@ -2802,7 +2817,7 @@ impl AccessService {
         self.store.set_password_hash(&user, &hash).await?;
         self.store.set_role(repo, &user, role).await?;
         let detail = format!("{user} added as {role}");
-        self.record(repo, &actor.user, AuditAction::MemberAdded, detail)
+        self.record(repo, actor.into(), AuditAction::MemberAdded, detail)
             .await?;
         Ok(user)
     }
@@ -2915,7 +2930,7 @@ impl AccessService {
             record.role.as_str(),
             record.expires_at.to_rfc3339()
         );
-        self.record(repo, &actor.user, AuditAction::InviteCreated, detail)
+        self.record(repo, actor.into(), AuditAction::InviteCreated, detail)
             .await?;
         Ok((record, code))
     }
@@ -2945,7 +2960,7 @@ impl AccessService {
         if self.store.revoke_invite(id, self.clock.now()).await? {
             self.record(
                 repo,
-                &actor.user,
+                actor.into(),
                 AuditAction::InviteRevoked,
                 format!("invitation {id}"),
             )
@@ -3136,7 +3151,7 @@ impl AccessService {
         self.store.ensure_user(user, self.clock.now()).await?;
         self.store.set_role(repo, user, Role::Admin).await?;
         let detail = format!("{user} added as admin (creator)");
-        self.record(repo, user, AuditAction::MemberAdded, detail)
+        self.record(repo, user.into(), AuditAction::MemberAdded, detail)
             .await
     }
 
@@ -3213,7 +3228,7 @@ impl AccessService {
 
     async fn record_server(
         &self,
-        actor: &UserId,
+        actor: Actor<'_>,
         action: AuditAction,
         detail: String,
     ) -> Result<()> {
@@ -3292,7 +3307,7 @@ impl AccessService {
             .set_signup_with_events(user, SignupStage::Complete, &[approved])
             .await?;
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::AccountApproved,
             format!("{user} approved"),
         )
@@ -3340,7 +3355,7 @@ impl AccessService {
             Some(reason) => format!("{user} disabled: {reason}"),
             None => format!("{user} disabled"),
         };
-        self.record_server(&actor.user, AuditAction::AccountDisabled, detail)
+        self.record_server(actor.into(), AuditAction::AccountDisabled, detail)
             .await?;
         self.existing_account(user).await
     }
@@ -3365,7 +3380,7 @@ impl AccessService {
             .await?;
         self.store.clear_account_deletion(user).await?;
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::AccountEnabled,
             format!("{user} enabled"),
         )
@@ -3387,7 +3402,7 @@ impl AccessService {
         }
         self.store.set_admin(user, true).await?;
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::AdminGranted,
             format!("{user} made an administrator"),
         )
@@ -3403,7 +3418,7 @@ impl AccessService {
         match self.store.revoke_admin(user).await? {
             AdminRevoke::Revoked => {
                 self.record_server(
-                    &actor.user,
+                    actor.into(),
                     AuditAction::AdminRevoked,
                     format!("{user} no longer an administrator"),
                 )
@@ -3510,7 +3525,7 @@ impl AccessService {
         if let Some(n) = record.rate_limit_per_minute {
             detail.push_str(&format!(", {n} requests per minute"));
         }
-        self.record_server(&actor.user, AuditAction::ServiceCredentialCreated, detail)
+        self.record_server(actor.into(), AuditAction::ServiceCredentialCreated, detail)
             .await?;
         Ok((record, full))
     }
@@ -3530,7 +3545,7 @@ impl AccessService {
         );
         if let Err(e) = self
             .record_server(
-                &credential.actor(),
+                (&credential.actor()).into(),
                 AuditAction::ServiceCredentialRefused,
                 detail,
             )
@@ -3557,7 +3572,7 @@ impl AccessService {
             return Err(PynError::ServiceCredentialNotFound(name.to_string()));
         }
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::ServiceCredentialRevoked,
             format!("service credential {name} revoked"),
         )

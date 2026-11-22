@@ -9,7 +9,7 @@ use pyn_object::ObjectId;
 
 use crate::audit::{AuditEvent, AuditScope, NewAuditEvent};
 use crate::error::{PynError, Result};
-use crate::types::{NewRevision, RepoPath, Revision, RevisionHash, RevisionId};
+use crate::types::{NewRevision, RepoPath, Revision, RevisionHash, RevisionId, UserId};
 
 fn micros(at: DateTime<Utc>) -> i64 {
     at.timestamp_micros()
@@ -213,6 +213,7 @@ impl NewAuditEvent {
             action: self.action.as_str(),
             path: self.path.as_ref().map(RepoPath::as_str),
             detail: &self.detail,
+            acting_admin: self.acting_admin.as_ref().map(UserId::as_str),
         })
     }
 }
@@ -227,6 +228,7 @@ impl AuditEvent {
             action: self.action.as_str(),
             path: self.path.as_ref().map(RepoPath::as_str),
             detail: &self.detail,
+            acting_admin: self.acting_admin.as_ref().map(UserId::as_str),
         })
     }
 

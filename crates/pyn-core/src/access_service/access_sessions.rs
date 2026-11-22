@@ -310,6 +310,7 @@ impl AccessService {
             let event = NewAuditEvent {
                 at,
                 actor: record.actor(),
+                acting_admin: None,
                 action,
                 path: None,
                 detail: detail.clone(),

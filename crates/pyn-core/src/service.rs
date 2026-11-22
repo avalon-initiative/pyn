@@ -31,7 +31,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::access::{Permission, Principal};
 use crate::audit::{
-    AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent, brief,
+    Actor, AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent, brief,
 };
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts, validate_branch_name};
 use crate::clock::Clock;
@@ -316,14 +316,15 @@ impl RepoService {
 
     async fn record(
         &self,
-        actor: &UserId,
+        actor: Actor<'_>,
         action: AuditAction,
         path: &RepoPath,
         detail: String,
     ) -> Result<()> {
         let event = NewAuditEvent {
             at: self.clock.now(),
-            actor: actor.clone(),
+            actor: actor.user.clone(),
+            acting_admin: actor.acting_admin.cloned(),
             action,
             path: Some(path.clone()),
             detail,
@@ -333,10 +334,16 @@ impl RepoService {
             .await
     }
 
-    async fn record_repo(&self, actor: &UserId, action: AuditAction, detail: String) -> Result<()> {
+    async fn record_repo(
+        &self,
+        actor: Actor<'_>,
+        action: AuditAction,
+        detail: String,
+    ) -> Result<()> {
         let event = NewAuditEvent {
             at: self.clock.now(),
-            actor: actor.clone(),
+            actor: actor.user.clone(),
+            acting_admin: actor.acting_admin.cloned(),
             action,
             path: None,
             detail,
@@ -482,14 +489,10 @@ impl RepoService {
         old: &Rules,
         new: &Rules,
     ) -> Result<Vec<StrandedVersion>> {
-        let actor = &who.user;
         let now = self.clock.now();
         let found = self.conversions(old, new).await?;
         let events = self
-            .lock_events(Some((
-                actor.clone(),
-                Some("now shared by policy".to_string()),
-            )))
+            .lock_events(Some(who.into()), Some("now shared by policy".to_string()))
             .await;
         for lock in &found.released_locks {
             if self
@@ -499,13 +502,13 @@ impl RepoService {
                 .is_some()
             {
                 let detail = format!("released {}'s lock: now shared by policy", lock.owner);
-                self.record(actor, AuditAction::ForceUnlock, &lock.path, detail)
+                self.record(who.into(), AuditAction::ForceUnlock, &lock.path, detail)
                     .await?;
             }
         }
         for path in &found.to_shared {
             let detail = format!("exclusive -> shared by policy r{}", rev.id);
-            self.record(actor, AuditAction::ModeConverted, path, detail)
+            self.record(who.into(), AuditAction::ModeConverted, path, detail)
                 .await?;
         }
         let mut conversions = BTreeMap::new();
@@ -520,7 +523,7 @@ impl RepoService {
                 }
                 None => format!("shared -> exclusive by policy r{}", rev.id),
             };
-            self.record(actor, AuditAction::ModeConverted, path, detail)
+            self.record(who.into(), AuditAction::ModeConverted, path, detail)
                 .await?;
         }
         let stranded = self
@@ -539,7 +542,7 @@ impl RepoService {
                     .map(|c| format!("; the path converted to exclusive at r{c}"))
                     .unwrap_or_default()
             );
-            self.record(actor, AuditAction::VersionStranded, &v.path, detail)
+            self.record(who.into(), AuditAction::VersionStranded, &v.path, detail)
                 .await?;
         }
         let detail = format!(
@@ -550,7 +553,7 @@ impl RepoService {
             found.to_exclusive.len(),
             stranded.len()
         );
-        self.record(actor, AuditAction::PolicyChanged, &rev.path, detail)
+        self.record(who.into(), AuditAction::PolicyChanged, &rev.path, detail)
             .await?;
         Ok(stranded)
     }
@@ -710,8 +713,15 @@ impl RepoService {
         self.parse_policy(content).await
     }
 
-    /// Builds lock events for this repository, `None` when it is gone. `forced` is the actor and reason of a forced release.
-    async fn lock_events(&self, forced: Option<(UserId, Option<String>)>) -> Option<LockEvents> {
+    /// Builds lock events for this repository, `None` when it is gone. `by` is who caused the change (`None` when the
+    /// clock did); `forced_reason` is the reason of a forced release.
+    async fn lock_events(
+        &self,
+        by: Option<Actor<'_>>,
+        forced_reason: Option<String>,
+    ) -> Option<LockEvents> {
+        let acting_admin = by.and_then(|a| a.acting_admin.cloned());
+        let by_user = by.map(|a| a.user.clone());
         let record = self.meta.get_repo(&self.repo).await.ok().flatten()?;
         let (owner, owner_id, events) = self.limit_events.clone();
         let now = self.clock.now();
@@ -727,6 +737,7 @@ impl RepoService {
                     path: l.path.clone(),
                     holder: l.owner.clone(),
                     expires_at: l.expires_at,
+                    acting_admin: acting_admin.clone(),
                 },
                 LockChange::Released(l) => DomainEvent::LockReleased {
                     owner,
@@ -736,6 +747,7 @@ impl RepoService {
                     path: l.path.clone(),
                     holder: l.owner.clone(),
                     reason: None,
+                    acting_admin: acting_admin.clone(),
                 },
                 LockChange::CheckedIn(l) => DomainEvent::LockReleased {
                     owner,
@@ -745,6 +757,7 @@ impl RepoService {
                     path: l.path.clone(),
                     holder: l.owner.clone(),
                     reason: Some("checkin".into()),
+                    acting_admin: acting_admin.clone(),
                 },
                 LockChange::Expired(l) => DomainEvent::LockExpired {
                     owner,
@@ -756,7 +769,8 @@ impl RepoService {
                     expires_at: l.expires_at,
                 },
                 LockChange::Forced(l) => {
-                    let (actor, reason) = forced.clone().unwrap_or((l.owner.clone(), None));
+                    let actor = by_user.clone().unwrap_or_else(|| l.owner.clone());
+                    let reason = forced_reason.clone();
                     DomainEvent::LockForced {
                         owner,
                         owner_id,
@@ -766,6 +780,7 @@ impl RepoService {
                         holder: l.owner.clone(),
                         actor,
                         reason,
+                        acting_admin: acting_admin.clone(),
                     }
                 }
             };
@@ -775,10 +790,10 @@ impl RepoService {
 
     /// Take the lock on an exclusive path. `base` must equal the default branch's revision of it so nobody edits a
     /// stale copy; the holder renews by checking out again.
-    pub async fn checkout(
+    pub async fn checkout<'a>(
         &self,
         path: &RepoPath,
-        user: &UserId,
+        user: impl Into<Actor<'a>>,
         base: Option<RevisionId>,
     ) -> Result<Lock> {
         self.checkout_on(DEFAULT_BRANCH, path, user, base).await
@@ -786,11 +801,11 @@ impl RepoService {
 
     /// Like `checkout`, for a commit on `branch`: the path must be exclusive under the branch's effective policy or the
     /// default branch's, whose policy a merge brings the branch (resolving a conversion conflict takes the lock first).
-    pub async fn checkout_on(
+    pub async fn checkout_on<'a>(
         &self,
         branch: &str,
         path: &RepoPath,
-        user: &UserId,
+        user: impl Into<Actor<'a>>,
         base: Option<RevisionId>,
     ) -> Result<Lock> {
         self.ensure_writable().await?;
@@ -808,13 +823,14 @@ impl RepoService {
                 actual: head,
             });
         }
-        self.take_lock(path, user).await
+        self.take_lock(path, user.into()).await
     }
 
     /// Takes or renews the lease and audits it; no mode or base check.
-    async fn take_lock(&self, path: &RepoPath, user: &UserId) -> Result<Lock> {
+    async fn take_lock(&self, path: &RepoPath, who: Actor<'_>) -> Result<Lock> {
+        let user = who.user;
         let now = self.clock.now();
-        let events = self.lock_events(None).await;
+        let events = self.lock_events(Some(who), None).await;
         let lock = self
             .limit_result(
                 self.meta
@@ -831,7 +847,7 @@ impl RepoService {
             )
             .await?;
         self.record(
-            user,
+            who,
             AuditAction::Checkout,
             path,
             format!("until {}", lock.expires_at),
@@ -842,7 +858,8 @@ impl RepoService {
 
     /// Locks `path` for the LFS Locks API. An exclusive path is locked as `checkout` does at its current head; any
     /// other path gets an advisory lock that commits do not check.
-    pub async fn lock_path(&self, path: &RepoPath, user: &UserId) -> Result<Lock> {
+    pub async fn lock_path<'a>(&self, path: &RepoPath, user: impl Into<Actor<'a>>) -> Result<Lock> {
+        let user = user.into();
         if self.mode_for(path) == Mode::Exclusive {
             let head = self.pointer_on(DEFAULT_BRANCH, path).await?.map(|r| r.id);
             return self.checkout_on(DEFAULT_BRANCH, path, user, head).await;
@@ -856,10 +873,17 @@ impl RepoService {
         self.meta.get_lock(&self.repo, path, self.clock.now()).await
     }
 
-    pub async fn release(&self, path: &RepoPath, user: &UserId) -> Result<()> {
-        let events = self.lock_events(None).await;
+    pub async fn release<'a>(&self, path: &RepoPath, user: impl Into<Actor<'a>>) -> Result<()> {
+        let user = user.into();
+        let events = self.lock_events(Some(user), None).await;
         self.meta
-            .release_lock_with_events(&self.repo, path, user, self.clock.now(), events.as_deref())
+            .release_lock_with_events(
+                &self.repo,
+                path,
+                user.user,
+                self.clock.now(),
+                events.as_deref(),
+            )
             .await?;
         self.record(user, AuditAction::Release, path, "released".into())
             .await
@@ -867,7 +891,7 @@ impl RepoService {
 
     /// Removes a lease that ran out and queues `lock.expired`; false when it was already swept or taken again.
     pub async fn expire_lock(&self, path: &RepoPath) -> Result<bool> {
-        let Some(events) = self.lock_events(None).await else {
+        let Some(events) = self.lock_events(None, None).await else {
             return Ok(false);
         };
         let lapsed = self
@@ -929,19 +953,20 @@ impl RepoService {
     }
 
     /// Removes someone else's live lock. The reason is required because it goes into the audit log.
-    pub async fn force_unlock(
+    pub async fn force_unlock<'a>(
         &self,
         path: &RepoPath,
-        actor: &UserId,
+        actor: impl Into<Actor<'a>>,
         reason: &str,
     ) -> Result<Lock> {
+        let actor = actor.into();
         if reason.trim().is_empty() {
             return Err(PynError::InvalidRequest(
                 "a reason is required to force an unlock".into(),
             ));
         }
         let events = self
-            .lock_events(Some((actor.clone(), Some(reason.trim().to_string()))))
+            .lock_events(Some(actor), Some(reason.trim().to_string()))
             .await;
         let lock = self
             .meta
@@ -1019,7 +1044,7 @@ impl RepoService {
             expected_head: base,
             lock_holder: lock_holder.cloned(),
         };
-        let events = self.lock_events(None).await;
+        let events = self.lock_events(Some(who.into()), None).await;
         let mut revs = self
             .limit_result(
                 self.meta
@@ -1125,7 +1150,7 @@ impl RepoService {
             .await?;
         let rev = &recorded.revision;
         self.record(
-            &who.user,
+            who.into(),
             AuditAction::Checkin,
             path,
             format!("r{}: {}", rev.id, brief(&rev.message)),
@@ -1267,7 +1292,7 @@ impl RepoService {
                 lock_holder: (mode == Mode::Exclusive).then(|| who.user.clone()),
             });
         }
-        let events = self.lock_events(None).await;
+        let events = self.lock_events(Some(who.into()), None).await;
         let revs = self
             .limit_result(
                 self.meta
@@ -1289,7 +1314,7 @@ impl RepoService {
                 AuditAction::Checkin
             };
             self.record(
-                &who.user,
+                who.into(),
                 action,
                 &rev.path,
                 format!(
@@ -1414,7 +1439,7 @@ impl RepoService {
             )
             .await?;
         self.record(
-            &who.user,
+            who.into(),
             AuditAction::Restore,
             path,
             format!("r{} restored from r{source}", recorded.revision.id),
@@ -2045,7 +2070,7 @@ impl RepoService {
             .create_branch(&self.repo, name, &at, &who.user, now)
             .await?;
         self.record_repo(
-            &who.user,
+            who.into(),
             AuditAction::BranchCreated,
             format!("{name} at {at}"),
         )
@@ -2074,8 +2099,12 @@ impl RepoService {
             .delete_branch(&self.repo, name, branch.head.as_ref())
             .await?;
         let at = branch.head.map_or_else(String::new, |h| format!(" at {h}"));
-        self.record_repo(&who.user, AuditAction::BranchDeleted, format!("{name}{at}"))
-            .await
+        self.record_repo(
+            who.into(),
+            AuditAction::BranchDeleted,
+            format!("{name}{at}"),
+        )
+        .await
     }
 
     /// Renames a branch other than the default one.
@@ -2085,7 +2114,7 @@ impl RepoService {
         validate_branch_name(to)?;
         let branch = self.meta.rename_branch(&self.repo, from, to).await?;
         self.record_repo(
-            &who.user,
+            who.into(),
             AuditAction::BranchRenamed,
             format!("{from} to {to}"),
         )

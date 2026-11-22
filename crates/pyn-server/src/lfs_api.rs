@@ -296,7 +296,7 @@ pub(crate) async fn create_lock(
     if let Some(existing) = repo.service.lock_of(&path).await? {
         return Ok(conflict(Some(existing)));
     }
-    match repo.service.lock_path(&path, &who.user).await {
+    match repo.service.lock_path(&path, &who).await {
         Ok(lock) => Ok(Lfs(
             StatusCode::CREATED,
             LockBody {
@@ -385,10 +385,10 @@ pub(crate) async fn unlock(
     if req.force && lock.owner != who.user {
         who.require(Permission::ForceUnlock)?;
         repo.service
-            .force_unlock(&lock.path, &who.user, "forced through the LFS API")
+            .force_unlock(&lock.path, &who, "forced through the LFS API")
             .await?;
     } else {
-        repo.service.release(&lock.path, &who.user).await?;
+        repo.service.release(&lock.path, &who).await?;
     }
     Ok(Lfs(
         StatusCode::OK,

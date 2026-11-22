@@ -54,7 +54,7 @@ impl AccessService {
             EmailAdd::Added => {}
         }
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::EmailAdded,
             format!("{} added {address}", actor.user),
         )
@@ -90,7 +90,7 @@ impl AccessService {
             }
         }
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::EmailPrimaryChanged,
             format!("{} made {address} the primary address", actor.user),
         )
@@ -113,7 +113,7 @@ impl AccessService {
             }
         }
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::EmailRemoved,
             format!("{} removed {address}", actor.user),
         )
@@ -137,7 +137,7 @@ impl AccessService {
             return Err(bad());
         }
         self.record_server(
-            &account.user,
+            (&account.user).into(),
             AuditAction::EmailVerified,
             format!("{} verified {}", account.user, record.email),
         )
@@ -245,7 +245,7 @@ impl AccessService {
             None => Vec::new(),
         };
         self.record_server(
-            &account.user,
+            (&account.user).into(),
             AuditAction::AccountRenamed,
             format!("{} renamed to {new}", account.user),
         )
@@ -253,7 +253,7 @@ impl AccessService {
         for repo in &moved {
             self.record(
                 AuditScope::Repo(repo.id.clone()),
-                &new,
+                (&new).into(),
                 AuditAction::AccountRenamed,
                 format!("owner {} renamed to {new}", account.user),
             )

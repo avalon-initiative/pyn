@@ -1524,6 +1524,9 @@ pub struct AuditEntry {
     /// The actor's public identity (the current name's account when renamed); absent when no active account holds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_public: Option<PublicIdentity>,
+    /// The administrator who acted as `actor` in an access session; absent for an ordinary request. Covered by `hash`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acting_admin: Option<String>,
     pub action: String,
     pub path: Option<String>,
     pub detail: String,

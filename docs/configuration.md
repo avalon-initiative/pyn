@@ -122,7 +122,8 @@ The access line (`target` `access`, `message` `request`):
 | `client_ip`, `user_agent` | Only with `PYN_ACCESS_LOG_CLIENT=true` |
 
 The audit line (`target` `audit`, `message` `audit`, only with `PYN_AUDIT_LOG=true`): `scope` (`owner/name`,
-`@org:<name>` or the server), `actor`, `action` and `path` when the event has one. The event's free-text detail is not
+`@org:<name>` or the server), `actor`, `acting_admin` (only when an administrator acted as `actor` in an
+[access session](concepts/access.md#administrator-access-sessions)), `action` and `path` when the event has one. The event's free-text detail is not
 written; read it through the audit API.
 
 Never logged: credentials (tokens, cookies, passwords), query strings, request or response bodies, email addresses and
