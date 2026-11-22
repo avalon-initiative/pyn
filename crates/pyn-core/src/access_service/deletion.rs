@@ -189,7 +189,7 @@ impl AccessService {
             "{user} scheduled their own deletion for {}",
             deletion.purge_at.to_rfc3339()
         );
-        self.record_server(user, AuditAction::AccountDeletionScheduled, detail)
+        self.record_server(user.into(), AuditAction::AccountDeletionScheduled, detail)
             .await?;
         Ok(deletion)
     }
@@ -223,7 +223,7 @@ impl AccessService {
             ));
         }
         self.record_server(
-            user,
+            user.into(),
             AuditAction::AccountDeletionRestored,
             format!("{user} restored their account"),
         )
@@ -290,7 +290,7 @@ impl AccessService {
             "{user} scheduled for deletion on {}: {reason}",
             deletion.purge_at.to_rfc3339()
         );
-        self.record_server(&actor.user, AuditAction::AccountDeletionScheduled, detail)
+        self.record_server(actor.into(), AuditAction::AccountDeletionScheduled, detail)
             .await?;
         Ok(Some(deletion))
     }
@@ -327,7 +327,7 @@ impl AccessService {
             Some(reason) => format!("{user} {how}: {reason}"),
             None => format!("{user} {how}"),
         };
-        self.record_server(actor, AuditAction::AccountDeleted, detail)
+        self.record_server(actor.into(), AuditAction::AccountDeleted, detail)
             .await
     }
 

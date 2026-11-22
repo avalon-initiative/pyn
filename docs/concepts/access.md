@@ -818,10 +818,19 @@ tokens are untouched and keep working as before while a session runs and after i
   call to each method, route and repository (`owner/name` for a repository route) writes one `access_session_reached` entry,
   as does the first refused call to a route (`refused:`). Later calls only add to the count, so a script cannot flood the
   logs. At most 200 distinct entries are itemised per session; the rest are counted under one `(further routes)` entry. The end
-  entry carries the total (`N requests over M routes`). A call that cannot be recorded is not served. Repository audit logs
-  record the account as the actor of what the session did, because that is whose access it was: the session log, which names
-  the administrator and carries the time, is how to tell. An expired session is recorded as ended, at its expiry time, by a
+  entry carries the total (`N requests over M routes`). A call that cannot be recorded is not served. What the session *does* is
+  recorded under the account, whose access it is, with the administrator beside it (below). An expired session is recorded as ended, at its expiry time, by a
   sweep that runs every minute and by any read of the sessions.
+- **Acting administrator**: every audit event and [lock webhook event](events.md#lock-events) a session produces carries
+  `acting_admin`, the administrator's name, next to `actor` (the account). It appears in the repository's audit log
+  (`GET /v1/repos/{owner}/{name}/audit`, and `pyn audit` as `alice (as administrator root)`), in the `acting_admin` field of the structured audit line
+  ([configuration](../configuration.md#log-fields)), and in `lock.acquired`, `lock.released` and `lock.forced`. It is part of the event's
+  hash, so it cannot be added, changed or removed without breaking the chain ([integrity](integrity.md)).
+  An ordinary request has no field at all, not a null one, and hashes exactly as before. Which routes a session reaches is
+  fixed by the table above, so the audited writes it can make are the repository ones: check-out, release, check-in, restore,
+  force unlock, deletions, policy changes and the conversions they cause, and branch create, rename, delete and merge. Everything that
+  would audit under another scope (members, tokens, organizations, the account) is refused to a session. A client shows such an entry
+  as the account, "as administrator `acting_admin` in an access session".
 - **Notification**: `GET /v1/me/access-sessions` lists every access session on the signed-in account, newest first, with the
   administrator, reason, notes, times, state (`active`, `ended`, `expired`) and the routes it called. It cannot be turned off or
   dismissed: there is no setting, and no route that edits or deletes an entry, so a session started on an account always

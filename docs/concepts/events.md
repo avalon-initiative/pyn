@@ -524,6 +524,7 @@ Raised in the same transaction as the lock change, so a refused change (a held p
 Expiry is raised by whichever of two things removes the lapsed lease first: a sweep that runs on the server every few seconds, or the next checkout of that path (by anyone, the former holder included), which raises it immediately before that checkout's `lock.acquired`. The lease row is removed in the same transaction as the event, so each lapse raises exactly one `lock.expired`, and `expires_at` is when it ran out, not when it was noticed. A check-in or push that consumes the holder's lock (the lock is released with the path's revision, in the same transaction) raises `lock.released` with `reason` `checkin`. A policy change that makes a path shared releases the live locks on it as `lock.forced`, not `lock.released`. Deleting a repository raises no lock events: `repository.deleted` covers the locks it removes.
 
 The actor of `lock.acquired` and `lock.released` is the holder; `lock.forced` names its `actor`; `lock.expired` has none (the clock did it).
+When an administrator caused the change while acting as that account in an [access session](access.md#administrator-access-sessions), `lock.acquired`, `lock.released` and `lock.forced` carry `acting_admin`, the administrator's name. The field is absent from every other event, never null; a receiver that does not know it ignores it.
 
 ### Following a repository's lock changes
 
@@ -547,7 +548,7 @@ When the server is shutting down it answers a waiting request at once with the e
 
 A path was locked, including by taking over a lapsed lease.
 
-`data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder`, `expires_at` (when the lease ends).
+`data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder`, `expires_at` (when the lease ends); `acting_admin` when an administrator acted as the holder in an access session.
 
 ```json
 {
@@ -572,7 +573,7 @@ A path was locked, including by taking over a lapsed lease.
 
 The holder released the lock, or a check-in or push consumed it.
 
-`data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder`, `reason` (`checkin` when a revision of the path consumed the lock; null for an explicit release).
+`data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder`, `reason` (`checkin` when a revision of the path consumed the lock; null for an explicit release); `acting_admin` as for `lock.acquired`.
 
 ### `lock.expired`
 
@@ -584,7 +585,7 @@ A lease ran out and was removed (see above).
 
 A live lock was removed without its holder: a forced unlock, or a policy change that made the path shared.
 
-`data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder` (whose lock was removed), `actor` (who removed it), `reason` (the unlock reason; `now shared by policy` for a policy change).
+`data`: `owner`, `owner_id`, `repo`, `repo_id`, `path`, `holder` (whose lock was removed), `actor` (who removed it), `reason` (the unlock reason; `now shared by policy` for a policy change); `acting_admin` as for `lock.acquired`.
 
 ```json
 {

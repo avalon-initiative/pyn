@@ -66,7 +66,7 @@ make it fit.
 **Audit event**, in this order:
 
 ```text
-str("pyn-audit-v1")
+str("pyn-audit-v1")     or "pyn-audit-v2" with an acting administrator, below
 str(scope)              the log's storage key: `owner/name`, `@org:<name>` or `@server`
 opt_str(previous)       hash of the preceding event in the same log; absent for the first
 time(at)
@@ -75,6 +75,20 @@ str(action)             the action's snake_case name
 opt_str(path)
 str(detail)
 ```
+
+An event recorded by an administrator acting as `actor` in an [access session](access.md#administrator-access-sessions) is a
+different encoding under its own tag, with the administrator's name appended:
+
+```text
+str("pyn-audit-v2")
+...                     the fields above, unchanged
+str(acting_admin)       the administrator behind the session
+```
+
+An event without an acting administrator keeps the `pyn-audit-v1` encoding byte for byte, so every event written before the
+field existed still verifies. The tag is the version marker: the stored `acting_admin` (`audit_events.acting_admin`, `acting_admin` in
+the API) decides which encoding is checked, and removing it from a v2 event, adding it to a v1 event or changing it
+makes the hash fail. No `hash_version` column is needed for audit events.
 
 The first byte string of each encoding is a domain tag, so a revision hash can never equal an audit hash. The encoding is
 part of the contract: a change to any byte needs a new tag (`...-v2`) and a new column, never an edit of these.
@@ -102,7 +116,7 @@ and time `1700000000123456`:
 
 Covered: path, content hash, previous hash, author, time, message and restore source (revisions, v1); v2 adds the git
 file mode, the structured author, the blob id with its algorithm and the commit id; scope, previous hash, time, actor,
-action, path and detail (audit events).
+action, path and detail, and the acting administrator when there is one (audit events).
 
 Not covered by the revision hash, on purpose: the per-path revision number (its position in the chain fixes it), the
 recorded `shared` or `exclusive` mode (`.pyn/pyn.toml` at the commit decides it, and the commit id covers that file) and the
@@ -142,7 +156,7 @@ events leaves a valid chain. A client that remembers a head hash can detect that
 - `pyn verify [<path>]` follows the steps until the server is done, prints the report and exits 1 when anything is broken. It also selects each revision's encoding from
   `hash_version`, recomputes the revision hashes (v1, v2 and v3) and the commit ids it fetches on the client, so a server that reports "ok" cannot hide a mismatch.
 
-Revisions in the API carry `hash`, `hash_version`, `previous` and `base`; audit events carry `hash` and `previous`.
+Revisions in the API carry `hash`, `hash_version`, `previous` and `base`; audit events carry `hash` and `previous` (and `acting_admin` when an administrator acted in an access session).
 
 ## Content ids and v1
 

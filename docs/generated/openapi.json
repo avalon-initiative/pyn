@@ -12064,6 +12064,13 @@
           "hash"
         ],
         "properties": {
+          "acting_admin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The administrator who acted as `actor` in an access session; absent for an ordinary request. Covered by `hash`."
+          },
           "action": {
             "type": "string"
           },
@@ -13727,6 +13734,13 @@
           "expires_at"
         ],
         "properties": {
+          "acting_admin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The administrator who acted as `holder` in an access session; absent otherwise."
+          },
           "expires_at": {
             "type": "string",
             "format": "date-time"
@@ -13804,6 +13818,13 @@
           "reason"
         ],
         "properties": {
+          "acting_admin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The administrator who acted as `actor` in an access session; absent otherwise."
+          },
           "actor": {
             "type": "string"
           },
@@ -13847,6 +13868,13 @@
           "reason"
         ],
         "properties": {
+          "acting_admin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The administrator who acted as `holder` in an access session; absent otherwise."
+          },
           "holder": {
             "type": "string"
           },

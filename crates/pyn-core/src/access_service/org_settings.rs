@@ -33,7 +33,7 @@ impl AccessService {
             );
             self.record(
                 AuditScope::Org(org.clone()),
-                &actor.user,
+                actor.into(),
                 AuditAction::OrgSettingChanged,
                 detail,
             )

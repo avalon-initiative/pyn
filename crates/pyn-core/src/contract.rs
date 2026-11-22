@@ -2545,6 +2545,7 @@ fn restricted(name: &str, permissions: &[Permission]) -> Principal {
         user: user(name),
         permissions: permissions.iter().copied().collect(),
         email: None,
+        acting_admin: None,
     }
 }
 
@@ -5735,6 +5736,7 @@ pub async fn effective_roles_resolve_across_direct_team_and_owner_grants(store: 
         ]
         .into(),
         email: None,
+        acting_admin: None,
     };
     assert!(matches!(
         access
@@ -9312,6 +9314,7 @@ fn event(
         action,
         path: path.map(|p| RepoPath::new(p).unwrap()),
         detail: format!("{action} by {actor}"),
+        acting_admin: None,
     }
 }
 
@@ -9560,6 +9563,32 @@ pub async fn audit_events_are_hash_chained_per_scope(store: Audit) {
     }
 }
 
+pub async fn audit_events_keep_the_acting_administrator_inside_the_chain(store: Audit) {
+    let scope = AuditScope::Repo(RepoId::new("game"));
+    for (minute, admin) in [None, Some("root"), None].into_iter().enumerate() {
+        let mut e = event("alice", AuditAction::Checkout, None, minute as i64);
+        e.acting_admin = admin.map(user);
+        store.record(&scope, e).await.unwrap();
+    }
+    let mut events = store
+        .list(
+            &scope,
+            &AuditQuery {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    events.reverse();
+    let admins: Vec<_> = events.iter().map(|e| e.acting_admin.clone()).collect();
+    assert_eq!(admins, vec![None, Some(user("root")), None]);
+    assert!(crate::integrity::verify_audit(&scope, &events).is_empty());
+    let mut forged = events[1].clone();
+    forged.acting_admin = None;
+    assert!(forged.verify(&scope).is_err());
+}
+
 pub async fn racing_audit_records_keep_one_unbroken_chain(store: Audit) {
     let scope = AuditScope::Repo(RepoId::new("game"));
     let mut tasks = Vec::new();
@@ -9598,6 +9627,7 @@ macro_rules! audit_contract_tests {
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_page_backwards);
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_scopes_keep_repository_organization_and_server_logs_apart);
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_are_hash_chained_per_scope);
+        $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_keep_the_acting_administrator_inside_the_chain);
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; racing_audit_records_keep_one_unbroken_chain);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {

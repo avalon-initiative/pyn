@@ -168,7 +168,7 @@ impl AccessService {
             }
         };
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::WebhookCreated,
             format!("webhook {} ({}): {}", sub.id, sub.name, origin_of(&sub.url)),
         )
@@ -241,7 +241,7 @@ impl AccessService {
             .await?
             .ok_or(PynError::WebhookNotFound(id))?;
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::WebhookUpdated,
             format!(
                 "webhook {} ({}): changed {}",
@@ -263,7 +263,7 @@ impl AccessService {
             return Err(PynError::WebhookNotFound(id));
         }
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::WebhookDeleted,
             format!("webhook {} ({}): {}", sub.id, sub.name, origin_of(&sub.url)),
         )
@@ -283,7 +283,7 @@ impl AccessService {
             .await?
             .ok_or(PynError::WebhookNotFound(id))?;
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::WebhookSecretRotated,
             format!(
                 "webhook {} ({}): secret {} added",
@@ -325,7 +325,7 @@ impl AccessService {
             });
         }
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::WebhookSecretRetired,
             format!(
                 "webhook {} ({}): secret {} retired",
@@ -393,7 +393,7 @@ impl AccessService {
             .await?
             .ok_or_else(not_found)?;
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::WebhookRedelivered,
             format!(
                 "webhook {} ({}): delivery {} redelivered",

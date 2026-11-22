@@ -12,6 +12,8 @@ pub const REVISION_V2: u32 = 2;
 /// A revision that deletes its path: the v2 fields under its own tag.
 pub const REVISION_V3: u32 = 3;
 pub const AUDIT_TAG: &str = "pyn-audit-v1";
+/// An event recorded by an administrator acting as `actor` in an access session: the v1 fields plus `acting_admin`.
+pub const AUDIT_V2_TAG: &str = "pyn-audit-v2";
 
 /// The fields a revision hash covers. `previous` is the hash of the path's previous revision, `None` for the first.
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +58,8 @@ pub struct AuditFields<'a> {
     pub action: &'a str,
     pub path: Option<&'a str>,
     pub detail: &'a str,
+    /// The administrator acting as `actor`; `None` hashes under the v1 tag exactly as before the field existed.
+    pub acting_admin: Option<&'a str>,
 }
 
 struct Encoder(Sha256);
@@ -145,7 +149,11 @@ fn v2_fields(mut e: Encoder, f: &RevisionV2Fields<'_>) -> String {
 }
 
 pub fn audit_hash(f: &AuditFields<'_>) -> String {
-    let mut e = Encoder::new(AUDIT_TAG);
+    let mut e = Encoder::new(if f.acting_admin.is_some() {
+        AUDIT_V2_TAG
+    } else {
+        AUDIT_TAG
+    });
     e.str(f.scope);
     e.opt_str(f.previous);
     e.i64(f.created_micros);
@@ -153,6 +161,9 @@ pub fn audit_hash(f: &AuditFields<'_>) -> String {
     e.str(f.action);
     e.opt_str(f.path);
     e.str(f.detail);
+    if let Some(admin) = f.acting_admin {
+        e.str(admin);
+    }
     e.finish()
 }
 
@@ -311,6 +322,7 @@ mod tests {
             action: "checkout",
             path: Some("Content/a.umap"),
             detail: "lease 8h",
+            acting_admin: None,
         });
         assert_eq!(a, VECTOR_AUDIT_1);
         let b = audit_hash(&AuditFields {
@@ -321,8 +333,43 @@ mod tests {
             action: "repo_updated",
             path: None,
             detail: "",
+            acting_admin: None,
         });
         assert_eq!(b, VECTOR_AUDIT_2);
+    }
+
+    #[test]
+    fn acting_admin_is_covered_and_never_collides_with_v1() {
+        let plain = AuditFields {
+            scope: "alice/game",
+            previous: None,
+            created_micros: 1_700_000_000_123_456,
+            actor: "alice",
+            action: "checkout",
+            path: Some("Content/a.umap"),
+            detail: "lease 8h",
+            acting_admin: None,
+        };
+        assert_eq!(audit_hash(&plain), VECTOR_AUDIT_1);
+        let acted = audit_hash(&AuditFields {
+            acting_admin: Some("bob"),
+            ..plain
+        });
+        assert_ne!(acted, VECTOR_AUDIT_1);
+        assert_ne!(
+            acted,
+            audit_hash(&AuditFields {
+                acting_admin: Some("carol"),
+                ..plain
+            })
+        );
+        assert_ne!(
+            audit_hash(&AuditFields {
+                acting_admin: Some(""),
+                ..plain
+            }),
+            VECTOR_AUDIT_1
+        );
     }
 
     #[test]

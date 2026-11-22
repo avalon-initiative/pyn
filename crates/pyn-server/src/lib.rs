@@ -870,6 +870,7 @@ pub(crate) fn audit_entry_dto(e: pyn_core::AuditEvent, with_path: bool) -> api::
         actor: e.actor.to_string(),
         actor_current: None,
         actor_public: None,
+        acting_admin: e.acting_admin.map(|a| a.to_string()),
         action: e.action.to_string(),
         path: e.path.filter(|_| with_path).map(|p| p.to_string()),
         detail: e.detail,
@@ -974,13 +975,12 @@ async fn checkout(
     }: RepoCaller,
     Json(req): Json<api::CheckoutRequest>,
 ) -> ApiResult<Json<api::Lock>> {
-    let user = who.user;
     let lock = repo
         .service
         .checkout_on(
             branch_of(req.branch.as_deref()),
             &RepoPath::new(req.path)?,
-            &user,
+            &who,
             req.base_revision.map(RevisionId),
         )
         .await?;
@@ -1001,7 +1001,7 @@ async fn release(
     Json(req): Json<api::ReleaseRequest>,
 ) -> ApiResult<StatusCode> {
     repo.service
-        .release(&RepoPath::from_stored(req.path)?, &who.user)
+        .release(&RepoPath::from_stored(req.path)?, &who)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1916,10 +1916,9 @@ async fn force_unlock(
     }: RepoCaller,
     Json(req): Json<api::ForceUnlockRequest>,
 ) -> ApiResult<Json<api::Lock>> {
-    let actor = who.user;
     let lock = repo
         .service
-        .force_unlock(&RepoPath::from_stored(req.path)?, &actor, &req.reason)
+        .force_unlock(&RepoPath::from_stored(req.path)?, &who, &req.reason)
         .await?;
     Ok(Json(lock_dto(lock)))
 }

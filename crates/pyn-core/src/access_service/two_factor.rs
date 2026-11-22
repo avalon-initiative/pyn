@@ -94,7 +94,7 @@ impl AccessService {
                 let left = self.store.unused_recovery_codes(user).await?;
                 return self
                     .record_server(
-                        user,
+                        user.into(),
                         AuditAction::RecoveryCodeUsed,
                         format!("{user} used a recovery code, {left} left"),
                     )
@@ -288,7 +288,7 @@ impl AccessService {
         };
         let fresh_until = self.mark_credential_fresh(actor, cookie).await?;
         self.record_server(
-            user,
+            user.into(),
             AuditAction::TwoFactorAdded,
             format!("{user} added the authenticator app {:?}", pending.label),
         )
@@ -330,7 +330,7 @@ impl AccessService {
         self.require_fresh(actor, cookie).await?;
         let codes = self.new_recovery_codes(&actor.user).await?;
         self.record_server(
-            &actor.user,
+            actor.into(),
             AuditAction::RecoveryCodesRegenerated,
             format!("{} made new recovery codes", actor.user),
         )
@@ -357,7 +357,7 @@ impl AccessService {
                 } else {
                     format!("{user} removed a second factor, so two-factor authentication is off")
                 };
-                self.record_server(user, AuditAction::TwoFactorRemoved, detail)
+                self.record_server(user.into(), AuditAction::TwoFactorRemoved, detail)
                     .await
             }
         }
