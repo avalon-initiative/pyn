@@ -95,7 +95,7 @@ pub const KNOWN: &[&str] = &[
 /// `env_file: .env` hands the whole file to the server container, so these do reach it and must not be reported.
 pub const OTHER_COMPONENTS: &[&str] = &[
     "PYN_API_URL",
-    "PYN_CF_TOKEN_FILE",
+    "PYN_CADDY_IMAGE",
     "PYN_CLI_CONFIG",
     "PYN_CONFIG_DIR",
     "PYN_DEBUG_SUBMODULE_CONFIG",
@@ -109,9 +109,7 @@ pub const OTHER_COMPONENTS: &[&str] = &[
     "PYN_SERVER_PUBLISH",
     "PYN_SERVER_VERSION",
     "PYN_SITE",
-    "PYN_TLS",
     "PYN_TOKEN",
-    "PYN_TRUSTED_PROXY_RANGES",
     "PYN_USER",
     "PYN_WEB_IMAGE",
     "PYN_WEB_PUBLISH",
