@@ -36,6 +36,7 @@ services:
       PYN_DATABASE_URL: postgres://pyn:${POSTGRES_PASSWORD}@db:5432/pyn
       PYN_SECRET_KEY: ${PYN_SECRET_KEY:?set PYN_SECRET_KEY in .env (openssl rand -hex 32)}
       PYN_DATA_DIR: /data
+      PYN_PUBLIC_URL: ${PYN_PUBLIC_URL:-${PYN_SITE:+https://}${PYN_SITE:-http://localhost:8080}}
       PYN_TRUST_FORWARDED_FOR: "true"
     ports:
       - "127.0.0.1:7878:7878"
@@ -56,12 +57,27 @@ services:
       - server
     environment:
       PYN_API_URL: http://server:7878
+      PYN_SITE: ${PYN_SITE:-}
+      PYN_TLS: ${PYN_TLS:-}
+      PYN_TRUSTED_PROXY_RANGES: ${PYN_TRUSTED_PROXY_RANGES:-}
+      PYN_ACCESS_LOG: ${PYN_ACCESS_LOG:-off}
+      CF_API_TOKEN_FILE: /run/secrets/cf_api_token
+    # 8080 is plain HTTP (PYN_TLS=off). With PYN_SITE set, 80, 443 and 443/udp are published on all interfaces; without it they
+    # map to unused host ports, so an install without PYN_SITE never takes 80 or 443 from the host.
     ports:
       - "${PYN_WEB_PUBLISH:-127.0.0.1:8080}:8080"
+      - "${PYN_WEB_PUBLISH_HTTP:-0.0.0.0:${PYN_SITE:+80}}:80"
+      - "${PYN_WEB_PUBLISH_TLS:-0.0.0.0:${PYN_SITE:+443}}:443"
+      - "${PYN_WEB_PUBLISH_TLS:-0.0.0.0:${PYN_SITE:+443}}:443/udp"
+    volumes:
+      - pyn-tls:/data
+    secrets:
+      - cf_api_token
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
     read_only: true
     tmpfs:
       - /tmp
-      - /etc/nginx/conf.d:uid=101,gid=101
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
@@ -69,3 +85,8 @@ services:
 volumes:
   pyn-db:
   pyn-objects:
+  pyn-tls:
+
+secrets:
+  cf_api_token:
+    file: ${PYN_CF_TOKEN_FILE:-/dev/null}

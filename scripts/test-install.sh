@@ -47,10 +47,14 @@ for ref in v1.0.0 v0.1.2-alpha v0.1.1-alpha v0.1.0-alpha main; do
   for f in docker-compose.yml docker-compose.server.yml docker-compose.web.yml; do
     printf '# %s at %s\nservices:\n  server:\n    image: ghcr.io/avalon-initiative/pyn-core:x\n%s' "$f" "$ref" \
       "$([ "$f" != docker-compose.server.yml ] && echo '  web:
-    image: ghcr.io/avalon-initiative/pyn-web:x')" >"$fix/raw/$ref/$f"
+    image: ghcr.io/avalon-initiative/pyn-web:x
+    volumes:
+      - pyn-tls:/data
+volumes:
+  pyn-tls:')" >"$fix/raw/$ref/$f"
   done
 done
-printf '# web only\nservices:\n  web:\n    image: ghcr.io/avalon-initiative/pyn-web:x\n' >"$fix/raw/main/docker-compose.web.yml"
+printf '# web only\nservices:\n  web:\n    image: ghcr.io/avalon-initiative/pyn-web:x\n    volumes:\n      - pyn-tls:/data\nvolumes:\n  pyn-tls:\n' >"$fix/raw/main/docker-compose.web.yml"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.2-alpha/"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.1-alpha/"
 cp "$fix/raw/main/docker-compose.web.yml" "$fix/raw/v0.1.0-alpha/"
@@ -321,7 +325,7 @@ case_start wc6; extra_env=(FAKE_WEBLIST_DOWN=1); run_install --dir "$c/pyn" --ye
 expect "an unreadable release list falls back to the latest release" has "$c/pyn/.env" "PYN_WEB_VERSION=v0.3.0"
 expect "list fallback: says so" has "$c/out" "the compatibility information could not be read"
 case_start wc7; extra_env=(); tty_file="$c/answers"
-printf 'full\ndocker\n%s\n\n\ntag\n0.3.0\n\n\nn\n' "$c/pyn" >"$tty_file"
+printf 'full\ndocker\n%s\n\ntag\n0.3.0\nn\n' "$c/pyn" >"$tty_file"
 run_install --version v0.1.1-alpha
 expect "interactive: the menu offers the latest compatible release" has "$c/out" "Latest compatible release (v0.2.0-alpha)"
 expect "interactive: below the minimum asks, and no stops the install" bad_rc
@@ -366,7 +370,7 @@ expect "server publish is opened for a non-local address" has "$c/pyn/.env" "PYN
 
 case_start p2
 tty_file="$c/answers"
-printf 'full\ndocker\n%s\n\n2\n0.1.1\n\nhttps://pyn.example.com\ny\n' "$c/pyn" >"$tty_file"
+printf 'full\ndocker\n%s\n\n2\n0.1.1\n\n\nhttps://pyn.example.com\ny\n' "$c/pyn" >"$tty_file"
 run_install
 expect "typed names, bare version and URL are taken" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
 expect "typed bare version selects its tag" has "$c/pyn/.env" "PYN_SERVER_VERSION=v0.1.1"
@@ -526,7 +530,7 @@ expect "full with native offers server-only, interactively" ok_rc
 expect "full with native explains Docker-only" has "$out" "Docker-only"
 expect "and installs the native server" test -x "$c/root/usr/local/bin/pyn-server"
 case_start w3; tty_file="$c/answers"
-printf 'web\nnative\n\n%s\n\n\n\nhttps://pyn.example.com\n\n\n' "$c/pyn" >"$tty_file"
+printf 'web\nnative\n\n%s\n\n\n\n\nhttps://pyn.example.com\n\n\n' "$c/pyn" >"$tty_file"
 run_install
 expect "web with native can switch to Docker interactively" has "$c/pyn/.env" "PYN_API_URL=https://pyn.example.com"
 
@@ -570,7 +574,7 @@ expect "macOS without Docker: CLI only is offered and installed" ok_rc
 expect "macOS without Docker: tells to install Docker Desktop first" has "$out" "install Docker Desktop first"
 expect "macOS without Docker: the menu does not offer a server" lacks "$out" "Server and web app"
 mac m3 x86_64
-tty_file="$c/answers"; printf '1\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
+tty_file="$c/answers"; printf '1\n%s\n\n\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install
 expect "Intel Mac: Docker shapes still work" ok_rc
 expect "Intel Mac: says there is no CLI build" has "$out" "no pyn command build for Intel Macs"
@@ -607,7 +611,7 @@ run_install --yes --shape full --dir "$c/pyn"
 expect "other Linux works when the tools exist" ok_rc
 expect "other Linux says nothing is installed for you" has "$out" "host: Linux (fedora)"
 case_start o4 systemctl; tty_file="$c/answers"
-printf 'full\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
+printf 'full\n%s\n\n\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install
 expect "Linux without systemd skips the method menu" ok_rc
 expect "and says why" has "$out" "native needs systemd"
@@ -618,7 +622,7 @@ expect "an explicit native choice without systemd still stops" bad_rc
 # Latest release
 chan() { case_start "$1"; extra_env=(); }
 chan h1; extra_env=(FAKE_LATEST_V1=1); tty_file="$c/answers"
-printf 'full\ndocker\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
+printf 'full\ndocker\n%s\n\n\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install
 expect "the latest release is the menu default" has "$out" "Latest release (v1.0.0) (default)"
 expect "the latest release's tag is resolved" has "$out" "resolved release: v1.0.0"
@@ -792,7 +796,7 @@ expect "default folder is the current directory" ok_rc
 expect "Compose file lands in the current directory" test -f "$c/cwd/docker-compose.yml"
 expect ".env lands in the current directory" test -f "$c/cwd/.env"
 case_start w_cwd2; extra_env=(); tty_file="$c/answers"
-printf 'full\ndocker\n\n\n\n\n\n' >"$tty_file"
+printf 'full\ndocker\n\n\n\n\n\n\n' >"$tty_file"
 run_install
 expect "the prompt shows the current directory as the default" has "$out" "Where should the deployment live (Compose and env files)? [$c/cwd]:"
 expect "accepting the default installs there" test -f "$c/cwd/.env"
@@ -898,7 +902,7 @@ run_install --yes --shape full --dir .
 expect "--dir . inside a checkout is guarded after resolving" test -f "$c/checkout/pyn/.env"
 expect "the guard says so" has "$out" "using $c/checkout/pyn instead"
 case_start q14; extra_env=(); tty_file="$c/answers"
-printf 'full\ndocker\n~/typed/dir\n\n\n\n\n' >"$tty_file"
+printf 'full\ndocker\n~/typed/dir\n\n\n\n\n\n' >"$tty_file"
 run_install
 expect "~ typed at the folder prompt is expanded" test -f "$c/home/typed/dir/.env"
 expect "~ typed at the prompt creates no folder named ~" bash -c '[ ! -e "$0/~" ]' "$c/cwd"
@@ -963,7 +967,7 @@ run_install --color --yes --shape full --version 9.9.9
 expect "errors are red on stderr" has "$c/err" "${esc}[31mpyn-install:"
 run_install --yes --shape full --version 9.9.9
 expect "errors are plain when piped" lacks "$c/err" "$esc"
-case_start z9; extra_env=(); tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
+case_start z9; extra_env=(); tty_file="$c/answers"; printf 'full\ndocker\n%s\n\n\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install --color
 expect "--color: questions are cyan" has "$c/out" "${esc}[36mWhere should the deployment live"
 expect "--color: the default answer is green" has "$c/out" "[${esc}[32m$c/cwd${esc}[0m]"
@@ -1011,10 +1015,197 @@ run_install --yes --shape server --method native --database-url postgres://u:p@h
 expect "a native install with noisy curl succeeds" ok_rc
 expect "a native install prints no raw curl output" bash -c '! grep -q NOISE "$0" "$1"' "$c/out" "$c/err"
 case_start n_p1; extra_env=(); tty_file="$c/answers"; piped=1
-printf 'full\ndocker\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
+printf 'full\ndocker\n%s\n\n\n\n\n\n' "$c/pyn" >"$tty_file"
 run_install
 expect "piping the script into bash still reads prompts from the terminal file" ok_rc
 expect "and completes the install" test -f "$c/pyn/.env"
+
+# HTTPS: --site, --tls, --cf-token-file
+freeport() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+p1=$(freeport); p2=$(freeport)
+probe=(PYN_INSTALL_PROBE_PORTS="$p1 $p2")
+token=cfTokenValue0123456789abcdefghijklmnop
+printf '%s\n' "$token" >"$work/cf.token"
+
+case_start s_auto; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site Pyn.Example.com
+expect "--site with a public name succeeds" ok_rc
+expect "--site: PYN_SITE is written" has "$c/pyn/.env" "PYN_SITE=Pyn.Example.com"
+expect "a public name picks auto" has "$c/pyn/.env" "PYN_TLS=auto"
+expect "the address becomes https://<site>" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://Pyn.Example.com"
+expect "auto: one plain sentence says why" has "$c/out" "TLS auto: Pyn.Example.com is a public name, so certificates come from Let's Encrypt"
+expect "auto: says the ports must be reachable from the internet" has "$c/out" "must be reachable from the internet"
+expect "the pre-check reports the ports as free" has "$c/out" "ports 80 and 443 are free"
+expect "https keeps the plain port on loopback" lacks "$c/pyn/.env" "PYN_WEB_PUBLISH=0.0.0.0"
+expect "auto: no root certificate talk" lacks "$c/out" "pyn-root.crt"
+expect "auto: no token file is made" test ! -e "$c/pyn/secrets"
+expect ".env stays mode 600 with TLS" test "$(mode_of "$c/pyn/.env")" = 600
+expect "auto: says where to look when https does not answer" has "$c/out" "docker compose logs web"
+
+case_start s_ip; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site 192.168.1.5
+expect "an IP address picks internal" has "$c/pyn/.env" "PYN_TLS=internal"
+expect "an IP address: https public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://192.168.1.5"
+expect "internal: one plain sentence says why" has "$c/out" "TLS internal: 192.168.1.5 is an address or a private name"
+expect "an IP address says passkeys need a host name over https" has "$c/out" "passkeys need a host name over https"
+expect "internal: the root is fetched from the container" has "$c/log" "compose cp web:/data/caddy/pki/authorities/local/root.crt"
+expect "internal: how to trust it is printed" has "$c/out" "trust it once on each device"
+expect "internal: ports are not needed from the internet" lacks "$c/out" "must be reachable from the internet"
+
+case_start s_lan; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.lan
+expect "a private name picks internal" has "$c/pyn/.env" "PYN_TLS=internal"
+expect "a private name does not mention passkeys limits" lacks "$c/out" "passkeys need a host name"
+
+case_start s_dns; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --cf-token-file "$work/cf.token"
+expect "a token file picks dns-cloudflare" has "$c/pyn/.env" "PYN_TLS=dns-cloudflare"
+expect "dns-cloudflare: one plain sentence says why" has "$c/out" "TLS dns-cloudflare: certificates are issued through your Cloudflare DNS"
+expect "the token lands in DIR/secrets" has "$c/pyn/secrets/cloudflare-token" "$token"
+expect "the token file is mode 600" test "$(mode_of "$c/pyn/secrets/cloudflare-token")" = 600
+expect "the secrets folder is mode 700" test "$(mode_of "$c/pyn/secrets")" = 700
+expect "the token is handed to the container's user" has "$c/log" "chown 65532:65532 $c/pyn/secrets/cloudflare-token"
+expect ".env names the file" has "$c/pyn/.env" "PYN_CF_TOKEN_FILE=./secrets/cloudflare-token"
+expect "the token is not in .env" bash -c '! grep -qF "$1" "$2"' _ "$token" "$c/pyn/.env"
+expect "the token is never printed or logged" bash -c '! grep -qF "$1" "$2" "$3" "$4"' _ "$token" "$c/out" "$c/err" "$c/log"
+expect "dns-cloudflare: no internet exposure warning" lacks "$c/out" "must be reachable from the internet"
+run_install --dir "$c/pyn" --yes --shape full
+expect "a re-run keeps the mode and the token" has "$c/pyn/.env" "PYN_TLS=dns-cloudflare"
+expect "a re-run keeps the token file" has "$c/pyn/secrets/cloudflare-token" "$token"
+expect "a re-run names the kept token without printing it" has "$c/out" "keeping the Cloudflare token"
+
+case_start s_dnsu; extra_env=("${probe[@]}" FAKE_UID=1000); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --cf-token-file "$work/cf.token"
+expect "without root the owner change is explained, not hidden" has "$c/out" "sudo chown 65532:65532"
+
+case_start s_tty; extra_env=("${probe[@]}"); tty_file="$c/answers"
+printf 'full\ndocker\n%s\n\npyn.example.com\ny\n%s\n\n' "$c/pyn" "$token" >"$tty_file"
+run_install --version v0.1.2-alpha --web-version 0.2.0
+expect "prompted: a site, the private-network question and a token" ok_rc
+expect "prompted: asks for the site" has "$c/out" "Domain name or address people will use"
+expect "prompted: asks about a private network behind Cloudflare" has "$c/out" "behind a Cloudflare domain"
+expect "prompted: asks for the token without showing it" has "$c/out" "Cloudflare API token (not shown)"
+expect "prompted: explains the token scope" has "$c/out" "Zone Read and DNS Edit"
+expect "prompted: picks dns-cloudflare" has "$c/pyn/.env" "PYN_TLS=dns-cloudflare"
+expect "prompted: the typed token is stored" has "$c/pyn/secrets/cloudflare-token" "$token"
+expect "prompted: the typed token is not echoed" bash -c '! grep -qF "$1" "$2" "$3" "$4"' _ "$token" "$c/out" "$c/err" "$c/pyn/.env"
+
+case_start s_tty2; extra_env=("${probe[@]}"); tty_file="$c/answers"
+printf 'full\ndocker\n%s\n\nhome.example.org\n\n\n' "$c/pyn" >"$tty_file"
+run_install --version v0.1.2-alpha --web-version 0.2.0
+expect "prompted: a public name, no to the private network, picks auto" has "$c/pyn/.env" "PYN_TLS=auto"
+
+case_start s_tty3; extra_env=("${probe[@]}"); tty_file="$c/answers"
+printf 'full\ndocker\n%s\n\n\n\n\n' "$c/pyn" >"$tty_file"
+run_install --version v0.1.2-alpha --web-version 0.2.0
+expect "prompted: Enter on the site keeps plain HTTP" ok_rc
+expect "plain HTTP: no PYN_SITE" lacks "$c/pyn/.env" "PYN_SITE="
+expect "plain HTTP: no PYN_TLS" lacks "$c/pyn/.env" "PYN_TLS="
+expect "plain HTTP: the address is asked as before" has "$c/out" "Address people will use (PYN_PUBLIC_URL)"
+
+dock s_plain --shape full
+expect "unattended without --site keeps plain HTTP" lacks "$c/pyn/.env" "PYN_SITE="
+expect "unattended plain: no https talk" lacks "$c/out" "https: "
+dock s_plain2 --shape full --public-url https://pyn.example.com
+expect "--public-url alone does not turn TLS on" lacks "$c/pyn/.env" "PYN_SITE="
+expect "--public-url alone keeps the address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+
+case_start s_pu; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --public-url https://pyn.example.com/
+expect "--public-url equal to the site is accepted quietly" lacks "$c/out" "differs from"
+case_start s_pu2; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --public-url https://other.example.com
+expect "--public-url that differs is kept" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://other.example.com"
+expect "--public-url that differs warns" has "$c/out" "differs from https://pyn.example.com"
+
+case_start s_off; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls off
+expect "--tls off succeeds" ok_rc
+expect "--tls off writes PYN_TLS=off" has "$c/pyn/.env" "PYN_TLS=off"
+expect "--tls off does not set PYN_SITE" lacks "$c/pyn/.env" "PYN_SITE="
+expect "--tls off uses the site as the public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+expect "--tls off keeps 8080 on loopback" lacks "$c/pyn/.env" "PYN_WEB_PUBLISH=0.0.0.0"
+expect "--tls off says to put a proxy in front" has "$c/out" "your own proxy, tunnel or load balancer"
+case_start s_off2; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --tls off
+expect "--tls off without a site is fine" ok_rc
+
+case_start s_ovr; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls internal
+expect "--tls overrides the choice made from the site" has "$c/pyn/.env" "PYN_TLS=internal"
+
+case_start s_web; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape web --api-url https://api.example.com --site pyn.example.com
+expect "the web-only shape takes --site too" has "$c/pyn/.env" "PYN_SITE=pyn.example.com"
+expect "web-only: the web address is named for PYN_ALLOWED_ORIGINS" has "$c/out" "https://pyn.example.com"
+
+case_start s_e1; run_install --dir "$c/pyn" --yes --shape full --site "https://x.example.com"
+expect "--site with a scheme fails" bad_rc
+case_start s_e2; run_install --dir "$c/pyn" --yes --shape full --site "x.example.com:8443"
+expect "--site with a port fails" bad_rc
+case_start s_e3; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site 10.0.0.5 --tls auto
+expect "--tls auto with an IP address fails" bad_rc
+expect "--tls auto with an IP address says why" has "$c/err" "needs a public host name"
+case_start s_e4; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls dns-cloudflare
+expect "--tls dns-cloudflare without a token fails" bad_rc
+expect "and names --cf-token-file" has "$c/err" "--cf-token-file"
+case_start s_e5; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls files
+expect "--tls files is refused with a pointer" has "$c/err" "set by hand"
+case_start s_e6; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls nonsense
+expect "--tls nonsense fails" bad_rc
+case_start s_e7; run_install --dir "$c/pyn" --yes --shape server --site pyn.example.com
+expect "--site with a server-only install fails" bad_rc
+case_start s_e8; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls auto --cf-token-file "$work/cf.token"
+expect "--cf-token-file with another mode fails" bad_rc
+case_start s_e9; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.lan --cf-token-file "$work/cf.token"
+expect "--cf-token-file with a private name fails" bad_rc
+case_start s_e10; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --cf-token-file "$work/missing"
+expect "--cf-token-file that does not exist fails" bad_rc
+printf 'short\n' >"$work/bad.token"
+case_start s_e11; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --cf-token-file "$work/bad.token"
+expect "a token that is not a token fails" bad_rc
+case_start s_e12; run_install --dir "$c/pyn" --yes --shape full --tls internal
+expect "--tls internal without a site fails and names --site" has "$c/err" "--site"
+case_start s_e13; extra_env=("${probe[@]}"); run_install --dir "$c/pyn" --yes --shape full --site 10.0.0.5 --tls dns-cloudflare --cf-token-file "$work/cf.token"
+expect "dns-cloudflare with an IP address fails" bad_rc
+
+# A busy port, a stale Compose file, and a re-run that holds the ports itself
+python3 -c 'import socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(1); time.sleep(60)' "$p1" &
+listener=$!
+sleep 1
+case_start s_busy; extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com
+expect "a busy port stops an unattended install" bad_rc
+expect "a busy port is named" has "$out" "port $p1 already in use"
+expect "a busy port: nothing was started" lacks "$c/log" "compose up"
+expect "a busy port: nothing was written" test ! -e "$c/pyn/.env"
+expect "a busy port points at --tls off" has "$out" "--tls off"
+case_start s_busy2; extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com --tls off
+expect "--tls off ignores busy ports" ok_rc
+case_start s_busy3; extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); tty_file="$c/answers"; printf 'docker\n\nn\nn\n' >"$tty_file"
+run_install --dir "$c/pyn" --shape full --site pyn.example.com --version v0.1.2-alpha --web-version 0.2.0
+expect "prompted: declining at a busy port stops" bad_rc
+expect "prompted: declining at a busy port asks first" has "$c/out" "Continue anyway"
+case_start s_busy4; extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); tty_file="$c/answers"; printf 'docker\n\nn\ny\ny\n' >"$tty_file"
+run_install --dir "$c/pyn" --shape full --site pyn.example.com --version v0.1.2-alpha --web-version 0.2.0
+expect "prompted: continuing anyway is possible" ok_rc
+p3=$(freeport); p4=$(freeport)
+case_start s_busy5; extra_env=(PYN_INSTALL_PROBE_PORTS="$p3 $p4"); run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com
+extra_env=(PYN_INSTALL_PROBE_PORTS="$p1 $p2"); run_install --dir "$c/pyn" --yes --shape full
+expect "a re-run does not trip over the ports its own install holds" ok_rc
+expect "a re-run says so" has "$out" "already used by this install"
+kill "$listener" 2>/dev/null || true
+wait "$listener" 2>/dev/null || true
+
+case_start s_vol; extra_env=("${probe[@]}"); mkdir -p "$c/pyn"
+printf '# old\nservices:\n  web:\n    image: ghcr.io/avalon-initiative/pyn-web:x\n' >"$c/pyn/docker-compose.yml"
+printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=x\nPYN_SECRET_KEY=y\nPYN_PUBLIC_URL=http://h:8080\n' >"$c/pyn/.env"; chmod 600 "$c/pyn/.env"
+run_install --dir "$c/pyn" --yes --shape full --reuse use --site pyn.example.com
+expect "a Compose file without the pyn-tls volume is refused for TLS" bad_rc
+expect "the refusal explains the lost certificates" has "$c/err" "no persistent pyn-tls volume"
+expect "the refusal starts nothing" lacks "$c/log" "compose up"
+run_install --dir "$c/pyn" --yes --shape full --reuse use
+expect "the same stale file is fine while TLS is off" ok_rc
+
+case_start s_up; extra_env=("${probe[@]}"); mkdir -p "$c/pyn"
+printf 'PYN_SERVER_VERSION=v0.1.2\nPYN_WEB_VERSION=v0.2.0\nPOSTGRES_PASSWORD=pw\nPYN_SECRET_KEY=sk\nPYN_PUBLIC_URL=http://10.0.0.5:8080\nPYN_WEB_PUBLISH=0.0.0.0:8080\nPYN_REGISTRATION=closed\n' >"$c/pyn/.env"; chmod 600 "$c/pyn/.env"
+run_install --dir "$c/pyn" --yes --shape full
+expect "an existing .env without PYN_SITE stays plain" lacks "$c/pyn/.env" "PYN_SITE="
+expect "an existing .env without PYN_SITE gets no PYN_TLS" lacks "$c/pyn/.env" "PYN_TLS="
+expect "an existing .env keeps its public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=http://10.0.0.5:8080"
+run_install --dir "$c/pyn" --yes --shape full --site pyn.example.com
+expect "upgrading with --site adds TLS to an existing install" has "$c/pyn/.env" "PYN_TLS=auto"
+expect "upgrading with --site moves the public address" has "$c/pyn/.env" "PYN_PUBLIC_URL=https://pyn.example.com"
+expect "upgrading keeps the other settings" has "$c/pyn/.env" "PYN_REGISTRATION=closed"
+expect "upgrading keeps the secrets" has "$c/pyn/.env" "POSTGRES_PASSWORD=pw"
 
 # Flags
 case_start f1

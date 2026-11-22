@@ -14,12 +14,34 @@ services:
     logging: *logging
     environment:
       PYN_API_URL: ${PYN_API_URL:?set PYN_API_URL in .env (the server address, for example https://pyn.example.com)}
+      PYN_SITE: ${PYN_SITE:-}
+      PYN_TLS: ${PYN_TLS:-}
+      PYN_TRUSTED_PROXY_RANGES: ${PYN_TRUSTED_PROXY_RANGES:-}
+      PYN_ACCESS_LOG: ${PYN_ACCESS_LOG:-off}
+      CF_API_TOKEN_FILE: /run/secrets/cf_api_token
+    # 8080 is plain HTTP (PYN_TLS=off). With PYN_SITE set, 80, 443 and 443/udp are published on all interfaces; without it they
+    # map to unused host ports, so an install without PYN_SITE never takes 80 or 443 from the host.
     ports:
       - "${PYN_WEB_PUBLISH:-127.0.0.1:8080}:8080"
+      - "${PYN_WEB_PUBLISH_HTTP:-0.0.0.0:${PYN_SITE:+80}}:80"
+      - "${PYN_WEB_PUBLISH_TLS:-0.0.0.0:${PYN_SITE:+443}}:443"
+      - "${PYN_WEB_PUBLISH_TLS:-0.0.0.0:${PYN_SITE:+443}}:443/udp"
+    volumes:
+      - pyn-tls:/data
+    secrets:
+      - cf_api_token
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
     read_only: true
     tmpfs:
       - /tmp
-      - /etc/nginx/conf.d:uid=101,gid=101
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+
+volumes:
+  pyn-tls:
+
+secrets:
+  cf_api_token:
+    file: ${PYN_CF_TOKEN_FILE:-/dev/null}
