@@ -2311,6 +2311,7 @@ dependencies = [
  "pyn-hash",
  "pyn-merge",
  "pyn-object",
+ "pyn-postgres",
  "pyn-proto",
  "pyn-s3",
  "pyn-server",

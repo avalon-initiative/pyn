@@ -150,6 +150,13 @@ impl Server {
 
     pub fn with_game_env(vars: &[(&str, &str)]) -> Self {
         let server = Self::start_with_env(vars);
+        server.provision();
+        server
+    }
+
+    /// Sets this server up and creates the `game` repository with `alice` as owner and `bob` as writer.
+    pub fn provision(&self) {
+        let server = self;
         let cwd = server.dir("admin");
         let input = format!("{PASSWORD}\n");
         for (user, args) in [
@@ -188,7 +195,6 @@ impl Server {
             "alice",
             &["member", "set", "bob", "writer", "--repo", "alice/game"],
         );
-        server
     }
 
     pub fn source(&self) -> String {

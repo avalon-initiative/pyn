@@ -45,6 +45,7 @@ axum = "0.8.9"
 hmac = "0.13.0"
 pyn-core = { path = "../pyn-core", features = ["test-support"] }
 pyn-gitwork = { path = "../pyn-gitwork", features = ["test-support"] }
+pyn-postgres = { path = "../pyn-postgres" }
 pyn-s3 = { path = "../pyn-s3", features = ["test-support"] }
 pyn-server = { path = "../pyn-server" }
 sha1 = "0.11.0"
