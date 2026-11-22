@@ -36,7 +36,9 @@ services:
       PYN_DATABASE_URL: postgres://pyn:${POSTGRES_PASSWORD}@db:5432/pyn
       PYN_SECRET_KEY: ${PYN_SECRET_KEY:?set PYN_SECRET_KEY in .env (openssl rand -hex 32)}
       PYN_DATA_DIR: /data
-      PYN_TRUST_FORWARDED_FOR: "true"
+      # An explicit value in .env wins; otherwise the address follows PYN_SITE (the Caddy option), else the plain trial address
+      PYN_PUBLIC_URL: ${PYN_PUBLIC_URL:-${PYN_SITE:+https://}${PYN_SITE:-http://localhost:8080}}
+      PYN_TRUST_FORWARDED_FOR: ${PYN_TRUST_FORWARDED_FOR:-true}
     ports:
       - "127.0.0.1:7878:7878"
     volumes:

@@ -37,7 +37,7 @@ help:
 	@echo "  make release-publish  tag the merged release commit on main and push the tag"
 	@echo "  make release-all VER=x.y.z WEB_VER=x.y.z  release pyn (VER) and/or the sibling pyn-web (WEB_VER), each on its own version (publishes tags)"
 	@echo "  make release-test  test the release scripts against a throwaway repository"
-	@echo "  make install-test  test scripts/install.sh against stubbed tools and the Compose files (offline)"
+	@echo "  make install-test  test scripts/install.sh and scripts/check-env.sh against stubbed tools and the Compose files (offline)"
 	@echo "  make release-smoke VER=x.y.z [WEB_VER=x.y.z]  run the published images through deploy/docker-compose.yml (needs docker)"
 	@echo "  make clean         remove build artifacts and PID/log files"
 
@@ -167,6 +167,7 @@ release-test:
 install-test:
 	@scripts/test-install.sh
 	@scripts/test-compose.sh
+	@scripts/test-check-env.sh
 
 release-smoke:
 	@scripts/smoke-release.sh "$(VER)" $(WEB_VER)
