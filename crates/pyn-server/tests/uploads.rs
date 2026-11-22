@@ -75,6 +75,7 @@ async fn rig(cap: u64, per_user: u32, per_server: u32) -> Rig {
         trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     });
     Rig {

@@ -29,6 +29,7 @@ mod admin_api;
 pub mod auth;
 mod branch_api;
 mod caller;
+pub mod certificate;
 mod client;
 mod deletion_api;
 pub mod email;
@@ -89,6 +90,8 @@ pub struct AppState {
     pub updates: Option<Arc<update_check::UpdateChecker>>,
     /// Which object store is in use and its last probe result.
     pub storage: Arc<storage::StorageReport>,
+    /// What the last check of the public TLS certificate saw.
+    pub certificate: Arc<certificate::CertificateReport>,
     /// The draining flag and the cached readiness check.
     pub ready: ready::Readiness,
 }
@@ -512,6 +515,8 @@ struct RepoAddress {
         api::StorageSettings,
         api::StorageKind,
         api::StorageStatus,
+        api::CertificateSettings,
+        api::CertificateState,
         api::ReadinessReport,
         api::ReadinessStatus,
         api::ReadinessCheck,

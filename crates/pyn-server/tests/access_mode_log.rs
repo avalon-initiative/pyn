@@ -81,6 +81,7 @@ async fn a_change_of_mode_is_logged() {
         trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     });
     let r = app

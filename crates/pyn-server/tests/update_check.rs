@@ -65,6 +65,7 @@ fn server(updates: Option<Arc<UpdateChecker>>) -> Router {
         trusted_proxies: 1,
         updates,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     })
 }

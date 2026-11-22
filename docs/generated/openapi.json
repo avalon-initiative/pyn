@@ -11999,7 +11999,8 @@
         "required": [
           "account_deletion",
           "administrators",
-          "storage"
+          "storage",
+          "certificate"
         ],
         "properties": {
           "account_deletion": {
@@ -12007,6 +12008,9 @@
           },
           "administrators": {
             "$ref": "#/components/schemas/AdministratorSummary"
+          },
+          "certificate": {
+            "$ref": "#/components/schemas/CertificateSettings"
           },
           "storage": {
             "$ref": "#/components/schemas/StorageSettings"
@@ -12304,6 +12308,93 @@
             "description": "`changes` is incomplete: more paths changed than listed, or more commits than `max_commits`."
           }
         }
+      },
+      "CertificateSettings": {
+        "type": "object",
+        "description": "What the server's periodic TLS handshake against its own public address (`PYN_PUBLIC_URL`) saw.\nOnly public certificate facts and the configured host are reported.",
+        "required": [
+          "state",
+          "names"
+        ],
+        "properties": {
+          "days_left": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Whole days until `not_after`, rounded down; negative once expired. Null until a certificate was read."
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The host the handshake targets; null while `unchecked`."
+          },
+          "issuer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The issuer's common name, when it has one."
+          },
+          "last_checked": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last check failed (null when it succeeded); `state` is `unreachable` then, and the certificate fields keep the last good read."
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The DNS and IP names in the certificate (its subject name when it has none)."
+          },
+          "not_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "not_before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CertificateState"
+          },
+          "trusted": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the chain verified against the system roots for `host`; null until a certificate was read.\nAn untrusted certificate (a private authority) still has its expiry reported."
+          }
+        }
+      },
+      "CertificateState": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "expiring",
+          "expired",
+          "unreachable",
+          "unchecked"
+        ]
       },
       "ChangePasswordRequest": {
         "type": "object",

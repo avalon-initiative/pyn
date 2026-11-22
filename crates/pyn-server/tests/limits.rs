@@ -71,6 +71,7 @@ async fn server_with_cap(default_limits: Limits, upload_cap: Option<u64>) -> Rou
         trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     })
 }

@@ -107,6 +107,7 @@ async fn world_with(trust_forwarded: bool, visibility: &str) -> World {
         trusted_proxies: 1,
         updates: None,
         storage: Default::default(),
+        certificate: Default::default(),
         ready: Default::default(),
     });
     let alice = token_for(&app, "alice").await;

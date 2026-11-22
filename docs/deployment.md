@@ -257,7 +257,7 @@ terminates TLS, add the web app's public address to the server's `PYN_ALLOWED_OR
 The certificates and the internal root live in the `pyn-tls` volume (`/data` in the container). It must persist: losing it means new certificates, for `internal` a new root every device must trust again, and for `auto` a
 risk of hitting the public authority's rate limits. Never run `docker compose down -v` on a live deployment (that deletes the database volume too); the installer refuses a Compose file without the volume.
 
-Renewal is automatic: Caddy renews when about a third of a certificate's life is left, tries the fallback authority if the first fails, and needs no change for the shorter lifetimes public authorities are moving to. If a certificate is
+Renewal is automatic ([the server watches the result](#the-server-watches-the-certificate)): Caddy renews when about a third of a certificate's life is left, tries the fallback authority if the first fails, and needs no change for the shorter lifetimes public authorities are moving to. If a certificate is
 not renewing, check in this order:
 
 1. `docker compose logs web` for `certificate`, `acme` or `error` lines; a failed renewal is logged with the reason.
@@ -265,8 +265,33 @@ not renewing, check in this order:
 3. The `pyn-tls` volume is mounted and writable (`docker compose config` shows it), and the host clock is right.
 4. The expiry the browser sees: `echo | openssl s_client -connect pyn.example.com:443 -servername pyn.example.com 2>/dev/null | openssl x509 -noout -enddate`. Point an uptime monitor that checks certificate expiry at the public address too.
 
-Provisional: the server's admin status does not yet warn about a certificate that is close to expiry or failed to renew (the certificate is held by the web container), so watch the log or monitor the expiry as above. The release smoke test
-(`scripts/smoke-release.sh`) checks the certificate's expiry date over https with an internal certificate and warns loudly when too little life is left.
+#### The server watches the certificate
+
+The certificate is held by the web container (or a balancer), so the server reads it from outside. Every `PYN_CERT_CHECK_INTERVAL_SECS` (default 21600, six hours; `0` turns it off; otherwise 60 to 604800)
+it connects to the host and port of `PYN_PUBLIC_URL`, completes a TLS handshake and reads the certificate's dates and names, then closes the connection. It sends no credentials and no request. The first check runs
+30 seconds after start. Nothing is checked, and the state is `unchecked`, when the public URL is not `https://`, when its host is `localhost` or a loopback address, or when the interval is `0`. Behind a balancer
+that holds the certificate (`PYN_TLS=off` on the web container) the check still reads what the balancer serves, provided the public URL is https and this server can reach that name; a host that cannot reach its own
+public address (no hairpin routing) reports `unreachable`, and then the expiry has to be watched elsewhere.
+
+An untrusted certificate is read like any other: the internal authority and a private CA are normal here, so the handshake does not fail on trust. Whether the chain verifies for that host against the server's system roots is
+reported separately as `trusted`; `false` is expected with `internal`, and a surprise with `auto`.
+
+`GET /v1/admin/settings` (administrators) reports a `certificate` object: `state`, `host`, `trusted`, `not_before`, `not_after`, `days_left` (whole days, rounded down, negative once expired), `names`, `issuer`,
+`last_checked` and `last_error`. Only public certificate facts and the configured host appear. `/readyz` does not depend on it: a certificate problem is not a reason to take a copy out of rotation.
+
+| State | Meaning |
+| --- | --- |
+| `ok` | Valid, with more than the warning margin left |
+| `expiring` | Less remaining than the smaller of 14 days and a third of the certificate's total lifetime (so Caddy's 12 hour internal certificates, renewed at a third of their life, are not flagged for being short) |
+| `expired` | Past `not_after` |
+| `unreachable` | The last handshake failed (`last_error` says how: refused, timed out, not TLS); the certificate fields keep the last good read |
+| `unchecked` | Not applicable or switched off (above), or the first check has not run yet |
+
+The server logs at warn level while a certificate is `expiring`, at error level when under the smaller of 3 days and a quarter of the margin remain or it has expired, at warn level when a check fails, and once at info
+when it recovers, each at most once per check interval. A certificate that is not `trusted` is logged once when that is first seen.
+
+When it is `expiring` or `unreachable`, follow the renewal checklist above: `docker compose logs web` for the renewal error, the `pyn-tls` volume, ports 80 and 443 reachable from the internet (`auto`), the DNS token
+(`dns-cloudflare`), and the host clock.
 
 #### Upgrading an existing install
 

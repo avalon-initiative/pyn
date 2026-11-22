@@ -222,6 +222,43 @@ fn update_checker(
     Ok(Some(checker))
 }
 
+/// Watches the certificate at the public address unless it is switched off or there is nothing public to check.
+fn start_certificate_check(
+    public_url: &str,
+    drain: &Drain,
+    tasks: &mut Vec<JoinHandle<()>>,
+) -> anyhow::Result<Arc<pyn_server::certificate::CertificateReport>> {
+    use pyn_server::certificate::{CertificateReport, Target, interval_from, spawn_monitor};
+    let report = Arc::new(CertificateReport::default());
+    let every = interval_from(
+        std::env::var("PYN_CERT_CHECK_INTERVAL_SECS")
+            .ok()
+            .as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let Some(every) = every else {
+        return Ok(report);
+    };
+    match Target::from_public_url(public_url) {
+        Ok(target) => {
+            tracing::info!(
+                host = target.host,
+                "the TLS certificate at the public address is checked about every {} seconds",
+                every.as_secs()
+            );
+            tasks.push(spawn_monitor(
+                target,
+                report.clone(),
+                every,
+                Duration::from_secs(30),
+                drain.clone(),
+            ));
+        }
+        Err(skip) => tracing::debug!("the TLS certificate is not checked: {}", skip.reason()),
+    }
+    Ok(report)
+}
+
 /// `PYN_WEBHOOKS_ALLOW_LOOPBACK` is refused unless plain-http development mode is on too.
 fn allow_loopback() -> anyhow::Result<bool> {
     loopback_mode(
@@ -772,6 +809,7 @@ async fn main() -> anyhow::Result<()> {
         &drain,
         &mut tasks,
     )?;
+    let certificate = start_certificate_check(&access.public_url(), &drain, &mut tasks)?;
     tasks.extend(start_webhook_delivery(
         webhooks,
         clock,
@@ -820,6 +858,7 @@ async fn main() -> anyhow::Result<()> {
             trusted_proxies,
             updates,
             storage,
+            certificate,
             ready: Readiness::new(drain.clone()),
         },
         request_limits,
