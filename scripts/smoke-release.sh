@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Smoke-tests a published release: pulls the images, runs deploy/docker-compose.yml, checks the server and web app,
-# completes first-run setup. Usage: scripts/smoke-release.sh <server-version> [<web-version>] (for example 0.1.0 0.1.3).
-# The web version defaults to the latest pyn-web release, since the two are released independently. Needs docker compose, curl, openssl.
+# completes first-run setup, then does the same over https with PYN_TLS=internal (redirect, exported root, forwarded protocol, the
+# certificate's expiry). Usage: scripts/smoke-release.sh <server-version> [<web-version>] (for example 0.1.0 0.1.3).
+# The web version defaults to the latest pyn-web release, since the two are released independently. Needs docker compose, curl, openssl. Set SMOKE_SKIP_TLS=1 to run only the plain pass.
 set -euo pipefail
 
 # The first bare-token line under the setup token header; startup log lines may be interleaved in between.
@@ -32,9 +33,10 @@ ready_attempts=${SMOKE_READY_ATTEMPTS:-60}
 
 work=$(mktemp -d)
 project="pyn-smoke-$$"
+pdir="$work"
 started=0
 ok=0
-compose() { docker compose -p "$project" --project-directory "$work" -f "$work/docker-compose.yml" "$@"; }
+compose() { docker compose -p "$project" --project-directory "$pdir" -f "$pdir/docker-compose.yml" "$@"; }
 
 cleanup() {
   local code=$?
@@ -75,62 +77,178 @@ free_port() {
   fail "no free local port found"
 }
 
-cp "$root/deploy/docker-compose.yml" "$work/docker-compose.yml"
-web_port=$(free_port)
-cat >"$work/.env" <<ENV
+write_env() { # write_env extra-lines...
+  cat >"$pdir/.env" <<ENV
 PYN_SERVER_VERSION=v$version
 PYN_WEB_VERSION=v$web_version
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 PYN_SECRET_KEY=$(openssl rand -hex 32)
-PYN_PUBLIC_URL=http://127.0.0.1:$web_port
-PYN_WEB_PUBLISH=127.0.0.1:$web_port
 ENV
+  printf '%s\n' "$@" >>"$pdir/.env"
+}
 
 # The web image comes from pyn-web's own tag workflow, which can finish later than this repo's.
-step "pulling pyn-core v$version and pyn-web v$web_version (up to $pull_attempts attempts, ${pull_wait}s apart)"
-pulled=0
-for attempt in $(seq 1 "$pull_attempts"); do
-  if compose pull --quiet 2>"$work/pull.err"; then pulled=1; break; fi
-  echo "smoke: pull attempt $attempt/$pull_attempts failed: $(tail -n 1 "$work/pull.err")" >&2
-  [[ $attempt -lt $pull_attempts ]] && sleep "$pull_wait"
-done
-[[ $pulled -eq 1 ]] || fail "could not pull pyn-core v$version and pyn-web v$web_version (are both images published, and are both packages public?)"
+pull_images() {
+  step "pulling pyn-core v$version and pyn-web v$web_version (up to $pull_attempts attempts, ${pull_wait}s apart)"
+  local pulled=0 attempt
+  for attempt in $(seq 1 "$pull_attempts"); do
+    if compose pull --quiet 2>"$work/pull.err"; then pulled=1; break; fi
+    echo "smoke: pull attempt $attempt/$pull_attempts failed: $(tail -n 1 "$work/pull.err")" >&2
+    [[ $attempt -lt $pull_attempts ]] && sleep "$pull_wait"
+  done
+  [[ $pulled -eq 1 ]] || fail "could not pull pyn-core v$version and pyn-web v$web_version (are both images published, and are both packages public?)"
+}
 
-step "starting the stack (web on 127.0.0.1:$web_port)"
-started=1
-compose up --detach --wait --wait-timeout 180 || fail "docker compose up did not become ready"
-
-server_addr=$(compose port server 7878) || fail "the server port is not published"
-server_url="http://127.0.0.1:${server_addr##*:}"
-web_url="http://127.0.0.1:$web_port"
-
-wait_for() {
+wait_for() { # wait_for NAME URL [curl options...]
   local name=$1 url=$2
+  shift 2
   for _ in $(seq 1 "$ready_attempts"); do
-    if curl --silent --fail --max-time 5 --output /dev/null "$url"; then step "$name answers at $url"; return; fi
+    if curl --silent --fail --max-time 5 --output /dev/null "$@" "$url"; then step "$name answers at $url"; return; fi
     sleep 2
   done
   fail "$name did not answer at $url"
 }
-wait_for "server /healthz" "$server_url/healthz"
-wait_for "web app" "$web_url/"
 
-status=$(curl --silent --fail --max-time 10 "$server_url/v1/setup") || fail "GET /v1/setup failed"
-[[ $status == *'"initialised":false'* ]] || fail "a fresh server should report initialised=false, got: $status"
+# complete_setup SETUP_URL PUBLIC_URL [curl options...]: reads the one-time token from the server log and finishes first-run setup
+complete_setup() {
+  local setup_url=$1 public=$2 server_log token body code
+  shift 2
+  local status
+  status=$(curl --silent --fail --max-time 10 "$@" "$setup_url") || fail "GET $setup_url failed"
+  [[ $status == *'"initialised":false'* ]] || fail "a fresh server should report initialised=false, got: $status"
+  server_log=$(compose logs --no-log-prefix --no-color server 2>&1) || fail "could not read the server log"
+  token=$(setup_token_from_log <<<"$server_log")
+  [[ -n $token ]] || fail "the setup token is not in the server log"
+  step "completing first-run setup"
+  admin_password=$(openssl rand -hex 16)
+  body=$(printf '{"token":"%s","username":"smoke-admin","password":"%s","registration":"closed","public_url":"%s"}' "$token" "$admin_password" "$public")
+  code=$(curl --silent --output "$work/setup.out" --write-out '%{http_code}' --max-time 30 "$@" \
+    --header 'Content-Type: application/json' --data "$body" "$setup_url") || fail "POST $setup_url failed"
+  [[ $code == 201 ]] || fail "POST $setup_url returned $code: $(cat "$work/setup.out")"
+  status=$(curl --silent --fail --max-time 10 "$@" "$setup_url") || fail "GET $setup_url failed after setup"
+  [[ $status == *'"initialised":true'* ]] || fail "the server does not report initialised=true after setup, got: $status"
+}
 
-server_log=$(compose logs --no-log-prefix --no-color server 2>&1) || fail "could not read the server log"
-token=$(setup_token_from_log <<<"$server_log")
-[[ -n $token ]] || fail "the setup token is not in the server log"
+# Moves to a fresh stack in its own folder; the previous one is taken down with its volumes
+new_stack() { # new_stack NAME
+  if [[ $started -eq 1 ]]; then compose down --volumes --remove-orphans >&2 || true; started=0; fi
+  project="pyn-smoke-$$-$1"
+  pdir="$work/$1"
+  mkdir -p "$pdir"
+  cp "$root/deploy/docker-compose.yml" "$pdir/docker-compose.yml"
+}
 
-step "completing first-run setup"
-body=$(printf '{"token":"%s","username":"smoke-admin","password":"%s","registration":"closed","public_url":"%s"}' \
-  "$token" "$(openssl rand -hex 16)" "$web_url")
-code=$(curl --silent --output "$work/setup.out" --write-out '%{http_code}' --max-time 30 \
-  --header 'Content-Type: application/json' --data "$body" "$server_url/v1/setup") || fail "POST /v1/setup failed"
-[[ $code == 201 ]] || fail "POST /v1/setup returned $code: $(cat "$work/setup.out")"
+plain_pass() {
+  local web_port server_addr server_url web_url
+  new_stack plain
+  web_port=$(free_port)
+  # PYN_TLS=off is the plain HTTP mode behind your own proxy; an existing .env without PYN_SITE behaves the same
+  write_env "PYN_PUBLIC_URL=http://127.0.0.1:$web_port" "PYN_WEB_PUBLISH=127.0.0.1:$web_port" "PYN_TLS=off"
+  pull_images
 
-status=$(curl --silent --fail --max-time 10 "$server_url/v1/setup") || fail "GET /v1/setup failed after setup"
-[[ $status == *'"initialised":true'* ]] || fail "the server does not report initialised=true after setup, got: $status"
+  step "starting the stack (plain HTTP, web on 127.0.0.1:$web_port)"
+  started=1
+  compose up --detach --wait --wait-timeout 180 || fail "docker compose up did not become ready"
+
+  server_addr=$(compose port server 7878) || fail "the server port is not published"
+  server_url="http://127.0.0.1:${server_addr##*:}"
+  web_url="http://127.0.0.1:$web_port"
+  wait_for "server /healthz" "$server_url/healthz"
+  wait_for "web app" "$web_url/"
+  complete_setup "$server_url/v1/setup" "$web_url"
+  step "plain HTTP pass OK"
+}
+
+# Warns loudly, on stderr and as a workflow annotation, when the certificate has less life left than a healthy renewal leaves
+check_expiry() { # check_expiry CERT_FILE
+  local cert=$1 not_before not_after start end now life left floor=$((7 * 86400)) days
+  not_before=$(openssl x509 -in "$cert" -noout -startdate | cut -d= -f2)
+  not_after=$(openssl x509 -in "$cert" -noout -enddate | cut -d= -f2)
+  step "certificate valid from $not_before until $not_after"
+  openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || fail "the served certificate has expired ($not_after): renewal is not working"
+  now=$(date -u +%s)
+  if start=$(date -u -d "$not_before" +%s 2>/dev/null) && end=$(date -u -d "$not_after" +%s 2>/dev/null); then
+    life=$((end - start))
+    left=$((end - now))
+    # Certificates are renewed with a third of their life left; short-lived ones (the local authority's last 12 hours) get a proportional floor
+    [[ $((life / 10)) -ge $floor ]] || floor=$((life / 10))
+    days=$((left / 86400))
+    if [[ $left -lt $floor ]]; then
+      {
+        echo "smoke: !!!!!!!!!! WARNING !!!!!!!!!!"
+        echo "smoke: the served certificate has only $((left / 3600)) hours left (${days} days), under the floor of $((floor / 3600)) hours: RENEWAL IS NOT HAPPENING"
+        echo "::warning::pyn-web certificate close to expiry ($not_after); automatic renewal may be failing"
+      } >&2
+      return 0
+    fi
+    step "certificate has $((left / 3600)) hours left of a $((life / 3600))-hour lifetime"
+  elif ! openssl x509 -in "$cert" -noout -checkend "$floor" >/dev/null; then
+    {
+      echo "smoke: !!!!!!!!!! WARNING !!!!!!!!!!"
+      echo "smoke: the served certificate expires within 7 days ($not_after): RENEWAL IS NOT HAPPENING"
+      echo "::warning::pyn-web certificate close to expiry ($not_after); automatic renewal may be failing"
+    } >&2
+  fi
+}
+
+tls_pass() {
+  local web_port http_port tls_port web_url https_url redirect root_crt cookie_file web_container cert_file
+  new_stack tls
+  web_port=$(free_port)
+  http_port=$(free_port)
+  tls_port=$(free_port)
+  while [[ $http_port == "$web_port" ]]; do http_port=$(free_port); done
+  while [[ $tls_port == "$web_port" || $tls_port == "$http_port" ]]; do tls_port=$(free_port); done
+  web_url="http://127.0.0.1:$http_port"
+  https_url="https://127.0.0.1:$tls_port"
+  # The public address is deliberately http: the server then marks its session cookie Secure only when the web container
+  # tells it the request came over https (X-Forwarded-Proto), which is what this pass checks.
+  write_env "PYN_SITE=127.0.0.1" "PYN_TLS=internal" "PYN_PUBLIC_URL=http://127.0.0.1:$tls_port" \
+    "PYN_WEB_PUBLISH=127.0.0.1:$web_port" "PYN_WEB_PUBLISH_HTTP=127.0.0.1:$http_port" "PYN_WEB_PUBLISH_TLS=127.0.0.1:$tls_port"
+
+  step "starting the stack (PYN_TLS=internal, http on 127.0.0.1:$http_port, https on 127.0.0.1:$tls_port)"
+  started=1
+  compose up --detach --wait --wait-timeout 180 || fail "docker compose up did not become ready (TLS)"
+
+  web_container=$(compose ps -q web) || fail "no web container"
+  [[ -n $web_container ]] || fail "no web container"
+  root_crt="$pdir/root.crt"
+  for _ in $(seq 1 "$ready_attempts"); do
+    if docker cp "$web_container:/data/caddy/pki/authorities/local/root.crt" "$root_crt" 2>/dev/null && [[ -s $root_crt ]]; then break; fi
+    sleep 2
+  done
+  [[ -s $root_crt ]] || fail "the internal root certificate was not created in the web container"
+  openssl x509 -in "$root_crt" -noout >/dev/null || fail "the exported root is not a certificate"
+  step "fetched the internal root certificate from the container"
+
+  wait_for "web app over https" "$https_url/" --cacert "$root_crt"
+  # The redirect omits the port by design (docs/deployment.md), so only the scheme, host and status are compared
+  redirect=$(curl --silent --output /dev/null --write-out '%{http_code} %{redirect_url}' --max-time 10 "$web_url/some/route") || fail "http request failed"
+  [[ $redirect == "308 https://127.0.0.1/some/route" ]] || fail "http should redirect with 308 to https, got: $redirect"
+  step "http redirects to https (308)"
+  curl --silent --fail --max-time 10 --cacert "$root_crt" "$https_url/healthz" >/dev/null || fail "the server's /healthz through the web container over https failed"
+
+  complete_setup "$https_url/v1/setup" "http://127.0.0.1:$tls_port" --cacert "$root_crt"
+  cookie_file="$pdir/signin.headers"
+  curl --silent --fail --max-time 10 --cacert "$root_crt" --dump-header "$cookie_file" --output /dev/null \
+    --header 'Content-Type: application/json' --data "{\"username\":\"smoke-admin\",\"password\":\"$admin_password\"}" \
+    "$https_url/v1/session" || fail "signing in over https through the web container failed"
+  grep -qi '^set-cookie:.*; Secure' "$cookie_file" || fail "the server did not see X-Forwarded-Proto: https (its session cookie is not Secure)"
+  step "signed in over https; the server saw X-Forwarded-Proto: https"
+
+  cert_file="$pdir/served.crt"
+  openssl s_client -connect "127.0.0.1:$tls_port" -servername 127.0.0.1 -CAfile "$root_crt" -verify_return_error </dev/null 2>"$pdir/s_client.err" |
+    openssl x509 >"$cert_file" || fail "could not read the served certificate: $(tail -n 3 "$pdir/s_client.err")"
+  check_expiry "$cert_file"
+  step "TLS pass OK"
+}
+
+plain_pass
+if [[ ${SMOKE_SKIP_TLS:-} != 1 ]]; then tls_pass; fi
 
 ok=1
-step "OK: pyn-core v$version with pyn-web v$web_version start, answer, and complete setup"
+if [[ ${SMOKE_SKIP_TLS:-} == 1 ]]; then
+  step "OK: pyn-core v$version with pyn-web v$web_version start, answer, and complete setup over plain HTTP"
+else
+  step "OK: pyn-core v$version with pyn-web v$web_version start, answer, and complete setup over plain HTTP and over https (internal certificate)"
+fi

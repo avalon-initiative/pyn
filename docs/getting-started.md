@@ -25,7 +25,7 @@ It asks:
    command.
 2. **How to run it**: Docker (default; the release images and the Compose files of the chosen release) or native (the
    release `pyn-server` binary as a hardened systemd service with PostgreSQL, see
-   [native install](deployment.md#native-install-systemd)). The web app is Docker-only for now, because its nginx proxy
+   [native install](deployment.md#native-install-systemd)). The web app is Docker-only for now, because its proxy
    configuration ships in the image.
 3. **Which release**: the latest release (the default), or a specific
    version you type: a full tag such as `v0.1.2-alpha`, or a bare `0.1.2`, which maps to the matching release tag. The entry is checked against the published releases, and the resolved tag is shown before anything starts.
@@ -40,7 +40,13 @@ It asks:
    offering the `.env` of the chosen or current folder (type `none` to skip). Every path, typed or passed as a flag (`--dir=~/pyn` works too), may start with `~` or be relative to the folder you ran the script from; the plan shows the resolved absolute path, and a native env file path cannot contain spaces. If the folder already holds an install (so running the script inside an existing deployment folder just works), it shows how the Compose file differs from the release's and asks:
    **use** the files as they are, **refresh** the Compose file from the release and keep your env, or **start fresh**. Files
    that get replaced are copied to `NAME.bak.<timestamp>` first; nothing is deleted.
-5. **The address people will use** (`PYN_PUBLIC_URL`). The browser's address must match it exactly.
+5. **The domain name or address people will use** (web app, Docker), which turns https on, and nothing else about it. Press Enter for plain HTTP on this host's port 8080, the right choice for a trial on one computer.
+   A name makes pyn serve https itself, with certificates it obtains and renews, and the script picks the kind and says why in one sentence: a public name gets Let's Encrypt (`auto`; ports 80 and 443 must be
+   reachable from the internet, and it says so), an IP address or a private name gets a local authority (`internal`; each device trusts its root once, and it prints where to fetch it), and for a name on a private network behind a
+   Cloudflare domain it asks one more thing, a DNS API token limited to that zone (Zone Read and DNS Edit), typed without echo and stored in `secrets/cloudflare-token` (mode 600), never in `.env`
+   (`dns-cloudflare`: nothing exposed, nothing to install on devices). It checks that ports 80 and 443 are free on this host and refuses a Compose file without the persistent certificate volume.
+   With an IP address it says that passkeys need a host name over https. Details and the other layouts (your own proxy, a tunnel, Cloudflare): [HTTPS](deployment.md#https).
+6. **The address people will use** (`PYN_PUBLIC_URL`), asked only when no name was given (with a name it is `https://<name>`). The browser's address must match it exactly.
 
 It first prints a checklist of the tools the choice needs (`curl`, `tar`, `sha256sum`, `openssl`, Docker with the Compose
 plugin, `systemctl`, PostgreSQL). On Ubuntu or Debian, as root or with `sudo`, it offers to install what is missing:
@@ -56,6 +62,9 @@ rather than a hang:
 
 ```bash
 sudo bash install.sh --yes --shape server --method docker --version 0.1.2 --public-url https://pyn.example.com
+sudo bash install.sh --yes --shape full --site pyn.example.com                                  # public name: https with automatic certificates
+sudo bash install.sh --yes --shape full --site pyn.example.com --cf-token-file ./cf.token       # private network behind Cloudflare: DNS challenge
+sudo bash install.sh --yes --shape full --site 192.168.1.20                                     # address: internal authority, trust its root once
 ```
 
 | Flag | Meaning (default) |
@@ -67,7 +76,10 @@ sudo bash install.sh --yes --shape server --method docker --version 0.1.2 --publ
 | `--dir DIR` | Where the Docker files live (the current folder; `./pyn` inside `/`, home or a checkout) |
 | `--env-file PATH` | An existing env file to reuse: copied to `DIR/.env` (Docker; an existing `.env` is backed up), or referenced by the unit's `EnvironmentFile` (native) |
 | `--reuse use\|refresh\|fresh` | What to do with an existing install (`refresh`) |
-| `--public-url URL` | `PYN_PUBLIC_URL` (`http://<this host>:8080`, `:7878` for a server only or native) |
+| `--public-url URL` | `PYN_PUBLIC_URL` (`http://<this host>:8080`, `:7878` for a server only or native; `https://<site>` with `--site`) |
+| `--site NAME` | Web app (Docker): the domain name or address people use, without scheme or port. Turns https on; the certificate kind follows from it. Without it (and without `--yes`) the script asks, and Enter keeps plain HTTP |
+| `--tls auto\|internal\|dns-cloudflare\|off` | Override the kind picked from `--site`. `off` keeps plain HTTP on 8080 for your own proxy, tunnel or load balancer |
+| `--cf-token-file PATH` | A file holding a Cloudflare API token limited to the zone (Zone Read, DNS Edit): selects `dns-cloudflare`, copied to `secrets/cloudflare-token` (mode 600) |
 | `--api-url URL` | Web only: `PYN_API_URL`. CLI: the server to print the config step for |
 | `--database-url URL` | Native: an existing PostgreSQL (`postgres://...`) instead of a local one |
 | `--yes`, `--no-install`, `--help` | Never ask; never install; usage |
@@ -166,7 +178,8 @@ On macOS use `sed -i ''` instead of `sed -i`. Then edit `.env` for your network:
 | --- | --- |
 | `PYN_PUBLIC_URL` | The address you will type in the browser, for example `http://192.168.1.20:8080` or `https://pyn.example.com`. Keep `http://localhost:8080` if you only use this computer. |
 | `POSTGRES_VERSION` | Optional. The PostgreSQL major version, `16` unless set. A database created on one major version cannot be opened by another, so change it only with a [dump and restore](deployment.md#backups). |
-| `PYN_WEB_PUBLISH` | Remove the `#` and set `0.0.0.0:8080` so other computers can reach it. Leave it commented to keep the server on this computer only. |
+| `PYN_SITE` | Optional, to serve https: the host name or address people use, with no scheme or port. `PYN_PUBLIC_URL` then defaults to `https://<PYN_SITE>`, and the certificate kind follows from the name (`PYN_TLS`, see [HTTPS](deployment.md#https)). Ports 80 and 443 must be free on this computer. Leave it unset for plain HTTP. |
+| `PYN_WEB_PUBLISH` | Plain HTTP only. Remove the `#` and set `0.0.0.0:8080` so other computers can reach it. Leave it commented to keep the server on this computer only. |
 
 `.env` holds secrets and must not be committed or shared. Copy `PYN_SECRET_KEY` somewhere safe: webhook secrets stored in
 the database cannot be read without it. Also keep a copy of `.env` itself, and add a second administrator after setup;
@@ -269,7 +282,7 @@ pyn login <your user name>
 An `http://` address for a host other than this computer sends passwords and tokens in clear text, so `pyn login` and
 `pyn config set server` print a warning about it. It is shown once for each address (and again at the next login),
 never for `localhost`, `127.*` or `[::1]`, and later commands stay quiet. Put TLS in front of the server before
-using it beyond a trusted network (see [Reverse proxy and TLS](deployment.md#reverse-proxy-and-tls)). The address is
+using it beyond a trusted network (see [HTTPS](deployment.md#https)). The address is
 stored in its normal form (`http:192.168.1.20:8080` becomes `http://192.168.1.20:8080`) and one that is not an
 `http://` or `https://` address is refused.
 

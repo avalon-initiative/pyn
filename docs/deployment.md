@@ -79,18 +79,18 @@ warns while it is still set.
 
 | Setting | Why |
 | --- | --- |
-| `PYN_PUBLIC_URL=https://...` | Marks session cookies `Secure` and is used in links; setup records the address too |
+| `PYN_PUBLIC_URL=https://...` | Marks session cookies `Secure` and is used in links; setup records the address too. The Compose file derives it from `PYN_SITE` (`https://<PYN_SITE>`) when it is not set |
 | `PYN_WEBAUTHN_RP_ID` | Optional. [Passkeys](concepts/access.md#passkeys-and-security-keys) use `PYN_PUBLIC_URL`'s host as the WebAuthn relying-party id and its origin as the allowed origin, so that address must be a host name over `https://` (an IP address, or `http://` other than `localhost`, leaves authenticator apps as the only second factor). Set this to a parent domain of the host to share passkeys across subdomains. Choose it before people register passkeys: changing the host or the id makes them unusable |
 | `PYN_SECRET_KEY` | Encrypts webhook secrets at rest; compose refuses to start without it |
 | `PYN_ACCESS` | `private` (default) refuses every signed-out request except sign-in, sign-up and setup; `public` lets signed-out visitors read public repositories and profiles. Used by first-run setup and as the default until it; after setup the stored value wins and an administrator changes it at runtime (see [server access mode](concepts/access.md#server-access-mode)) |
 | `PYN_REGISTRATION` | `invite` (default) or `closed` for a private server; `open` needs the [sign-up protections](concepts/access.md#protecting-open-registration) |
-| `PYN_TRUST_FORWARDED_FOR=true` | Only behind a proxy that sets `X-Forwarded-For`, so rate limits see client addresses |
+| `PYN_TRUST_FORWARDED_FOR=true` | Only behind a proxy that sets `X-Forwarded-For`, so rate limits see client addresses. The Compose files set it, and the web container sends exactly one entry (the real client): see [the layouts](#public-address-and-client-addresses-per-layout) |
 | `PYN_ALLOWED_ORIGINS` | Required for a web app served from another origin, such as a web-only deployment pointing here (its address, no path) |
 | `PYN_DISABLED_ACCOUNT_RETENTION_DAYS` | Disabled accounts are [deleted](concepts/access.md#deleting-an-account) after 90 days by default (`0` keeps them forever); the server runs the task itself (hourly), so nothing is scheduled outside it |
 | never `PYN_DEV_AUTH` | It accepts any user header with every permission |
 
-Logs go to standard error as plain text; read them with `docker compose logs`. The port is
-published on loopback by default (`PYN_PUBLISH` in `.env`), so only a reverse proxy on the host reaches it.
+Logs go to standard error as plain text; read them with `docker compose logs`. The API port
+7878 is published on loopback only; browsers reach the web container, which serves https itself ([HTTPS](#https)).
 
 ### Email
 
@@ -115,8 +115,9 @@ PYN_TRUST_FORWARDED_FOR=true                 # the web container sets X-Forwarde
 docker compose --profile web up -d --wait
 ```
 
-The web container listens on `127.0.0.1:8080` by default (`PYN_WEB_PUBLISH` changes it); put the TLS proxy in front of it, not in front of
-the server. `PYN_API_URL` (set to `http://server:7878` in the Compose file) is the only setting the image reads; it must have no path.
+The web container serves https itself when `PYN_SITE` is set ([HTTPS](#https)); otherwise it listens for plain HTTP on `127.0.0.1:8080`
+(`PYN_WEB_PUBLISH` changes it), for use behind your own proxy. Put a proxy for browsers in front of the web container, never in front of
+the server's API port. `PYN_API_URL` (set to `http://server:7878` in the Compose file) must have no path; the other settings the image reads are listed under [HTTPS](#https).
 The two images are set separately (`PYN_IMAGE` and `PYN_WEB_IMAGE` here; `PYN_SERVER_VERSION` and `PYN_WEB_VERSION` in the
 released files under `deploy/`), their tags need not match, and either can be upgraded alone: change its line, then
 `docker compose pull` and `docker compose up -d`.
@@ -131,28 +132,142 @@ The server and the web app are released independently, and no release requires a
 - `GET /v1/capabilities` reports the server's release in `version` (readable signed out, in both access modes), which is what the
   web app compares against.
 
-### Reverse proxy and TLS
+### HTTPS
 
-The server speaks plain HTTP; terminate TLS in front of it with any proxy (Caddy, nginx, Traefik, a cloud load
-balancer). Requirements:
+The web container (the `pyn-web` image, which runs [Caddy](https://caddyserver.com)) terminates TLS itself, with certificates it obtains and renews on its own, so
+no proxy, certificate tool or hand-edited configuration is needed. It serves the app and forwards `/v1` and `/healthz` to the server, so browsers and the
+`pyn` command use one https address. The server's own port 7878 stays on loopback and carries no TLS: do not point a proxy for browsers at it (it would skip the web app).
+The installer asks for the host name or address people use and sets everything else up ([Getting started](getting-started.md)); by hand it is the settings below.
 
-- Forward to `127.0.0.1:7878` and send `X-Forwarded-Proto: https` and `X-Forwarded-For`.
-- Allow large request bodies and long uploads: no body size limit (or one above your largest file), and no response or
-  request buffering for object routes.
-- Redirect HTTP to HTTPS and send HSTS from the proxy.
+#### Choosing a path
 
-Until TLS is in place, the CLI warns about the clear-text address: at `pyn login` and when `pyn config set server`
+In this order of preference:
+
+1. **Hosted:** nothing to do. A hosted pyn uses a publicly trusted certificate.
+2. **A public host name** (a name in public DNS that points at this host, with ports 80 and 443 reachable from the internet): set `PYN_SITE=pyn.example.com`. The certificate is
+   automatic (Let's Encrypt, with a second public authority enabled as a fallback), renews itself, and nothing is installed on any device. `PYN_TLS=auto`.
+3. **A private network with a domain you own:** use a name in a Cloudflare zone you control, such as `pyn.example.com`, add one DNS record for it (an A record to this host's
+   private address, DNS only), set `PYN_SITE` to the name, and give the container a Cloudflare API token (below). The certificates are public and browser-trusted, nothing is exposed to the
+   internet and nothing is installed on any device. `PYN_TLS=dns-cloudflare`.
+4. **No domain:** the internal authority. `PYN_SITE` is an IP address or a private name (`pyn.lan`); the container makes its own authority and certificates, and each device trusts its
+   root certificate once ([below](#trusting-the-internal-root)). `PYN_TLS=internal`, the default for an address or a private name.
+5. **A trial on one computer:** leave `PYN_SITE` unset and use `http://localhost:8080`. Browsers treat `localhost` as secure, so passkeys work there too.
+
+With `PYN_SITE` set and no `PYN_TLS`, the mode follows the name: an IP address, a single-label name or one ending in `.lan`, `.local`, `.home.arpa`, `.internal`, `.test` or `.localhost` gets
+`internal`, any other name gets `auto`. Choose `dns-cloudflare` (or `files`) explicitly.
+
+| Setting | Meaning |
+| --- | --- |
+| `PYN_SITE` | The host name or IP address people use, with no scheme or port. Unset means plain HTTP on 8080, as before |
+| `PYN_TLS` | `auto`, `internal`, `dns-cloudflare`, `files` or `off` (plain HTTP on 8080; `PYN_SITE` is then ignored) |
+| `PYN_CF_TOKEN_FILE` | Compose only: a file on the host holding the Cloudflare token, mounted into the container as a secret (the image reads it through `CF_API_TOKEN_FILE`). The Compose files do not read `CF_API_TOKEN`, so the token stays out of `.env` |
+| `PYN_TRUSTED_PROXY_RANGES` | Addresses or ranges (space or comma separated) of proxies in front of the web container. Empty by default, and never a private-range wildcard (the container refuses `private_ranges`, `0.0.0.0/0` and `::/0`), which would trust everyone arriving through Docker's network |
+| `PYN_WEB_PUBLISH_HTTP`, `PYN_WEB_PUBLISH_TLS` | Where ports 80 and 443 (and 443/udp) are published: `ip:port` for each, default all interfaces on 80 and 443 once `PYN_SITE` is set |
+| `PYN_ACCESS_LOG` | `on` writes one JSON line per request to the container log (default `off`) |
+
+With the installer: `--site pyn.example.com` picks `auto` for a public name, `internal` for an address or a private name; adding `--cf-token-file FILE` (or answering yes to the private-network question and
+pasting the token) picks `dns-cloudflare`; `--tls auto|internal|dns-cloudflare|off` overrides the pick. The installer checks that ports 80 and 443 are free, refuses a Compose file without the certificate
+volume, stores the token as `secrets/cloudflare-token` (mode 600, handed to the container's user) and prints, for `internal`, where the root certificate is.
+
+#### The Cloudflare token
+
+`dns-cloudflare` proves control of the name through a DNS record, so the host needs no open port. Create an API token (Cloudflare dashboard, My Profile, API Tokens) with the permissions **Zone: Zone: Read** and
+**Zone: DNS: Edit**, limited to the one zone (Zone Resources: Include, Specific zone). Nothing broader is needed. The token can change that zone's DNS, so keep it in a file readable only by its owner and the
+container (mode 600, owned by uid 65532, the container's user), never in `.env` or a repository, and revoke it if the host is lost. The installer (`secrets/cloudflare-token`) and Compose
+(`PYN_CF_TOKEN_FILE=./secrets/cloudflare-token`) do that; with plain `docker run`, use `--env CF_API_TOKEN_FILE=/run/secrets/token` and a read-only mount.
+
+#### Ports and exposure
+
+- **80, 443 and 443/udp** (HTTP/3) are published on all interfaces once `PYN_SITE` is set. Port 80 answers with a redirect to https, and for `auto` is also used to prove control of the name. The container is not root and binds them through the namespaced
+  `net.ipv4.ip_unprivileged_port_start` sysctl the Compose files set (no capability).
+- The redirect omits the port, so the real 443 must be the published one. To use other ports, run the container with `PYN_TLS=off` behind your own proxy ([layouts](#public-address-and-client-addresses-per-layout)).
+- `auto` needs this host reachable on 80 and 443 **from the internet**, and the name's DNS pointing at it. Where that is not possible, use `dns-cloudflare` (nothing exposed) or `internal`.
+- A host that already uses 80 or 443 (another web server, a proxy) cannot also publish them: keep that proxy in front and run the web container with `PYN_TLS=off`, or stop the other one. Without `PYN_SITE` the Compose files publish nothing on 80 or 443.
+- Exposed to the network is only the web container: the app, `/v1` and `/healthz`. The server's API port, the database and the container's own administration endpoint (off) are not published.
+- `internal`: anyone who can read the `pyn-tls` volume holds the authority's private key, so devices that trust the root would trust a forged certificate. Treat the volume as a secret and trust the root only on devices that need it.
+
+#### Why passkeys need a host name
+
+[Passkeys](concepts/access.md#passkeys-and-security-keys) are tied to a host name by the web standard (WebAuthn): an IP address is not allowed, and the page must be https (or `localhost`). With an IP address people
+sign in with a password and an authenticator app. To use passkeys, give pyn a name: a public one, a name in your own zone, or a private name such as `pyn.lan` (point it at the host in your router's DNS or in each device's hosts file) with `internal`.
+Choose the name before people register passkeys; changing it makes them unusable.
+
+#### Trusting the internal root
+
+Needed only for `internal`. Fetch the root from the running container (the installer saves it as `pyn-root.crt` next to `.env`):
+
+```bash
+docker compose cp web:/data/caddy/pki/authorities/local/root.crt ./pyn-root.crt
+```
+
+Trust it once on each device that opens pyn; keep it from anyone who should not be trusted. The root persists in the `pyn-tls` volume, so a recreated container keeps it.
+
+- **Linux (Debian, Ubuntu):** `sudo cp pyn-root.crt /usr/local/share/ca-certificates/pyn-root.crt && sudo update-ca-certificates`. Fedora and similar: copy to `/etc/pki/ca-trust/source/anchors/` and run `sudo update-ca-trust`. Firefox keeps its own list: Settings, Privacy and Security, Certificates, View Certificates, Authorities, Import, and tick "Trust this CA to identify websites". Chrome and Chromium on Linux use the per-user NSS store: `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n pyn-root -i pyn-root.crt`.
+- **macOS:** `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain pyn-root.crt`, or open the file in Keychain Access, add it to System, open it and set "When using this certificate" to Always Trust.
+- **Windows:** in an administrator prompt, `certutil -addstore -f ROOT pyn-root.crt`, or double-click the file, Install Certificate, Local Machine, and place it in Trusted Root Certification Authorities. Firefox on Windows can use the system store (`security.enterprise_roots.enabled`) or import it as above.
+- **iOS and iPadOS:** send the file to the device (AirDrop, mail or a download), open it and allow the profile, install it in Settings, Profile Downloaded, then turn on full trust in Settings, General, About, Certificate Trust Settings.
+- **Android:** Settings, Security (or Security and privacy), Encryption and credentials, Install a certificate, CA certificate, and choose the file. Chrome and the system browser accept a user-installed authority; some apps ignore it.
+
+Provisional: the `pyn` command is expected to read the operating system's trust store, so the steps above should be enough for it too; this has not been verified against an internal root yet.
+
+#### Your own certificate
+
+`PYN_TLS=files` serves a certificate and key you provide, for an authority of your own or a Cloudflare origin certificate. Mount a folder with `tls.crt` and `tls.key` at `/certs` in a
+`docker-compose.override.yml` next to the Compose file, and set `PYN_SITE` and `PYN_TLS=files` in `.env`:
+
+```yaml
+services:
+  web:
+    volumes:
+      - ./certs:/certs:ro
+```
+
+Renewing means replacing the two files and running `docker compose restart web`; the container checks for both files at start and refuses to start without them.
+
+#### Public address and client addresses per layout
+
+`PYN_PUBLIC_URL` is the address people type, `https://<name>` without a port for the default 443. Sign-in, cookies and passkeys follow it, and when it is unset the Compose file uses `https://<PYN_SITE>`. `PYN_TRUST_FORWARDED_FOR=true` (set
+by the Compose files) lets the server's rate limits use the client address from `X-Forwarded-For`. The web container sends the server exactly one entry, the real client, so it stays correct in every layout below.
+The container takes the client from the connection itself unless that peer is listed in `PYN_TRUSTED_PROXY_RANGES`; for a listed proxy it reads `CF-Connecting-IP`, else `X-Forwarded-For` (right to left, the first address not listed), and keeps its `X-Forwarded-Proto` and `X-Forwarded-Host`.
+List only the addresses the proxy really connects from, never a range that includes clients.
+
+| Layout | `PYN_TLS` and `PYN_SITE` | `PYN_PUBLIC_URL` | `PYN_TRUSTED_PROXY_RANGES` |
+| --- | --- | --- | --- |
+| Direct: the web container is the edge | `auto`, `internal` or `dns-cloudflare`, with `PYN_SITE` | Derived: `https://<PYN_SITE>` | Empty |
+| Behind your own proxy or tunnel on the same host or network | `PYN_TLS=off`, `PYN_SITE` unset; the proxy forwards to `http://<host>:8080` | The proxy's public https address | The proxy's address as the container sees it (for a container proxy, its address on the shared network) |
+| A Cloudflare tunnel (`cloudflared` forwarding to `http://web:8080`) | `PYN_TLS=off` | `https://<the tunnel's host name>` | The `cloudflared` container's address; the client comes from `CF-Connecting-IP` |
+| Cloudflare proxied (orange cloud) with an origin certificate | `PYN_TLS=files` with the origin certificate and key, `PYN_SITE` the name, Cloudflare SSL mode Full (strict) | `https://<name>` | [Cloudflare's published ranges](https://www.cloudflare.com/ips/), kept up to date by you |
+| A managed load balancer that terminates TLS, in front of `PYN_TLS=off` containers | `PYN_TLS=off`, `PYN_WEB_PUBLISH` on the private interface | The load balancer's https address | The load balancer's addresses (its subnet only if nothing else can reach the container) |
+
+A Cloudflare tunnel or proxy limits request bodies (100 MB on the lower plans) and carries HTTP only, so it does not suit large files or the planned SSH transport; prefer the direct layouts for those. When another proxy
+terminates TLS, add the web app's public address to the server's `PYN_ALLOWED_ORIGINS` only for a web app served from another origin.
+
+#### Certificates must persist, and renew on their own
+
+The certificates and the internal root live in the `pyn-tls` volume (`/data` in the container). It must persist: losing it means new certificates, for `internal` a new root every device must trust again, and for `auto` a
+risk of hitting the public authority's rate limits. Never run `docker compose down -v` on a live deployment (that deletes the database volume too); the installer refuses a Compose file without the volume.
+
+Renewal is automatic: Caddy renews when about a third of a certificate's life is left, tries the fallback authority if the first fails, and needs no change for the shorter lifetimes public authorities are moving to. If a certificate is
+not renewing, check in this order:
+
+1. `docker compose logs web` for `certificate`, `acme` or `error` lines; a failed renewal is logged with the reason.
+2. For `auto`: ports 80 and 443 reachable from the internet and the name's DNS pointing at this host. For `dns-cloudflare`: the token is valid, not revoked, and limited to the right zone with Zone Read and DNS Edit.
+3. The `pyn-tls` volume is mounted and writable (`docker compose config` shows it), and the host clock is right.
+4. The expiry the browser sees: `echo | openssl s_client -connect pyn.example.com:443 -servername pyn.example.com 2>/dev/null | openssl x509 -noout -enddate`. Point an uptime monitor that checks certificate expiry at the public address too.
+
+Provisional: the server's admin status does not yet warn about a certificate that is close to expiry or failed to renew (the certificate is held by the web container), so watch the log or monitor the expiry as above. The release smoke test
+(`scripts/smoke-release.sh`) checks the certificate's expiry date over https with an internal certificate and warns loudly when too little life is left.
+
+#### Upgrading an existing install
+
+An install without `PYN_SITE` in its `.env` is unchanged: the web container stays plain HTTP on 8080 (`PYN_TLS` unset means `off`), the Compose file publishes nothing on 80 or 443 for it, and `PYN_PUBLIC_URL` and the 8080 mapping are used as before. To turn https on,
+add `PYN_SITE` (and `PYN_PUBLIC_URL=https://<name>`, or leave it to the derived value), refresh the Compose file, and run `docker compose up -d`; or re-run the installer with `--site` (it moves `PYN_PUBLIC_URL` and keeps the rest).
+If your own proxy already serves the name, set `PYN_TLS=off` and leave `PYN_SITE` unset. Both the server and the web app address people use change when you move to https: update the CLI's saved address (`pyn config set --global server https://<name>`) and any web app that lists this one in `PYN_ALLOWED_ORIGINS`.
+
+Until https is in place, the CLI warns about the clear-text address: at `pyn login` and when `pyn config set server`
 stores an `http://` address for a host that is not loopback. The warning is shown once per address (stored in the user's
 configuration directory, next to the saved sign-ins) and again after a new login or a changed address; later commands
 print nothing extra, and `--json` output is unaffected.
-
-A minimal Caddy site, which handles certificates and the forwarded headers itself:
-
-```
-pyn.example.com {
-	reverse_proxy 127.0.0.1:7878
-}
-```
 
 ### Health and monitoring
 
