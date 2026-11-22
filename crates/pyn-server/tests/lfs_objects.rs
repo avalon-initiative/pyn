@@ -106,6 +106,7 @@ async fn world_with(trust_forwarded: bool, visibility: &str) -> World {
         trust_forwarded,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     });
     let alice = token_for(&app, "alice").await;
     let bob = token_for(&app, "bob").await;

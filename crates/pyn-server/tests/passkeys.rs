@@ -71,6 +71,7 @@ fn server_at(public_url: &str) -> Server {
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     });
     Server { app, clock }
 }

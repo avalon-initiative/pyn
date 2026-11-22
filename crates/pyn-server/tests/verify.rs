@@ -81,6 +81,7 @@ async fn world() -> World {
         trust_forwarded: true,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     });
     World { app, meta }
 }

@@ -61,6 +61,7 @@ async fn server_with_root(org_creation: OrgCreation) -> (Router, String) {
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     });
     (app, root)
 }

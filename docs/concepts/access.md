@@ -431,7 +431,7 @@ sees there (a public repository stays readable by any signed-in account), a bad 
 service credential is still refused where it was. Stored data and repository visibility flags are never touched by the mode, and
 existing tokens keep working. LFS uploads, verify, locks and tus, and the organization lookups, need a credential on both modes; LFS download is the one LFS operation a `public` server gives a signed-out caller, from a public repository.
 
-These stay open in both modes, because a signed-out visitor needs them to reach a server at all: `GET /healthz`,
+These stay open in both modes, because a signed-out visitor needs them to reach a server at all: `GET /healthz`, `GET /readyz`,
 `GET /openapi.json`, `GET /v1/capabilities`, `GET`/`POST /v1/setup`, `GET /v1/registration`,
 `POST /v1/register`, `POST /v1/register/verify`, `POST /v1/register/resend`, `POST /v1/login`, `POST`/`DELETE /v1/session`,
 `GET /v1/sign-in-options`, `GET /v1/oidc/authorize`, `GET /v1/oidc/callback`, and the tus `OPTIONS` preflight. Accepting an
@@ -1038,7 +1038,7 @@ reaches against its declaration, fails the build.
 
 ## First-run setup
 
-A new server is uninitialised. Until setup completes it serves only `GET /v1/setup`, `POST /v1/setup` and `GET /healthz`;
+A new server is uninitialised. Until setup completes it serves only `GET /v1/setup`, `POST /v1/setup`, `GET /healthz` and `GET /readyz`;
 every other route answers `503 not_initialised`. Setup creates the first administrator and records the essentials, and it
 can never run again (`409 already_initialised`).
 

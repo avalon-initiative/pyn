@@ -103,6 +103,7 @@ fn app(log: LogConfig) -> Router {
             trust_forwarded: false,
             updates: None,
             storage: Default::default(),
+            ready: Default::default(),
         },
         RequestLimits::default(),
         log,

@@ -23,6 +23,7 @@ services:
       target: server
     image: ${PYN_IMAGE:-pyn-core:local}
     restart: unless-stopped
+    stop_grace_period: 45s
     depends_on:
       db:
         condition: service_healthy

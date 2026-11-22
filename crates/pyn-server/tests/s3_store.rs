@@ -303,7 +303,12 @@ async fn an_unreachable_store_turns_the_report_degraded_without_stopping_anythin
         api::StorageKind::S3,
         Some(BUCKET.into()),
     ));
-    spawn_monitor(store, report.clone(), Duration::from_millis(50));
+    spawn_monitor(
+        store,
+        report.clone(),
+        Duration::from_millis(50),
+        Default::default(),
+    );
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(report.settings().status, api::StorageStatus::Ok);
 

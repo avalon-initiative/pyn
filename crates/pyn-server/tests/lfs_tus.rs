@@ -141,6 +141,7 @@ async fn world() -> World {
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     });
     let alice = token_for(&app, "alice").await;
     let bob = token_for(&app, "bob").await;

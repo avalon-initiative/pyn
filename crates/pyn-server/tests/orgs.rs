@@ -75,6 +75,7 @@ async fn server_with_mode(
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     });
     (app, root, store)
 }

@@ -4,6 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pyn_core::AccessService;
+use tokio::task::JoinHandle;
+
+use crate::shutdown::Drain;
 
 /// One pass: runs the sweep and logs what it did.
 pub async fn run_once(access: &AccessService) {
@@ -26,14 +29,13 @@ pub async fn run_once(access: &AccessService) {
     }
 }
 
-/// Runs a pass now and then every `every`. State lives in the store, so a restart loses nothing.
-pub fn spawn(access: Arc<AccessService>, every: Duration) {
+/// Runs a pass now and then every `every` until draining starts. State lives in the store, so a restart loses nothing.
+pub fn spawn(access: Arc<AccessService>, every: Duration, drain: Drain) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(every);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
+        while drain.tick(&mut tick).await {
             run_once(&access).await;
         }
-    });
+    })
 }

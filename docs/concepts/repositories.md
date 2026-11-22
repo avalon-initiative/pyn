@@ -24,7 +24,7 @@ never derived from the name, unchanged by a rename and never issued again after 
 see [events](events.md#stable-ids) for the format and for how integrations should key their data.
 
 **Reserved names.** `_`, `-`, `about`, `admin`, `api`, `assets`, `explore`, `healthz`, `help`, `login`, `logout`, `new`,
-`notifications`, `openapi`, `orgs`, `pricing`, `register`, `search`, `settings`, `signup`, `static`, `user`, `users` and
+`notifications`, `openapi`, `orgs`, `pricing`, `readyz`, `register`, `search`, `settings`, `signup`, `static`, `user`, `users` and
 `v1` cannot be a user name or an organization name, because the web app and the API use them as routes. The answer is
 `400 reserved_name`. (A repository name cannot be `-` either, since it must start with a letter or digit, which is what
 lets the web app keep `/:owner/-/...` for organization pages.)

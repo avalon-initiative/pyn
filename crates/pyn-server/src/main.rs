@@ -1,4 +1,7 @@
 use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::task::JoinHandle;
 
 use pyn_core::gate::{DEFAULT_UPLOADS_PER_SERVER, DEFAULT_UPLOADS_PER_USER};
 use pyn_core::memory::{
@@ -20,7 +23,9 @@ use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::email::{MailerSetting, check_log_mailer_bind};
 use pyn_server::observe::{LogConfig, LogFormat, LoggedAudit};
 use pyn_server::passwords::PooledPasswords;
+use pyn_server::ready::Readiness;
 use pyn_server::request_limits::RequestLimits;
+use pyn_server::shutdown::{self, Drain, Outcome};
 use pyn_server::storage::{ObjectStoreSetting, StorageReport};
 use pyn_server::update_check::{GithubReleases, ReleaseSource, UpdateChecker};
 use pyn_server::webhook_delivery::{DeliveryWorker, SafeSender, WorkerConfig};
@@ -195,6 +200,8 @@ fn update_checker(
     on: bool,
     source: impl FnOnce() -> anyhow::Result<Arc<dyn ReleaseSource>>,
     clock: Arc<dyn Clock>,
+    drain: &Drain,
+    tasks: &mut Vec<JoinHandle<()>>,
 ) -> anyhow::Result<Option<Arc<UpdateChecker>>> {
     if !on {
         return Ok(None);
@@ -207,7 +214,11 @@ fn update_checker(
         clock,
         env!("CARGO_PKG_VERSION"),
     ));
-    checker.clone().spawn(std::time::Duration::from_secs(600));
+    tasks.push(
+        checker
+            .clone()
+            .spawn(std::time::Duration::from_secs(600), drain.clone()),
+    );
     Ok(Some(checker))
 }
 
@@ -258,10 +269,11 @@ fn start_webhook_delivery(
     clock: Arc<dyn Clock>,
     settings: &WebhookSettings,
     public_url: String,
-) -> anyhow::Result<()> {
+    drain: &Drain,
+) -> anyhow::Result<Option<JoinHandle<()>>> {
     if !strict_flag("PYN_WEBHOOK_WORKER", true)? {
         tracing::info!("PYN_WEBHOOK_WORKER is false: this copy does not deliver webhooks");
-        return Ok(());
+        return Ok(None);
     }
     let allowed_hosts: Vec<String> = std::env::var("PYN_WEBHOOKS_ALLOWED_HOSTS")
         .map(|v| v.split(',').map(str::to_string).collect())
@@ -284,7 +296,7 @@ fn start_webhook_delivery(
         );
         sender = sender.allowing_loopback();
     }
-    Arc::new(DeliveryWorker::new(
+    let handle = Arc::new(DeliveryWorker::new(
         store,
         clock,
         Arc::new(sender),
@@ -293,8 +305,8 @@ fn start_webhook_delivery(
         public_url,
         config,
     ))
-    .spawn();
-    Ok(())
+    .spawn(drain.clone());
+    Ok(Some(handle))
 }
 
 /// OpenID Connect sign-in, only when the issuer, client id and client secret are all set.
@@ -331,6 +343,17 @@ async fn healthcheck(addr: &str) -> anyhow::Result<()> {
         .build()?;
     client.get(url).send().await?.error_for_status()?;
     Ok(())
+}
+
+/// `PYN_SHUTDOWN_GRACE_SECS`: seconds in-flight requests get to finish after a stop signal, default 30; 0 is no grace.
+fn shutdown_grace() -> anyhow::Result<Duration> {
+    match std::env::var("PYN_SHUTDOWN_GRACE_SECS") {
+        Ok(v) => Ok(Duration::from_secs(whole_number(
+            "PYN_SHUTDOWN_GRACE_SECS",
+            &v,
+        )?)),
+        Err(_) => Ok(Duration::from_secs(30)),
+    }
 }
 
 #[tokio::main]
@@ -384,6 +407,10 @@ async fn main() -> anyhow::Result<()> {
         strict_flag("PYN_DEV_AUTH_ALLOW_NON_LOOPBACK", false)?,
     )
     .map_err(anyhow::Error::msg)?;
+    let grace = shutdown_grace()?;
+    let drain = Drain::default();
+    let signals = shutdown::watch_signals()?;
+    let mut tasks: Vec<JoinHandle<()>> = Vec::new();
     let (clock, time) = dev_clock()?;
     let (rules, initial_policy) = match std::env::var("PYN_CONFIG") {
         Ok(path) => {
@@ -434,7 +461,7 @@ async fn main() -> anyhow::Result<()> {
     let (objects, storage): (Arc<dyn ObjectStore>, Arc<StorageReport>) = match content_setting {
         ObjectStoreSetting::Filesystem(dir) => {
             let fs = FsObjectStore::open(dir).await?;
-            fs.spawn_sweeper(std::time::Duration::from_secs(900));
+            tasks.push(fs.spawn_sweeper(Duration::from_secs(900)));
             (
                 Arc::new(ChunkedStore::new(Arc::new(fs))),
                 Arc::new(StorageReport::new(StorageKind::Filesystem, None)),
@@ -444,11 +471,12 @@ async fn main() -> anyhow::Result<()> {
             let bucket = settings.bucket.clone();
             let store = pyn_server::storage::open_s3(*settings).await?;
             let report = Arc::new(StorageReport::new(StorageKind::S3, Some(bucket.clone())));
-            pyn_server::storage::spawn_monitor(
+            tasks.push(pyn_server::storage::spawn_monitor(
                 store.clone(),
                 report.clone(),
                 pyn_server::storage::PROBE_INTERVAL,
-            );
+                drain.clone(),
+            ));
             tracing::info!(bucket, "file content is kept in an S3 bucket");
             (Arc::new(ChunkedStore::new(store)), report)
         }
@@ -693,12 +721,36 @@ async fn main() -> anyhow::Result<()> {
         on_off("PYN_UPDATE_CHECK", false)?,
         || Ok(Arc::new(GithubReleases::new()?)),
         clock.clone(),
+        &drain,
+        &mut tasks,
     )?;
-    start_webhook_delivery(webhooks, clock, &hook_settings, access.public_url())?;
-    pyn_server::account_deletion::spawn(access.clone(), std::time::Duration::from_secs(3600));
-    pyn_server::access_session_sweep::spawn(access.clone(), std::time::Duration::from_secs(60));
-    pyn_server::lock_stream_api::spawn_sweep(repos.clone(), std::time::Duration::from_secs(5));
-    pyn_server::tus_sweep::spawn(repos.clone(), std::time::Duration::from_secs(600));
+    tasks.extend(start_webhook_delivery(
+        webhooks,
+        clock,
+        &hook_settings,
+        access.public_url(),
+        &drain,
+    )?);
+    tasks.push(pyn_server::account_deletion::spawn(
+        access.clone(),
+        Duration::from_secs(3600),
+        drain.clone(),
+    ));
+    tasks.push(pyn_server::access_session_sweep::spawn(
+        access.clone(),
+        Duration::from_secs(60),
+        drain.clone(),
+    ));
+    tasks.push(pyn_server::lock_stream_api::spawn_sweep(
+        repos.clone(),
+        Duration::from_secs(5),
+        drain.clone(),
+    ));
+    tasks.push(pyn_server::tus_sweep::spawn(
+        repos.clone(),
+        Duration::from_secs(600),
+        drain.clone(),
+    ));
 
     let dev_auth: Option<Arc<dyn AuthProvider>> = if flag("PYN_DEV_AUTH") {
         tracing::warn!(
@@ -719,6 +771,7 @@ async fn main() -> anyhow::Result<()> {
             trust_forwarded: flag("PYN_TRUST_FORWARDED_FOR"),
             updates,
             storage,
+            ready: Readiness::new(drain.clone()),
         },
         request_limits,
         log_config,
@@ -726,12 +779,26 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("pyn-server listening on {addr} with {meta_kind} storage");
-    axum::serve(
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await?;
-    Ok(())
+    .with_graceful_shutdown({
+        let drain = drain.clone();
+        async move { drain.started().await }
+    })
+    .into_future();
+    let outcome = shutdown::run(server, &drain, grace, signals).await?;
+    for task in &tasks {
+        task.abort();
+    }
+    match outcome {
+        Outcome::Clean => {
+            tracing::info!("pyn-server stopped");
+            Ok(())
+        }
+        Outcome::Forced { .. } => std::process::exit(1),
+    }
 }
 
 #[cfg(test)]
@@ -774,7 +841,13 @@ mod tests {
     #[test]
     fn an_off_update_check_builds_no_source() {
         let clock: std::sync::Arc<dyn pyn_core::Clock> = std::sync::Arc::new(pyn_core::SystemClock);
-        let checker = update_checker(false, || panic!("the source must not be built"), clock);
+        let checker = update_checker(
+            false,
+            || panic!("the source must not be built"),
+            clock,
+            &super::Drain::default(),
+            &mut Vec::new(),
+        );
         assert!(checker.unwrap().is_none());
     }
 

@@ -94,6 +94,7 @@ async fn state_full(
         trust_forwarded: true,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     }
 }
 

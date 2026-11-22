@@ -175,11 +175,11 @@ impl DeliveryWorker {
         })
     }
 
-    /// Runs passes forever on this process. Several server copies may each run one: claims are exclusive.
-    pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+    /// Runs passes on this process until draining starts. Several server copies may each run one: claims are exclusive.
+    pub fn spawn(self: Arc<Self>, drain: crate::shutdown::Drain) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut next_purge = self.clock.now();
-            loop {
+            while !drain.is_draining() {
                 let now = self.clock.now();
                 let mut busy = false;
                 match self.run_once(now).await {
@@ -193,8 +193,8 @@ impl DeliveryWorker {
                     }
                     next_purge = now + Duration::hours(1);
                 }
-                if !busy {
-                    tokio::time::sleep(self.config.poll).await;
+                if !busy && !drain.sleep(self.config.poll).await {
+                    break;
                 }
             }
         })

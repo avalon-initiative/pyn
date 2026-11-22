@@ -8,8 +8,10 @@ use axum::extract::{Query, State};
 use pyn_core::{OutboxEvent, PynError, Repositories};
 use pyn_proto as api;
 use serde::Deserialize;
+use tokio::task::JoinHandle;
 
 use crate::caller::RepoReader;
+use crate::shutdown::Drain;
 use crate::{ApiResult, AppState, RepoAddress};
 
 const MAX_WAIT_SECS: u64 = 25;
@@ -40,7 +42,7 @@ fn item(event: OutboxEvent) -> ApiResult<api::LockStreamEvent> {
     })
 }
 
-/// Lock changes of the repository after a cursor, oldest first. Waits up to `wait` seconds for one when there is none.
+/// Lock changes of the repository after a cursor, oldest first. Waits up to `wait` seconds for one when there is none, or less when the server starts shutting down.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/locks/events", operation_id = "lock_events",
     params(RepoAddress,
         ("after" = Option<String>, Query, description = "cursor of the last event seen; without it the stream starts now and returns no events"),
@@ -69,27 +71,30 @@ pub(crate) async fn lock_events(
             .repos
             .lock_events_after(&repo.record, after, limit)
             .await?;
-        if !found.is_empty() || tokio::time::Instant::now() >= deadline {
+        if !found.is_empty()
+            || tokio::time::Instant::now() >= deadline
+            || s.ready.drain.is_draining()
+        {
             let events = found.into_iter().map(item).collect::<ApiResult<Vec<_>>>()?;
             let cursor = events
                 .last()
                 .map_or_else(|| raw.to_string(), |e| e.cursor.clone());
             return Ok(Json(api::LockStreamPage { events, cursor }));
         }
-        tokio::time::sleep(POLL_EVERY).await;
+        // The wait ends early once the server drains, so the client reconnects instead of holding the shutdown.
+        s.ready.drain.sleep(POLL_EVERY).await;
     }
 }
 
 /// Removes lapsed leases every `every`, raising `lock.expired` for each so a stream shows the expiry when it happens.
-pub fn spawn_sweep(repos: Arc<Repositories>, every: Duration) {
+pub fn spawn_sweep(repos: Arc<Repositories>, every: Duration, drain: Drain) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(every);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
+        while drain.tick(&mut tick).await {
             if let Err(e) = repos.sweep_expired_locks().await {
                 tracing::error!(error = %e, "lock expiry sweep failed");
             }
         }
-    });
+    })
 }

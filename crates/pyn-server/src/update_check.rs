@@ -11,6 +11,8 @@ use pyn_proto as api;
 use semver::Version;
 use serde::Deserialize;
 
+use crate::shutdown::Drain;
+
 /// How long a successful answer is kept.
 pub const TTL: chrono::Duration = chrono::Duration::hours(24);
 /// How long to wait after a failed lookup before trying again.
@@ -179,16 +181,15 @@ impl UpdateChecker {
         true
     }
 
-    /// Checks now, then whenever due, polling every `every`.
-    pub fn spawn(self: Arc<Self>, every: Duration) {
+    /// Checks now, then whenever due, polling every `every` until draining starts.
+    pub fn spawn(self: Arc<Self>, every: Duration, drain: Drain) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(every);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tick.tick().await;
+            while drain.tick(&mut tick).await {
                 self.refresh_if_due().await;
             }
-        });
+        })
     }
 }
 

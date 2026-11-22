@@ -102,6 +102,7 @@ async fn world(mode: AccessMode) -> World {
         trust_forwarded: false,
         updates: None,
         storage: Default::default(),
+        ready: Default::default(),
     };
     let app = router(state);
     let body = json!({"username": "alice", "password": "correct horse battery"}).to_string();
