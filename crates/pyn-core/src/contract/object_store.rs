@@ -5,7 +5,9 @@ use std::sync::Arc;
 use pyn_object::{Kind, hash_object};
 use tokio::io::AsyncReadExt;
 
-use crate::{ChunkedStore, Keying, ObjectId, ObjectStore, PynError, REPO_ALGORITHM};
+use crate::{
+    ChunkedStore, Keying, ObjectId, ObjectStore, PynError, REPO_ALGORITHM, StoredKey, StoredKind,
+};
 
 pub type Objects = Arc<dyn ObjectStore>;
 
@@ -264,6 +266,52 @@ pub async fn store_serves_chunked_objects_through_chunked_store(store: Objects) 
     assert!(chunked.get(&id).await.unwrap().is_none());
 }
 
+pub async fn store_lists_every_key_once_across_pages(store: Objects) {
+    let mut expected = std::collections::HashSet::new();
+    for n in 0..23 {
+        let id = put_blob(&store, &bytes_of(100 + n, n as u64 + 40)).await.id;
+        expected.insert(StoredKey {
+            id,
+            kind: StoredKind::Object,
+        });
+    }
+    let chunk = store.put_chunk(b"a chunk".to_vec()).await.unwrap();
+    expected.insert(StoredKey {
+        id: chunk,
+        kind: StoredKind::Object,
+    });
+    let whole = blob_id(b"a manifest owner");
+    store.put_manifest(&whole, b"m".to_vec()).await.unwrap();
+    expected.insert(StoredKey {
+        id: whole,
+        kind: StoredKind::Manifest,
+    });
+
+    for limit in [1, 7, 1000] {
+        let mut seen = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let page = store.list_keys(after.as_deref(), limit).await.unwrap();
+            assert!(page.keys.len() <= limit && page.keys.len() <= 1000);
+            seen.extend(page.keys);
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        let unique: std::collections::HashSet<_> = seen.iter().copied().collect();
+        assert_eq!(unique.len(), seen.len(), "a key was listed twice");
+        assert!(
+            expected.is_subset(&unique),
+            "limit {limit}: a key is missing"
+        );
+    }
+
+    assert!(store.delete(&whole).await.unwrap());
+    let page = store.list_keys(None, 1000).await.unwrap();
+    assert!(!page.keys.iter().any(|k| k.id == whole));
+}
+
 /// Generates one `#[tokio::test]` per object-store case. `$factory` is an async expression yielding the store as an
 /// `Arc<dyn ObjectStore>` together with a value kept alive for the test (a server, a temporary directory).
 #[macro_export]
@@ -282,6 +330,7 @@ macro_rules! object_store_contract_tests {
         $crate::object_store_contract_tests!(@one $factory; [$(#[$attr])*]; store_handles_objects_across_the_sizes_it_is_given);
         $crate::object_store_contract_tests!(@one $factory; [$(#[$attr])*]; store_serves_concurrent_puts_of_the_same_content);
         $crate::object_store_contract_tests!(@one $factory; [$(#[$attr])*]; store_serves_chunked_objects_through_chunked_store);
+        $crate::object_store_contract_tests!(@one $factory; [$(#[$attr])*]; store_lists_every_key_once_across_pages);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

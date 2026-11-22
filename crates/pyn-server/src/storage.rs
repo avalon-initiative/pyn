@@ -66,6 +66,20 @@ impl ObjectStoreSetting {
     }
 }
 
+/// The bucket settings from `PYN_S3_*` alone, for commands that name the data directory themselves.
+pub fn s3_from_env(
+    get: impl Fn(&str) -> Option<String>,
+    read: impl Fn(&str) -> std::io::Result<String>,
+) -> Result<S3Settings, String> {
+    let set = |name: &str| get(name).filter(|v| !v.is_empty());
+    if set("PYN_S3_BUCKET").is_none() {
+        return Err(
+            "PYN_S3_BUCKET is not set; the bucket is named by the PYN_S3_* settings".into(),
+        );
+    }
+    s3_settings(&set, &read)
+}
+
 /// `NAME` or the file named by `NAME_FILE`, never both; a file's one trailing newline is dropped. Errors never carry a value.
 fn secret(
     name: &str,
@@ -302,6 +316,16 @@ mod tests {
         assert_eq!(s.max_attempts, 5);
         assert!(s.spool_dir.ends_with("pyn-s3-spool"));
         assert!(parse(&[]).unwrap().is_shared());
+    }
+
+    #[test]
+    fn the_bucket_settings_are_read_alone_and_ignore_the_data_directory() {
+        let mut pairs = BASE.to_vec();
+        pairs.push(("PYN_DATA_DIR", "/data"));
+        let s = s3_from_env(env(&pairs), no_files).unwrap();
+        assert_eq!(s.bucket, "pyn-prod");
+        let err = s3_from_env(env(&[("PYN_DATA_DIR", "/data")]), no_files).unwrap_err();
+        assert!(err.contains("PYN_S3_BUCKET"), "{err}");
     }
 
     #[test]

@@ -338,6 +338,54 @@ What the provider's behaviour means for you (details in [provider notes](concept
 - The spool directory (`PYN_S3_SPOOL_DIR`) must hold the largest object being uploaded; in the container image `/tmp` is
   memory-backed, so point it at a volume when large files are expected.
 
+### Moving the object store
+
+`pyn-server migrate-objects` copies every stored object and chunk manifest from a data directory into a bucket, or from a
+bucket back into a directory, so an existing install can change store without losing history. It runs on the host, next to
+`recover-admin`, and exits.
+
+```
+pyn-server migrate-objects (--from-data-dir PATH | --from-s3) (--to-data-dir PATH | --to-s3)
+                           [--dry-run] [--verify] [--jobs N] [--force]
+```
+
+- A side is either a data directory (`--from-data-dir` / `--to-data-dir`, the path given explicitly; `PYN_DATA_DIR` is not
+  read) or the bucket (`--from-s3` / `--to-s3`) described by the `PYN_S3_*` variables, with the same `_FILE` variants as the
+  server. Exactly one side is the bucket for a move between a directory and a bucket; two directories also work. Both sides
+  the bucket is refused, as is the same directory (or one inside the other).
+- `--dry-run` reads and compares but writes nothing (no directory is created, no marker is written to the bucket) and
+  prints what would be copied.
+- `--verify` re-reads every object and manifest it copied from the destination and compares hashes, failing the run on any
+  difference. Objects already present are always compared by size and hash before being skipped, so a run with or without
+  `--verify` never trusts what is there.
+- `--jobs N` (1 to 64, default 4) is the number of objects handled at once.
+- `--force` runs although a server answers on `PYN_ADDR` (default `127.0.0.1:7878`). Without it the command refuses, because
+  chunk and manifest writes from a live server would interleave with the copy. That check only sees a server reachable on
+  that address from this host; stopping every copy, on every host, is up to the operator.
+- Progress lines (counts and bytes, never credentials) go to standard error. The summary goes to standard output:
+  `copied` (or `would copy`), `skipped`, `verified` with `--verify`, and `failed`, followed by the failing keys (the first
+  20, then a count). The exit status is 0 when nothing failed and 1 otherwise, including a failure to reach either store.
+- The command never deletes from either side. Run again after any failure: what is already in the destination is skipped,
+  so a run can be interrupted and resumed, and a run right after a clean one copies nothing. An object that exists in the
+  destination with different content is reported, not overwritten; remove it there by hand and run again.
+
+Cutover from a data directory to a bucket:
+
+1. Stop every copy of the server, so nothing writes during the copy. Back up first (`scripts/backup.sh`).
+2. Set `PYN_S3_*` in the shell, then check the plan:
+   `pyn-server migrate-objects --from-data-dir /data --to-s3 --dry-run`.
+3. Copy with verification: `pyn-server migrate-objects --from-data-dir /data --to-s3 --verify`. In the container image,
+   `docker compose run --rm -e PYN_S3_ENDPOINT=... server migrate-objects --from-data-dir /data --to-s3 --verify`
+   with the data volume mounted.
+4. Run it once more: it should report `copied: 0` and `failed: 0`.
+5. Switch the configuration: remove `PYN_DATA_DIR` and set `PYN_S3_*` (the server refuses both together), then start the
+   server. Check `GET /v1/admin/settings` shows `storage` kind `s3` and clone a repository.
+6. Keep the old directory until you have used the new store for a while; it is untouched and the way back
+   (`--from-s3 --to-data-dir /data`) works the same way.
+
+Moving to a bucket needs list permission on it (the command lists keys), and a bucket whose objects were also written by
+something else is copied as it is: only keys in pyn's layout are listed.
+
 ## Backups
 
 State is the PostgreSQL database plus the object store directory, and `PYN_SECRET_KEY`. Back up all three; the database

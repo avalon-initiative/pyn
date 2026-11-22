@@ -179,3 +179,32 @@ async fn the_probe_leaves_no_marker_and_names_the_failing_operation() {
     assert!(text.contains("PutObject") && text.contains("403"), "{text}");
     assert!(!text.contains("not-the-secret"), "{text}");
 }
+
+#[tokio::test]
+async fn listing_stays_under_the_prefix_and_skips_strays() {
+    let server = Server::start();
+    let mut settings = server.settings();
+    settings.prefix = "repo-a".into();
+    let store = S3ObjectStore::open(settings.clone()).await.unwrap();
+    settings.prefix = "repo-b".into();
+    let other = S3ObjectStore::open(settings).await.unwrap();
+    let mine = store.put(b"mine".to_vec()).await.unwrap();
+    other.put(b"theirs".to_vec()).await.unwrap();
+    store.put_manifest(&mine, b"m".to_vec()).await.unwrap();
+    let stray = server
+        .root
+        .join(common::BUCKET)
+        .join("repo-a")
+        .join("notes.txt");
+    std::fs::write(stray, b"x").unwrap();
+    store.probe().await.unwrap();
+
+    let page = store.list_keys(None, 1000).await.unwrap();
+    let names: Vec<_> = page.keys.iter().map(|k| k.name()).collect();
+    assert_eq!(page.next, None);
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names.contains(&mine.to_hex()) && names.contains(&format!("{}.cm", mine.to_hex())));
+    let small = store.list_keys(None, 1).await.unwrap();
+    assert_eq!(small.keys.len(), 1);
+    assert!(small.next.is_some());
+}

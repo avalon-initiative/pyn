@@ -325,27 +325,11 @@ fn oidc_provider() -> anyhow::Result<Option<Arc<HttpOidcProvider>>> {
 
 /// Asks this server's own `/healthz` on the configured address; an unspecified bind address is probed on loopback.
 async fn healthcheck(addr: &str) -> anyhow::Result<()> {
-    let (host, port) = addr
-        .rsplit_once(':')
-        .ok_or_else(|| anyhow::anyhow!("PYN_ADDR must be host:port"))?;
-    let host = match host.trim_matches(['[', ']']) {
-        "0.0.0.0" => "127.0.0.1",
-        "::" => "::1",
-        other => other,
-    };
-    let host = if host.contains(':') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
+    let url = pyn_server::host_admin::healthz_url(addr)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
-    client
-        .get(format!("http://{host}:{port}/healthz"))
-        .send()
-        .await?
-        .error_for_status()?;
+    client.get(url).send().await?.error_for_status()?;
     Ok(())
 }
 

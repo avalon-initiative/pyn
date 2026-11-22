@@ -39,6 +39,7 @@ mod lfs_api;
 mod limits_api;
 pub mod lock_stream_api;
 mod merge_api;
+pub mod migrate_objects;
 pub mod observe;
 mod oidc_api;
 mod org_api;

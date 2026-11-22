@@ -294,3 +294,26 @@ async fn chunked_objects_on_disk_share_chunks_compress_and_delete() {
     assert!(!s.exists(&hash).await.unwrap());
     assert_eq!(files_named(dir.path(), ".cm"), 0);
 }
+
+#[tokio::test]
+async fn listing_skips_temp_files_and_foreign_names_and_lists_compressed_objects_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FsObjectStore::open(dir.path()).await.unwrap();
+    let packed = store.put(vec![b'a'; 100_000]).await.unwrap();
+    let plain = store.put(b"plain".to_vec()).await.unwrap();
+    store.put_manifest(&packed, b"m".to_vec()).await.unwrap();
+    std::fs::write(dir.path().join(".tmp-abc"), b"x").unwrap();
+    std::fs::create_dir(dir.path().join("zz")).unwrap();
+    std::fs::write(dir.path().join(&packed.to_hex()[..2]).join("junk"), b"x").unwrap();
+
+    let page = store.list_keys(None, 1000).await.unwrap();
+    let mut names: Vec<_> = page.keys.iter().map(|k| k.name()).collect();
+    names.sort();
+    let mut want = vec![
+        packed.to_hex(),
+        format!("{}.cm", packed.to_hex()),
+        plain.to_hex(),
+    ];
+    want.sort();
+    assert_eq!(names, want);
+}

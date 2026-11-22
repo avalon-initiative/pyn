@@ -108,7 +108,8 @@ pub use merge::{
     Resolution,
 };
 pub use object::{
-    KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore, REPO_ALGORITHM, Stored,
+    KeyHasher, KeyPage, Keying, ObjectRead, ObjectReader, ObjectStore, REPO_ALGORITHM, Stored,
+    StoredKey, StoredKind, page_of_keys,
 };
 pub use oidc::{
     AuthorizationRequest, CodeExchange, ExternalClaims, ExternalCreate, ExternalIdentity,
