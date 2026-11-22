@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke-tests a published release: pulls the images, runs deploy/docker-compose.yml, checks the server and web app,
-# completes first-run setup, then does the same over https with PYN_TLS=internal (redirect, exported root, forwarded protocol, the
-# certificate's expiry). Usage: scripts/smoke-release.sh <server-version> [<web-version>] (for example 0.1.0 0.1.3).
+# completes first-run setup, then does the same over https through the optional caddy service with an internal certificate
+# (redirect, exported root, forwarded protocol across both proxies, the certificate's expiry). Usage: scripts/smoke-release.sh <server-version> [<web-version>] (for example 0.1.0 0.1.3).
 # The web version defaults to the latest pyn-web release, since the two are released independently. Needs docker compose, curl, openssl. Set SMOKE_SKIP_TLS=1 to run only the plain pass.
 set -euo pipefail
 
@@ -142,8 +142,8 @@ plain_pass() {
   local web_port server_addr server_url web_url
   new_stack plain
   web_port=$(free_port)
-  # PYN_TLS=off is the plain HTTP mode behind your own proxy; an existing .env without PYN_SITE behaves the same
-  write_env "PYN_PUBLIC_URL=http://127.0.0.1:$web_port" "PYN_WEB_PUBLISH=127.0.0.1:$web_port" "PYN_TLS=off"
+  # No caddy profile: this is the stack an existing install runs
+  write_env "PYN_PUBLIC_URL=http://127.0.0.1:$web_port" "PYN_WEB_PUBLISH=127.0.0.1:$web_port"
   pull_images
 
   step "starting the stack (plain HTTP, web on 127.0.0.1:$web_port)"
@@ -177,7 +177,7 @@ check_expiry() { # check_expiry CERT_FILE
       {
         echo "smoke: !!!!!!!!!! WARNING !!!!!!!!!!"
         echo "smoke: the served certificate has only $((left / 3600)) hours left (${days} days), under the floor of $((floor / 3600)) hours: RENEWAL IS NOT HAPPENING"
-        echo "::warning::pyn-web certificate close to expiry ($not_after); automatic renewal may be failing"
+        echo "::warning::caddy certificate close to expiry ($not_after); automatic renewal may be failing"
       } >&2
       return 0
     fi
@@ -186,13 +186,13 @@ check_expiry() { # check_expiry CERT_FILE
     {
       echo "smoke: !!!!!!!!!! WARNING !!!!!!!!!!"
       echo "smoke: the served certificate expires within 7 days ($not_after): RENEWAL IS NOT HAPPENING"
-      echo "::warning::pyn-web certificate close to expiry ($not_after); automatic renewal may be failing"
+      echo "::warning::caddy certificate close to expiry ($not_after); automatic renewal may be failing"
     } >&2
   fi
 }
 
 tls_pass() {
-  local web_port http_port tls_port web_url https_url redirect root_crt cookie_file web_container cert_file
+  local web_port http_port tls_port web_url https_url redirect root_crt cookie_file cert_file
   new_stack tls
   web_port=$(free_port)
   http_port=$(free_port)
@@ -201,23 +201,23 @@ tls_pass() {
   while [[ $tls_port == "$web_port" || $tls_port == "$http_port" ]]; do tls_port=$(free_port); done
   web_url="http://127.0.0.1:$http_port"
   https_url="https://127.0.0.1:$tls_port"
-  # The public address is deliberately http: the server then marks its session cookie Secure only when the web container
-  # tells it the request came over https (X-Forwarded-Proto), which is what this pass checks.
-  write_env "PYN_SITE=127.0.0.1" "PYN_TLS=internal" "PYN_PUBLIC_URL=http://127.0.0.1:$tls_port" \
+  # The public address is deliberately http: the server then marks its session cookie Secure only when the request reaches it
+  # with X-Forwarded-Proto: https from caddy, kept by the web container, which is what this pass checks.
+  printf '%s\n' '{' $'\tskip_install_trust' $'\tdefault_sni 127.0.0.1' '}' '' '127.0.0.1 {' $'\ttls internal' \
+    $'\treverse_proxy web:8080 {' $'\t\tflush_interval -1' $'\t}' '}' >"$pdir/Caddyfile"
+  write_env "COMPOSE_PROFILES=caddy" "PYN_SITE=127.0.0.1" "PYN_TRUSTED_PROXIES=2" "PYN_PUBLIC_URL=http://127.0.0.1:$tls_port" \
     "PYN_WEB_PUBLISH=127.0.0.1:$web_port" "PYN_WEB_PUBLISH_HTTP=127.0.0.1:$http_port" "PYN_WEB_PUBLISH_TLS=127.0.0.1:$tls_port"
 
-  step "starting the stack (PYN_TLS=internal, http on 127.0.0.1:$http_port, https on 127.0.0.1:$tls_port)"
+  step "starting the stack (caddy with an internal certificate, http on 127.0.0.1:$http_port, https on 127.0.0.1:$tls_port)"
   started=1
   compose up --detach --wait --wait-timeout 180 || fail "docker compose up did not become ready (TLS)"
 
-  web_container=$(compose ps -q web) || fail "no web container"
-  [[ -n $web_container ]] || fail "no web container"
   root_crt="$pdir/root.crt"
   for _ in $(seq 1 "$ready_attempts"); do
-    if docker cp "$web_container:/data/caddy/pki/authorities/local/root.crt" "$root_crt" 2>/dev/null && [[ -s $root_crt ]]; then break; fi
+    if compose cp caddy:/data/caddy/pki/authorities/local/root.crt "$root_crt" 2>/dev/null && [[ -s $root_crt ]]; then break; fi
     sleep 2
   done
-  [[ -s $root_crt ]] || fail "the internal root certificate was not created in the web container"
+  [[ -s $root_crt ]] || fail "the internal root certificate was not created in the caddy container"
   openssl x509 -in "$root_crt" -noout >/dev/null || fail "the exported root is not a certificate"
   step "fetched the internal root certificate from the container"
 
@@ -226,14 +226,14 @@ tls_pass() {
   redirect=$(curl --silent --output /dev/null --write-out '%{http_code} %{redirect_url}' --max-time 10 "$web_url/some/route") || fail "http request failed"
   [[ $redirect == "308 https://127.0.0.1/some/route" ]] || fail "http should redirect with 308 to https, got: $redirect"
   step "http redirects to https (308)"
-  curl --silent --fail --max-time 10 --cacert "$root_crt" "$https_url/healthz" >/dev/null || fail "the server's /healthz through the web container over https failed"
+  curl --silent --fail --max-time 10 --cacert "$root_crt" "$https_url/healthz" >/dev/null || fail "the server's /healthz through caddy and the web container over https failed"
 
   complete_setup "$https_url/v1/setup" "http://127.0.0.1:$tls_port" --cacert "$root_crt"
   cookie_file="$pdir/signin.headers"
   curl --silent --fail --max-time 10 --cacert "$root_crt" --dump-header "$cookie_file" --output /dev/null \
     --header 'Content-Type: application/json' --data "{\"username\":\"smoke-admin\",\"password\":\"$admin_password\"}" \
-    "$https_url/v1/session" || fail "signing in over https through the web container failed"
-  grep -qi '^set-cookie:.*; Secure' "$cookie_file" || fail "the server did not see X-Forwarded-Proto: https (its session cookie is not Secure)"
+    "$https_url/v1/session" || fail "signing in over https through caddy and the web container failed"
+  grep -qi '^set-cookie:.*; Secure' "$cookie_file" || fail "the server did not see X-Forwarded-Proto: https across caddy and the web container (its session cookie is not Secure)"
   step "signed in over https; the server saw X-Forwarded-Proto: https"
 
   cert_file="$pdir/served.crt"
@@ -250,5 +250,5 @@ ok=1
 if [[ ${SMOKE_SKIP_TLS:-} == 1 ]]; then
   step "OK: pyn-core v$version with pyn-web v$web_version start, answer, and complete setup over plain HTTP"
 else
-  step "OK: pyn-core v$version with pyn-web v$web_version start, answer, and complete setup over plain HTTP and over https (internal certificate)"
+  step "OK: pyn-core v$version with pyn-web v$web_version start, answer, and complete setup over plain HTTP and over https through caddy (internal certificate)"
 fi
