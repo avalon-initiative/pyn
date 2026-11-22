@@ -87,7 +87,7 @@ release() {
 
   # The members pin their intra-workspace dependencies at the workspace version.
   sed -i "s/^version = \"$current\"/version = \"$ver\"/" Cargo.toml
-  sed -i "s/^\\(pyn-[a-z-]* = { version = \"\\)$current/\\1$ver/" crates/*/Cargo.toml
+  sed -i "s/^\\(pyn-[a-z0-9-]* = { version = \"\\)$current/\\1$ver/" crates/*/Cargo.toml
   # The lock pins the member versions, so metadata re-resolves and rewrites it.
   cargo metadata --format-version 1 >/dev/null
   # The published OpenAPI document embeds the workspace version.
@@ -121,7 +121,7 @@ publish() {
   tag="${BASH_REMATCH[2]}"
   ver="${BASH_REMATCH[3]}"
   scripts/verify-release-version.sh "$tag" >/dev/null || die "the workspace version at HEAD is not $ver"
-  bad=$(grep -Hn "^pyn-[a-z-]* = { version = " crates/*/Cargo.toml | grep -v "version = \"$ver\"" || true)
+  bad=$(grep -Hn "^pyn-[a-z0-9-]* = { version = " crates/*/Cargo.toml | grep -v "version = \"$ver\"" || true)
   [ -z "$bad" ] || die "intra-workspace pins are not $ver:"$'\n'"$bad"
   grep -q "^    \"version\": \"$ver\"" docs/generated/openapi.json || die "docs/generated/openapi.json is not at $ver"
   tag_exists "$tag" && die "tag '$tag' already exists"

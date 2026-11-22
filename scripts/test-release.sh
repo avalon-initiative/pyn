@@ -59,12 +59,12 @@ new_repo() {
   rm -rf "$d" "$d.git" "$GH_FIX"; mkdir -p "$GH_FIX"
   git init -q --bare -b main "$d.git"
   git clone -q "$d.git" "$d" 2>/dev/null
-  mkdir -p "$d/scripts" "$d/crates/pyn-a/src" "$d/crates/pyn-b/src" "$d/docs/generated" "$d/bin"
+  mkdir -p "$d/scripts" "$d/crates/pyn-a/src" "$d/crates/pyn-s3/src" "$d/docs/generated" "$d/bin"
   cp "$src/scripts/release.sh" "$src/scripts/verify-release-version.sh" "$src/scripts/ci-green-for-tree.sh" "$src/scripts/release-all.sh" "$d/scripts/"
   printf '[workspace]\nmembers = ["crates/*"]\nresolver = "2"\n\n[workspace.package]\nversion = "0.0.1"\n' > "$d/Cargo.toml"
-  printf '[package]\nname = "pyn-a"\nversion.workspace = true\nedition = "2021"\n\n[dependencies]\npyn-b = { version = "0.0.1", path = "../pyn-b" }\n' > "$d/crates/pyn-a/Cargo.toml"
-  printf '[package]\nname = "pyn-b"\nversion.workspace = true\nedition = "2021"\n' > "$d/crates/pyn-b/Cargo.toml"
-  : > "$d/crates/pyn-a/src/lib.rs"; : > "$d/crates/pyn-b/src/lib.rs"
+  printf '[package]\nname = "pyn-a"\nversion.workspace = true\nedition = "2021"\n\n[dependencies]\npyn-s3 = { version = "0.0.1", path = "../pyn-s3" }\n' > "$d/crates/pyn-a/Cargo.toml"
+  printf '[package]\nname = "pyn-s3"\nversion.workspace = true\nedition = "2021"\n' > "$d/crates/pyn-s3/Cargo.toml"
+  : > "$d/crates/pyn-a/src/lib.rs"; : > "$d/crates/pyn-s3/src/lib.rs"
   printf '{\n  "info": {\n    "version": "0.0.1"\n  }\n}\n' > "$d/docs/generated/openapi.json"
   printf 'check:\n\t@test -z "$$GATE_FAILS"\nopenapi:\n\t@sed -i "s/^    \\"version\\": .*/    \\"version\\": \\"$$(sed -n "s/^version = \\"\\(.*\\)\\"$$/\\1/p" Cargo.toml)\\"/" docs/generated/openapi.json\n' > "$d/Makefile"
   cp "$work/gh-stub" "$d/bin/gh"
@@ -119,7 +119,7 @@ expect "commit subject names the tag" test "$(git -C "$r" log -1 --format=%s rel
 changed=$(git -C "$r" diff --name-only main release-v0.1.0 | tr '\n' ' ')
 expect "release changes exactly the version files" test "$changed" = "Cargo.lock Cargo.toml crates/pyn-a/Cargo.toml docs/generated/openapi.json "
 expect "release bumps the workspace version" git -C "$r" grep -q '^version = "0.1.0"' release-v0.1.0 -- Cargo.toml
-expect "release bumps the intra-workspace pin" git -C "$r" grep -q 'pyn-b = { version = "0.1.0"' release-v0.1.0 -- crates/pyn-a/Cargo.toml
+expect "release bumps the intra-workspace pin" git -C "$r" grep -q 'pyn-s3 = { version = "0.1.0"' release-v0.1.0 -- crates/pyn-a/Cargo.toml
 expect "release bumps the lock" bash -c 'git -C "$0" show release-v0.1.0:Cargo.lock | grep -q "version = \"0.1.0\""' "$r"
 expect "release bumps the openapi document" git -C "$r" grep -q '"version": "0.1.0"' release-v0.1.0 -- docs/generated/openapi.json
 expect "release pushes the branch" git -C "$r" ls-remote --exit-code --heads origin release-v0.1.0 >/dev/null
