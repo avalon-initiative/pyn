@@ -5,7 +5,7 @@ set -euo pipefail
 
 repo=avalon-initiative/pyn
 shape="" method="" version_in="" web_version_in="" web_ver="" dir="" public_url="" api_url="" database_url="" env_file="" reuse=""
-site="" tls="" cf_token_file="" tls_mode="" cf_token="" public_url_flag="" tls_flag=""
+site="" caddy="" cert="" public_url_flag=""
 os_kind="" os_id="" arch="" native_env="" start_dir="" dir_default="" dir_warn=""
 yes=0 no_install=0 interactive=0 tmp=""
 root=${PYN_INSTALL_ROOT:-}
@@ -30,15 +30,11 @@ Every answer has a flag; with --yes (or no terminal) a missing answer takes its 
   --reuse use|refresh|fresh     when DIR (or the native env file) already holds an install: use it as it is, refresh the
                                 Compose file or binary from the release and keep the env (default), or start fresh (backs up)
   --public-url URL              the address people type in the browser (default http://<this host>:8080, or :7878 for a server;
-                                https://<site> when --site or a site answer is given)
-  --site NAME                   web app (Docker): the domain name or address people use, without scheme or port; turns https on. The
-                                certificate kind follows from it: a public name gets Let's Encrypt (auto), an address or a private name
-                                gets a local authority (internal), a name behind Cloudflare with --cf-token-file gets dns-cloudflare
-  --tls auto|internal|dns-cloudflare|off
-                                override the certificate kind picked from --site; off keeps plain HTTP on 8080 for your own proxy,
-                                tunnel or load balancer (PYN_SITE is then not set, only the public address)
-  --cf-token-file PATH          a file holding a Cloudflare API token limited to the zone (Zone Read, DNS Edit), for dns-cloudflare;
-                                it is copied to DIR/secrets (mode 600) and mounted into the container, never put in .env
+                                https://<site> when Caddy is used); alone it means plain HTTP at that address
+  --caddy, --no-caddy           web app (Docker): put a caddy container (the official image) in front for HTTPS, or not (default: ask,
+                                and no without a terminal); needs --site
+  --site NAME                   with Caddy: the domain name or address people use, without scheme or port (implies --caddy). A public
+                                name gets Let's Encrypt certificates, an address or a private name gets Caddy's own local authority
   --api-url URL                 web: the pyn server the web app talks to (PYN_API_URL); cli: the server to point the command at
   --database-url URL            native: use this PostgreSQL (postgres://...) instead of creating a local database
   --yes                         never ask: take defaults, and install missing tools without asking
@@ -148,8 +144,8 @@ while [ $# -gt 0 ]; do
     --env-file=*) env_file=${1#--env-file=}; [ -n "$env_file" ] || die "--env-file needs a value"; shift ;;
     --public-url) public_url=${2:?--public-url needs a value}; shift 2 ;;
     --site) site=${2:?--site needs a value}; shift 2 ;;
-    --tls) tls=${2:?--tls needs a value}; shift 2 ;;
-    --cf-token-file) cf_token_file=${2:?--cf-token-file needs a value}; shift 2 ;;
+    --caddy) caddy=yes; shift ;;
+    --no-caddy) caddy=no; shift ;;
     --api-url) api_url=${2:?--api-url needs a value}; shift 2 ;;
     --database-url) database_url=${2:?--database-url needs a value}; shift 2 ;;
     --yes | -y) yes=1; shift ;;
@@ -162,7 +158,6 @@ while [ $# -gt 0 ]; do
 done
 
 public_url_flag=$public_url
-tls_flag=$tls
 
 # Prompts
 
@@ -810,9 +805,9 @@ wait_health() {
 
 token_block() { grep -A3 "one-time setup token" | tail -n 4 || true; }
 
-# TLS
+# Caddy
 
-# ip, private or public: the same split the web image makes when PYN_TLS is unset
+# ip, private or public: decides the certificate kind (public names get a public authority, the rest a local one)
 site_kind() {
   local n=${1,,}
   n=${n%.}
@@ -830,176 +825,140 @@ site_kind() {
 
 valid_site() { [[ $1 =~ ^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)$ ]]; }
 
-# Reads a secret from the terminal without echoing it and prints it without spaces; the prompt is printed by the caller
-read_secret() {
-  local line
-  IFS= read -r -s -u 3 line || die "input ended while waiting for: $1"
-  echo >&2
-  printf '%s' "$line" | tr -d '[:space:]'
-}
-
-# Sets tls_mode (and cf_token) from --site, --tls and the answers; says why in one sentence. Docker web app only.
-tls_flow() {
+# Sets caddy (yes or no) from the flags, the answers and an existing install; for yes also site, cert and public_url. Docker web app only.
+caddy_flow() {
   local kind="" derived=""
-  case $tls in
-    "" | auto | internal | dns-cloudflare | off) ;;
-    files) [ "$tls_flag" != files ] || die "--tls files is set by hand: mount your certificate and key (docs/deployment.md#your-own-certificate)" ;;
-    *) die "--tls must be auto, internal, dns-cloudflare or off" ;;
-  esac
-  if [ -z "$site" ] && [ -z "$tls" ] && [ -z "$public_url" ]; then
-    ask_optional site "Domain name or address people will use (Enter for plain HTTP on this host, port 8080)" --site
+  if [ "$caddy" = no ] && [ -n "$site" ]; then die "--site needs Caddy; drop --no-caddy"; fi
+  if [ -z "$caddy" ] && [ -z "$site" ] && [ -z "$public_url" ]; then
+    if confirm "Put Caddy in front for HTTPS? (adds a caddy container on the official image)" n; then caddy=yes; else caddy=no; fi
   fi
-  if [ -z "$site" ] && [ -n "$tls" ] && [ "$tls" != off ]; then
-    ask site "Domain name or address people will use (PYN_SITE)" "" --site
+  if [ -z "$caddy" ] && [ -n "$site" ]; then caddy=yes; fi
+  if [ "$caddy" != yes ]; then
+    caddy=no
+    [ "$reuse" = fresh ] || ! has_caddy_profile "$dir/.env" || say "this install already runs Caddy; it is left as it is (remove COMPOSE_PROFILES=caddy from .env to stop using it)"
+    return 0
   fi
+
+  ask site "Domain name or address people use (no scheme or port, for example pyn.example.com)" "" --site
   site=${site%/}
-  [ -z "$site" ] || valid_site "$site" || die "--site is a host name or IP address only, with no scheme, port or path: $site"
-  if [ -n "$cf_token_file" ]; then
-    cf_token_file=$(normalize_path "$cf_token_file" "--cf-token-file")
-    [ -f "$cf_token_file" ] || die "--cf-token-file $cf_token_file does not exist"
-    case $tls in "" | dns-cloudflare) ;; *) die "--cf-token-file is only for --tls dns-cloudflare" ;; esac
-  fi
-  if [ -z "$site" ] && [ -z "$tls" ]; then tls_mode=off; return 0; fi
-  [ -z "$site" ] || kind=$(site_kind "$site")
-
-  if [ "$tls" = off ]; then
-    tls_mode=off
-    say "TLS off: plain HTTP on port 8080, so put your own proxy, tunnel or load balancer in front for https."
-  elif [ -n "$tls" ]; then
-    tls_mode=$tls
-  elif [ "$kind" = public ] && [ -n "$cf_token_file" ]; then
-    tls_mode=dns-cloudflare
-  elif [ "$kind" = public ] && confirm "Is $site a name on a private network, behind a Cloudflare domain (no ports open to the internet)?" n; then
-    tls_mode=dns-cloudflare
-  elif [ "$kind" = public ]; then
-    tls_mode=auto
+  valid_site "$site" || die "--site is a host name or IP address only, with no scheme, port or path: $site"
+  kind=$(site_kind "$site")
+  if [ "$kind" = public ]; then
+    cert=auto
+    say "Certificates: $site is a public name, so Caddy gets them from Let's Encrypt on its own and renews them."
+    warn "ports 80 and 443 of this host must be reachable from the internet, and $site must point here; this script cannot check that"
   else
-    [ -z "$cf_token_file" ] || die "--cf-token-file needs a public host name in a Cloudflare zone, not $site"
-    tls_mode=internal
-  fi
-
-  case $tls_mode in
-    files) say "TLS files: your own certificate and key, mounted at /certs, kept as the existing install has them" ;;
-    auto)
-      [ "$kind" = public ] || die "--tls auto needs a public host name; $site is an address or a private name (use --tls internal)"
-      say "TLS auto: $site is a public name, so certificates come from Let's Encrypt on their own and renew themselves."
-      warn "ports 80 and 443 of this host must be reachable from the internet, and $site must point here; this script cannot check that. Without it, use a Cloudflare domain (dns-cloudflare) or --tls internal."
-      ;;
-    internal)
-      say "TLS internal: $site is an address or a private name, so certificates come from a local authority, and each device trusts its root certificate once."
-      if [ "$kind" = ip ]; then
-        warn "passkeys need a host name over https (the web standard does not allow an IP address), so with $site people sign in with a password; a name such as pyn.lan enables passkeys"
-      fi
-      ;;
-    dns-cloudflare)
-      [ "$kind" != ip ] || die "dns-cloudflare needs a host name in a Cloudflare zone, not an IP address: $site"
-      say "TLS dns-cloudflare: certificates are issued through your Cloudflare DNS, so nothing has to be open to the internet and devices need nothing installed."
-      get_cf_token
-      ;;
-  esac
-
-  if [ "$tls_mode" = off ] && [ -z "$site" ]; then return 0; fi
-  if [ -n "$site" ]; then
-    derived=https://$site
-    if [ -z "$public_url_flag" ]; then
-      public_url=$derived
-    elif [ "${public_url%/}" != "$derived" ]; then
-      warn "--public-url ${public_url%/} differs from https://$site; sign-in, cookies and passkeys follow --public-url"
+    cert=internal
+    say "Certificates: $site is an address or a private name, so Caddy signs them with its own local authority, and each device trusts its root certificate once."
+    if [ "$kind" = ip ]; then
+      warn "passkeys need a host name over https (the web standard does not allow an IP address), so with $site people sign in with a password; a name such as pyn.lan enables passkeys"
     fi
   fi
-}
-
-# The Cloudflare token: from --cf-token-file, a file kept by an earlier run, or typed (not shown)
-get_cf_token() {
-  local kept="$dir/secrets/cloudflare-token" v
-  if [ -n "$cf_token_file" ]; then
-    v=$(tr -d '[:space:]' <"$cf_token_file")
-  elif [ -e "$kept" ] && [ "$reuse" != fresh ]; then
-    say "keeping the Cloudflare token in $kept"
-    return 0
-  elif [ "$interactive" -eq 1 ]; then
-    say "create the token at Cloudflare (My Profile, API Tokens) with the permissions Zone Read and DNS Edit, limited to the zone of $site"
-    printf '%s: ' "${c_cyan}Cloudflare API token (not shown)${c_reset}"
-    v=$(read_secret "the Cloudflare API token")
-  else
-    die "--tls dns-cloudflare needs --cf-token-file (a file holding the token)"
+  derived=https://$site
+  if [ -z "$public_url_flag" ]; then
+    public_url=$derived
+  elif [ "${public_url%/}" != "$derived" ]; then
+    warn "--public-url ${public_url%/} differs from https://$site; sign-in, cookies and passkeys follow --public-url"
   fi
-  [[ $v =~ ^[A-Za-z0-9_-]{20,}$ ]] || die "that does not look like a Cloudflare API token (letters, digits, - and _, at least 20 characters)"
-  cf_token=$v
 }
 
 port_busy() { ( exec 4<>"/dev/tcp/${PYN_INSTALL_PROBE_HOST:-127.0.0.1}/$1" ) 2>/dev/null; }
 
-# https needs 80 (the redirect) and 443 on this host; an install that already holds them is not a conflict
+has_caddy_profile() { case ",$(get_env "$1" COMPOSE_PROFILES)," in *,caddy,*) return 0 ;; *) return 1 ;; esac; }
+
+# Caddy needs 80 (the redirect and the public challenge) and 443 on this host; an install that already holds them is not a conflict
 check_ports() {
   local p busy=""
-  [ "$tls_mode" != off ] || return 0
-  [ -z "$(get_env "$dir/.env" PYN_SITE)" ] || [ "$reuse" = fresh ] || { say "ports 80 and 443 are already used by this install"; return 0; }
+  [ "$caddy" = yes ] || return 0
+  if [ "$reuse" != fresh ] && [ -n "$(get_env "$dir/.env" PYN_SITE)" ] && has_caddy_profile "$dir/.env"; then
+    say "ports 80 and 443 are already used by this install"
+    return 0
+  fi
   for p in ${PYN_INSTALL_PROBE_PORTS:-80 443}; do
     if port_busy "$p"; then busy="$busy $p"; fi
   done
   [ -n "$busy" ] || { say "ports 80 and 443 are free on this host"; return 0; }
-  warn "port${busy} already in use on this host, and https needs 80 and 443 (another web server or proxy?)"
-  say "stop what uses them, or keep that proxy in front and run the web app behind it with --tls off"
+  warn "port${busy} already in use on this host, and Caddy needs 80 and 443 (another web server or proxy?)"
+  say "stop what uses them, or keep that proxy in front and run without Caddy (docs/deployment.md#https)"
   if [ "$interactive" -eq 1 ] && confirm "Continue anyway (the stack will not start until they are free)?" n; then return 0; fi
   die "stopped; nothing was changed"
 }
 
-# The certificates live in the pyn-tls volume; without it they would be reissued on every recreate and hit rate limits
-check_tls_volume() {
-  [ "$tls_mode" != off ] || return 0
-  if ! grep -q 'pyn-tls:/data' "$1" || ! grep -q '^  pyn-tls:' "$1" || grep -Eq '^[[:space:]]*-[[:space:]]*/data([[:space:]:]|$)' "$1"; then
-    die "$1 has no persistent pyn-tls volume for /data, so certificates would be lost on every recreate and renewal limits would bite; refresh it with --reuse refresh (nothing was started)"
+# The certificates and the local root live in caddy-data; without it they would be reissued on every recreate and hit rate limits
+check_caddy_volume() {
+  [ "$caddy" = yes ] || return 0
+  if ! grep -q '^  caddy:' "$1" || ! grep -q 'caddy-data:/data' "$1" || ! grep -q '^  caddy-data:' "$1"; then
+    die "$1 has no caddy service with a persistent caddy-data volume, so certificates would be lost on every recreate and renewal limits would bite; refresh it with --reuse refresh (nothing was started)"
   fi
 }
 
-# The token goes in DIR/secrets, mode 600, and is handed to the container's user (65532); .env only names the file
-write_cf_token() { # write_cf_token ENVFILE
-  local d="$dir/secrets" f="$dir/secrets/cloudflare-token"
-  [ -n "$cf_token" ] || return 0
-  ( umask 077; mkdir -p "$d"; rm -f "$f"; printf '%s\n' "$cf_token" >"$f" )
-  chmod 700 "$d"
-  chmod 600 "$f"
-  if [ "$(id -u)" -eq 0 ]; then try_quiet chown 65532:65532 "$f" || warn "could not give $f to the web container's user: run: chown 65532:65532 $f"
-  elif command -v sudo >/dev/null 2>&1 && try_quiet sudo -n chown 65532:65532 "$f"; then :
-  else warn "$f must belong to the web container's user (65532) or the token cannot be read: run: sudo chown 65532:65532 $f"
-  fi
-  set_env "$1" PYN_CF_TOKEN_FILE ./secrets/cloudflare-token
-  say "wrote the Cloudflare token to $f (mode 600); .env only names the file"
-}
-
-write_tls_env() { # write_tls_env ENVFILE
-  local f=$1
-  [ -n "$tls_mode" ] || return 0
-  if [ "$tls_mode" = off ]; then
-    [ -z "$tls" ] || set_env "$f" PYN_TLS off
+write_caddyfile() { # tabs, as caddy fmt writes them
+  local f="$dir/Caddyfile" sni=${site#[} tlsline=""
+  sni=${sni%]}
+  [ "$cert" != internal ] || tlsline=$'\n\ttls internal'
+  if [ -f "$f" ] && [ "$reuse" != fresh ] && grep -qxF "$site {" "$f"; then
+    say "keeping the existing Caddyfile (delete it to have it written again)"
     return 0
   fi
-  if [ "$(get_env "$f" PYN_SITE)" != "$site" ]; then
-    set_env "$f" PYN_SITE "$site"
-    set_env "$f" PYN_PUBLIC_URL "$public_url"
-    say "set PYN_SITE $site and PYN_PUBLIC_URL $public_url"
-  fi
-  [ "$(get_env "$f" PYN_TLS)" = "$tls_mode" ] || set_env "$f" PYN_TLS "$tls_mode"
-  write_cf_token "$f"
+  if [ -f "$f" ]; then backup_file "$f"; fi
+  cat >"$f" <<CADDY
+{
+	skip_install_trust
+	default_sni $sni
 }
 
-# What to do next, per mode, once the stack is up
-tls_after_up() {
-  local root_crt=/data/caddy/pki/authorities/local/root.crt
-  [ "$tls_mode" != off ] || return 0
+$site {$tlsline
+	reverse_proxy web:8080 {
+		flush_interval -1
+	}
+}
+CADDY
+  chmod 644 "$f"
+  say "wrote $f"
+}
+
+write_caddy_env() { # write_caddy_env ENVFILE
+  local f=$1 cur
+  [ "$caddy" = yes ] || return 0
+  write_caddyfile
+  cur=$(get_env "$f" COMPOSE_PROFILES)
+  has_caddy_profile "$f" || set_env "$f" COMPOSE_PROFILES "${cur:+$cur,}caddy"
+  [ "$(get_env "$f" PYN_SITE)" = "$site" ] || set_env "$f" PYN_SITE "$site"
+  [ "$(get_env "$f" PYN_PUBLIC_URL)" = "$public_url" ] || { set_env "$f" PYN_PUBLIC_URL "$public_url"; say "set PYN_PUBLIC_URL $public_url"; }
+  grep -q '^#* *PYN_CADDY_IMAGE=' "$f" || printf '# PYN_CADDY_IMAGE=\n' >>"$f"
+  if [ "$shape" = full ]; then
+    set_env "$f" PYN_TRUST_FORWARDED_FOR true
+    cur=$(get_env "$f" PYN_TRUSTED_PROXIES)
+    case $cur in
+      "" | 1) set_env "$f" PYN_TRUSTED_PROXIES 2 ;;
+      2) ;;
+      *) say "keeping PYN_TRUSTED_PROXIES=$cur (Caddy and the web container are two proxies, so it must be at least 2)" ;;
+    esac
+  fi
+}
+
+# What to do next once the stack is up
+caddy_after_up() {
+  local root_crt=/data/caddy/pki/authorities/local/root.crt i
+  [ "$caddy" = yes ] || return 0
   say "open $public_url (the first request can take a few seconds while a certificate is obtained)"
-  say "if https does not answer: cd $dir && docker compose logs web"
-  case $tls_mode in
-    internal)
-      if try_quiet compose_in cp "web:$root_crt" "$dir/pyn-root.crt" && [ -s "$dir/pyn-root.crt" ]; then
-        say "the local authority's root certificate is saved as $dir/pyn-root.crt: trust it once on each device (docs/deployment.md#trusting-the-internal-root)"
-      else
-        say "fetch the local authority's root certificate and trust it once on each device: cd $dir && docker compose cp web:$root_crt ./pyn-root.crt"
-      fi
-      ;;
-    auto) say "renewal is automatic; the certificates live in the pyn-tls volume, so never run docker compose down -v" ;;
-  esac
+  say "if https does not answer: cd $dir && docker compose logs caddy"
+  if [ "$shape" = web ]; then
+    say "the server at $(get_env "$dir/.env" PYN_API_URL) needs PYN_TRUST_FORWARDED_FOR=true and PYN_TRUSTED_PROXIES=2 (Caddy and the web container are two proxies); set them there and restart it"
+  fi
+  if [ "$cert" = internal ]; then
+    for i in 1 2 3; do
+      if try_quiet compose_in cp "caddy:$root_crt" "$dir/pyn-root.crt" && [ -s "$dir/pyn-root.crt" ]; then break; fi
+      sleep 2
+    done
+    if [ -s "$dir/pyn-root.crt" ]; then
+      say "the local authority's root certificate is saved as $dir/pyn-root.crt: trust it once on each device (docs/deployment.md#trusting-the-internal-root)"
+    else
+      say "fetch the local authority's root certificate and trust it once on each device: cd $dir && docker compose cp caddy:$root_crt ./pyn-root.crt"
+    fi
+  else
+    say "renewal is automatic; the certificates live in the caddy-data volume, so never run docker compose down -v"
+  fi
 }
 
 # Docker
@@ -1023,10 +982,7 @@ preload_from_env() {
   [ -f "$1" ] || return 0
   [ -n "$public_url" ] || public_url=$(get_env "$1" PYN_PUBLIC_URL)
   [ "$shape" != web ] || [ -n "$api_url" ] || api_url=$(get_env "$1" PYN_API_URL)
-  if [ -z "$site" ] && [ "$shape" != server ]; then
-    site=$(get_env "$1" PYN_SITE)
-    [ -z "$site" ] || [ -n "$tls" ] || tls=$(get_env "$1" PYN_TLS)
-  fi
+  if [ -z "$site" ] && [ "$caddy" != no ] && [ "$shape" != server ] && has_caddy_profile "$1"; then site=$(get_env "$1" PYN_SITE); fi
 }
 
 docker_prepare() {
@@ -1074,7 +1030,7 @@ docker_flow() {
     if [ -f "$dc" ] && ! cmp -s "$tmp/compose.yml" "$dc"; then backup_file "$dc"; fi
     cat "$tmp/compose.yml" >"$dc"
   fi
-  if [ "$shape" != server ]; then check_tls_volume "$dc"; fi
+  if [ "$shape" != server ]; then check_caddy_volume "$dc"; fi
 
   if [ -n "$env_file" ]; then
     check_env_perms "$env_file"
@@ -1101,8 +1057,6 @@ docker_flow() {
   fi
   chmod 600 "$env_path"
 
-  if [ "$shape" != server ]; then write_tls_env "$env_path"; fi
-
   if [ "$shape" != web ]; then
     fill_secret "$env_path" POSTGRES_PASSWORD 24
     fill_secret "$env_path" PYN_SECRET_KEY 32
@@ -1118,6 +1072,8 @@ docker_flow() {
       web) set_env "$env_path" PYN_API_URL "$api_url"; [ -z "$bind" ] || set_env "$env_path" PYN_WEB_PUBLISH "$bind:8080" ;;
     esac
   fi
+
+  if [ "$shape" != server ]; then write_caddy_env "$env_path"; fi
 
   if [ "$shape" != web ]; then pin_version "$env_path" PYN_SERVER_VERSION "v$ver"; fi
   if [ "$shape" != server ]; then
@@ -1135,7 +1091,7 @@ docker_flow() {
   run_stream "Starting the stack" compose_in up --detach --wait ||
     die "the stack did not come up; see: cd $dir && docker compose logs"
   ok "up. Files are in $dir"
-  if [ "$shape" != server ]; then tls_after_up; fi
+  if [ "$shape" != server ]; then caddy_after_up; fi
   if [ "$shape" = web ]; then
     say "add this web address to PYN_ALLOWED_ORIGINS on the server at $(get_env "$env_path" PYN_API_URL), then restart it: $public_url"
   elif [ "$first_run" -eq 1 ]; then
@@ -1382,8 +1338,8 @@ main() {
     fi
   fi
 
-  if [ -n "$site$tls$cf_token_file" ] && { [ "$method" != docker ] || { [ "$shape" != full ] && [ "$shape" != web ]; }; }; then
-    die "--site, --tls and --cf-token-file are for the web app in a Docker install (--shape full or web)"
+  if { [ -n "$site" ] || [ "$caddy" = yes ]; } && { [ "$method" != docker ] || { [ "$shape" != full ] && [ "$shape" != web ]; }; }; then
+    die "--caddy and --site are for the web app in a Docker install (--shape full or web)"
   fi
   if [ -n "$database_url" ] && [[ ! $database_url =~ ^postgres(ql)?://[^[:space:]]+$ ]]; then
     die "--database-url must look like postgres://user:password@host:5432/database"
@@ -1431,7 +1387,7 @@ main() {
   resolve_version
   case $shape in full | web) resolve_web_version ;; esac
   if [ "$method" = docker ] && [ "$shape" != cli ]; then docker_prepare; fi
-  case $shape in full | web) [ "$method" != docker ] || tls_flow ;; esac
+  case $shape in full | web) [ "$method" != docker ] || caddy_flow ;; esac
 
   case $shape in
     web)
@@ -1463,7 +1419,7 @@ main() {
   say "plan: $shape via $method, release $tag (image v$ver)${web_ver:+, pyn-web v$web_ver}${reuse:+, existing install: $reuse}"
   case $shape in
     cli) ;;
-    *) if [ "$method" = docker ]; then say "deployment folder: $dir"; [ -z "$tls_mode" ] || [ "$tls_mode" = off ] || say "https: $tls_mode for $site"; [ -z "$env_file" ] || say "env file to reuse: $env_file"; else say "env file: $native_env"; fi ;;
+    *) if [ "$method" = docker ]; then say "deployment folder: $dir"; [ "$caddy" != yes ] || say "https: Caddy for $site (certificates: $cert)"; [ -z "$env_file" ] || say "env file to reuse: $env_file"; else say "env file: $native_env"; fi ;;
   esac
   confirm "Proceed?" y || die "stopped; nothing was changed"
 
