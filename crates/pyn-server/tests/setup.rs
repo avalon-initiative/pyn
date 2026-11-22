@@ -52,6 +52,7 @@ fn app() -> Router {
         dev_auth: None,
         trust_forwarded: false,
         updates: None,
+        storage: Default::default(),
     })
 }
 

@@ -72,6 +72,33 @@ pub struct AccountDeletionSettings {
 pub struct AdminSettings {
     pub account_deletion: AccountDeletionSettings,
     pub administrators: AdministratorSummary,
+    pub storage: StorageSettings,
+}
+
+/// Where file content is kept (`PYN_S3_BUCKET`, `PYN_DATA_DIR` or neither) and whether it answered the last check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StorageSettings {
+    pub kind: StorageKind,
+    /// The bucket name for `s3`; null otherwise. The endpoint and the credentials are never reported.
+    pub bucket: Option<String>,
+    /// `degraded` when the store failed its last probe (an S3 store is probed about every 30 seconds).
+    pub status: StorageStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageKind {
+    /// Lost at restart; only for trying pyn out.
+    Memory,
+    Filesystem,
+    S3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageStatus {
+    Ok,
+    Degraded,
 }
 
 /// How many active server administrators exist.

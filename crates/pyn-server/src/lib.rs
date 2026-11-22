@@ -56,6 +56,7 @@ pub mod routes;
 mod self_service_api;
 mod session_api;
 mod setup_api;
+pub mod storage;
 mod team_api;
 pub mod tus_sweep;
 mod two_factor_api;
@@ -81,6 +82,8 @@ pub struct AppState {
     pub trust_forwarded: bool,
     /// The release lookup; `None` when `PYN_UPDATE_CHECK` is off.
     pub updates: Option<Arc<update_check::UpdateChecker>>,
+    /// Which object store is in use and its last probe result.
+    pub storage: Arc<storage::StorageReport>,
 }
 
 /// The `{owner}` and `{name}` of every repository route.
@@ -498,6 +501,9 @@ struct RepoAddress {
         api::AdminSettings,
         api::UpdateStatus,
         api::AdministratorSummary,
+        api::StorageSettings,
+        api::StorageKind,
+        api::StorageStatus,
         api::AccountDeletionScheduledData,
         api::AccountDeletionRestoredData,
         api::AccountDeletedData,

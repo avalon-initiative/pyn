@@ -89,9 +89,19 @@ are removed at start and every 15 minutes.
 ## S3-compatible store
 
 `pyn-s3` implements `ObjectStore` for any S3-compatible service (AWS S3, DigitalOcean Spaces, Cloudflare R2, MinIO), so
-several server copies can share one bucket instead of a shared volume. It is provisional: the crate and its settings
-exist, and choosing it at server start, health reporting and migrating an existing filesystem store are separate work
-(decision #208, issues #1222 and #1223).
+several server copies can share one bucket instead of a shared volume. It is provisional: migrating an existing
+filesystem store into a bucket is separate work (decision #208, issue #1223).
+
+### Choosing the store
+
+The server picks its content store from the environment at start: `PYN_S3_BUCKET` selects the S3 store, otherwise
+`PYN_DATA_DIR` the filesystem store, otherwise memory (lost at restart). The two are exclusive: both set stops the server,
+because the data directory holds only objects, so there is nothing to keep there beside a bucket. The settings are in
+[configuration](../configuration.md#s3-compatible-object-store). Before serving, the server writes, reads back and deletes
+a marker object under the prefix and stops with the failed operation and its HTTP status if that fails (a wrong key, a
+missing bucket, an unreachable endpoint). While running it repeats the check every 30 seconds without stopping anything;
+`GET /v1/admin/settings` returns `storage: {kind, bucket, status}` with `status` `degraded` while it fails, and never the
+endpoint or credentials. `GET /healthz` stays a liveness check and does not depend on the store.
 
 The client is written in house on `reqwest` (rustls) with AWS Signature Version 4: no AWS SDK and no new runtime
 dependency. It sends only the headers it chooses: `Authorization`, `x-amz-date` and the plain full-payload

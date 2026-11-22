@@ -15,11 +15,13 @@ use pyn_core::{
 use pyn_fs::FsObjectStore;
 use pyn_oidc::{HttpOidcProvider, OidcConfig};
 use pyn_postgres::{PgMetadataStore, TimeSource};
+use pyn_proto::StorageKind;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::email::{MailerSetting, check_log_mailer_bind};
 use pyn_server::observe::{LogConfig, LogFormat, LoggedAudit};
 use pyn_server::passwords::PooledPasswords;
 use pyn_server::request_limits::RequestLimits;
+use pyn_server::storage::{ObjectStoreSetting, StorageReport};
 use pyn_server::update_check::{GithubReleases, ReleaseSource, UpdateChecker};
 use pyn_server::webhook_delivery::{DeliveryWorker, SafeSender, WorkerConfig};
 use pyn_server::{AppState, router_with_log};
@@ -417,6 +419,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let request_limits = request_limits()?;
+    let content_setting = ObjectStoreSetting::from_env(
+        |name| std::env::var(name).ok(),
+        |path| std::fs::read_to_string(path),
+    )
+    .map_err(anyhow::Error::msg)?;
 
     let Stores {
         meta,
@@ -434,17 +441,37 @@ async fn main() -> anyhow::Result<()> {
     };
     let instances: u32 = number("PYN_INSTANCES", 1)?;
     anyhow::ensure!(instances >= 1, "PYN_INSTANCES must be at least 1");
-    anyhow::ensure!(
-        instances == 1 || (meta_kind == "postgres" && std::env::var("PYN_DATA_DIR").is_ok()),
-        "PYN_INSTANCES above 1 needs PYN_DATABASE_URL and PYN_DATA_DIR on storage all copies share"
-    );
-    let objects: Arc<dyn ObjectStore> = match std::env::var("PYN_DATA_DIR") {
-        Ok(dir) => {
+    pyn_server::storage::check_instances(
+        instances,
+        meta_kind == "postgres",
+        content_setting.is_shared(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let (objects, storage): (Arc<dyn ObjectStore>, Arc<StorageReport>) = match content_setting {
+        ObjectStoreSetting::Filesystem(dir) => {
             let fs = FsObjectStore::open(dir).await?;
             fs.spawn_sweeper(std::time::Duration::from_secs(900));
-            Arc::new(ChunkedStore::new(Arc::new(fs)))
+            (
+                Arc::new(ChunkedStore::new(Arc::new(fs))),
+                Arc::new(StorageReport::new(StorageKind::Filesystem, None)),
+            )
         }
-        Err(_) => Arc::new(ChunkedStore::new(Arc::new(MemoryObjectStore::new()))),
+        ObjectStoreSetting::S3(settings) => {
+            let bucket = settings.bucket.clone();
+            let store = pyn_server::storage::open_s3(*settings).await?;
+            let report = Arc::new(StorageReport::new(StorageKind::S3, Some(bucket.clone())));
+            pyn_server::storage::spawn_monitor(
+                store.clone(),
+                report.clone(),
+                pyn_server::storage::PROBE_INTERVAL,
+            );
+            tracing::info!(bucket, "file content is kept in an S3 bucket");
+            (Arc::new(ChunkedStore::new(store)), report)
+        }
+        ObjectStoreSetting::Memory => (
+            Arc::new(ChunkedStore::new(Arc::new(MemoryObjectStore::new()))),
+            Arc::new(StorageReport::default()),
+        ),
     };
     if let Some(pg) = postgres {
         let done = pg.migrate_content_ids(objects.as_ref()).await?;
@@ -707,6 +734,7 @@ async fn main() -> anyhow::Result<()> {
             dev_auth,
             trust_forwarded: flag("PYN_TRUST_FORWARDED_FOR"),
             updates,
+            storage,
         },
         request_limits,
         log_config,

@@ -1,14 +1,14 @@
 # Configuration
 
 Environment variables for the server and the CLI. Everything is optional for the local demo (`make dev`); a server you
-keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
+keep needs at least `PYN_DATABASE_URL` and either `PYN_DATA_DIR` or an S3 bucket (`PYN_S3_BUCKET`, below).
 
 | Variable | Meaning |
 | --- | --- |
 | `PYN_DATABASE_URL` | PostgreSQL connection URL; unset means in-memory metadata |
 | `PYN_CREATE_DATABASE` | `true` creates the database if it does not exist |
-| `PYN_DATA_DIR` | Directory for uploaded content; unset means in-memory |
-| `PYN_INSTANCES` | How many server copies share the database, default 1; above 1 the server refuses to start without `PYN_DATABASE_URL` and `PYN_DATA_DIR` (a shared volume), and every copy needs the same `PYN_SETUP_TOKEN` until set up |
+| `PYN_DATA_DIR` | Directory for uploaded content; unset (and no `PYN_S3_BUCKET`) means in-memory. The server keeps nothing else there. Setting it together with `PYN_S3_BUCKET` stops the server |
+| `PYN_INSTANCES` | How many server copies share the database, default 1; above 1 the server refuses to start without `PYN_DATABASE_URL` and shared content storage (`PYN_S3_BUCKET`, or `PYN_DATA_DIR` on a shared volume), and every copy needs the same `PYN_SETUP_TOKEN` until set up |
 | `PYN_CONFIG` | Initial policy of every repository created while it is set (stored with the repository), and the fallback of older repositories that have no `.pyn/pyn.toml`; unset means new repositories start shared and older ones are all-exclusive (`make dev` uses `scripts/demo.pyn.toml`) |
 | `RUST_LOG` | Log filter in `tracing` syntax (`debug`, `pyn_server=debug,info`); default `info`. An unparsable value falls back to the default |
 | `PYN_LOG_FORMAT` | `text` (default) or `json`: json writes one object per line on standard output with the fields in [log fields](#log-fields); any other value stops the server. The host-admin commands (`create-admin` and the like) keep writing logs to standard error whatever the format |
@@ -73,6 +73,25 @@ keep needs at least `PYN_DATABASE_URL` and `PYN_DATA_DIR`.
 `make e2e` runs the end-to-end suites (`crates/pyn-cli/tests/e2e.rs` and `e2e_second.rs`): it spawns the real `pyn-server` (in-memory store) and drives the real `pyn` binary through init, clone, locks, policy changes, add and commit, a plain git repository, branches and merge, `verify`, policy preview and `local_store` commits pushed and pulled between clones, on temporary folders. It is part of `make test` too, and needs `git` on the path only as an oracle.
 
 > **Not for production.** Never run with `PYN_DEV_AUTH=true` on a network you do not control.
+
+## S3-compatible object store
+
+Setting `PYN_S3_BUCKET` keeps file content in a bucket of any S3-compatible service (AWS S3, DigitalOcean Spaces, Cloudflare R2, MinIO) instead of `PYN_DATA_DIR`; see [storage](concepts/storage.md#s3-compatible-store) and [several copies on a bucket](deployment.md#several-copies-on-a-bucket). Settings are checked at start and a bad one stops the server; an error names the variable and never prints a secret or the endpoint. An empty value counts as unset. Any `PYN_S3_*` variable without `PYN_S3_BUCKET` is an error, and so is `PYN_S3_BUCKET` together with `PYN_DATA_DIR`.
+
+| Variable | Meaning |
+| --- | --- |
+| `PYN_S3_BUCKET` | The bucket name; selects the S3 store. The endpoint, the access key id and the secret access key are then required |
+| `PYN_S3_ENDPOINT` | The service address: `https://` (for example `https://nyc3.digitaloceanspaces.com`), or `http://` for a local server. No user name or password in it, and no bucket name unless you use `PYN_S3_PATH_STYLE` |
+| `PYN_S3_REGION` | The region requests are signed for, default `us-east-1`. Spaces and R2 take their own region codes (`nyc3`, `auto`) |
+| `PYN_S3_ACCESS_KEY_ID`, `PYN_S3_SECRET_ACCESS_KEY` | The credentials. Each has a `_FILE` variant (`PYN_S3_ACCESS_KEY_ID_FILE`, `PYN_S3_SECRET_ACCESS_KEY_FILE`) naming a file that holds the value, for Docker and Kubernetes secrets; one trailing newline is dropped. Setting both a variable and its `_FILE` variant, an unreadable file, or an empty one stops the server (the error names the variable and the path, never the contents) |
+| `PYN_S3_PREFIX` | Optional key prefix, so one bucket can hold several installations; a trailing `/` is added when missing |
+| `PYN_S3_PATH_STYLE` | `true` or `false` (default): `false` addresses `https://<bucket>.<host>/<key>` (virtual-host), `true` addresses `https://<host>/<bucket>/<key>`. Use `true` for MinIO and other servers without wildcard DNS |
+| `PYN_S3_SPOOL_DIR` | Where content over the threshold waits while it is hashed before upload. Default: a `pyn-s3-spool` folder in the system temporary directory (`PYN_DATA_DIR` cannot be set with a bucket, so it plays no part). In the Compose image `/tmp` is memory-backed; point this at a volume if large files are expected |
+| `PYN_S3_SPOOL_THRESHOLD` | Bytes held in memory per upload before spilling to the spool directory, default 8388608 (8 MiB) |
+| `PYN_S3_REQUEST_TIMEOUT_SECS` | Whole-request limit in seconds for calls without a large body, default 30; at least 1 |
+| `PYN_S3_MAX_RETRIES` | Times a throttled or failed request is tried again after the first, default 4; 0 to 20 |
+
+At start the server also sweeps spool files left by a process that died and runs a check: it writes, reads back and deletes a small marker object under the prefix, and stops with a message naming the failed operation and its status if any step fails. While running, the check repeats every 30 seconds, and `GET /v1/admin/settings` reports `storage.status` as `degraded` while it fails; the server keeps running and `GET /healthz` is unchanged (it is a liveness check).
 
 ## Log fields
 

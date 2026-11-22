@@ -11966,7 +11966,8 @@
         "description": "Server settings an administrator can read.",
         "required": [
           "account_deletion",
-          "administrators"
+          "administrators",
+          "storage"
         ],
         "properties": {
           "account_deletion": {
@@ -11974,6 +11975,9 @@
           },
           "administrators": {
             "$ref": "#/components/schemas/AdministratorSummary"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageSettings"
           }
         }
       },
@@ -17149,6 +17153,45 @@
             "description": "Shown once and never stored."
           }
         }
+      },
+      "StorageKind": {
+        "type": "string",
+        "enum": [
+          "memory",
+          "filesystem",
+          "s3"
+        ]
+      },
+      "StorageSettings": {
+        "type": "object",
+        "description": "Where file content is kept (`PYN_S3_BUCKET`, `PYN_DATA_DIR` or neither) and whether it answered the last check.",
+        "required": [
+          "kind",
+          "status"
+        ],
+        "properties": {
+          "bucket": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bucket name for `s3`; null otherwise. The endpoint and the credentials are never reported."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/StorageKind"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StorageStatus",
+            "description": "`degraded` when the store failed its last probe (an S3 store is probed about every 30 seconds)."
+          }
+        }
+      },
+      "StorageStatus": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "degraded"
+        ]
       },
       "StrandedVersion": {
         "type": "object",

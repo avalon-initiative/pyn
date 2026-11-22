@@ -82,6 +82,7 @@ fn build(
         dev_auth: None,
         trust_forwarded: false,
         updates: None,
+        storage: Default::default(),
     });
     Server { app, idp, store }
 }

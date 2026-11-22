@@ -60,6 +60,7 @@ async fn server_with_root(org_creation: OrgCreation) -> (Router, String) {
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
         updates: None,
+        storage: Default::default(),
     });
     (app, root)
 }

@@ -79,6 +79,7 @@ async fn a_change_of_mode_is_logged() {
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
         updates: None,
+        storage: Default::default(),
     });
     let r = app
         .oneshot(

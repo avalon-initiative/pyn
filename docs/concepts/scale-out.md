@@ -28,4 +28,4 @@ page records the current state, as of 2026-10-30.
 | State | Problem | Issue |
 | --- | --- | --- |
 | Setup token | One generated token per process unless `PYN_SETUP_TOKEN` is shared; any one completes setup. Documented in [access](access.md). | #182 |
-| Object store and in-memory stores | Single-process or not durable. Setting `PYN_INSTANCES` above 1 makes the server refuse to start without `PYN_DATABASE_URL` and `PYN_DATA_DIR`, which must be shared storage. | #183 |
+| Filesystem and in-memory object stores | Single-process or not durable. Setting `PYN_INSTANCES` above 1 makes the server refuse to start without `PYN_DATABASE_URL` and shared content storage: `PYN_S3_BUCKET` (every copy shares the bucket, see [deployment](../deployment.md#several-copies-on-a-bucket)), or `PYN_DATA_DIR`, which must then be shared storage. | #183 |
