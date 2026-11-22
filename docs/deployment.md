@@ -465,7 +465,7 @@ start without `PYN_DATABASE_URL` and shared content storage (a bucket, below, or
 - Put a load balancer in front; sessions and CSRF live in the database, so any copy can answer any request.
 - Keep clocks in sync (NTP). Set `PYN_WEBHOOK_WORKER=false` on copies that should not deliver webhooks, but leave at least
   one delivering.
-- Rate-limits on uploads and expensive requests are per process.
+- The caps on concurrent uploads, expensive requests and merges are per process on purpose: each bounds one copy's memory and CPU, so N copies allow N times the cap ([scale-out](concepts/scale-out.md)).
 
 The Compose file is single node; for several copies run the same image as separate services or hosts, with a bucket or
 with the shared volume mounted at `/data`.

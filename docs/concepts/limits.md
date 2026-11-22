@@ -46,7 +46,8 @@ be recorded, leaves no stored bytes behind, apart from bytes that were already s
 `PYN_MAX_UPLOADS_PER_USER` (default 8) and `PYN_MAX_UPLOADS` (default 64) bound how many uploads run at once for one
 user and for the server process. An upload past either is refused with `429 uploads_busy` and a `Retry-After` of 5
 seconds before its body is read. Both must be at least 1, and an invalid value stops the server at start. The counts
-are per process.
+are per process on purpose: they protect one copy's memory, so with several copies each enforces its own and the total
+is the cap times the copies ([scale-out](scale-out.md)). Resumable (LFS) uploads are counted per owner in the database.
 
 ## Where a limit comes from
 
