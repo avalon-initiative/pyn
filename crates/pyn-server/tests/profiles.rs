@@ -65,6 +65,7 @@ async fn build(mode: AccessMode, limits: RateLimits, trust_forwarded: bool) -> R
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded,
         updates: None,
+        storage: Default::default(),
     })
 }
 

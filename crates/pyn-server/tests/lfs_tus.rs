@@ -140,6 +140,7 @@ async fn world() -> World {
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
         updates: None,
+        storage: Default::default(),
     });
     let alice = token_for(&app, "alice").await;
     let bob = token_for(&app, "bob").await;

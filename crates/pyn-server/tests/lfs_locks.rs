@@ -116,6 +116,7 @@ async fn world() -> World {
         dev_auth: None,
         trust_forwarded: true,
         updates: None,
+        storage: Default::default(),
     };
     let root = UserId::new("root");
     state.access.admin_for_tests(&root).await.unwrap();

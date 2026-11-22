@@ -158,7 +158,7 @@ pyn.example.com {
 
 `GET /healthz` answers 200 once the process is up, including before setup. Docker uses it for the container health
 (`docker compose ps`); point an uptime monitor at the public URL. Watch free space on the `pyn-objects` and `pyn-db`
-volumes: content is only added, and [limits](concepts/limits.md) are off by default on a self-hosted server.
+volumes (with an S3 bucket, `GET /v1/admin/settings` reports whether the store answers): content is only added, and [limits](concepts/limits.md) are off by default on a self-hosted server.
 
 ### Shipping logs
 
@@ -280,18 +280,63 @@ Migrations only move forward; to go back, restore the backup taken in step 1 ont
 ## Several server copies
 
 Setting `PYN_INSTANCES` above 1 declares that several server processes share one database; the server then refuses to
-start without `PYN_DATABASE_URL` and `PYN_DATA_DIR`. What is and is not safe is listed in
+start without `PYN_DATABASE_URL` and shared content storage (a bucket, below, or `PYN_DATA_DIR` on a shared volume). What is and is not safe is listed in
 [scale-out](concepts/scale-out.md). In practice:
 
-- All copies use the same PostgreSQL database and the same `PYN_DATA_DIR` on shared storage (a network file system that
-  supports atomic rename and hard links), the same `PYN_SECRET_KEY`, and the same `PYN_SETUP_TOKEN` until set up.
+- All copies use the same PostgreSQL database and the same content storage: one S3 bucket ([below](#several-copies-on-a-bucket)),
+  or the same `PYN_DATA_DIR` on shared storage (a network file system that supports atomic rename and hard links). They also
+  share the same `PYN_SECRET_KEY` and the same `PYN_SETUP_TOKEN` until set up.
 - Put a load balancer in front; sessions and CSRF live in the database, so any copy can answer any request.
 - Keep clocks in sync (NTP). Set `PYN_WEBHOOK_WORKER=false` on copies that should not deliver webhooks, but leave at least
   one delivering.
 - Rate-limits on uploads and expensive requests are per process.
 
-The Compose file is single node; for several copies run the same image as separate services or hosts with the shared
-volume mounted at `/data`.
+The Compose file is single node; for several copies run the same image as separate services or hosts, with a bucket or
+with the shared volume mounted at `/data`.
+
+### Several copies on a bucket
+
+With `PYN_S3_BUCKET` the copies need no shared volume: file content lives in an S3-compatible bucket and metadata in
+PostgreSQL. The example is DigitalOcean Spaces; another provider changes only the endpoint, region and keys.
+
+1. Create a Space in a region, for example `nyc3`, with file listing restricted (a private bucket: pyn never serves objects
+   publicly), and a key pair (Spaces access key and secret) scoped to that Space if the
+   provider allows it.
+2. Put the settings in the environment of every copy (the Compose file sets `PYN_DATA_DIR`, so remove that line and the
+   `pyn-objects` volume from a copy of it, or run the image from your own service definitions):
+
+   ```
+   PYN_INSTANCES=2
+   PYN_DATABASE_URL=postgres://...
+   PYN_S3_ENDPOINT=https://nyc3.digitaloceanspaces.com
+   PYN_S3_REGION=nyc3
+   PYN_S3_BUCKET=my-pyn-space
+   PYN_S3_ACCESS_KEY_ID_FILE=/run/secrets/spaces_key_id
+   PYN_S3_SECRET_ACCESS_KEY_FILE=/run/secrets/spaces_secret
+   ```
+
+   Use `https://<region>.digitaloceanspaces.com` as the endpoint (without the Space's name: with the default
+   virtual-host addressing the server puts the bucket in front of the host itself). Keep `PYN_S3_PATH_STYLE` unset for
+   Spaces; set it to `true` for MinIO and other servers that cannot resolve `<bucket>.<host>`. `PYN_S3_PREFIX` lets
+   several installations share one Space.
+3. Start the copies. Each one writes, reads back and deletes a marker object before it serves, so a wrong key, an
+   unreachable endpoint or a missing Space stops it at start with the failed operation and status in the message
+   (`S3 PutObject failed: HTTP 403 ...`). `GET /v1/admin/settings` (as an administrator) shows `storage` with the kind,
+   the bucket and `ok` or `degraded`; `GET /healthz` stays a plain liveness check so a store outage does not make a load
+   balancer drop every copy.
+
+What the provider's behaviour means for you (details in [provider notes](concepts/storage.md#provider-notes)):
+
+- Spaces is the first hosted target but has not yet been confirmed against a real Space; run the opt-in suite described
+  in [storage](concepts/storage.md#tests) with a throwaway Space before relying on it.
+- Throttling (`429`, `SlowDown`) and `5xx` answers are retried with backoff (`PYN_S3_MAX_RETRIES`), so a provider's
+  request-rate limits show up as slower pushes until the retries run out, then as a `storage_error`.
+- Content over 5 GiB goes up by multipart, whose parts must be at least 5 MiB; an upload cut off by a crash leaves parts
+  that count against your quota until aborted, so add a lifecycle rule that aborts incomplete multipart uploads.
+- A bucket policy that hides missing keys behind `403` (no list permission, as on AWS S3) makes the store report errors;
+  grant list permission on the bucket.
+- The spool directory (`PYN_S3_SPOOL_DIR`) must hold the largest object being uploaded; in the container image `/tmp` is
+  memory-backed, so point it at a volume when large files are expected.
 
 ## Backups
 

@@ -19,8 +19,14 @@ sha2 = "0.11.0"
 tokio = { version = "1.53.2", features = ["fs", "io-util", "rt", "time"] }
 tokio-util = { version = "0.7.19", features = ["io"] }
 tracing = "0.1.44"
+s3s = { version = "0.17.0", optional = true }
+s3s-fs = { version = "0.17.0", optional = true }
+hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "http1"], optional = true }
+tempfile = { version = "3", optional = true }
 
 [features]
+# The in-process S3 server (`testing`) for tests of this crate and of crates that run against a store; never in a runtime build.
+test-support = ["dep:s3s", "dep:s3s-fs", "dep:hyper-util", "dep:tempfile", "tokio/net", "tokio/rt-multi-thread", "tokio/sync"]
 # Compiles the tests that need a real S3-compatible service (tests/real_endpoint.rs); off so CI and `make test-live` never run them.
 real-endpoint = []
 
@@ -29,9 +35,7 @@ getrandom = "0.4.3"
 hex = "0.4.3"
 pyn-core = { path = "../pyn-core", features = ["contract"] }
 pyn-object = { path = "../pyn-object" }
-s3s = "0.17.0"
-s3s-fs = "0.17.0"
-hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "http1"] }
+pyn-s3 = { path = ".", features = ["test-support"] }
 sha2 = "0.11.0"
 tempfile = "3"
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net"] }

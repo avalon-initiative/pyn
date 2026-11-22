@@ -360,6 +360,7 @@ fn state(mode: AccessMode) -> AppState {
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
         updates: None,
+        storage: Default::default(),
     }
 }
 

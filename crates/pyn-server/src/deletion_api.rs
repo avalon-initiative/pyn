@@ -127,5 +127,6 @@ pub(crate) async fn admin_settings(
             window_days: u32::try_from(window).unwrap_or(0),
             disabled_retention_days: u32::try_from(retention).unwrap_or(0),
         },
+        storage: s.storage.settings(),
     }))
 }

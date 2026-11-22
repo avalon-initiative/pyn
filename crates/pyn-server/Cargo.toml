@@ -20,6 +20,7 @@ pyn-fs = { version = "0.1.5", path = "../pyn-fs" }
 pyn-oidc = { version = "0.1.5", path = "../pyn-oidc" }
 pyn-postgres = { version = "0.1.5", path = "../pyn-postgres" }
 pyn-proto = { version = "0.1.5", path = "../pyn-proto" }
+pyn-s3 = { version = "0.1.5", path = "../pyn-s3" }
 pyn-smtp = { version = "0.1.5", path = "../pyn-smtp" }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 semver = "1.0.28"
@@ -42,6 +43,7 @@ pyn-core = { path = "../pyn-core", features = ["contract", "test-support"] }
 http-body-util = "0.1.5"
 pyn-oidc = { path = "../pyn-oidc", features = ["test-support"] }
 pyn-object = { path = "../pyn-object" }
+pyn-s3 = { path = "../pyn-s3", features = ["test-support"] }
 tower = "0.5.3"
 tempfile = "3"
 sha1 = "0.11.0"

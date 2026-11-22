@@ -31,7 +31,7 @@ fn stream(bytes: Vec<u8>) -> pyn_core::ObjectReader {
 
 #[tokio::test]
 async fn objects_land_at_prefix_shard_and_rest_with_manifests_beside_them() {
-    let server = Server::start().await;
+    let server = Server::start();
     let mut settings = server.settings();
     settings.prefix = "repo-a".into();
     let store = S3ObjectStore::open(settings).await.unwrap();
@@ -102,7 +102,7 @@ async fn a_spooled_put_leaves_no_spool_file_on_any_outcome() {
 
 #[tokio::test]
 async fn open_sweeps_only_stale_spool_files() {
-    let server = Server::start().await;
+    let server = Server::start();
     let settings = server.settings();
     std::fs::create_dir_all(&settings.spool_dir).unwrap();
     let stale = settings.spool_dir.join(".s3spool-stale");
@@ -118,7 +118,7 @@ async fn open_sweeps_only_stale_spool_files() {
 
 #[tokio::test]
 async fn content_over_the_multipart_threshold_goes_up_in_parts_at_the_final_key() {
-    let server = Server::start().await;
+    let server = Server::start();
     let mut settings = server.settings();
     settings.multipart_threshold = 1 << 20;
     settings.part_size = 5 << 20;
@@ -145,7 +145,7 @@ async fn content_over_the_multipart_threshold_goes_up_in_parts_at_the_final_key(
 
 #[tokio::test]
 async fn wrong_credentials_are_refused_with_the_operation_status_and_code() {
-    let server = Server::start().await;
+    let server = Server::start();
     let mut settings = server.settings();
     settings.secret_access_key = "not-the-secret".into();
     let store = S3ObjectStore::open(settings).await.unwrap();
@@ -154,5 +154,28 @@ async fn wrong_credentials_are_refused_with_the_operation_status_and_code() {
     assert!(matches!(err, PynError::Storage(_)), "{text}");
     assert!(text.contains("HeadObject"), "{text}");
     assert!(text.contains("403"), "{text}");
+    assert!(!text.contains("not-the-secret"), "{text}");
+}
+
+#[tokio::test]
+async fn the_probe_leaves_no_marker_and_names_the_failing_operation() {
+    let server = Server::start();
+    let mut settings = server.settings();
+    settings.prefix = "repo-a".into();
+    let store = S3ObjectStore::open(settings.clone()).await.unwrap();
+    store.probe().await.unwrap();
+    let markers = server.root.join(common::BUCKET).join("repo-a/.pyn-probe");
+    let left = std::fs::read_dir(&markers).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(left, 0, "the marker is deleted");
+
+    settings.secret_access_key = "not-the-secret".into();
+    let text = S3ObjectStore::open(settings)
+        .await
+        .unwrap()
+        .probe()
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(text.contains("PutObject") && text.contains("403"), "{text}");
     assert!(!text.contains("not-the-secret"), "{text}");
 }

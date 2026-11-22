@@ -63,6 +63,7 @@ fn server(updates: Option<Arc<UpdateChecker>>) -> Router {
         dev_auth: Some(Arc::new(DevHeaderAuth) as Arc<dyn AuthProvider>),
         trust_forwarded: false,
         updates,
+        storage: Default::default(),
     })
 }
 

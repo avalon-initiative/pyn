@@ -10,6 +10,9 @@ mod sigv4;
 mod spool;
 mod xml;
 
+#[cfg(feature = "test-support")]
+pub mod testing;
+
 use std::ops::Range;
 use std::time::Duration;
 
@@ -74,6 +77,38 @@ impl S3ObjectStore {
     /// Removes spool files last modified more than `age` ago; returns how many.
     pub async fn sweep_stale_spool(&self, age: Duration) -> Result<usize> {
         spool::sweep(&self.spool_dir, age).await
+    }
+
+    /// Writes, reads back and deletes a marker object under the prefix; an error names the failing operation.
+    pub async fn probe(&self) -> Result<()> {
+        let mut id = [0u8; 8];
+        getrandom::fill(&mut id).map_err(|e| storage(format!("no randomness: {e}")))?;
+        let key = format!("{}.pyn-probe/{}", self.prefix, hex::encode(id));
+        let marker = b"pyn-probe".to_vec();
+        let sha256 = sigv4::sha256_hex(&marker);
+        self.client
+            .put(&key, Body::Bytes(Bytes::from(marker.clone())), sha256)
+            .await?;
+        let read = async {
+            let resp = self
+                .client
+                .send(&Call::new("GetObject", Method::GET, &key))
+                .await?;
+            if !resp.status().is_success() {
+                return Err(self.client.refused("GetObject", resp).await);
+            }
+            let got = resp
+                .bytes()
+                .await
+                .map_err(|e| storage(format!("S3 GetObject failed: {}", e.without_url())))?;
+            if got[..] != marker[..] {
+                return Err(storage("S3 GetObject failed: the marker read back differs"));
+            }
+            Ok(())
+        }
+        .await;
+        let deleted = self.client.delete(&key).await;
+        read.and(deleted)
     }
 
     /// The host requests go to, for messages.
