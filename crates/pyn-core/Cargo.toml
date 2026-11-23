@@ -19,12 +19,12 @@ getrandom = "0.4.3"
 globset = "0.4.20"
 hex = "0.4.3"
 hmac = "0.13.0"
-pyn-chunk = { version = "0.2.1", path = "../pyn-chunk" }
-pyn-gitattr = { version = "0.2.1", path = "../pyn-gitattr" }
-pyn-hash = { version = "0.2.1", path = "../pyn-hash" }
-pyn-merge = { version = "0.2.1", path = "../pyn-merge" }
-pyn-object = { version = "0.2.1", path = "../pyn-object" }
-pyn-webauthn = { version = "0.2.1", path = "../pyn-webauthn" }
+pyn-chunk = { version = "0.2.2", path = "../pyn-chunk" }
+pyn-gitattr = { version = "0.2.2", path = "../pyn-gitattr" }
+pyn-hash = { version = "0.2.2", path = "../pyn-hash" }
+pyn-merge = { version = "0.2.2", path = "../pyn-merge" }
+pyn-object = { version = "0.2.2", path = "../pyn-object" }
+pyn-webauthn = { version = "0.2.2", path = "../pyn-webauthn" }
 serde = { version = "1.0.229", features = ["derive"] }
 sha1 = "0.11.0"
 sha2 = "0.11.0"
