@@ -930,7 +930,7 @@ pub struct UpdateOrgProfileRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateOrgRequest {
-    /// Shares the namespace with user names: 2 to 39 lowercase letters, digits, `-` or `_`, not reserved.
+    /// Normalised to a canonical name (trimmed, spaces become `-`, lowercased); shares the namespace with user names: 2 to 39 letters, digits, `-` or `_`, not reserved. The typed form becomes the display name when it differs.
     pub name: String,
 }
 
@@ -2143,7 +2143,7 @@ pub struct AddEmailRequest {
 /// A username change; the old name is free for anyone to take afterwards.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RenameRequest {
-    /// The new name: 2 to 39 lowercase letters, digits, `-` or `_`.
+    /// The new name, normalised like a registered one: 2 to 39 letters, digits, `-` or `_` (spaces become `-`, case is ignored).
     pub username: String,
     /// The account's current password; omitted only by an account with none, from a web session.
     pub password: Option<String>,

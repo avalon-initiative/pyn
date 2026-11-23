@@ -15,6 +15,17 @@ the case it was created with (`MyGame` stays `MyGame`), but names are unique per
 `alice/GAME` finds `alice/Game`. Different owners are independent: `alice/game` and `bob/game` are different repositories.
 Renaming a repository to another case of its own name is allowed. This is the current behaviour.
 
+**Owner names are URL forms.** A typed owner name is normalised to one canonical name: trimmed, each run of whitespace becomes a
+single `-`, and ASCII letters are lowercased, so `Test Studio`, `test-studio` and `TeSt-StuDiO` are the same owner, `test-studio`.
+The canonical name is 2 to 39 characters from `a-z`, `0-9`, `-` and `_`, starting with a letter or digit; anything else (other
+punctuation, non-ASCII letters, a leading `-` or `_`) is `400 invalid_request`. The canonical name is what is stored, compared and
+returned by the API, and what uniqueness and the [reserved names](#addresses-and-namespaces) below are checked against, across users
+and organizations together (a taken name is `409 user_exists`, a reserved one `400 reserved_name`, so `Admin` and ` _ ` are
+refused). Lookups normalise the same way, with no redirect: `/v1/orgs/Test%20Studio`, `/v1/repos/TEST-STUDIO/game`, a sign-in as
+`Alice`, and an owner or user named in a request body all resolve to the canonical account. An organization created as `Test Studio`
+keeps the typed form (spaces collapsed to one) as its [display name](profiles.md#organization-profiles), set only when it differs from
+the canonical name. Names already stored are canonical, so nothing migrates.
+
 Anyone with an account can create repositories **in their own namespace**, and becomes the repository's `admin`.
 In an organization, its owners can, and other members as its [creation policy](#repository-creation-policy) allows.
 
@@ -48,8 +59,8 @@ new owner name and each old `owner/name` address keeps resolving to its reposito
 ## Organizations
 
 An organization is a namespace that owns repositories, so a team can own a repository rather than one person's account.
-It is an account of kind `org` in the same namespace as users, with the same name rules (2 to 39 lowercase letters, digits,
-`-` or `_`). An organization **cannot sign in, and cannot hold keys, tokens or sessions**; it is never created by sign-up;
+It is an account of kind `org` in the same namespace as users, with the same name rules (canonical names of 2 to 39 lowercase letters, digits,
+`-` or `_`; typed forms [normalise](#addresses-and-namespaces) first). An organization **cannot sign in, and cannot hold keys, tokens or sessions**; it is never created by sign-up;
 people act on its behalf, and a request that names an organization as the signed-in user is refused.
 
 - **Create.** Any signed-in account may create an organization (`POST /v1/orgs`) and becomes its first **owner**. The person

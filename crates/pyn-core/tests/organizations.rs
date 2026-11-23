@@ -188,7 +188,7 @@ async fn names_share_one_namespace_and_reserved_names_are_refused() {
         );
         assert_eq!(err.code(), "reserved_name");
     }
-    for bad in ["", "a", "Acme", "-acme", "ac me", &"x".repeat(40)] {
+    for bad in ["", "a", "-acme", "ac.me", "ac!me", &"x".repeat(40)] {
         let err = w.access.create_org(&alice, bad).await.unwrap_err();
         assert!(matches!(err, PynError::InvalidRequest(_)), "{bad:?}: {err}");
     }
@@ -1054,4 +1054,42 @@ async fn invitations_for_organization_repositories_cannot_be_made_or_redeemed_by
         !w.store.user_exists(&user("carol")).await.unwrap(),
         "a refused sign-up leaves no account"
     );
+}
+
+#[tokio::test]
+async fn names_collide_on_the_normalised_form_and_the_typed_form_is_the_display_name() {
+    let w = world();
+    sign_up(&w, "test-user").await;
+    let alice = session("alice");
+
+    let org = w.access.create_org(&alice, " Test Studio ").await.unwrap();
+    assert_eq!(org.user, user("test-studio"));
+    let profile = w.access.org_profile_of(&user("test-studio")).await.unwrap();
+    assert_eq!(profile.display_name.as_deref(), Some("Test Studio"));
+
+    for same in ["test-studio", "TeSt-StuDiO", "TEST STUDIO", "test  studio"] {
+        let err = w.access.create_org(&alice, same).await.unwrap_err();
+        assert!(matches!(err, PynError::UserExists(_)), "{same}: {err}");
+        let err = w
+            .access
+            .register(Registration::new(same, PASSWORD))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::UserExists(_)), "{same}: {err}");
+    }
+    for same in ["Test User", "TEST-USER"] {
+        let err = w.access.create_org(&alice, same).await.unwrap_err();
+        assert!(matches!(err, PynError::UserExists(_)), "{same}: {err}");
+    }
+    for reserved in ["Admin", " Orgs"] {
+        let err = w.access.create_org(&alice, reserved).await.unwrap_err();
+        assert!(
+            matches!(err, PynError::ReservedName(_)),
+            "{reserved}: {err}"
+        );
+    }
+
+    let plain = w.access.create_org(&alice, "plain").await.unwrap();
+    let profile = w.access.org_profile_of(&plain.user).await.unwrap();
+    assert_eq!(profile.display_name, None, "nothing typed beyond the slug");
 }

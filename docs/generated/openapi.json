@@ -13497,7 +13497,7 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "Shares the namespace with user names: 2 to 39 lowercase letters, digits, `-` or `_`, not reserved."
+            "description": "Normalised to a canonical name (trimmed, spaces become `-`, lowercased); shares the namespace with user names: 2 to 39 letters, digits, `-` or `_`, not reserved. The typed form becomes the display name when it differs."
           }
         }
       },
@@ -16891,7 +16891,7 @@
           },
           "username": {
             "type": "string",
-            "description": "The new name: 2 to 39 lowercase letters, digits, `-` or `_`."
+            "description": "The new name, normalised like a registered one: 2 to 39 letters, digits, `-` or `_` (spaces become `-`, case is ignored)."
           }
         }
       },
