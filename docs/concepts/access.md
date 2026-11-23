@@ -319,6 +319,10 @@ no usable host (empty, an IP address, or `http://` other than `localhost`) offer
 ceremony route answers `501 passkeys_unavailable`. Listing, renaming and removing still work, and the passkeys an account already
 holds still count as a second factor, so a changed address never turns two-factor authentication off.
 
+Before setup completes `GET /v1/sign-in-options` answers `503 not_initialised`, like every route but setup. A client that
+read it before setup finished must ask again afterwards: the web app does so when the setup wizard hands over to sign-in and
+after a sign-out, so the passkey button and the second-factor step's passkey option follow what the server reports.
+
 **Ceremonies.** Each is two calls around one browser call, and the bodies are the WebAuthn JSON forms (`credential.toJSON()` of
 the browser's result goes in `credential` as it is; binary fields are base64url). `begin` returns a `ceremony` id and `public_key`
 options; `finish` takes the `ceremony` back. A challenge is random, good for one `finish` and for five minutes, and spent whatever
