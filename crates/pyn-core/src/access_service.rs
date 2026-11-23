@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -1251,6 +1251,30 @@ pub struct AccessService {
     setup: setup::SetupState,
     webhooks: Arc<dyn WebhookStore>,
     webhook_settings: WebhookSettings,
+    mail_health: Mutex<MailHealth>,
+}
+
+/// The newest mail outcomes, kept in memory for the administrator's status.
+#[derive(Default)]
+struct MailHealth {
+    last_failure: Option<MailFailure>,
+    last_sent_at: Option<DateTime<Utc>>,
+}
+
+/// A send the mailer refused; the error never carries the recipient address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailFailure {
+    pub at: DateTime<Utc>,
+    pub error: String,
+}
+
+/// Which mailer is configured, whether sign-up verifies addresses, and how the latest sends went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailStatus {
+    pub mailer: MailerKind,
+    pub verification: bool,
+    pub last_failure: Option<MailFailure>,
+    pub last_sent_at: Option<DateTime<Utc>>,
 }
 
 fn stronger(
@@ -1346,6 +1370,7 @@ impl AccessService {
             setup: setup::SetupState::default(),
             webhooks: Arc::new(MemoryWebhookStore::new()),
             webhook_settings: WebhookSettings::default(),
+            mail_health: Mutex::default(),
         }
     }
 
@@ -2374,7 +2399,10 @@ impl AccessService {
         client: Option<&str>,
     ) -> Result<UserId> {
         let limits = &self.config.limits;
-        let account_key = format!("sign-in:account:{}", bounded_key(&username.to_lowercase()));
+        let account_key = format!(
+            "sign-in:account:{}",
+            bounded_key(&account::normalize_name(username))
+        );
         let client_key = client.map(|c| format!("sign-in:client:{}", bounded_key(c)));
         // Client first: a refused client creates no per-account row.
         if let Some(key) = &client_key {
@@ -2384,7 +2412,7 @@ impl AccessService {
         self.count_limited(&account_key, limits.sign_in_per_account, SIGN_IN_WINDOW)
             .await?;
 
-        let user = UserId::new(username);
+        let user = UserId::new(account::normalize_name(username));
         let verified = match self.store.password_hash(&user).await? {
             Some(hash) => self.passwords.verify(password, &hash).await,
             None => {
@@ -2588,6 +2616,7 @@ impl AccessService {
         } else {
             SignupStage::Complete
         };
+        let welcome_to = email.clone();
         let new = NewAccount {
             id: AccountId::generate(AccountKind::User)?,
             user: user.clone(),
@@ -2631,6 +2660,15 @@ impl AccessService {
             SignupStage::PendingApproval => AccountStatus::PendingApproval,
             _ => AccountStatus::Active,
         };
+        if let Some(address) = welcome_to {
+            self.send_welcome(
+                &address,
+                &user,
+                false,
+                signup == SignupStage::PendingApproval,
+            )
+            .await;
+        }
         Ok(SignUp { user, status })
     }
 
@@ -2712,24 +2750,71 @@ impl AccessService {
         Ok(())
     }
 
-    /// Sends one message; a failure is logged and never fails the action that asked for it. True when it was sent.
+    /// Sends one message; a failure is logged and kept for the status, and never fails the action that asked
+    /// for it. True when it was sent.
     pub(crate) async fn deliver(&self, message: EmailMessage) -> bool {
-        let domain = message.to.rsplit_once('@').map_or("unknown", |(_, d)| d);
-        let domain = domain.to_string();
-        if let Err(e) = self.email.send(message).await {
-            tracing::warn!(to_domain = %domain, error = %e, "email delivery failed; the person needs an administrator's help");
-            return false;
+        let to = message.to.clone();
+        let domain = to
+            .rsplit_once('@')
+            .map_or("unknown", |(_, d)| d)
+            .to_string();
+        let result = self.email.send(message).await;
+        let mut health = self.mail_health.lock().unwrap();
+        match result {
+            Ok(()) => {
+                health.last_sent_at = Some(self.clock.now());
+                true
+            }
+            Err(e) => {
+                let error: String = e
+                    .to_string()
+                    .replace(&to, "<recipient>")
+                    .chars()
+                    .take(300)
+                    .collect();
+                tracing::warn!(to_domain = %domain, %error, "email delivery failed; the person needs an administrator's help");
+                health.last_failure = Some(MailFailure {
+                    at: self.clock.now(),
+                    error,
+                });
+                false
+            }
         }
-        true
+    }
+
+    /// Mails the welcome whenever a mailer is configured, whatever the verification setting.
+    pub(crate) async fn send_welcome(
+        &self,
+        address: &str,
+        user: &UserId,
+        confirmed: bool,
+        pending_approval: bool,
+    ) {
+        if self.email.kind() == MailerKind::None {
+            return;
+        }
+        self.deliver(welcome_message(
+            address,
+            user.as_str(),
+            &self.public_url(),
+            confirmed,
+            pending_approval,
+        ))
+        .await;
     }
 
     pub fn now(&self) -> DateTime<Utc> {
         self.clock.now()
     }
 
-    /// Which mailer is configured and whether sign-up verifies addresses.
-    pub fn email_status(&self) -> (MailerKind, bool) {
-        (self.email.kind(), self.config.require_email_verification)
+    pub fn email_status(&self) -> EmailStatus {
+        let health = self.mail_health.lock().unwrap();
+        EmailStatus {
+            mailer: self.email.kind(),
+            verification: self.config.require_email_verification,
+            last_failure: health.last_failure.clone(),
+            last_sent_at: health.last_sent_at,
+        }
     }
 
     /// Confirms an address from the token in its email. The account then becomes active, or waits for
@@ -2773,12 +2858,12 @@ impl AccessService {
             SignupStage::PendingApproval => AccountStatus::PendingApproval,
             _ => AccountStatus::Active,
         };
-        self.deliver(welcome_message(
+        self.send_welcome(
             &record.email,
-            account.user.as_str(),
-            &self.public_url(),
+            &account.user,
+            true,
             next == SignupStage::PendingApproval,
-        ))
+        )
         .await;
         Ok(SignUp {
             user: account.user,

@@ -47,6 +47,7 @@ mod oidc_api;
 mod org_api;
 mod org_settings_api;
 pub mod origin;
+mod owner_path;
 mod passkeys_api;
 pub mod passwords;
 mod profile_api;
@@ -601,8 +602,13 @@ pub fn router_with_log(
 ) -> Router {
     let drain = state.ready.drain.clone();
     let app = request_limits::apply(routes(state.clone()), limits);
-    observe::layer(app, state, log)
-        .layer(axum::middleware::from_fn_with_state(drain, shutdown::track))
+    let app = observe::layer(app, state, log)
+        .layer(axum::middleware::from_fn_with_state(drain, shutdown::track));
+    Router::new().fallback_service(
+        tower::ServiceBuilder::new()
+            .map_request(owner_path::canonicalize)
+            .service(app),
+    )
 }
 
 fn routes(state: AppState) -> Router {
@@ -727,7 +733,7 @@ fn status_for(e: &PynError) -> StatusCode {
         PynError::Unauthenticated(_)
         | PynError::SecondFactorRequired
         | PynError::SecondFactorInvalid
-        | PynError::PasskeyInvalid(_)
+        | PynError::PasskeyInvalid { .. }
         | PynError::ExternalSignInFailed(_) => StatusCode::UNAUTHORIZED,
         PynError::ExternalProviderUnavailable(_) | PynError::EmailDeliveryFailed(_) => {
             StatusCode::BAD_GATEWAY

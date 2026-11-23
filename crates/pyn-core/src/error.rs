@@ -244,8 +244,11 @@ pub enum PynError {
         "this server has no public address usable for passkeys; set PYN_PUBLIC_URL to an https:// address with a host name"
     )]
     PasskeysUnavailable,
-    #[error("the passkey was not accepted: {0}")]
-    PasskeyInvalid(String),
+    #[error("the passkey was not accepted: {detail}")]
+    PasskeyInvalid {
+        reason: PasskeyReason,
+        detail: String,
+    },
     #[error("no such notice {0}")]
     NoticeNotFound(String),
     #[error("the request is missing a valid CSRF token")]
@@ -351,6 +354,43 @@ fn inactive_message(status: AccountStatus) -> &'static str {
     }
 }
 
+/// Why a passkey ceremony was refused; each cause has its own stable API code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasskeyReason {
+    /// Malformed or unsupported data, or anything without a more specific cause.
+    Other,
+    CeremonyExpired,
+    NotRegistered,
+    UserHandleMismatch,
+    OriginNotAllowed,
+    RpIdMismatch,
+    ChallengeMismatch,
+    UserVerificationRequired,
+    SignatureInvalid,
+    CounterRegressed,
+    Replayed,
+    AlreadyRegistered,
+}
+
+impl PasskeyReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Other => "passkey_invalid",
+            Self::CeremonyExpired => "passkey_ceremony_expired",
+            Self::NotRegistered => "passkey_not_registered",
+            Self::UserHandleMismatch => "passkey_user_handle_mismatch",
+            Self::OriginNotAllowed => "passkey_origin_not_allowed",
+            Self::RpIdMismatch => "passkey_rp_id_mismatch",
+            Self::ChallengeMismatch => "passkey_challenge_mismatch",
+            Self::UserVerificationRequired => "passkey_user_verification_required",
+            Self::SignatureInvalid => "passkey_signature_invalid",
+            Self::CounterRegressed => "passkey_counter_regressed",
+            Self::Replayed => "passkey_replayed",
+            Self::AlreadyRegistered => "passkey_already_registered",
+        }
+    }
+}
+
 impl PynError {
     /// Stable machine-readable code sent to API clients.
     pub fn code(&self) -> &'static str {
@@ -448,7 +488,7 @@ impl PynError {
             Self::FactorNotFound(_) => "factor_not_found",
             Self::PasskeyNotFound(_) => "passkey_not_found",
             Self::PasskeysUnavailable => "passkeys_unavailable",
-            Self::PasskeyInvalid(_) => "passkey_invalid",
+            Self::PasskeyInvalid { reason, .. } => reason.code(),
             Self::NoticeNotFound(_) => "notice_not_found",
             Self::CsrfFailed => "csrf_failed",
             Self::OriginNotAllowed => "origin_not_allowed",

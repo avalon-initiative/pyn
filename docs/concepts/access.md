@@ -73,7 +73,7 @@ teams. Teams are managed with `pyn team ...` (see [teams](repositories.md#teams)
 
 ## Accounts and signing in
 
-People have accounts: a unique user name (2 to 39 lowercase letters, digits, `-` or `_`; not one of the
+People have accounts: a unique user name (2 to 39 lowercase letters, digits, `-` or `_`, after [normalising](repositories.md#addresses-and-namespaces) a typed name: spaces become `-` and case is ignored, so `Ada Lovelace` registers as `ada-lovelace`; not one of the
 [reserved names](repositories.md#addresses-and-namespaces)) and a password of at least ten
 characters (at most 256), stored only as a salted argon2id hash. `pyn login <name>` checks the password and saves an expiring session
 for that server in your user configuration directory (`~/.config/pyn/credentials.toml`, readable only by you: the directory is `0700`, the file `0600`, written atomically under an advisory lock file, `.credentials.lock`, so concurrent commands lose no entry), the way a git
@@ -326,12 +326,18 @@ after a sign-out, so the passkey button and the second-factor step's passkey opt
 **Ceremonies.** Each is two calls around one browser call, and the bodies are the WebAuthn JSON forms (`credential.toJSON()` of
 the browser's result goes in `credential` as it is; binary fields are base64url). `begin` returns a `ceremony` id and `public_key`
 options; `finish` takes the `ceremony` back. A challenge is random, good for one `finish` and for five minutes, and spent whatever
-the outcome (`401 passkey_invalid` when it is unknown, used, expired or issued for another purpose or account). The server
+the outcome (`401 passkey_ceremony_expired` when it is unknown, used, expired or issued for another purpose or account). The server
 asks for user verification and a discoverable credential at every ceremony, and refuses an authenticator that did not verify
-the person.
+the person. The `user.id` offered at registration is derived from the account, so the `userHandle` a discoverable sign-in returns
+matches the stored one.
+
+**Refusals.** Every refused ceremony answers `401` with its own code, and the server log records the code and reason (never the
+answer's bytes): `passkey_ceremony_expired`, `passkey_not_registered`, `passkey_user_handle_mismatch`, `passkey_origin_not_allowed`,
+`passkey_rp_id_mismatch`, `passkey_challenge_mismatch`, `passkey_user_verification_required`, `passkey_signature_invalid`,
+`passkey_counter_regressed`, `passkey_replayed`, `passkey_already_registered`; `passkey_invalid` stays for malformed or unsupported data.
 
 **Counter.** An authenticator whose counter did not increase, while either value is non-zero, may be a copy: the sign-in or check is
-refused with `passkey_invalid`, the stored counter is left as it was, the server log records `passkey_clone_suspected` and the
+refused with `passkey_counter_regressed`, the stored counter is left as it was, the server log records `passkey_clone_suspected` and the
 account gets a [notice](#requiring-two-factor-authentication) (`passkey_clone_suspected`) so it can remove the passkey. Authenticators
 that keep no counter (always zero, typical of synced passkeys) are accepted.
 
@@ -345,12 +351,12 @@ or by signing in with a passkey, which opens the window. Password sign-in with o
 | --- | --- |
 | `GET /v1/me/passkeys` | `[{id, name, created_at, last_used_at, transports, sign_count, backup_eligible, backup_state}]`, oldest first; never a key or a credential id |
 | `POST /v1/me/passkeys/register/begin` | `{password?}` gives `{ceremony, public_key: {rp, user, challenge, pubKeyCredParams, timeout, excludeCredentials, authenticatorSelection, attestation}, expires_at}` (`PublicKeyCredentialCreationOptionsJSON`). The password is needed while the account has no second factor, a fresh check once it has one: `401`, `403 fresh_check_required`; `400` at ten passkeys; `501 passkeys_unavailable` |
-| `POST /v1/me/passkeys/register/finish` | `{ceremony, name?, credential}` gives `201 {passkey, recovery_codes?, fresh_until}`; `recovery_codes` only with the account's first second factor. `401 passkey_invalid` (also an authenticator already registered), `501` |
+| `POST /v1/me/passkeys/register/finish` | `{ceremony, name?, credential}` gives `201 {passkey, recovery_codes?, fresh_until}`; `recovery_codes` only with the account's first second factor. `401` with a refusal code above (`passkey_already_registered` for an authenticator already registered), `501` |
 | `PATCH /v1/me/passkeys/{id}` | `{name}` gives the passkey; `404 passkey_not_found` |
 | `DELETE /v1/me/passkeys/{id}` | `204`; `403 fresh_check_required`, `404 passkey_not_found` |
-| `POST /v1/me/passkeys/verify/begin`, `.../verify/finish` | the fresh check with a passkey: `begin` gives `{ceremony, public_key}` (`PublicKeyCredentialRequestOptionsJSON`, the account's passkeys in `allowCredentials`; `400` when it has none), `finish {ceremony, credential}` gives `{fresh_until}`; `401 passkey_invalid`, `429` (the same delay as codes) |
+| `POST /v1/me/passkeys/verify/begin`, `.../verify/finish` | the fresh check with a passkey: `begin` gives `{ceremony, public_key}` (`PublicKeyCredentialRequestOptionsJSON`, the account's passkeys in `allowCredentials`; `400` when it has none), `finish {ceremony, credential}` gives `{fresh_until}`; `401` with a refusal code, `429` (the same delay as codes) |
 | `POST /v1/session/passkey/begin` | open; `{username?}` gives `{ceremony, public_key, expires_at}`. With a name the account's passkeys are offered; without one (or with an unknown name) `allowCredentials` is empty and the browser offers a discoverable passkey. Same origin check as sign-in |
-| `POST /v1/session/passkey/finish` | open; `{ceremony, credential}` signs in as `POST /v1/session` does (cookie and `SessionInfo`) with the fresh window open. `401 passkey_invalid`, `403` for an account that cannot sign in or a foreign origin, `429` (the client's sign-in limit), `501` |
+| `POST /v1/session/passkey/finish` | open; `{ceremony, credential}` signs in as `POST /v1/session` does (cookie and `SessionInfo`) with the fresh window open. `401` with a refusal code, `403` for an account that cannot sign in or a foreign origin, `429` (the client's sign-in limit), `501` |
 
 Registration, rename and removal are on the [enrolment routes](#requiring-two-factor-authentication) (`full_scope_enrolment`);
 `verify` is `full_scope`. Passkeys are not available to tokens, only full-scope credentials, like the other factors.

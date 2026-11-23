@@ -351,7 +351,7 @@ async fn a_rename_needs_the_password_and_keeps_old_addresses_working_with_a_move
             "alice",
             "PUT",
             "/v1/me/username",
-            rename("Alicia", PASSWORD),
+            rename("Alicia!", PASSWORD),
         ),
     )
     .await;

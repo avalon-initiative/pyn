@@ -135,6 +135,42 @@ fn answer(device: &mut SoftwareAuthenticator, ask: &PasskeyRequest) -> PasskeyAs
 }
 
 #[tokio::test]
+async fn a_discoverable_sign_in_carries_the_user_handle_the_browser_stored_at_registration() {
+    let w = world();
+    signup(&w, "alice").await;
+    let mut device = SoftwareAuthenticator::new(1);
+    let who = session("alice");
+    let begun = w
+        .access
+        .begin_passkey_registration(&who, Some("cookie"), Some(PASSWORD))
+        .await
+        .unwrap();
+    let made = device.create(RP, ORIGIN, &begun.challenge);
+    w.access
+        .finish_passkey_registration(
+            &who,
+            Some("cookie"),
+            &begun.ceremony,
+            None,
+            &PasskeyAttestation {
+                client_data_json: made.client_data_json,
+                attestation_object: made.attestation_object,
+                transports: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
+    let mut reply = answer(&mut device, &ask);
+    reply.user_handle = Some(begun.user_handle.clone());
+    w.access
+        .finish_passkey_sign_in(&ask.ceremony, &reply, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn a_first_passkey_brings_recovery_codes_and_counts_as_a_second_factor() {
     let w = world();
     signup(&w, "alice").await;
@@ -323,7 +359,7 @@ async fn a_challenge_works_once_and_only_for_a_few_minutes() {
         w.access
             .finish_passkey_sign_in(&ask.ceremony, &reply, false, None)
             .await,
-        "passkey_invalid",
+        "passkey_ceremony_expired",
     );
 
     let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
@@ -333,7 +369,7 @@ async fn a_challenge_works_once_and_only_for_a_few_minutes() {
         w.access
             .finish_passkey_sign_in(&ask.ceremony, &reply, false, None)
             .await,
-        "passkey_invalid",
+        "passkey_ceremony_expired",
     );
 
     let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
@@ -341,7 +377,7 @@ async fn a_challenge_works_once_and_only_for_a_few_minutes() {
         w.access
             .finish_passkey_sign_in("not-a-ceremony", &answer(&mut device, &ask), false, None)
             .await,
-        "passkey_invalid",
+        "passkey_ceremony_expired",
     );
     let wrong_purpose = w
         .access
@@ -357,7 +393,7 @@ async fn a_challenge_works_once_and_only_for_a_few_minutes() {
                 None,
             )
             .await,
-        "passkey_invalid",
+        "passkey_ceremony_expired",
     );
 }
 
@@ -375,7 +411,7 @@ async fn a_bad_answer_is_refused_and_spends_its_challenge() {
         w.access
             .finish_passkey_sign_in(&ask.ceremony, &answer(&mut stranger, &ask), false, None)
             .await,
-        "passkey_invalid",
+        "passkey_not_registered",
     );
 
     let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
@@ -385,7 +421,7 @@ async fn a_bad_answer_is_refused_and_spends_its_challenge() {
         w.access
             .finish_passkey_sign_in(&ask.ceremony, &forged, false, None)
             .await,
-        "passkey_invalid",
+        "passkey_signature_invalid",
     );
 
     let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
@@ -401,7 +437,7 @@ async fn a_bad_answer_is_refused_and_spends_its_challenge() {
         w.access
             .finish_passkey_sign_in(&ask.ceremony, &wrong_origin, false, None)
             .await,
-        "passkey_invalid",
+        "passkey_origin_not_allowed",
     );
 
     let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
@@ -411,7 +447,7 @@ async fn a_bad_answer_is_refused_and_spends_its_challenge() {
         w.access
             .finish_passkey_sign_in(&ask.ceremony, &wrong_handle, false, None)
             .await,
-        "passkey_invalid",
+        "passkey_user_handle_mismatch",
     );
 
     let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
@@ -451,7 +487,7 @@ async fn a_passkey_cannot_pass_another_accounts_fresh_check() {
                 &answer(&mut b, &ask),
             )
             .await,
-        "passkey_invalid",
+        "passkey_not_registered",
     );
     let ask = w
         .access
@@ -467,7 +503,7 @@ async fn a_passkey_cannot_pass_another_accounts_fresh_check() {
                 &answer(&mut b, &ask),
             )
             .await,
-        "passkey_invalid",
+        "passkey_ceremony_expired",
         // the challenge belongs to alice
     );
     let ask = w
@@ -516,7 +552,7 @@ async fn a_counter_that_does_not_advance_is_refused_reported_and_not_stored() {
         w.access
             .finish_passkey_sign_in(&ask.ceremony, &replayed, false, None)
             .await,
-        "passkey_invalid",
+        "passkey_counter_regressed",
     );
     assert_eq!(
         w.access.list_passkeys(&session("alice")).await.unwrap()[0].sign_count,
@@ -595,7 +631,7 @@ async fn the_same_authenticator_registers_once() {
                 },
             )
             .await,
-        "passkey_invalid",
+        "passkey_already_registered",
     );
     assert!(!w.access.has_second_factor(&user("bob")).await.unwrap());
 }
@@ -627,7 +663,7 @@ async fn a_passkey_that_is_not_user_verified_is_refused() {
                 },
             )
             .await,
-        "passkey_invalid",
+        "passkey_user_verification_required",
     );
 }
 

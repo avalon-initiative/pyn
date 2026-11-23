@@ -300,7 +300,7 @@ pub(crate) async fn create_org(
 ) -> ApiResult<(StatusCode, Json<api::OrgInfo>)> {
     let org = s
         .access
-        .admin_create_org(&who, &req.name, &UserId::new(req.owner))
+        .admin_create_org(&who, &req.name, &crate::owner_path::typed_owner(req.owner))
         .await?;
     Ok((
         StatusCode::CREATED,

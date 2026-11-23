@@ -1166,8 +1166,16 @@ pub mod account {
         RESERVED_NAMES.contains(&name)
     }
 
-    /// Lowercase letters, digits, `-` and `_`, 2 to 39 characters, starting with a letter or digit, and not
-    /// reserved.
+    /// The canonical form of a typed owner name: trimmed, each run of whitespace one `-`, ASCII lowercase.
+    pub fn normalize_name(name: &str) -> String {
+        name.split_whitespace()
+            .collect::<Vec<_>>()
+            .join("-")
+            .to_ascii_lowercase()
+    }
+
+    /// A user name in canonical form: lowercase letters, digits, `-` and `_`, 2 to 39 characters, starting with a
+    /// letter or digit, and not reserved. Typed forms normalise first (see `normalize_name`).
     pub fn validate_username(name: &str) -> Result<UserId> {
         validate_namespace(name, "a user name")
     }
@@ -1177,9 +1185,10 @@ pub mod account {
         validate_namespace(name, "an organization name")
     }
 
-    fn validate_namespace(name: &str, noun: &str) -> Result<UserId> {
-        if is_reserved_name(name) {
-            return Err(PynError::ReservedName(name.to_string()));
+    fn validate_namespace(typed: &str, noun: &str) -> Result<UserId> {
+        let name = normalize_name(typed);
+        if is_reserved_name(&name) {
+            return Err(PynError::ReservedName(name));
         }
         let ok_chars = name
             .bytes()
@@ -1192,7 +1201,7 @@ pub mod account {
             Ok(UserId::new(name))
         } else {
             Err(PynError::InvalidRequest(format!(
-                "{noun} is 2 to 39 lowercase letters, digits, '-' or '_', starting with a letter or digit"
+                "{noun} is 2 to 39 letters, digits, '-' or '_' (spaces become '-', case is ignored), starting with a letter or digit"
             )))
         }
     }
@@ -1959,5 +1968,41 @@ mod tests {
                 .is_err()
         );
         assert!(own.require_org_grant(&acme, need).is_err());
+    }
+    #[test]
+    fn owner_names_normalise_to_one_canonical_form() {
+        use super::account::{normalize_name, validate_org_name, validate_username};
+        for typed in [
+            "Test Studio",
+            "test-studio",
+            "TeSt-StuDiO",
+            "  test  studio\t",
+            "TEST-STUDIO ",
+        ] {
+            assert_eq!(normalize_name(typed), "test-studio", "{typed:?}");
+            assert_eq!(validate_org_name(typed).unwrap().as_str(), "test-studio");
+            assert_eq!(validate_username(typed).unwrap().as_str(), "test-studio");
+        }
+        assert_eq!(normalize_name("a - b"), "a---b");
+        assert_eq!(normalize_name("Under_Score"), "under_score");
+    }
+
+    #[test]
+    fn owner_names_outside_the_alphabet_are_refused_and_reserved_ones_ignore_case() {
+        use super::account::{validate_org_name, validate_username};
+        for bad in ["", " ", "a", "-acme", "ac.me", "ac/me", "ac!me", "é", "ünï"] {
+            assert!(
+                matches!(validate_org_name(bad), Err(PynError::InvalidRequest(_))),
+                "{bad:?}"
+            );
+        }
+        assert!(validate_username(&"x".repeat(40)).is_err());
+        assert!(validate_username(&"X".repeat(39)).is_ok());
+        for reserved in ["Admin", " ORGS ", "_", " - ", "Settings"] {
+            assert!(
+                matches!(validate_username(reserved), Err(PynError::ReservedName(_))),
+                "{reserved:?}"
+            );
+        }
     }
 }

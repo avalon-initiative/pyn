@@ -131,7 +131,7 @@ same readers as the organization itself; there is no per-field privacy for them.
 characters, trimmed, may span lines, and has no other control characters. The display name (shown beside the handle) is 1
 to 80 characters, trimmed, on one line, with no control characters. The link (`url`) is an `http` or `https` address of at
 most 200 characters with a valid host, no spaces and no user name or password. A blank value clears any of them. The avatar follows [Avatars](#avatars) below (png, jpeg or webp,
-at most 1 MiB, judged from the bytes) and shares their storage.
+at most 1 MiB, judged from the bytes) and shares their storage. When an organization is created under a typed name that differs from its canonical one (`Test Studio` for `test-studio`), the display name starts as the typed form; a user account keeps no typed form, since its display name is the person's own to set ([owner names](repositories.md#addresses-and-namespaces)).
 
 | Route | What it does |
 | --- | --- |

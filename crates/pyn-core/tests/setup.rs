@@ -195,7 +195,7 @@ async fn invalid_essentials_are_refused_without_spending_the_token() {
     ));
     assert!(matches!(
         w.svc
-            .complete_setup(request(TOKEN, "Not Valid"))
+            .complete_setup(request(TOKEN, "Not.Valid"))
             .await
             .unwrap_err(),
         PynError::InvalidRequest(_)
@@ -303,7 +303,7 @@ async fn a_right_token_gives_its_attempt_back() {
             .await
             .unwrap_err();
     }
-    let mut bad = request(TOKEN, "Not Valid");
+    let mut bad = request(TOKEN, "Not.Valid");
     bad.client = Some("10.0.0.1");
     w.svc.complete_setup(bad).await.unwrap_err();
     w.svc.complete_setup(request(TOKEN, "root")).await.unwrap();

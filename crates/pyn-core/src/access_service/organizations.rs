@@ -94,6 +94,22 @@ impl AccessService {
         }
     }
 
+    /// Keeps the typed form of a new organization's name as its display name when it differs from the slug.
+    async fn keep_typed_name(&self, org: &UserId, typed: &str, now: DateTime<Utc>) -> Result<()> {
+        let typed = typed.split_whitespace().collect::<Vec<_>>().join(" ");
+        if typed == org.as_str() {
+            return Ok(());
+        }
+        let fields = OrgProfileFields {
+            display_name: Some(typed),
+            ..OrgProfileFields::default()
+        };
+        if let Ok(fields) = fields.validated() {
+            self.store.set_org_fields(org, &fields, now).await?;
+        }
+        Ok(())
+    }
+
     /// Creates an organization with the actor as its first owner. The server may limit this to administrators.
     pub async fn create_org(&self, actor: &Identity, name: &str) -> Result<AccountRecord> {
         actor.require_namespace_management()?;
@@ -119,6 +135,7 @@ impl AccessService {
         {
             return Err(PynError::UserExists(org));
         }
+        self.keep_typed_name(&org, name, now).await?;
         let detail = format!("{org} created, owner {}", actor.user);
         self.record(
             AuditScope::Org(org.clone()),
@@ -160,6 +177,7 @@ impl AccessService {
         {
             return Err(PynError::UserExists(org));
         }
+        self.keep_typed_name(&org, name, self.clock.now()).await?;
         let detail = format!("{org} created, owner {owner}");
         self.record(
             AuditScope::Org(org.clone()),

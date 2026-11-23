@@ -3851,7 +3851,7 @@
             }
           },
           "401": {
-            "description": "passkey_invalid: the answer failed verification, the ceremony expired or was used, the authenticator did not verify the person, or it is already registered",
+            "description": "a refusal code (passkey_ceremony_expired, passkey_origin_not_allowed, passkey_user_verification_required, passkey_already_registered, ...) or passkey_invalid for malformed data",
             "content": {
               "application/json": {
                 "schema": {
@@ -3943,7 +3943,7 @@
             }
           },
           "401": {
-            "description": "passkey_invalid",
+            "description": "a refusal code: passkey_ceremony_expired, passkey_not_registered, passkey_user_handle_mismatch, passkey_signature_invalid, passkey_counter_regressed, ... or passkey_invalid for malformed data",
             "content": {
               "application/json": {
                 "schema": {
@@ -11302,7 +11302,7 @@
             }
           },
           "401": {
-            "description": "passkey_invalid",
+            "description": "a refusal code: passkey_ceremony_expired, passkey_not_registered, passkey_user_handle_mismatch, passkey_signature_invalid, passkey_counter_regressed, ... or passkey_invalid for malformed data",
             "content": {
               "application/json": {
                 "schema": {
@@ -13497,7 +13497,7 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "Shares the namespace with user names: 2 to 39 lowercase letters, digits, `-` or `_`, not reserved."
+            "description": "Normalised to a canonical name (trimmed, spaces become `-`, lowercased); shares the namespace with user names: 2 to 39 letters, digits, `-` or `_`, not reserved. The typed form becomes the display name when it differs."
           }
         }
       },
@@ -13907,6 +13907,23 @@
           }
         }
       },
+      "EmailFailure": {
+        "type": "object",
+        "description": "A refused send. The error never carries a recipient address or a credential.",
+        "required": [
+          "at",
+          "error"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
       "EmailSettings": {
         "type": "object",
         "description": "Whether the server sends email.",
@@ -13915,6 +13932,25 @@
           "verification"
         ],
         "properties": {
+          "last_failure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EmailFailure",
+                "description": "The newest send the mailer refused since the server started; null when none failed."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_sent_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When a message last went out since the server started; null when none has."
+          },
           "mailer": {
             "$ref": "#/components/schemas/MailerKind"
           },
@@ -16899,7 +16935,7 @@
           },
           "username": {
             "type": "string",
-            "description": "The new name: 2 to 39 lowercase letters, digits, `-` or `_`."
+            "description": "The new name, normalised like a registered one: 2 to 39 letters, digits, `-` or `_` (spaces become `-`, case is ignored)."
           }
         }
       },
