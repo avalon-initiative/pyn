@@ -500,6 +500,56 @@ async fn a_stored_policy_that_no_longer_parses_fails_the_repository_closed() {
     assert!(matches!(err, PynError::InvalidRules(_)), "{err}");
 }
 
+#[tokio::test]
+async fn the_active_policy_is_the_file_the_initial_policy_or_the_initial_policy_with_a_warning() {
+    let w = world();
+    let svc = make_repo(&w, "game").await;
+    let none = svc.active_policy().await.unwrap();
+    assert!(!none.from_file && none.commit.is_none() && none.warning.is_none());
+
+    put_policy(&svc, &admin("alice"), SHARED_POLICY, None)
+        .await
+        .unwrap();
+    let file = svc.active_policy().await.unwrap();
+    assert!(file.from_file && file.commit.is_some() && file.warning.is_none());
+    assert_eq!(file.rules.entries().len(), 2);
+
+    let rec = w
+        .meta
+        .find_repo(&UserId::new("alice"), "game")
+        .await
+        .unwrap()
+        .unwrap();
+    let bad = blob(&svc, "[exlusive]\n").await;
+    w.meta
+        .commit_revision(
+            &rec.id,
+            NewRevision {
+                path: path(POLICY),
+                content: bad,
+                file_mode: pyn_core::FileMode::Regular,
+                author: UserId::new("alice"),
+                person: pyn_core::Person::for_user(&UserId::new("alice"), None),
+                message: "bad".into(),
+                created_at: Utc::now(),
+                restored_from: None,
+                mode: Mode::Exclusive,
+                deleted: false,
+                size: 0,
+                changeset: None,
+            },
+            Some(RevisionId(1)),
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    let invalid = svc.active_policy().await.unwrap();
+    assert!(!invalid.from_file && invalid.commit.is_some());
+    assert!(invalid.warning.unwrap().contains("invalid"));
+    assert!(invalid.rules.entries().is_empty());
+}
+
 const LIMIT_POLICY: &str =
     "[meta]\ndefault = \"shared\"\nmax_locks_per_user = 2\n[exclusive]\npaths = [\"Content/\"]\n";
 

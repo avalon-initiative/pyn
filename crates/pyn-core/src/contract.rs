@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use chrono::{Duration, TimeZone, Utc};
 
 use crate::access::{
-    AccessMode, AccountKind, AccountStatus, InvitationAccept, InvitationCreate, InvitationGrant,
-    InviteId, InviteRecord, NewAccount, OrgInvitation, OrgRole, Permission, Principal,
-    RegistrationMode, RepoAccess, Role, RoleDefinitions, RoleSource, ServerInvitation,
+    AccessMode, AccountKind, AccountRecord, AccountStatus, InvitationAccept, InvitationCreate,
+    InvitationGrant, InviteId, InviteRecord, NewAccount, OrgInvitation, OrgRole, Permission,
+    Principal, RegistrationMode, RepoAccess, Role, RoleDefinitions, RoleSource, ServerInvitation,
     ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
     SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
@@ -1415,6 +1415,44 @@ pub async fn public_repositories_are_listed_in_pages_after_an_address(store: Sto
         .await
         .unwrap();
     assert!(end.is_empty());
+}
+
+pub async fn every_repository_is_listed_in_pages_with_a_name_filter(store: Store) {
+    for (id, owner, name, public) in [
+        ("r1", "alice", "alpha", true),
+        ("r2", "alice", "Beta", false),
+        ("r3", "bob", "alpha", false),
+        ("r4", "carol", "gamma", true),
+    ] {
+        let mut r = repo_record(id, owner, name);
+        if public {
+            r.visibility = Visibility::Public;
+        }
+        store.create_repo(r).await.unwrap();
+    }
+    let addresses = |repos: Vec<RepoRecord>| -> Vec<String> {
+        repos.into_iter().map(|r| r.address()).collect()
+    };
+
+    let all = store.list_repos_page(None, None, 10).await.unwrap();
+    assert_eq!(
+        addresses(all),
+        ["alice/Beta", "alice/alpha", "bob/alpha", "carol/gamma"],
+        "private ones too, in byte order"
+    );
+    let first = store.list_repos_page(None, None, 2).await.unwrap();
+    assert_eq!(addresses(first), ["alice/Beta", "alice/alpha"]);
+    let after = store
+        .list_repos_page(None, Some((&user("alice"), "alpha")), 10)
+        .await
+        .unwrap();
+    assert_eq!(addresses(after), ["bob/alpha", "carol/gamma"]);
+    let found = store.list_repos_page(Some("alph"), None, 10).await.unwrap();
+    assert_eq!(addresses(found), ["alice/alpha", "bob/alpha"]);
+    let found = store.list_repos_page(Some("beta"), None, 10).await.unwrap();
+    assert_eq!(addresses(found), ["alice/Beta"], "case-insensitive");
+    let found = store.list_repos_page(Some("bob/"), None, 10).await.unwrap();
+    assert_eq!(addresses(found), ["bob/alpha"], "the owner is searched too");
 }
 
 pub async fn a_repository_name_is_unique_per_owner(store: Store) {
@@ -3318,6 +3356,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_are_registered_found_and_listed_in_order);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_keeps_its_initial_policy_or_none);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; public_repositories_are_listed_in_pages_after_an_address);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; every_repository_is_listed_in_pages_with_a_name_filter);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_name_is_unique_per_owner);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repository_names_are_case_insensitive);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_repository_keeps_its_id);
@@ -4112,6 +4151,51 @@ pub async fn deleting_an_organization_removes_its_members_and_frees_the_name(sto
         store.create_user(&acme, at(2)).await.unwrap(),
         "the name is free again"
     );
+}
+
+pub async fn organizations_are_listed_by_name_with_member_counts_and_a_filter(store: Access) {
+    let (alice, bob) = (user("alice"), user("bob"));
+    store.create_user(&alice, at(0)).await.unwrap();
+    store.create_user(&bob, at(0)).await.unwrap();
+    for (name, tick) in [("zeta", 1), ("acme", 2), ("acorn", 3)] {
+        assert!(
+            store
+                .create_org(&user(name), &alice, at(tick))
+                .await
+                .unwrap()
+        );
+    }
+    store
+        .add_org_member(&user("acme"), &bob, OrgRole::Member)
+        .await
+        .unwrap();
+    let names = |found: Vec<(AccountRecord, u64)>| -> Vec<(String, u64)> {
+        found
+            .into_iter()
+            .map(|(a, n)| (a.user.to_string(), n))
+            .collect()
+    };
+
+    let all = store.list_orgs(None, None, 10).await.unwrap();
+    assert!(all.iter().all(|(a, _)| a.kind == AccountKind::Org));
+    assert_eq!(
+        names(all),
+        [("acme".into(), 2), ("acorn".into(), 1), ("zeta".into(), 1)],
+        "users are not listed; the creator counts as a member"
+    );
+    let first = store.list_orgs(None, None, 2).await.unwrap();
+    assert_eq!(names(first).len(), 2);
+    let after = store
+        .list_orgs(None, Some(&user("acme")), 10)
+        .await
+        .unwrap();
+    assert_eq!(names(after), [("acorn".into(), 1), ("zeta".into(), 1)]);
+    let found = store.list_orgs(Some("ac"), None, 10).await.unwrap();
+    assert_eq!(names(found), [("acme".into(), 2), ("acorn".into(), 1)]);
+    let found = store.list_orgs(Some("ET"), None, 10).await.unwrap();
+    assert!(found.is_empty(), "the caller lowercases the term");
+    let found = store.list_orgs(Some("et"), None, 10).await.unwrap();
+    assert_eq!(names(found), [("zeta".into(), 1)]);
 }
 
 type Hook = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
@@ -9430,7 +9514,9 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profiles_belong_to_one_account_each);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; profile_visibility_defaults_public_and_is_stored_apart);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; save_profile_writes_text_and_visibility_together_or_not_at_all);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organizations_are_listed_by_name_with_member_counts_and_a_filter);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_description_and_an_avatar_apart);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_display_name_and_a_url_and_replace_them_together);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_are_apart_from_user_profiles_and_go_with_the_org);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_people_search_lists_active_accounts_and_matches_only_what_is_visible);
     };

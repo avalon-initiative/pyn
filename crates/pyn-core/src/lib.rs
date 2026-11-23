@@ -124,7 +124,9 @@ pub use oidc::{
 };
 pub use org_settings::{OrgSettings, ReadOnlyDefault, ReadOnlySource};
 pub use passwords::{InlinePasswords, PasswordWorker};
-pub use profile::{Avatar, ImageKind, OrgProfile, Profile, ProfileFields, ProfileVisibility};
+pub use profile::{
+    Avatar, ImageKind, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
+};
 pub use profiles::{Profiles, PublicProfile};
 pub use pyn_gitattr::lockable::Disagreement;
 pub use pyn_object::{FileMode, ObjectId};
@@ -138,14 +140,15 @@ pub use repo_policy::{
     Standing, SubjectKind,
 };
 pub use repositories::Repositories;
-pub use rules::{Mode, PathFilter, Rules};
+pub use rules::{Mode, PathFilter, PathMatch, RuleEntry, Rules};
 pub use service::{
-    COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeEntry, ChangeKind, CommitPage, Comparison,
-    Deletion, FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES, FETCH_MAX_LIMIT, FetchPage,
-    FetchQuery, FetchedCommit, FileEntry, LockLimit, PathChange, PolicyPreview, PushObjects,
-    Pushed, Recorded, RepoService, RepoServiceContext, ServiceConfig, Snapshot, SnapshotEntry,
-    TUS_APPEND_LEASE_MINUTES, TUS_MAX_SESSIONS_PER_USER, TUS_SESSION_TTL_HOURS, TusAppended,
-    TusError, TusStatus, VERIFY_BUDGET, is_lfs_oid, sweep_tus_sessions,
+    ActivePolicy, COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeEntry, ChangeKind, CommitPage,
+    Comparison, Deletion, FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES,
+    FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit, FileEntry, LockLimit, PathChange,
+    PolicyPreview, PushObjects, Pushed, Recorded, RepoService, RepoServiceContext, ServiceConfig,
+    Snapshot, SnapshotEntry, TUS_APPEND_LEASE_MINUTES, TUS_MAX_SESSIONS_PER_USER,
+    TUS_SESSION_TTL_HOURS, TusAppended, TusError, TusStatus, VERIFY_BUDGET, is_lfs_oid,
+    sweep_tus_sessions,
 };
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};

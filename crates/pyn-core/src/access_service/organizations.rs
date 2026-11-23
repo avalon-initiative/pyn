@@ -2,7 +2,45 @@
 
 use super::*;
 
+/// A trimmed, lowercase search term; blank is none, and one over `MAX_PEOPLE_QUERY_CHARS` is refused.
+pub(crate) fn search_term(query: Option<&str>) -> Result<Option<String>> {
+    let query = query.map(str::trim).filter(|q| !q.is_empty());
+    if query.is_some_and(|q| q.chars().count() > super::profile::MAX_PEOPLE_QUERY_CHARS) {
+        return Err(PynError::InvalidRequest(format!(
+            "a search is at most {} characters",
+            super::profile::MAX_PEOPLE_QUERY_CHARS
+        )));
+    }
+    Ok(query.map(str::to_lowercase))
+}
+
 impl AccessService {
+    /// One page of every organization by name, for a server administrator: each with its member count, and the
+    /// name to pass back as `after` for the next page.
+    pub async fn list_orgs_page(
+        &self,
+        actor: &Identity,
+        query: Option<&str>,
+        after: Option<&UserId>,
+        limit: usize,
+    ) -> Result<(Vec<(AccountRecord, u64)>, Option<String>)> {
+        actor.require_full_scope()?;
+        if !self.is_server_admin(actor).await? {
+            return Err(PynError::ServerAdminRequired);
+        }
+        let query = search_term(query)?;
+        let limit = limit.max(1);
+        let mut found = self
+            .store
+            .list_orgs(query.as_deref(), after, limit + 1)
+            .await?;
+        let next = (found.len() > limit).then(|| {
+            found.truncate(limit);
+            found[limit - 1].0.user.to_string()
+        });
+        Ok((found, next))
+    }
+
     /// Whether `name` is an organization.
     pub async fn is_org(&self, name: &UserId) -> Result<bool> {
         Ok(self

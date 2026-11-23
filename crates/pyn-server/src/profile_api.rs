@@ -8,7 +8,10 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{Stream, StreamExt};
 use pyn_core::profiles::Profiles;
-use pyn_core::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility, PynError, UserId};
+use pyn_core::{
+    Avatar, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility, PynError,
+    UserId,
+};
 use pyn_proto as api;
 use serde::Deserialize;
 
@@ -298,6 +301,8 @@ fn org_profile_dto(org: &UserId, p: OrgProfile) -> api::OrgProfile {
     api::OrgProfile {
         name: org.to_string(),
         description: p.description,
+        display_name: p.display_name,
+        url: p.url,
         avatar_url: org_avatar_url(org, p.avatar.as_ref()),
     }
 }
@@ -323,7 +328,7 @@ pub(crate) async fn get_org_profile(
 #[utoipa::path(put, path = "/v1/orgs/{org}/profile", request_body = api::UpdateOrgProfileRequest,
     params(("org" = String, Path, description = "the organization's name")),
     responses((status = 200, body = api::OrgProfile, description = "the stored profile"),
-              (status = 400, body = api::ErrorBody, description = "invalid_request: the description is too long or has control characters"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request: a field is too long, has control characters, or the url is not a plain http or https address"),
               (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found"),
               (status = 409, body = api::ErrorBody, description = "owner_frozen")))]
@@ -336,7 +341,15 @@ pub(crate) async fn update_org_profile(
     let org = UserId::new(org);
     let saved = s
         .access
-        .update_org_description(&who, &org, req.description)
+        .update_org_fields(
+            &who,
+            &org,
+            OrgProfileFields {
+                description: req.description,
+                display_name: req.display_name,
+                url: req.url,
+            },
+        )
         .await?;
     Ok(Json(org_profile_dto(&org, saved)))
 }

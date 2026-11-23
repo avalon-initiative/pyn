@@ -806,6 +806,56 @@ async fn an_organization_profile_is_edited_by_owners_and_read_by_signed_in_accou
 }
 
 #[tokio::test]
+async fn an_organization_display_name_and_url_are_set_by_owners_and_validated() {
+    let app = server().await;
+    let (alice, bob, carol) = org_with_owner_and_member(&app).await;
+    let uri = "/v1/orgs/acme/profile";
+
+    let body = json!({"description": "d", "display_name": "  Acme Inc ", "url": "https://acme.example/about"});
+    let r = put_org_profile(&app, &alice, body.clone()).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let p = call(&app, &carol, "GET", uri, None)
+        .await
+        .json::<api::OrgProfile>();
+    assert_eq!(p.display_name.as_deref(), Some("Acme Inc"));
+    assert_eq!(p.url.as_deref(), Some("https://acme.example/about"));
+
+    let r = put_org_profile(&app, &bob, json!({"display_name": "Mine"})).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::FORBIDDEN, "not_org_owner")
+    );
+    for bad in [
+        json!({"url": "ftp://acme.example"}),
+        json!({"url": "javascript:alert(1)"}),
+        json!({"url": "https://user:pw@acme.example"}),
+        json!({"url": format!("https://acme.example/{}", "a".repeat(200))}),
+        json!({"display_name": "n".repeat(81)}),
+        json!({"display_name": "a\nb"}),
+    ] {
+        let r = put_org_profile(&app, &alice, bad.clone()).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::BAD_REQUEST, "invalid_request"),
+            "{bad}"
+        );
+    }
+    let ok = put_org_profile(&app, &alice, json!({"display_name": "n".repeat(80)})).await;
+    assert_eq!(ok.status, StatusCode::OK);
+    let p = ok.json::<api::OrgProfile>();
+    assert_eq!(
+        (p.url, p.description),
+        (None, None),
+        "a PUT replaces the text"
+    );
+    let r = put_org_profile(&app, &alice, body).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = put_org_profile(&app, &alice, json!({"display_name": " ", "url": ""})).await;
+    let p = r.json::<api::OrgProfile>();
+    assert_eq!((p.display_name, p.url), (None, None));
+}
+
+#[tokio::test]
 async fn an_organization_avatar_is_uploaded_served_and_removed_by_owners_only() {
     let app = server().await;
     let (alice, bob, _) = org_with_owner_and_member(&app).await;
@@ -1457,6 +1507,12 @@ async fn organization_profile_edits_are_audited_by_field_without_their_content()
     let (alice, bob, _) = org_with_owner_and_member(&app).await;
     put_org_profile(&app, &alice, json!({"description": "private words"})).await;
     put_org_profile(&app, &alice, json!({"description": "private words"})).await;
+    put_org_profile(
+        &app,
+        &alice,
+        json!({"description": "private words", "display_name": "Acme", "url": "https://acme.example"}),
+    )
+    .await;
     put_org_profile(&app, &bob, json!({"description": "refused"})).await;
     put_org_avatar(&app, &alice, png()).await;
     call(&app, &alice, "DELETE", "/v1/orgs/acme/avatar", None).await;
@@ -1475,6 +1531,7 @@ async fn organization_profile_edits_are_audited_by_field_without_their_content()
         edits,
         [
             ("org_profile_updated", "alice", "description"),
+            ("org_profile_updated", "alice", "display_name, url"),
             ("org_avatar_set", "alice", "avatar"),
             ("org_avatar_removed", "alice", "avatar"),
         ],

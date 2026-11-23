@@ -2689,6 +2689,28 @@ impl MetadataStore for PgMetadataStore {
         rows.iter().map(repo_from).collect()
     }
 
+    async fn list_repos_page(
+        &self,
+        query: Option<&str>,
+        after: Option<(&UserId, &str)>,
+        limit: usize,
+    ) -> Result<Vec<RepoRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
+             WHERE ($1::text IS NULL OR (owner COLLATE \"C\", name COLLATE \"C\") > ($1, $2))
+               AND ($3::text IS NULL OR strpos(lower(owner || '/' || name), $3) > 0)
+             ORDER BY owner COLLATE \"C\", name COLLATE \"C\" LIMIT $4",
+        )
+        .bind(after.map(|(o, _)| o.as_str()))
+        .bind(after.map(|(_, n)| n))
+        .bind(query)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(repo_from).collect()
+    }
+
     async fn update_repo_with_events(
         &self,
         id: &RepoId,

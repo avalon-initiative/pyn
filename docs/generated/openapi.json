@@ -631,6 +631,77 @@
         "x-pyn-reach": "service:manage_limits"
       }
     },
+    "/v1/admin/organizations": {
+      "get": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "list_organizations",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "only organizations whose name contains this text, case-insensitive; at most 64 characters",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "return organizations after this name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "page size, default 50, max 200",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "every organization ordered by name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOrgPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a `q` over 64 characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
+      }
+    },
     "/v1/admin/orgs": {
       "post": {
         "tags": [
@@ -949,6 +1020,77 @@
           }
         },
         "x-pyn-reach": "service:manage_limits"
+      }
+    },
+    "/v1/admin/repositories": {
+      "get": {
+        "tags": [
+          "admin_api"
+        ],
+        "operationId": "list_repositories",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "only repositories whose `owner/name` contains this text, case-insensitive; at most 64 characters",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "return repositories after this `owner/name`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "page size, default 50, max 200",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "every repository, private ones included, ordered by owner then name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminRepoPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a malformed `after` or a `q` over 64 characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
       }
     },
     "/v1/admin/service-credentials": {
@@ -5582,7 +5724,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: the description is too long or has control characters",
+            "description": "invalid_request: a field is too long, has control characters, or the url is not a plain http or https address",
             "content": {
               "application/json": {
                 "schema": {
@@ -9658,6 +9800,67 @@
         "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
+    "/v1/repos/{owner}/{name}/policy": {
+      "get": {
+        "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
+        "operationId": "get_policy",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "a path to report the mode and deciding rule for; repeatable, at most 20",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivePolicy"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_path, or invalid_request for more than 20 paths",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      }
+    },
     "/v1/repos/{owner}/{name}/policy/preview": {
       "post": {
         "tags": [],
@@ -12125,6 +12328,51 @@
           "disabled"
         ]
       },
+      "ActivePolicy": {
+        "type": "object",
+        "description": "The policy in force at the default branch head.",
+        "required": [
+          "default_mode",
+          "rules",
+          "source"
+        ],
+        "properties": {
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The default branch head the policy was read at; absent before the first commit."
+          },
+          "default_mode": {
+            "$ref": "#/components/schemas/PolicyMode",
+            "description": "The mode of a path no rule covers."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyPath"
+            },
+            "description": "One entry per `path` query parameter, in request order."
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyRule"
+            }
+          },
+          "source": {
+            "$ref": "#/components/schemas/PolicySource"
+          },
+          "warning": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when `.pyn/pyn.toml` is invalid at the head and the initial policy is shown instead."
+          }
+        }
+      },
       "ActivityEntry": {
         "type": "object",
         "description": "A file or lock event from the audit log.",
@@ -12258,7 +12506,7 @@
             "type": "string"
           },
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/Role"
           },
           "username": {
             "type": "string"
@@ -12323,6 +12571,110 @@
           },
           "user": {
             "type": "string"
+          }
+        }
+      },
+      "AdminOrgEntry": {
+        "type": "object",
+        "description": "An organization in the administrator's listing.",
+        "required": [
+          "id",
+          "name",
+          "created_at",
+          "member_count"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "member_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminOrgPage": {
+        "type": "object",
+        "description": "One page of every organization on the server.",
+        "required": [
+          "organizations",
+          "next_after"
+        ],
+        "properties": {
+          "next_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` to fetch the next page; null on the last page."
+          },
+          "organizations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminOrgEntry"
+            },
+            "description": "Ordered by name."
+          }
+        }
+      },
+      "AdminRepoEntry": {
+        "type": "object",
+        "description": "A repository in the administrator's listing.",
+        "required": [
+          "id",
+          "owner",
+          "name",
+          "visibility",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/Visibility"
+          }
+        }
+      },
+      "AdminRepoPage": {
+        "type": "object",
+        "description": "One page of every repository on the server, of any visibility.",
+        "required": [
+          "repos",
+          "next_after"
+        ],
+        "properties": {
+          "next_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` to fetch the next page; null on the last page."
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminRepoEntry"
+            },
+            "description": "Ordered by owner, then name."
           }
         }
       },
@@ -13133,7 +13485,7 @@
             "description": "How long the invitation can be used, in hours."
           },
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/Role"
           }
         }
       },
@@ -14005,7 +14357,7 @@
             "format": "date-time"
           },
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/Role"
           },
           "used_at": {
             "type": [
@@ -14444,7 +14796,7 @@
             ]
           },
           "role": {
-            "type": "string",
+            "$ref": "#/components/schemas/Role",
             "description": "The effective role: the highest of the direct grant, team grants and organization ownership."
           },
           "source": {
@@ -15081,8 +15433,22 @@
             ],
             "description": "At most 256 characters; null when unset."
           },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1 to 80 characters, shown beside the name; null when unset."
+          },
           "name": {
             "type": "string"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An http or https website link of at most 200 characters, without credentials; null when unset."
           }
         }
       },
@@ -15904,6 +16270,60 @@
           }
         }
       },
+      "PolicyMode": {
+        "type": "string",
+        "description": "The collaboration mode of a path.",
+        "enum": [
+          "shared",
+          "exclusive"
+        ]
+      },
+      "PolicyPath": {
+        "type": "object",
+        "description": "The mode of one requested path and the rule that decided it.",
+        "required": [
+          "path",
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/PolicyMode"
+          },
+          "path": {
+            "type": "string"
+          },
+          "rule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PolicyPathRule",
+                "description": "The deciding entry; absent when the default mode (or the policy file's own rule) applied."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "PolicyPathRule": {
+        "type": "object",
+        "description": "The entry of `rules` that decided a path.",
+        "required": [
+          "index",
+          "pattern"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Position in `rules`.",
+            "minimum": 0
+          },
+          "pattern": {
+            "type": "string"
+          }
+        }
+      },
       "PolicyPreview": {
         "type": "object",
         "description": "What a proposed policy would change in the repository, without applying it.",
@@ -15961,6 +16381,31 @@
             "description": "The proposed contents of `.pyn/pyn.toml`."
           }
         }
+      },
+      "PolicyRule": {
+        "type": "object",
+        "description": "One path entry of the policy, in the order the file lists them (exclusive entries, then shared).",
+        "required": [
+          "pattern",
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/PolicyMode"
+          },
+          "pattern": {
+            "type": "string",
+            "description": "The entry as written: an exact path, a glob, or a folder with a trailing `/`."
+          }
+        }
+      },
+      "PolicySource": {
+        "type": "string",
+        "description": "Where the active policy came from.",
+        "enum": [
+          "file",
+          "initial"
+        ]
       },
       "Profile": {
         "type": "object",
@@ -16551,11 +16996,15 @@
             ]
           },
           "role": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The caller's role in the repository; absent when they have none."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Role",
+                "description": "The caller's role in the repository; absent when they have none."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "visibility": {
             "$ref": "#/components/schemas/Visibility"
@@ -16710,7 +17159,7 @@
             "type": "string"
           },
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/Role"
           },
           "slug": {
             "type": "string"
@@ -17185,6 +17634,16 @@
           }
         }
       },
+      "Role": {
+        "type": "string",
+        "description": "A role in a repository, lowest to highest.",
+        "enum": [
+          "reader",
+          "writer",
+          "maintainer",
+          "admin"
+        ]
+      },
       "RoleGrant": {
         "type": "object",
         "required": [
@@ -17199,7 +17658,7 @@
             }
           },
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/Role"
           }
         }
       },
@@ -17288,8 +17747,14 @@
             "description": "`owner/name` of a personal repository."
           },
           "role": {
-            "type": "string",
-            "description": "A repository role (`reader`, `writer`, `maintainer`, `admin`) or an organization role (`member`, `owner`)."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Role"
+              },
+              {
+                "$ref": "#/components/schemas/OrgRole"
+              }
+            ]
           }
         }
       },
@@ -17515,7 +17980,7 @@
         ],
         "properties": {
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/Role"
           }
         }
       },
@@ -17591,7 +18056,7 @@
         ],
         "properties": {
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/Role"
           }
         }
       },
@@ -18053,7 +18518,7 @@
             "description": "`owner/name`."
           },
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/Role"
           }
         }
       },
@@ -18415,13 +18880,27 @@
       },
       "UpdateOrgProfileRequest": {
         "type": "object",
-        "description": "The new organization description; blank or left out clears it.",
+        "description": "The organization profile text; each field that is blank or left out is cleared.",
         "properties": {
           "description": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1 to 80 characters, no control characters."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "http or https only, at most 200 characters, no user name or password."
           }
         }
       },

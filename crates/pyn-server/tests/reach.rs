@@ -1074,6 +1074,7 @@ const REPOSITORY_ROUTES: &[(&str, &str, &str)] = &[
     ("POST", "/changesets", "repo_scoped:contents:write"),
     ("POST", "/restore", "repo_scoped:contents:write"),
     ("POST", "/force-unlock", "repo_scoped:locks:admin"),
+    ("GET", "/policy", "public_repo_read:contents:read"),
     ("POST", "/policy/preview", "repo_scoped:policy:write"),
     ("GET", "/audit", "repo_scoped:audit:read"),
     ("PUT", "/objects", "repo_scoped:contents:write"),

@@ -12,6 +12,7 @@ pub const MAX_COMPANY_CHARS: usize = 64;
 pub const MAX_LINKS: usize = 5;
 pub const MAX_LINK_BYTES: usize = 200;
 pub const MAX_ORG_DESCRIPTION_CHARS: usize = 256;
+pub const MAX_ORG_DISPLAY_NAME_CHARS: usize = 80;
 /// The largest avatar upload.
 pub const MAX_AVATAR_BYTES: u64 = 1 << 20;
 
@@ -128,16 +129,46 @@ impl Profile {
     }
 }
 
-/// What an organization shows about itself: a description and an avatar. Nothing in it is hidden from viewers.
+/// What an organization shows about itself. Nothing in it is hidden from viewers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OrgProfile {
     pub description: Option<String>,
+    pub display_name: Option<String>,
+    pub url: Option<String>,
     pub avatar: Option<Avatar>,
 }
 
-/// Trims an organization description; blank becomes `None`. Newlines are allowed, other control characters are not.
-pub fn validate_org_description(description: Option<String>) -> Result<Option<String>> {
-    text("description", description, MAX_ORG_DESCRIPTION_CHARS, true)
+/// The organization profile text an owner edits.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OrgProfileFields {
+    pub description: Option<String>,
+    pub display_name: Option<String>,
+    pub url: Option<String>,
+}
+
+impl OrgProfileFields {
+    /// Trims and checks each field; blank becomes `None`. The description may span lines, the display name may not,
+    /// and the url must be an http or https address without credentials.
+    pub fn validated(self) -> Result<Self> {
+        Ok(Self {
+            description: text(
+                "description",
+                self.description,
+                MAX_ORG_DESCRIPTION_CHARS,
+                true,
+            )?,
+            display_name: text(
+                "display name",
+                self.display_name,
+                MAX_ORG_DISPLAY_NAME_CHARS,
+                false,
+            )?,
+            url: match self.url.as_deref().map(str::trim) {
+                None | Some("") => None,
+                Some(url) => Some(link("url", url)?),
+            },
+        })
+    }
 }
 
 /// Checks avatar bytes (size, then magic numbers) and returns their format.
@@ -179,10 +210,10 @@ fn text(field: &str, value: Option<String>, max: usize, multiline: bool) -> Resu
     Ok(Some(value.to_string()))
 }
 
-fn link(raw: &str) -> Result<String> {
+fn link(field: &str, raw: &str) -> Result<String> {
     let url = raw.trim();
     if url.len() > MAX_LINK_BYTES {
-        return Err(bad("link", &format!("at most {MAX_LINK_BYTES} bytes")));
+        return Err(bad(field, &format!("at most {MAX_LINK_BYTES} bytes")));
     }
     if !url.is_ascii()
         || url
@@ -196,17 +227,17 @@ fn link(raw: &str) -> Result<String> {
     }
     let (scheme, rest) = url
         .split_once("://")
-        .ok_or_else(|| bad("link", "expected http:// or https://"))?;
+        .ok_or_else(|| bad(field, "expected http:// or https://"))?;
     if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
-        return Err(bad("link", "the scheme must be http or https"));
+        return Err(bad(field, "the scheme must be http or https"));
     }
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     if authority.contains('@') {
-        return Err(bad("link", "no user name or password in the url"));
+        return Err(bad(field, "no user name or password in the url"));
     }
     let host = match authority.rsplit_once(':') {
         Some((host, port)) if port.bytes().all(|b| b.is_ascii_digit()) && !port.is_empty() => host,
-        Some(_) if !authority.ends_with(']') => return Err(bad("link", "the port is not valid")),
+        Some(_) if !authority.ends_with(']') => return Err(bad(field, "the port is not valid")),
         _ => authority,
     };
     let host_ok = match host.strip_prefix('[') {
@@ -225,7 +256,7 @@ fn link(raw: &str) -> Result<String> {
         }
     };
     if !host_ok {
-        return Err(bad("link", "the host is not valid"));
+        return Err(bad(field, "the host is not valid"));
     }
     Ok(url.to_string())
 }
@@ -238,7 +269,7 @@ impl ProfileFields {
             if raw.trim().is_empty() {
                 continue;
             }
-            let url = link(raw)?;
+            let url = link("link", raw)?;
             if !links.contains(&url) {
                 links.push(url);
             }
@@ -341,13 +372,57 @@ mod tests {
 
     #[test]
     fn an_org_description_is_trimmed_bounded_and_may_span_lines() {
-        let d = |s: &str| validate_org_description(Some(s.into()));
+        let d = |s: &str| {
+            OrgProfileFields {
+                description: Some(s.into()),
+                ..Default::default()
+            }
+            .validated()
+            .map(|f| f.description)
+        };
         assert_eq!(d("  two\nlines ").unwrap().as_deref(), Some("two\nlines"));
         assert_eq!(d("   ").unwrap(), None);
         assert!(d(&"d".repeat(256)).is_ok());
         assert!(d(&"d".repeat(257)).is_err());
         assert!(d("a\u{1b}b").is_err());
-        assert_eq!(validate_org_description(None).unwrap(), None);
+        assert_eq!(
+            OrgProfileFields::default().validated().unwrap(),
+            Default::default()
+        );
+    }
+
+    #[test]
+    fn an_org_display_name_and_url_are_bounded_and_the_url_is_plain_http() {
+        let f = |name: Option<&str>, url: Option<&str>| {
+            OrgProfileFields {
+                display_name: name.map(Into::into),
+                url: url.map(Into::into),
+                ..Default::default()
+            }
+            .validated()
+        };
+        let ok = f(Some("  Acme Inc "), Some(" https://acme.example/x ")).unwrap();
+        assert_eq!(ok.display_name.as_deref(), Some("Acme Inc"));
+        assert_eq!(ok.url.as_deref(), Some("https://acme.example/x"));
+        assert_eq!(f(Some("  "), Some("")).unwrap(), Default::default());
+        assert!(f(Some(&"é".repeat(80)), None).is_ok());
+        assert!(f(Some(&"é".repeat(81)), None).is_err());
+        assert!(f(Some("a\nb"), None).is_err());
+        for bad in [
+            "ftp://a.example",
+            "javascript:alert(1)",
+            "acme.example",
+            "https://u:p@a.example",
+        ] {
+            assert!(f(None, Some(bad)).is_err(), "{bad}");
+        }
+        assert!(
+            f(
+                None,
+                Some(&format!("https://a.example/{}", "a".repeat(200)))
+            )
+            .is_err()
+        );
     }
 
     fn png() -> Vec<u8> {

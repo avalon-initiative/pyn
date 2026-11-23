@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::profile::{
-    Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility, validate_org_description,
+    Avatar, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
 };
 
 /// The longest people search, in characters.
@@ -158,22 +158,31 @@ impl AccessService {
         }
     }
 
-    /// Replaces the organization's description. Owners only, with a full-scope credential.
-    pub async fn update_org_description(
+    /// Replaces the organization's description, display name and url. Owners only, with a full-scope credential.
+    /// The audit entry names the fields that changed.
+    pub async fn update_org_fields(
         &self,
         actor: &Identity,
         org: &UserId,
-        description: Option<String>,
+        fields: OrgProfileFields,
     ) -> Result<OrgProfile> {
-        let description = validate_org_description(description)?;
+        let fields = fields.validated()?;
         self.require_org_edit(actor, org).await?;
         let old = self.store.org_profile(org).await?;
         self.store
-            .set_org_description(org, description.as_deref(), self.clock.now())
+            .set_org_fields(org, &fields, self.clock.now())
             .await?;
-        if old.description != description {
+        let changed: Vec<&str> = [
+            ("description", old.description != fields.description),
+            ("display_name", old.display_name != fields.display_name),
+            ("url", old.url != fields.url),
+        ]
+        .into_iter()
+        .filter_map(|(name, changed)| changed.then_some(name))
+        .collect();
+        if !changed.is_empty() {
             let (scope, action) = (AuditScope::Org(org.clone()), AuditAction::OrgProfileUpdated);
-            self.record(scope, actor.into(), action, "description".into())
+            self.record(scope, actor.into(), action, changed.join(", "))
                 .await?;
         }
         self.store.org_profile(org).await

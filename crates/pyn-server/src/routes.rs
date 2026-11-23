@@ -268,6 +268,16 @@ fn table() -> Vec<Entry> {
             Reach::AdminOnly,
             admin_api::set_access_mode,
         ),
+        get(
+            "/v1/admin/repositories",
+            Reach::AdminOnly,
+            admin_api::list_repositories,
+        ),
+        get(
+            "/v1/admin/organizations",
+            Reach::AdminOnly,
+            admin_api::list_organizations,
+        ),
         post(
             "/v1/admin/orgs",
             Reach::Service(ServiceScope::ManageOrganizations),
@@ -989,6 +999,11 @@ fn table() -> Vec<Entry> {
             "/v1/repos/{owner}/{name}/force-unlock",
             Reach::RepoScoped(need(Locks, Admin)),
             crate::force_unlock,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/policy",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            crate::get_policy,
         ),
         post(
             "/v1/repos/{owner}/{name}/policy/preview",

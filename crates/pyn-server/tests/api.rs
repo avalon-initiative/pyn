@@ -2561,6 +2561,114 @@ async fn the_policy_file_in_the_repository_governs_that_repository() {
     assert_eq!(modes, [(".pyn/pyn.toml", api::Mode::Shared)]);
 }
 
+async fn read_policy(app: &axum::Router, token: &str, query: &str) -> axum::response::Response {
+    send(
+        app,
+        "GET",
+        &format!("/v1/repos/alice/game/policy{query}"),
+        token,
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn the_active_policy_is_the_initial_one_until_a_file_exists_and_names_the_deciding_rule() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let bob = register_and_sign_in(&app, "bob").await;
+    create_repo(&app, &alice, "game").await;
+
+    let r = read_policy(&app, &alice, "?path=Content/a.umap&path=Source/b.cpp").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let initial: api::ActivePolicy = body_json(r).await;
+    assert_eq!(initial.source, api::PolicySource::Initial);
+    assert_eq!(initial.commit, None);
+    assert_eq!(initial.warning, None);
+    assert_eq!(initial.default_mode, api::PolicyMode::Shared);
+    assert_eq!(initial.rules.len(), 1);
+    assert_eq!(initial.paths.len(), 2);
+    assert_eq!(initial.paths[0].mode, api::PolicyMode::Exclusive);
+    assert_eq!(initial.paths[1].rule, None);
+
+    let policy = "[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"Source/\", \"*.psd\"]\n[shared]\npaths = [\"Source/ok.txt\"]\n";
+    let content = put_blob(&app, "game", &alice, policy).await;
+    let r = send(
+        &app,
+        "POST",
+        "/v1/repos/alice/game/checkin",
+        &alice,
+        Some(serde_json::json!({
+            "path": ".pyn/pyn.toml", "content": content, "base_revision": null, "message": "policy"
+        })),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let r = read_policy(
+        &app,
+        &alice,
+        "?path=Source/a.cpp&path=Source/ok.txt&path=a.psd&path=readme.md",
+    )
+    .await;
+    let active: api::ActivePolicy = body_json(r).await;
+    assert_eq!(active.source, api::PolicySource::File);
+    assert!(active.commit.is_some());
+    let listed: Vec<_> = active
+        .rules
+        .iter()
+        .map(|r| (r.pattern.as_str(), r.mode))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Source/", api::PolicyMode::Exclusive),
+            ("*.psd", api::PolicyMode::Exclusive),
+            ("Source/ok.txt", api::PolicyMode::Shared)
+        ]
+    );
+    let decided: Vec<_> = active
+        .paths
+        .iter()
+        .map(|p| {
+            (
+                p.mode,
+                p.rule.as_ref().map(|r| (r.index, r.pattern.as_str())),
+            )
+        })
+        .collect();
+    assert_eq!(
+        decided,
+        [
+            (api::PolicyMode::Exclusive, Some((0, "Source/"))),
+            (api::PolicyMode::Shared, Some((2, "Source/ok.txt"))),
+            (api::PolicyMode::Exclusive, Some((1, "*.psd"))),
+            (api::PolicyMode::Shared, None),
+        ]
+    );
+
+    let r = read_policy(&app, &bob, "").await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "repo_not_found");
+}
+
+#[tokio::test]
+async fn a_policy_read_answers_for_at_most_twenty_paths_and_refuses_a_bad_one() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let many = |n: usize| (0..n).map(|i| format!("&path=f{i}")).collect::<String>();
+    let r = read_policy(&app, &alice, &format!("?{}", many(20))).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(body_json::<api::ActivePolicy>(r).await.paths.len(), 20);
+    let r = read_policy(&app, &alice, &format!("?{}", many(21))).await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "invalid_request");
+    let r = read_policy(&app, &alice, "?path=../x").await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json::<api::ErrorBody>(r).await.code, "invalid_path");
+}
+
 #[tokio::test]
 async fn the_lock_limit_is_set_at_creation_overridden_by_the_policy_file_and_enforced() {
     let app = router(state_with(false, RegistrationMode::Open).await);
@@ -2755,7 +2863,8 @@ async fn checkin_text(app: &axum::Router, repo: &str, token: &str, path: &str) {
     assert_eq!(r.status(), StatusCode::OK);
 }
 
-const READ_ROUTES: [&str; 7] = [
+const READ_ROUTES: [&str; 8] = [
+    "policy",
     "compare?head=main",
     "tree",
     "files",

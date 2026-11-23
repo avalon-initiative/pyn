@@ -145,10 +145,26 @@ pub struct Rules {
     default: Mode,
     max_locks: Option<u32>,
     exclusive_read_only: Option<bool>,
-    exact: HashMap<String, Mode>,
+    exact: HashMap<String, (Mode, usize)>,
     /// Folder entries stored with a trailing `/`.
-    dirs: Vec<(String, Mode)>,
-    globs: Vec<(GlobMatcher, Mode)>,
+    dirs: Vec<(String, Mode, usize)>,
+    globs: Vec<(GlobMatcher, Mode, usize)>,
+    /// Every entry as written, exclusive list first; the `usize` in the maps above indexes it.
+    entries: Vec<RuleEntry>,
+}
+
+/// One `pyn.toml` path entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleEntry {
+    pub pattern: String,
+    pub mode: Mode,
+}
+
+/// The mode a path gets and the entry that decided it; `rule` is `None` when the default or the policy file's own rule did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathMatch {
+    pub mode: Mode,
+    pub rule: Option<usize>,
 }
 
 enum Entry<'a> {
@@ -193,6 +209,7 @@ impl Rules {
             exact: HashMap::new(),
             dirs: Vec::new(),
             globs: Vec::new(),
+            entries: Vec::new(),
         }
     }
 
@@ -221,7 +238,7 @@ impl Rules {
                 rules.add(raw, mode)?;
             }
         }
-        rules.dirs.sort_by_key(|(d, _)| std::cmp::Reverse(d.len()));
+        rules.dirs.sort_by_key(|(d, ..)| std::cmp::Reverse(d.len()));
         Ok(rules)
     }
 
@@ -231,27 +248,34 @@ impl Rules {
                 PynError::InvalidRules(format!("{raw:?} is listed as both exclusive and shared"))
             })
         };
+        let index = self.entries.len();
         match classify(raw)? {
             Entry::Exact(p) => {
-                if let Some(prev) = self.exact.insert(p.to_string(), mode) {
-                    dup(prev).map_or(Ok(()), Err)?;
+                if let Some((prev, _)) = self.exact.get(p) {
+                    dup(*prev).map_or(Ok(()), Err)?;
+                    return Ok(());
                 }
+                self.exact.insert(p.to_string(), (mode, index));
             }
             Entry::Dir(d) => {
-                if let Some((_, prev)) = self.dirs.iter().find(|(x, _)| x == d) {
+                if let Some((_, prev, _)) = self.dirs.iter().find(|(x, ..)| x == d) {
                     dup(*prev).map_or(Ok(()), Err)?;
-                } else {
-                    self.dirs.push((d.to_string(), mode));
+                    return Ok(());
                 }
+                self.dirs.push((d.to_string(), mode, index));
             }
             Entry::Glob(g) => {
                 let glob = GlobBuilder::new(g)
                     .literal_separator(true)
                     .build()
                     .map_err(|e| PynError::InvalidRules(format!("{raw:?}: {e}")))?;
-                self.globs.push((glob.compile_matcher(), mode));
+                self.globs.push((glob.compile_matcher(), mode, index));
             }
         }
+        self.entries.push(RuleEntry {
+            pattern: raw.to_string(),
+            mode,
+        });
         Ok(())
     }
 
@@ -269,38 +293,56 @@ impl Rules {
         self.exclusive_read_only
     }
 
+    /// The entries as written: the `exclusive` list, then the `shared` list.
+    pub fn entries(&self) -> &[RuleEntry] {
+        &self.entries
+    }
+
     /// The policy file is exclusive unless an entry covers it, whatever `meta.default` says.
     pub fn mode_for(&self, path: &RepoPath) -> Mode {
-        self.listed_mode(path)
-            .unwrap_or(if path.as_str() == POLICY_PATH {
+        self.matching(path).mode
+    }
+
+    /// The mode of `path` and the entry that decided it.
+    pub fn matching(&self, path: &RepoPath) -> PathMatch {
+        self.listed(path).unwrap_or(PathMatch {
+            mode: if path.as_str() == POLICY_PATH {
                 Mode::Exclusive
             } else {
                 self.default
-            })
+            },
+            rule: None,
+        })
     }
 
-    fn listed_mode(&self, path: &RepoPath) -> Option<Mode> {
+    fn listed(&self, path: &RepoPath) -> Option<PathMatch> {
         let p = path.as_str();
-        if let Some(mode) = self.exact.get(p) {
-            return Some(*mode);
+        let hit = |mode, index| {
+            Some(PathMatch {
+                mode,
+                rule: Some(index),
+            })
+        };
+        if let Some((mode, index)) = self.exact.get(p) {
+            return hit(*mode, *index);
         }
         let mut glob_hit = None;
-        for (matcher, mode) in &self.globs {
+        for (matcher, mode, index) in &self.globs {
             if matcher.is_match(p) {
                 if *mode == Mode::Exclusive {
-                    return Some(Mode::Exclusive);
+                    return hit(*mode, *index);
                 }
-                glob_hit = Some(*mode);
+                glob_hit.get_or_insert((*mode, *index));
             }
         }
-        if glob_hit.is_some() {
-            return glob_hit;
+        if let Some((mode, index)) = glob_hit {
+            return hit(mode, index);
         }
         // `dirs` is sorted deepest-first.
         self.dirs
             .iter()
-            .find(|(d, _)| p.starts_with(d.as_str()))
-            .map(|(_, m)| *m)
+            .find(|(d, ..)| p.starts_with(d.as_str()))
+            .and_then(|(_, mode, index)| hit(*mode, *index))
     }
 }
 
@@ -592,5 +634,29 @@ paths = ["Content/docs/", "**/*.md", "docs/"]
             let rules = Rules::from_toml(text).unwrap();
             assert_eq!(rules.mode_for(&p("notes.txt")), Mode::Exclusive);
         }
+    }
+
+    #[test]
+    fn the_deciding_entry_is_reported_with_its_position() {
+        let r = rules(GAME);
+        let patterns: Vec<_> = r.entries().iter().map(|e| e.pattern.as_str()).collect();
+        assert_eq!(
+            patterns,
+            [
+                "Content/",
+                "Config/ProductionConfig.cpp",
+                "Source/",
+                "docs/",
+                "README.md"
+            ]
+        );
+        let hit = r.matching(&p("Content/a.umap"));
+        assert_eq!((hit.mode, hit.rule), (Mode::Exclusive, Some(0)));
+        let hit = r.matching(&p("README.md"));
+        assert_eq!((hit.mode, hit.rule), (Mode::Shared, Some(4)));
+        let hit = r.matching(&p("other.txt"));
+        assert_eq!((hit.mode, hit.rule), (Mode::Exclusive, None));
+        let globs = rules("[meta]\ndefault = \"shared\"\n[exclusive]\npaths = [\"*.psd\"]\n");
+        assert_eq!(globs.matching(&p("a.psd")).rule, Some(0));
     }
 }

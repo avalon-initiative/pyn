@@ -35,7 +35,9 @@ use crate::merge::{MergeWrite, MergeWritten};
 use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
 use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
 use crate::org_settings::OrgSettings;
-use crate::profile::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility};
+use crate::profile::{
+    Avatar, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
+};
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{RepoRecord, RepoUpdate, Visibility};
 use crate::repo_policy::{
@@ -2222,15 +2224,17 @@ impl AccessStore for MemoryAccessStore {
         Ok(st.org_profiles.get(org).cloned().unwrap_or_default())
     }
 
-    async fn set_org_description(
+    async fn set_org_fields(
         &self,
         org: &UserId,
-        description: Option<&str>,
+        fields: &OrgProfileFields,
         _now: DateTime<Utc>,
     ) -> Result<()> {
         let mut st = self.state.lock().unwrap();
-        st.org_profiles.entry(org.clone()).or_default().description =
-            description.map(str::to_string);
+        let profile = st.org_profiles.entry(org.clone()).or_default();
+        profile.description = fields.description.clone();
+        profile.display_name = fields.display_name.clone();
+        profile.url = fields.url.clone();
         Ok(())
     }
 
@@ -2469,6 +2473,27 @@ impl AccessStore for MemoryAccessStore {
             account.deleting_since = None;
         }
         Ok(())
+    }
+
+    async fn list_orgs(
+        &self,
+        query: Option<&str>,
+        after: Option<&UserId>,
+        limit: usize,
+    ) -> Result<Vec<(AccountRecord, u64)>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .accounts
+            .values()
+            .filter(|a| a.kind == AccountKind::Org)
+            .filter(|a| after.is_none_or(|x| a.user.as_str() > x.as_str()))
+            .filter(|a| query.is_none_or(|q| a.user.as_str().to_lowercase().contains(q)))
+            .take(limit)
+            .map(|a| {
+                let members = st.org_roles.keys().filter(|(o, _)| *o == a.user).count();
+                (a.clone(), members as u64)
+            })
+            .collect())
     }
 
     async fn org_members(&self, org: &UserId) -> Result<Vec<(UserId, OrgRole)>> {

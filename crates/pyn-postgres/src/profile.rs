@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use pyn_core::{
-    Avatar, ImageKind, ObjectId, OrgProfile, Profile, ProfileFields, ProfileVisibility, PynError,
-    Result, UserId,
+    Avatar, ImageKind, ObjectId, OrgProfile, OrgProfileFields, Profile, ProfileFields,
+    ProfileVisibility, PynError, Result, UserId,
 };
 use sqlx::Row;
 use sqlx::postgres::{PgConnection, PgRow};
@@ -161,7 +161,7 @@ fn avatar_of(row: &PgRow) -> Result<Option<Avatar>> {
 impl PgMetadataStore {
     pub(crate) async fn org_profile_row(&self, org: &UserId) -> Result<OrgProfile> {
         let row = sqlx::query(
-            "SELECT description, avatar_content, avatar_type, avatar_size FROM org_profiles WHERE org_id = $1",
+            "SELECT description, display_name, url, avatar_content, avatar_type, avatar_size FROM org_profiles WHERE org_id = $1",
         )
         .bind(org.as_str())
         .fetch_optional(&self.pool)
@@ -172,22 +172,28 @@ impl PgMetadataStore {
         };
         Ok(OrgProfile {
             description: row.get("description"),
+            display_name: row.get("display_name"),
+            url: row.get("url"),
             avatar: avatar_of(&row)?,
         })
     }
 
-    pub(crate) async fn put_org_description(
+    pub(crate) async fn put_org_fields(
         &self,
         org: &UserId,
-        description: Option<&str>,
+        fields: &OrgProfileFields,
         now: DateTime<Utc>,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO org_profiles (org_id, description, updated_at) VALUES ($1, $2, $3)
-             ON CONFLICT (org_id) DO UPDATE SET description = $2, updated_at = $3",
+            "INSERT INTO org_profiles (org_id, description, display_name, url, updated_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (org_id) DO UPDATE SET description = $2, display_name = $3, url = $4,
+                 updated_at = $5",
         )
         .bind(org.as_str())
-        .bind(description)
+        .bind(fields.description.as_deref())
+        .bind(fields.display_name.as_deref())
+        .bind(fields.url.as_deref())
         .bind(now)
         .execute(&self.pool)
         .await

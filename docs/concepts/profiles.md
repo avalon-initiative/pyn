@@ -126,15 +126,17 @@ absent when no active account holds the name (deleted, disabled, not yet approve
 
 ## Organization profiles
 
-An organization carries a description and an avatar. Both are optional and public to the same readers as the organization
-itself; there is no per-field privacy for them. The description is at most 256 characters, trimmed, may span lines, and
-has no other control characters; a blank value clears it. The avatar follows [Avatars](#avatars) below (png, jpeg or webp,
+An organization carries a description, a display name, a website link and an avatar. All are optional and public to the
+same readers as the organization itself; there is no per-field privacy for them. The description is at most 256
+characters, trimmed, may span lines, and has no other control characters. The display name (shown beside the handle) is 1
+to 80 characters, trimmed, on one line, with no control characters. The link (`url`) is an `http` or `https` address of at
+most 200 characters with a valid host, no spaces and no user name or password. A blank value clears any of them. The avatar follows [Avatars](#avatars) below (png, jpeg or webp,
 at most 1 MiB, judged from the bytes) and shares their storage.
 
 | Route | What it does |
 | --- | --- |
-| `GET /v1/orgs/{org}/profile` | `{name, description, avatar_url}`. Any signed-in account, like `GET /v1/orgs/{org}`. |
-| `PUT /v1/orgs/{org}/profile` | Replaces the description. |
+| `GET /v1/orgs/{org}/profile` | `{name, description, display_name, url, avatar_url}`; the three optional fields are null when unset. Any signed-in account, like `GET /v1/orgs/{org}`. |
+| `PUT /v1/orgs/{org}/profile` | `{description?, display_name?, url?}` replaces all three: a field left out or blank is cleared. `400 invalid_request` for a field that breaks its limits or a `url` that is not a plain http or https address. |
 | `PUT /v1/orgs/{org}/avatar` | Sets the avatar from the request body (the raw image bytes). |
 | `DELETE /v1/orgs/{org}/avatar` | Removes the avatar. |
 | `GET /v1/orgs/{org}/avatar` | The image, readable signed out on a `public` server so it can sit in an `<img>`; `404 avatar_not_found` when none. |
@@ -142,11 +144,11 @@ at most 1 MiB, judged from the bytes) and shares their storage.
 Editing is for organization owners with a full-scope credential (`403 not_org_owner` for anyone else), and is refused while
 the organization is [frozen](limits.md#freezing-an-owner). An organization may change its avatar 30 times an hour. The
 `avatar_url` has the form `/v1/orgs/{org}/avatar?v=<hash start>`, cached like a user's. Deleting an organization deletes its
-profile. Edits are written to the organization's audit log as `org_profile_updated` (the description), `org_avatar_set` and
+profile. Edits are written to the organization's audit log as `org_profile_updated` (written only when something changed; the detail lists the changed fields, `description`, `display_name` and `url`), `org_avatar_set` and
 `org_avatar_removed`, with the acting owner; the detail names the field, never the text or the image.
 
 Every repository response (`RepoInfo`) carries `owner_identity` when an organization owns the repository: a `PublicIdentity`
-whose `user` is the organization's name, `display_name` is null (organizations have none) and `avatar_url` is its avatar.
+whose `user` is the organization's name, `display_name` is null (an organization's display name is on its profile) and `avatar_url` is its avatar.
 It is absent for a repository a user owns, whose profile is on `GET /v1/users/{user}`.
 
 ## Avatars

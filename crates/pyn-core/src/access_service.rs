@@ -39,7 +39,9 @@ use crate::oidc::{
 };
 use crate::org_settings::OrgSettings;
 use crate::passwords::{InlinePasswords, PasswordWorker};
-use crate::profile::{Avatar, OrgProfile, Profile, ProfileFields, ProfileVisibility};
+use crate::profile::{
+    Avatar, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
+};
 use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
@@ -64,7 +66,7 @@ mod freeze;
 mod invitations;
 mod limits;
 mod org_settings;
-mod organizations;
+pub(crate) mod organizations;
 mod passkeys;
 mod profile;
 mod recovery;
@@ -196,6 +198,15 @@ pub trait AccessStore: Send + Sync {
     ) -> Result<bool>;
 
     async fn org_role(&self, org: &UserId, user: &UserId) -> Result<Option<OrgRole>>;
+
+    /// At most `limit` organizations ordered by name (bytewise), strictly after `after`, whose name contains `query`
+    /// (lowercase), each with its member count.
+    async fn list_orgs(
+        &self,
+        query: Option<&str>,
+        after: Option<&UserId>,
+        limit: usize,
+    ) -> Result<Vec<(AccountRecord, u64)>>;
 
     /// The organizations the user belongs to with their role, ordered by name.
     async fn orgs_of(&self, user: &UserId) -> Result<Vec<(UserId, OrgRole)>>;
@@ -415,11 +426,11 @@ pub trait AccessStore: Send + Sync {
     /// The organization's profile; empty when none was saved.
     async fn org_profile(&self, org: &UserId) -> Result<OrgProfile>;
 
-    /// Sets or clears the organization's description, keeping the avatar. The organization must exist.
-    async fn set_org_description(
+    /// Replaces the organization's description, display name and url, keeping the avatar. The organization must exist.
+    async fn set_org_fields(
         &self,
         org: &UserId,
-        description: Option<&str>,
+        fields: &OrgProfileFields,
         now: DateTime<Utc>,
     ) -> Result<()>;
 

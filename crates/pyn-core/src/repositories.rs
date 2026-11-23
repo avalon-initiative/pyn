@@ -618,6 +618,43 @@ impl Repositories {
         Ok(out)
     }
 
+    /// One page of every repository of any visibility ordered by address, for a server administrator, and the address
+    /// to pass back as `after` for the next page. `query` matches the address, case-insensitively.
+    pub async fn list_all(
+        &self,
+        actor: &Identity,
+        query: Option<&str>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<RepoRecord>, Option<String>)> {
+        actor.require_full_scope()?;
+        if !self.access.is_server_admin(actor).await? {
+            return Err(PynError::ServerAdminRequired);
+        }
+        let query = crate::access_service::organizations::search_term(query)?;
+        let limit = limit.max(1);
+        let after = after
+            .map(|a| {
+                a.split_once('/')
+                    .map(|(owner, name)| (UserId::new(owner), name))
+                    .ok_or_else(|| PynError::InvalidRequest(format!("invalid cursor {a:?}")))
+            })
+            .transpose()?;
+        let mut found = self
+            .meta
+            .list_repos_page(
+                query.as_deref(),
+                after.as_ref().map(|(o, n)| (o, *n)),
+                limit + 1,
+            )
+            .await?;
+        let next = (found.len() > limit).then(|| {
+            found.truncate(limit);
+            found[limit - 1].address()
+        });
+        Ok((found, next))
+    }
+
     /// One page of public repositories ordered by address, strictly after `after` (`owner/name`), with the caller's
     /// role in each and the address to pass back for the next page. Works without an identity.
     pub async fn list_public(

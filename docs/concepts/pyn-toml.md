@@ -127,6 +127,25 @@ When several entries cover a path, the most specific wins:
 The same exact file or folder in both lists is an error, not a silent choice. Unknown tables, unknown keys and
 invalid values are errors too: with a safe default, a typo like `[exlusive]` must not be quietly ignored.
 
+## Reading the active policy
+
+`GET /v1/repos/{owner}/{name}/policy` returns the policy in force at the default branch head, parsed, so a client never
+parses TOML. It is readable under the same rules as the tree (a public repository needs no credential; a private one
+is not found for anyone without a role). The body:
+
+- `default_mode`: `shared` or `exclusive`, the mode of a path no rule covers.
+- `rules`: the path entries as written, `exclusive` list first, then `shared`: `{pattern, mode}`. The file has no
+  per-entry comments, so there is no `comment` field.
+- `source`: `file` when `.pyn/pyn.toml` is read, `initial` when the repository has no policy file yet (the initial
+  policy of the repository applies).
+- `commit`: the default branch head the policy was read at; absent in a repository with no commits.
+- `warning`: present, with `source: initial`, when the file at the head does not parse. The route answers rather than
+  failing, and the message says why.
+- `paths`: one `{path, mode, rule?}` per repeated `path` query parameter (at most 20, else `400 invalid_request`; a
+  malformed path is `400 invalid_path`), in request order. `rule` is `{index, pattern}`, the entry of `rules` that
+  decided the mode, and is absent when `meta.default` (or the policy file's own rule) did. It uses the same matcher as
+  enforcement, so it states why a path is exclusive.
+
 ## Changing policy
 
 The server is the only authority on a path's mode. A path's mode changes only by a commit to the default branch's

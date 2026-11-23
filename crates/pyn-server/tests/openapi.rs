@@ -137,6 +137,53 @@ fn closed_sets_are_enums() {
     }
 }
 
+fn schema_enum(spec: &serde_json::Value, schema: &str) -> Vec<String> {
+    spec["components"]["schemas"][schema]["enum"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{schema} is not an enum"))
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn role_enums_are_exactly_the_names_the_server_accepts() {
+    use std::str::FromStr;
+    let spec = spec();
+    let repo = schema_enum(&spec, "Role");
+    let want: Vec<_> = pyn_core::Role::ALL.iter().map(|r| r.as_str()).collect();
+    assert_eq!(repo, want);
+    let org = schema_enum(&spec, "OrgRole");
+    assert!(org.iter().all(|r| pyn_core::OrgRole::from_str(r).is_ok()));
+    assert_eq!(
+        org,
+        [pyn_core::OrgRole::Owner, pyn_core::OrgRole::Member].map(|r| r.as_str())
+    );
+
+    for (schema, field) in [
+        ("RepoInfo", "role"),
+        ("RoleGrant", "role"),
+        ("Member", "role"),
+        ("RepoTeam", "role"),
+        ("SetTeamRoleRequest", "role"),
+        ("TeamRepo", "role"),
+        ("SetMemberRequest", "role"),
+        ("AddUserRequest", "role"),
+        ("CreateInviteRequest", "role"),
+        ("InviteInfo", "role"),
+    ] {
+        assert_eq!(enum_values(&spec, schema, field), want, "{schema}.{field}");
+    }
+    let grant = &spec["components"]["schemas"]["ServerInvitationGrant"]["properties"]["role"];
+    let refs: Vec<_> = grant["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["$ref"].as_str().unwrap().rsplit('/').next().unwrap())
+        .collect();
+    assert_eq!(refs, ["Role", "OrgRole"]);
+}
+
 #[test]
 fn nullable_cursors_are_required() {
     let spec = spec();
@@ -144,6 +191,8 @@ fn nullable_cursors_are_required() {
         ("AuditPage", "next_before"),
         ("HistoryPage", "next_cursor"),
         ("FilePage", "next_after"),
+        ("AdminRepoPage", "next_after"),
+        ("AdminOrgPage", "next_after"),
     ] {
         let required = spec["components"]["schemas"][schema]["required"]
             .as_array()

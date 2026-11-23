@@ -593,6 +593,24 @@ pub trait MetadataStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<RepoRecord>>;
 
+    /// At most `limit` repositories of any visibility ordered by owner, then name (bytewise), strictly after `after`
+    /// when given, whose `owner/name` contains `query` (lowercase). A store may override this with a query.
+    async fn list_repos_page(
+        &self,
+        query: Option<&str>,
+        after: Option<(&UserId, &str)>,
+        limit: usize,
+    ) -> Result<Vec<RepoRecord>> {
+        let mut all = self.list_repos(None).await?;
+        all.retain(|r| {
+            after.is_none_or(|(o, n)| (r.owner.as_str(), r.name.as_str()) > (o.as_str(), n))
+                && query.is_none_or(|q| r.address().to_lowercase().contains(q))
+        });
+        all.sort_by(|a, b| (a.owner.as_str(), &a.name).cmp(&(b.owner.as_str(), &b.name)));
+        all.truncate(limit);
+        Ok(all)
+    }
+
     /// `RepoNotFound` for an unknown id, `RepoExists` if the new name is taken; a rejected update changes nothing.
     async fn update_repo(&self, id: &RepoId, update: RepoUpdate) -> Result<RepoRecord> {
         self.update_repo_with_events(id, update, &[]).await
