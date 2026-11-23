@@ -17,7 +17,7 @@ use crate::access_api::names;
 use crate::caller::{AnyCaller, NamespaceCaller, OptionalCaller, RepoCaller, RepoReader};
 use crate::{ApiResult, AppState, RepoAddress};
 
-fn visibility_dto(v: pyn_core::Visibility) -> api::Visibility {
+pub(crate) fn visibility_dto(v: pyn_core::Visibility) -> api::Visibility {
     match v {
         pyn_core::Visibility::Public => api::Visibility::Public,
         pyn_core::Visibility::Private => api::Visibility::Private,

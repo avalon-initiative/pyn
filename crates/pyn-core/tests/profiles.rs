@@ -365,7 +365,14 @@ async fn only_organization_owners_edit_its_profile() {
     assert_eq!(p.org_profile("acme").await.unwrap(), Default::default());
     let saved = w
         .access
-        .update_org_description(&alice, &acme, Some(" hi ".into()))
+        .update_org_fields(
+            &alice,
+            &acme,
+            pyn_core::OrgProfileFields {
+                description: Some(" hi ".into()),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     assert_eq!(saved.description.as_deref(), Some("hi"));
@@ -379,7 +386,7 @@ async fn only_organization_owners_edit_its_profile() {
     assert!(matches!(err, PynError::NotOrgOwner(_)), "{err}");
     let err = w
         .access
-        .update_org_description(&bob, &acme, None)
+        .update_org_fields(&bob, &acme, Default::default())
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::NotOrgOwner(_)), "{err}");

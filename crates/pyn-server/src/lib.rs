@@ -287,6 +287,9 @@ struct RepoAddress {
         restore,
         force_unlock,
         preview_policy,
+        get_policy,
+        admin_api::list_repositories,
+        admin_api::list_organizations,
         audit,
         put_object,
         put_chunk,
@@ -356,6 +359,18 @@ struct RepoAddress {
         api::MissingObjectsResponse,
         api::AssembleObjectRequest,
         api::PolicyPreview,
+        api::ActivePolicy,
+        api::Role,
+        api::OrgRole,
+        api::AdminRepoEntry,
+        api::AdminRepoPage,
+        api::AdminOrgEntry,
+        api::AdminOrgPage,
+        api::PolicyRule,
+        api::PolicyMode,
+        api::PolicySource,
+        api::PolicyPath,
+        api::PolicyPathRule,
         api::AuditEntry,
         api::AuditPage,
         api::CheckinRequest,
@@ -1978,6 +1993,76 @@ async fn preview_policy(
                         api::LockableDisagreementKind::ExclusiveNotLockable
                     }
                 },
+            })
+            .collect(),
+    }))
+}
+
+/// The most `path` parameters one policy read answers for.
+const POLICY_PATHS_MAX: usize = 20;
+
+fn policy_mode(mode: pyn_core::Mode) -> api::PolicyMode {
+    match mode {
+        pyn_core::Mode::Shared => api::PolicyMode::Shared,
+        pyn_core::Mode::Exclusive => api::PolicyMode::Exclusive,
+    }
+}
+
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/policy",
+    params(RepoAddress, ("path" = Option<Vec<String>>, Query, description = "a path to report the mode and deciding rule for; repeatable, at most 20")),
+    responses((status = 200, body = api::ActivePolicy),
+              (status = 400, body = api::ErrorBody, description = "invalid_path, or invalid_request for more than 20 paths")))]
+async fn get_policy(
+    RepoReader { repo, .. }: RepoReader,
+    Query(query): Query<Vec<(String, String)>>,
+) -> ApiResult<Json<api::ActivePolicy>> {
+    let asked: Vec<&str> = query
+        .iter()
+        .filter(|(k, _)| k == "path")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    if asked.len() > POLICY_PATHS_MAX {
+        return Err(PynError::InvalidRequest(format!(
+            "at most {POLICY_PATHS_MAX} paths per request"
+        ))
+        .into());
+    }
+    let paths = asked
+        .into_iter()
+        .map(|raw| RepoPath::from_stored(raw.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let active = repo.service.active_policy().await?;
+    let rules = &active.rules;
+    let entries = rules.entries();
+    Ok(Json(api::ActivePolicy {
+        default_mode: policy_mode(rules.default_mode()),
+        rules: entries
+            .iter()
+            .map(|e| api::PolicyRule {
+                pattern: e.pattern.clone(),
+                mode: policy_mode(e.mode),
+            })
+            .collect(),
+        source: if active.from_file {
+            api::PolicySource::File
+        } else {
+            api::PolicySource::Initial
+        },
+        commit: active.commit.map(|c| c.to_string()),
+        warning: active.warning,
+        paths: paths
+            .into_iter()
+            .map(|path| {
+                let found = rules.matching(&path);
+                api::PolicyPath {
+                    path: path.to_string(),
+                    mode: policy_mode(found.mode),
+                    rule: found.rule.map(|i| api::PolicyPathRule {
+                        index: i as u32,
+                        pattern: entries[i].pattern.clone(),
+                    }),
+                }
             })
             .collect(),
     }))

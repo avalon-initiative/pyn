@@ -84,6 +84,18 @@ fn changeset_id() -> Result<String> {
 }
 
 /// One path in a repository listing: its policy, head revision and live lock.
+/// The policy in force at the default branch head.
+#[derive(Debug, Clone)]
+pub struct ActivePolicy {
+    pub rules: Arc<Rules>,
+    /// The rules come from `.pyn/pyn.toml` rather than the initial policy.
+    pub from_file: bool,
+    /// The default branch head the policy was read at; `None` before the first commit.
+    pub commit: Option<ObjectId>,
+    /// Set when the file at the head is invalid and the initial policy is shown instead.
+    pub warning: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
     pub path: RepoPath,
@@ -363,6 +375,31 @@ impl RepoService {
 
     pub fn mode_for(&self, path: &RepoPath) -> Mode {
         self.rules().mode_for(path)
+    }
+
+    /// The policy at the default branch head: the file's, or the initial policy when there is no file or it does not parse.
+    pub async fn active_policy(&self) -> Result<ActivePolicy> {
+        let commit = self.default_head().await?;
+        let mut active = ActivePolicy {
+            rules: self.initial.clone(),
+            from_file: false,
+            commit,
+            warning: None,
+        };
+        let Some(tip) = commit else {
+            return Ok(active);
+        };
+        let policy = RepoPath::new(POLICY_PATH)?;
+        if let Some(rev) = self.meta.revision_at(&self.repo, &tip, &policy).await? {
+            match self.parse_policy(&rev.content).await {
+                Ok(rules) => {
+                    active.rules = Arc::new(rules);
+                    active.from_file = true;
+                }
+                Err(e) => active.warning = Some(format!("{POLICY_PATH} is invalid: {e}")),
+            }
+        }
+        Ok(active)
     }
 
     /// The effective policy of `branch`: the default branch's policy as of the latest policy commit the branch contains.

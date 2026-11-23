@@ -68,6 +68,77 @@ pub(crate) async fn list_accounts(
     ))
 }
 
+#[derive(Deserialize)]
+pub(crate) struct AdminListQuery {
+    q: Option<String>,
+    after: Option<String>,
+    limit: Option<usize>,
+}
+
+#[utoipa::path(get, path = "/v1/admin/repositories",
+    params(("q" = Option<String>, Query, description = "only repositories whose `owner/name` contains this text, case-insensitive; at most 64 characters"),
+           ("after" = Option<String>, Query, description = "return repositories after this `owner/name`"),
+           ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
+    responses((status = 200, body = api::AdminRepoPage, description = "every repository, private ones included, ordered by owner then name"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request: a malformed `after` or a `q` over 64 characters"),
+              (status = 403, body = api::ErrorBody, description = "server_admin_required")))]
+pub(crate) async fn list_repositories(
+    State(s): State<AppState>,
+    AdminCaller(who): AdminCaller,
+    Query(q): Query<AdminListQuery>,
+) -> ApiResult<Json<api::AdminRepoPage>> {
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let (found, next_after) = s
+        .repos
+        .list_all(&who, q.q.as_deref(), q.after.as_deref(), limit)
+        .await?;
+    Ok(Json(api::AdminRepoPage {
+        repos: found
+            .into_iter()
+            .map(|r| api::AdminRepoEntry {
+                id: r.id.to_string(),
+                owner: r.owner.to_string(),
+                name: r.name,
+                visibility: crate::repo_api::visibility_dto(r.visibility),
+                created_at: r.created_at,
+            })
+            .collect(),
+        next_after,
+    }))
+}
+
+#[utoipa::path(get, path = "/v1/admin/organizations",
+    params(("q" = Option<String>, Query, description = "only organizations whose name contains this text, case-insensitive; at most 64 characters"),
+           ("after" = Option<String>, Query, description = "return organizations after this name"),
+           ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
+    responses((status = 200, body = api::AdminOrgPage, description = "every organization ordered by name"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request: a `q` over 64 characters"),
+              (status = 403, body = api::ErrorBody, description = "server_admin_required")))]
+pub(crate) async fn list_organizations(
+    State(s): State<AppState>,
+    AdminCaller(who): AdminCaller,
+    Query(q): Query<AdminListQuery>,
+) -> ApiResult<Json<api::AdminOrgPage>> {
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let after = q.after.map(UserId::new);
+    let (found, next_after) = s
+        .access
+        .list_orgs_page(&who, q.q.as_deref(), after.as_ref(), limit)
+        .await?;
+    Ok(Json(api::AdminOrgPage {
+        organizations: found
+            .into_iter()
+            .map(|(a, members)| api::AdminOrgEntry {
+                id: a.id.to_string(),
+                name: a.user.to_string(),
+                created_at: a.created_at,
+                member_count: members,
+            })
+            .collect(),
+        next_after,
+    }))
+}
+
 #[utoipa::path(post, path = "/v1/admin/users/{user}/approve",
     params(("user" = String, Path, description = "the account's user name")),
     responses(

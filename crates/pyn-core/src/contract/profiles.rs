@@ -2,7 +2,7 @@
 
 use super::{Access, at, user};
 use crate::access::SignupStage;
-use crate::profile::{Avatar, ImageKind, ProfileFields, ProfileVisibility};
+use crate::profile::{Avatar, ImageKind, OrgProfileFields, ProfileFields, ProfileVisibility};
 use crate::{AccountDeletion, ObjectId};
 
 fn fields(name: &str) -> ProfileFields {
@@ -12,6 +12,13 @@ fn fields(name: &str) -> ProfileFields {
         location: Some("Lisbon".into()),
         company: None,
         links: vec!["https://a.example".into(), "https://b.example/x".into()],
+    }
+}
+
+fn org_fields(description: Option<&str>) -> OrgProfileFields {
+    OrgProfileFields {
+        description: description.map(Into::into),
+        ..Default::default()
     }
 }
 
@@ -153,7 +160,7 @@ pub async fn org_profiles_store_a_description_and_an_avatar_apart(store: Access)
     );
 
     store
-        .set_org_description(&acme, Some("we build tools"), at(2))
+        .set_org_fields(&acme, &org_fields(Some("we build tools")), at(2))
         .await
         .unwrap();
     store
@@ -164,13 +171,16 @@ pub async fn org_profiles_store_a_description_and_an_avatar_apart(store: Access)
     assert_eq!(saved.description.as_deref(), Some("we build tools"));
     assert_eq!(saved.avatar, Some(avatar(5)));
 
-    store.set_org_description(&acme, None, at(4)).await.unwrap();
+    store
+        .set_org_fields(&acme, &org_fields(None), at(4))
+        .await
+        .unwrap();
     let saved = store.org_profile(&acme).await.unwrap();
     assert_eq!(saved.description, None, "clearing the text");
     assert_eq!(saved.avatar, Some(avatar(5)), "keeps the avatar");
 
     store
-        .set_org_description(&acme, Some("again"), at(5))
+        .set_org_fields(&acme, &org_fields(Some("again")), at(5))
         .await
         .unwrap();
     store.set_org_avatar(&acme, None, at(6)).await.unwrap();
@@ -183,12 +193,45 @@ pub async fn org_profiles_store_a_description_and_an_avatar_apart(store: Access)
     );
 }
 
+pub async fn org_profiles_store_a_display_name_and_a_url_and_replace_them_together(store: Access) {
+    let (acme, alice) = (user("acme"), user("alice"));
+    store.create_user(&alice, at(0)).await.unwrap();
+    assert!(store.create_org(&acme, &alice, at(1)).await.unwrap());
+    store
+        .set_org_avatar(&acme, Some(&avatar(7)), at(2))
+        .await
+        .unwrap();
+    let all = OrgProfileFields {
+        description: Some("tools".into()),
+        display_name: Some("Acme Inc".into()),
+        url: Some("https://acme.example".into()),
+    };
+    store.set_org_fields(&acme, &all, at(3)).await.unwrap();
+    let saved = store.org_profile(&acme).await.unwrap();
+    assert_eq!(saved.display_name.as_deref(), Some("Acme Inc"));
+    assert_eq!(saved.url.as_deref(), Some("https://acme.example"));
+    assert_eq!(saved.description.as_deref(), Some("tools"));
+    assert_eq!(saved.avatar, Some(avatar(7)), "keeps the avatar");
+
+    store
+        .set_org_fields(&acme, &org_fields(Some("tools")), at(4))
+        .await
+        .unwrap();
+    let saved = store.org_profile(&acme).await.unwrap();
+    assert_eq!(
+        (saved.display_name, saved.url),
+        (None, None),
+        "clearing both"
+    );
+    assert_eq!(saved.description.as_deref(), Some("tools"));
+}
+
 pub async fn org_profiles_are_apart_from_user_profiles_and_go_with_the_org(store: Access) {
     let (acme, alice) = (user("acme"), user("alice"));
     store.create_user(&alice, at(0)).await.unwrap();
     assert!(store.create_org(&acme, &alice, at(1)).await.unwrap());
     store
-        .set_org_description(&acme, Some("acme"), at(2))
+        .set_org_fields(&acme, &org_fields(Some("acme")), at(2))
         .await
         .unwrap();
     store

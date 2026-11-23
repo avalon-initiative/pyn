@@ -33,8 +33,17 @@ pub struct ServerInvitationGrant {
     /// An organization's name.
     #[serde(default)]
     pub organization: Option<String>,
-    /// A repository role (`reader`, `writer`, `maintainer`, `admin`) or an organization role (`member`, `owner`).
+    /// A `Role` when `repository` is set, an `OrgRole` when `organization` is.
+    #[schema(schema_with = role_schema)]
     pub role: String,
+}
+
+fn role_schema() -> utoipa::openapi::schema::Schema {
+    use utoipa::openapi::{Ref, schema::OneOfBuilder};
+    OneOfBuilder::new()
+        .item(Ref::from_schema_name("Role"))
+        .item(Ref::from_schema_name("OrgRole"))
+        .into()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]

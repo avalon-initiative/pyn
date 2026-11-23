@@ -14,12 +14,12 @@ use pyn_core::{
     ExternalCreate, ExternalIdentity, GrantLevel, IdentityUnlink, InvitationAccept,
     InvitationCreate, InvitationGrant, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent,
     MemberCreation, NameReservation, NewAccount, NewExternalAccount, NewSecret, OVERFLOW_ROUTE,
-    OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgProfile, OrgRole, OrgSettings,
-    Permission, PrimaryChange, Profile, ProfileFields, ProfileVisibility, PynError, RateLimitStore,
-    RateState, ReachNote, RegistrationMode, RenameOutcome, RepoAccess, RepoId, RepoPolicy, Result,
-    Role, RoleDefinitions, ServerInvitation, ServerSettings, ServiceCredentialRecord, ServiceScope,
-    SessionRecord, SignupStage, SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId,
-    TokenRecord, TokenResource, UserId, VerificationRecord,
+    OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgProfile, OrgProfileFields, OrgRole,
+    OrgSettings, Permission, PrimaryChange, Profile, ProfileFields, ProfileVisibility, PynError,
+    RateLimitStore, RateState, ReachNote, RegistrationMode, RenameOutcome, RepoAccess, RepoId,
+    RepoPolicy, Result, Role, RoleDefinitions, ServerInvitation, ServerSettings,
+    ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind,
+    TeamId, TeamRecord, TokenId, TokenRecord, TokenResource, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -854,13 +854,13 @@ impl AccessStore for PgMetadataStore {
         self.org_profile_row(org).await
     }
 
-    async fn set_org_description(
+    async fn set_org_fields(
         &self,
         org: &UserId,
-        description: Option<&str>,
+        fields: &OrgProfileFields,
         now: DateTime<Utc>,
     ) -> Result<()> {
-        self.put_org_description(org, description, now).await
+        self.put_org_fields(org, fields, now).await
     }
 
     async fn set_org_avatar(
@@ -1572,6 +1572,32 @@ impl AccessStore for PgMetadataStore {
                 last_at: r.get("last_at"),
             })
             .collect())
+    }
+
+    async fn list_orgs(
+        &self,
+        query: Option<&str>,
+        after: Option<&UserId>,
+        limit: usize,
+    ) -> Result<Vec<(AccountRecord, u64)>> {
+        let rows = sqlx::query(
+            "SELECT u.id, u.account_id, u.kind, u.email, u.email_verified_at, u.signup, u.disabled_at, u.disabled_reason, u.is_admin, u.created_at, u.deleting_since, u.frozen_at, u.frozen_reason,
+                    (SELECT count(*) FROM org_members m WHERE m.org = u.id) AS members
+             FROM users u
+             WHERE u.kind = 'org'
+               AND ($1::text IS NULL OR u.id COLLATE \"C\" > $1)
+               AND ($2::text IS NULL OR strpos(lower(u.id), $2) > 0)
+             ORDER BY u.id COLLATE \"C\" LIMIT $3",
+        )
+        .bind(after.map(UserId::as_str))
+        .bind(query)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter()
+            .map(|r| Ok((account_from(r)?, r.get::<i64, _>("members") as u64)))
+            .collect()
     }
 
     async fn org_members(&self, org: &UserId) -> Result<Vec<(UserId, OrgRole)>> {

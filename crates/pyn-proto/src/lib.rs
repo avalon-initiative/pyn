@@ -906,14 +906,26 @@ pub struct OrgProfile {
     pub name: String,
     /// At most 256 characters; null when unset.
     pub description: Option<String>,
+    /// 1 to 80 characters, shown beside the name; null when unset.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// An http or https website link of at most 200 characters, without credentials; null when unset.
+    #[serde(default)]
+    pub url: Option<String>,
     /// `/v1/orgs/{org}/avatar?v=` and the start of the image's hash; null when there is no avatar.
     pub avatar_url: Option<String>,
 }
 
-/// The new organization description; blank or left out clears it.
+/// The organization profile text; each field that is blank or left out is cleared.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateOrgProfileRequest {
     pub description: Option<String>,
+    /// 1 to 80 characters, no control characters.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// http or https only, at most 200 characters, no user name or password.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1006,6 +1018,16 @@ pub enum RegistrationMode {
 pub enum AccessMode {
     Private,
     Public,
+}
+
+/// A role in a repository, lowest to highest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Reader,
+    Writer,
+    Maintainer,
+    Admin,
 }
 
 /// A person's standing in an organization.
@@ -1207,7 +1229,47 @@ pub struct RepoInfo {
     pub exclusive_read_only_source: ReadOnlySource,
     pub created_at: DateTime<Utc>,
     /// The caller's role in the repository; absent when they have none.
+    #[schema(value_type = Option<Role>)]
     pub role: Option<String>,
+}
+
+/// A repository in the administrator's listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AdminRepoEntry {
+    pub id: String,
+    pub owner: String,
+    pub name: String,
+    pub visibility: Visibility,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One page of every repository on the server, of any visibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AdminRepoPage {
+    /// Ordered by owner, then name.
+    pub repos: Vec<AdminRepoEntry>,
+    /// Pass as `after` to fetch the next page; null on the last page.
+    #[schema(required = true)]
+    pub next_after: Option<String>,
+}
+
+/// An organization in the administrator's listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AdminOrgEntry {
+    pub id: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub member_count: u64,
+}
+
+/// One page of every organization on the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AdminOrgPage {
+    /// Ordered by name.
+    pub organizations: Vec<AdminOrgEntry>,
+    /// Pass as `after` to fetch the next page; null on the last page.
+    #[schema(required = true)]
+    pub next_after: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1327,6 +1389,7 @@ pub struct CreatedToken {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RoleGrant {
+    #[schema(value_type = Role)]
     pub role: String,
     pub permissions: Vec<String>,
 }
@@ -1343,6 +1406,7 @@ pub struct Member {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<PublicIdentity>,
     /// The effective role: the highest of the direct grant, team grants and organization ownership.
+    #[schema(value_type = Role)]
     pub role: String,
     #[schema(value_type = MemberSource)]
     pub source: String,
@@ -1356,11 +1420,13 @@ pub struct RepoTeam {
     pub slug: String,
     pub name: String,
     pub description: String,
+    #[schema(value_type = Role)]
     pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SetTeamRoleRequest {
+    #[schema(value_type = Role)]
     pub role: String,
 }
 
@@ -1369,6 +1435,7 @@ pub struct SetTeamRoleRequest {
 pub struct TeamRepo {
     /// `owner/name`.
     pub repo: String,
+    #[schema(value_type = Role)]
     pub role: String,
 }
 
@@ -1445,6 +1512,7 @@ pub struct SetCreationRuleRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SetMemberRequest {
+    #[schema(value_type = Role)]
     pub role: String,
 }
 
@@ -1472,6 +1540,68 @@ pub struct AssembleObjectRequest {
 pub struct PolicyPreviewRequest {
     /// The proposed contents of `.pyn/pyn.toml`.
     pub content: String,
+}
+
+/// The collaboration mode of a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicyMode {
+    Shared,
+    Exclusive,
+}
+
+/// One path entry of the policy, in the order the file lists them (exclusive entries, then shared).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PolicyRule {
+    /// The entry as written: an exact path, a glob, or a folder with a trailing `/`.
+    pub pattern: String,
+    pub mode: PolicyMode,
+}
+
+/// Where the active policy came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicySource {
+    /// `.pyn/pyn.toml` at the default branch head.
+    File,
+    /// The server's initial policy: the repository has no policy file yet, or the file is invalid.
+    Initial,
+}
+
+/// The mode of one requested path and the rule that decided it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PolicyPath {
+    pub path: String,
+    pub mode: PolicyMode,
+    /// The deciding entry; absent when the default mode (or the policy file's own rule) applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<PolicyPathRule>,
+}
+
+/// The entry of `rules` that decided a path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PolicyPathRule {
+    /// Position in `rules`.
+    pub index: u32,
+    pub pattern: String,
+}
+
+/// The policy in force at the default branch head.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ActivePolicy {
+    /// The mode of a path no rule covers.
+    pub default_mode: PolicyMode,
+    pub rules: Vec<PolicyRule>,
+    pub source: PolicySource,
+    /// The default branch head the policy was read at; absent before the first commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Set when `.pyn/pyn.toml` is invalid at the head and the initial policy is shown instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    /// One entry per `path` query parameter, in request order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<PolicyPath>,
 }
 
 /// What a proposed policy would change in the repository, without applying it.
@@ -2032,11 +2162,13 @@ pub struct Renamed {
 pub struct AddUserRequest {
     pub username: String,
     pub password: String,
+    #[schema(value_type = Role)]
     pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateInviteRequest {
+    #[schema(value_type = Role)]
     pub role: String,
     /// How long the invitation can be used, in hours.
     pub hours: i64,
@@ -2045,6 +2177,7 @@ pub struct CreateInviteRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct InviteInfo {
     pub id: String,
+    #[schema(value_type = Role)]
     pub role: String,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
