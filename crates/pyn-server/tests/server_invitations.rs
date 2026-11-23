@@ -409,7 +409,9 @@ async fn admin_settings_say_whether_email_is_sent_without_naming_a_host() {
         settings.email,
         api::EmailSettings {
             mailer: api::MailerKind::Log,
-            verification: true
+            verification: true,
+            last_failure: None,
+            last_sent_at: None,
         }
     );
     let none = server(
@@ -422,12 +424,44 @@ async fn admin_settings_say_whether_email_is_sent_without_naming_a_host() {
         r.json::<api::AdminSettings>().email,
         api::EmailSettings {
             mailer: api::MailerKind::None,
-            verification: false
+            verification: false,
+            last_failure: None,
+            last_sent_at: None,
         }
     );
     let raw: Value = serde_json::from_slice(&r.body).unwrap();
     assert_eq!(
         raw["email"],
-        json!({"mailer": "none", "verification": false})
+        json!({"mailer": "none", "verification": false, "last_failure": null, "last_sent_at": null})
     );
+}
+
+struct Broken;
+
+#[async_trait::async_trait]
+impl EmailSender for Broken {
+    async fn send(&self, _message: pyn_core::EmailMessage) -> pyn_core::Result<()> {
+        Err(pyn_core::PynError::EmailDeliveryFailed(
+            "authentication failed".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn admin_settings_report_a_failed_send_and_a_working_one() {
+    let broken = server(RegistrationMode::Open, false, Some(Arc::new(Broken)));
+    let body = json!({"username": "maya", "password": PASSWORD, "email": "maya@example.org"});
+    let r = send(&broken.app, "", "POST", "/v1/register", Some(body.clone())).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let r = send(&broken.app, "root", "GET", "/v1/admin/settings", None).await;
+    let email = r.json::<api::AdminSettings>().email;
+    let failure = email.last_failure.expect("the failure is reported");
+    assert!(failure.error.contains("authentication failed"));
+    assert!(email.last_sent_at.is_none());
+
+    let ok = server(RegistrationMode::Open, false, None);
+    send(&ok.app, "", "POST", "/v1/register", Some(body)).await;
+    let r = send(&ok.app, "root", "GET", "/v1/admin/settings", None).await;
+    let email = r.json::<api::AdminSettings>().email;
+    assert!(email.last_failure.is_none() && email.last_sent_at.is_some());
 }

@@ -149,7 +149,12 @@ impl AccessService {
     }
 
     /// Mails the link; past the per-recipient limit a first mail is skipped quietly and a resend is refused.
-    async fn mail_address_check(&self, user: &UserId, address: &str, quiet: bool) -> Result<()> {
+    pub(super) async fn mail_address_check(
+        &self,
+        user: &UserId,
+        address: &str,
+        quiet: bool,
+    ) -> Result<()> {
         let allowed = self
             .count_limited(
                 &format!("mail:{}", bounded_key(address)),
