@@ -22,6 +22,19 @@ pub struct EmailSettings {
     pub mailer: MailerKind,
     /// Whether sign-up must confirm the address (`PYN_EMAIL_VERIFICATION`, on by default when a mailer is set).
     pub verification: bool,
+    /// The newest send the mailer refused since the server started; null when none failed.
+    #[serde(default)]
+    pub last_failure: Option<EmailFailure>,
+    /// When a message last went out since the server started; null when none has.
+    #[serde(default)]
+    pub last_sent_at: Option<DateTime<Utc>>,
+}
+
+/// A refused send. The error never carries a recipient address or a credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EmailFailure {
+    pub at: DateTime<Utc>,
+    pub error: String,
 }
 
 /// The role a server invitation gives in one repository or one organization; exactly one of the two targets.
