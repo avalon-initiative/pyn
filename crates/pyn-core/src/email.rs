@@ -81,14 +81,20 @@ impl EmailSender for MemoryEmailSender {
     }
 }
 
-/// The message sent once an address is confirmed. Plain text, no links that track.
+/// The message sent when an account is created or its address confirmed. Plain text, no links that track.
 pub fn welcome_message(
     to: &str,
     user: &str,
     public_url: &str,
+    confirmed: bool,
     pending_approval: bool,
 ) -> EmailMessage {
     let url = public_url.trim_end_matches('/');
+    let opening = if confirmed {
+        "your email address is confirmed."
+    } else {
+        "your account is created."
+    };
     let next = if pending_approval {
         "An administrator has to approve the account before you can sign in; you do not need to do anything until then."
     } else {
@@ -99,7 +105,7 @@ pub fn welcome_message(
         subject: "Welcome to pyn".into(),
         body: format!(
             "Hello {user},\n\n\
-             your email address is confirmed. pyn keeps your files' history and locks the ones that cannot be merged, \
+             {opening} pyn keeps your files' history and locks the ones that cannot be merged, \
              so two people never overwrite each other's work.\n\n\
              {next}\n\n\
              Security settings, including two-factor authentication and passkeys, are at {url}/_/settings/security. \

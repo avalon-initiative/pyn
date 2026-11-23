@@ -130,14 +130,19 @@ pub(crate) async fn admin_settings(
         storage: s.storage.settings(),
         certificate: s.certificate.settings(),
         email: {
-            let (mailer, verification) = s.access.email_status();
+            let status = s.access.email_status();
             api::EmailSettings {
-                mailer: match mailer {
+                mailer: match status.mailer {
                     MailerKind::None => api::MailerKind::None,
                     MailerKind::Log => api::MailerKind::Log,
                     MailerKind::Smtp => api::MailerKind::Smtp,
                 },
-                verification,
+                verification: status.verification,
+                last_failure: status.last_failure.map(|f| api::EmailFailure {
+                    at: f.at,
+                    error: f.error,
+                }),
+                last_sent_at: status.last_sent_at,
             }
         },
     }))

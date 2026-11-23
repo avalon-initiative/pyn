@@ -642,9 +642,9 @@ async fn resending_is_refused_when_verification_is_off_and_status_names_the_mail
             .await,
         Err(PynError::EmailVerificationOff)
     ));
-    let (kind, verification) = w.svc.email_status();
-    assert_eq!(kind, pyn_core::MailerKind::Log);
-    assert!(!verification);
+    let status = w.svc.email_status();
+    assert_eq!(status.mailer, pyn_core::MailerKind::Log);
+    assert!(!status.verification);
 }
 
 #[tokio::test]

@@ -219,10 +219,14 @@ impl AccessService {
             two_factor: None,
         };
         let password_hash = self.passwords.hash(request.password).await?;
+        // With a real mailer and verification on, the address is added unverified and confirmed by link.
+        let confirm_by_link = self.config.require_email_verification
+            && self.email.kind() != MailerKind::None
+            && email.is_some();
         let admin = NewAccount {
             id: AccountId::generate(AccountKind::User)?,
             user: user.clone(),
-            email,
+            email: if confirm_by_link { None } else { email.clone() },
             password_hash,
             signup: SignupStage::Complete,
             created_at: settings.initialised_at,
@@ -248,11 +252,32 @@ impl AccessService {
         );
         self.record_server((&user).into(), AuditAction::ServerSetupCompleted, detail)
             .await?;
+        if let Some(address) = email {
+            self.mail_first_administrator(&user, &address, confirm_by_link)
+                .await;
+        }
         Ok(user)
     }
 }
 
 impl AccessService {
+    /// Welcome and, when verification is on, the confirmation link. The account exists by now, so a failure is
+    /// logged and never undoes setup.
+    async fn mail_first_administrator(&self, user: &UserId, address: &str, confirm_by_link: bool) {
+        self.send_welcome(address, user, false, false).await;
+        if !confirm_by_link {
+            return;
+        }
+        let added = self.store.add_email(user, address, self.clock.now()).await;
+        let sent = match added {
+            Ok(_) => self.mail_address_check(user, address, true).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = sent {
+            tracing::warn!(error = %e, "the first administrator's confirmation email could not be prepared");
+        }
+    }
+
     /// The stored mode, else the configured default; it follows a write at once and a change made through another
     /// server copy within the settings TTL.
     pub fn access_mode(&self) -> AccessMode {
