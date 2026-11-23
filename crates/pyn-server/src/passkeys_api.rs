@@ -150,7 +150,7 @@ pub(crate) async fn begin_registration(
 #[utoipa::path(post, path = "/v1/me/passkeys/register/finish", request_body = api::RegisterPasskeyRequest, responses(
     (status = 201, body = api::PasskeyRegistered, description = "the passkey is on; the account's first second factor also gets its recovery codes, shown only now"),
     (status = 400, body = api::ErrorBody, description = "invalid_request"),
-    (status = 401, body = api::ErrorBody, description = "passkey_invalid: the answer failed verification, the ceremony expired or was used, the authenticator did not verify the person, or it is already registered"),
+    (status = 401, body = api::ErrorBody, description = "a refusal code (passkey_ceremony_expired, passkey_origin_not_allowed, passkey_user_verification_required, passkey_already_registered, ...) or passkey_invalid for malformed data"),
     (status = 501, body = api::ErrorBody, description = "passkeys_unavailable"),
 ))]
 pub(crate) async fn finish_registration(
@@ -234,7 +234,7 @@ pub(crate) async fn begin_verify(
 
 #[utoipa::path(post, path = "/v1/me/passkeys/verify/finish", request_body = api::PasskeyAssertionRequest, responses(
     (status = 200, body = api::FreshCheck, description = "sensitive actions stay open on this credential until `fresh_until`"),
-    (status = 401, body = api::ErrorBody, description = "passkey_invalid"),
+    (status = 401, body = api::ErrorBody, description = "a refusal code: passkey_ceremony_expired, passkey_not_registered, passkey_user_handle_mismatch, passkey_signature_invalid, passkey_counter_regressed, ... or passkey_invalid for malformed data"),
     (status = 429, body = api::ErrorBody, description = "too_many_attempts; Retry-After says how many seconds to wait"),
     (status = 501, body = api::ErrorBody, description = "passkeys_unavailable"),
 ))]
@@ -276,7 +276,7 @@ pub(crate) async fn begin_sign_in(
 
 #[utoipa::path(post, path = "/v1/session/passkey/finish", request_body = api::PasskeyAssertionRequest, responses(
     (status = 200, body = api::SessionInfo, description = "sets the HttpOnly session cookie; the passkey stood for the password and the second factor"),
-    (status = 401, body = api::ErrorBody, description = "passkey_invalid"),
+    (status = 401, body = api::ErrorBody, description = "a refusal code: passkey_ceremony_expired, passkey_not_registered, passkey_user_handle_mismatch, passkey_signature_invalid, passkey_counter_regressed, ... or passkey_invalid for malformed data"),
     (status = 403, body = api::ErrorBody, description = "the account cannot sign in: email_not_verified, approval_pending or account_disabled; or origin_not_allowed"),
     (status = 429, body = api::ErrorBody, description = "too_many_attempts"),
     (status = 501, body = api::ErrorBody, description = "passkeys_unavailable"),

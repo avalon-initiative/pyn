@@ -95,7 +95,7 @@ pub use email::{
     EmailMessage, EmailSender, MailerKind, MemoryEmailSender, NullEmailSender, invitation_message,
     welcome_message,
 };
-pub use error::{PynError, Result};
+pub use error::{PasskeyReason, PynError, Result};
 pub use freeze::{FREEZE_REASON_BYTES, MemoryOwnerWrites, OwnerWrites};
 pub use history::{
     HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryCursor, HistoryPage,
