@@ -256,7 +256,12 @@ async fn a_valid_certificate_reports_its_days_and_that_it_is_trusted() {
 async fn an_expired_certificate_is_read_and_reported_expired() {
     let pki = Pki::new();
     let n = now();
-    let leaf = pki.issue(Key::Ecdsa, SAN, n - days(10), n - days(1));
+    let leaf = pki.issue(
+        Key::Ecdsa,
+        SAN,
+        n - days(10),
+        n - chrono::Duration::hours(18),
+    );
     let target = tls_server(&leaf).await;
     let (report, critical) = check(
         &target,
@@ -566,7 +571,12 @@ async fn the_admin_settings_report_the_certificate_and_readiness_ignores_it() {
 
     let pki = Pki::new();
     let n = now();
-    let leaf = pki.issue(Key::Ecdsa, SAN, n - days(10), n - days(1));
+    let leaf = pki.issue(
+        Key::Ecdsa,
+        SAN,
+        n - days(10),
+        n - chrono::Duration::hours(18),
+    );
     let target = tls_server(&leaf).await;
     let report = Arc::new(CertificateReport::default());
     let (read, _) = check(&target, &pki.options(), &report.settings()).await;
