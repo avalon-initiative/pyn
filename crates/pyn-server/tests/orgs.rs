@@ -205,7 +205,7 @@ async fn names_are_validated_unique_and_not_reserved() {
             "{name}"
         );
     }
-    let r = create_org(&app, "bob", "Bad Name").await;
+    let r = create_org(&app, "bob", "Bad.Name").await;
     assert_eq!(
         (r.status, r.code().as_str()),
         (StatusCode::BAD_REQUEST, "invalid_request")
@@ -1194,4 +1194,61 @@ async fn direct_add_is_open_to_administrators_only_in_direct_mode() {
         ("bob", "member")
     );
     assert_eq!(members(&app, "root", "ops").await.len(), 2);
+}
+
+#[tokio::test]
+async fn owner_names_are_url_forms_in_bodies_and_paths() {
+    let app = server(OrgCreation::Anyone).await;
+    let r = create_org(&app, "alice", "Test Studio").await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(r.json::<api::OrgInfo>().name, "test-studio");
+
+    for typed in ["test-studio", "TeSt-StuDiO", "Test%20Studio", "TEST-STUDIO"] {
+        let r = call(&app, "alice", "GET", &format!("/v1/orgs/{typed}"), None).await;
+        assert_eq!(r.status, StatusCode::OK, "{typed}");
+        assert_eq!(r.json::<api::OrgInfo>().name, "test-studio", "{typed}");
+    }
+    let r = call(&app, "alice", "GET", "/v1/orgs/Test%20Studio/profile", None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        r.json::<api::OrgProfile>().display_name.as_deref(),
+        Some("Test Studio")
+    );
+
+    for typed in ["test studio", "TeSt-StuDiO", "alice ", "ALICE"] {
+        let r = create_org(&app, "bob", typed).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (StatusCode::CONFLICT, "user_exists"),
+            "{typed}"
+        );
+    }
+    let r = create_org(&app, "bob", " Admin ").await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::BAD_REQUEST, "reserved_name")
+    );
+
+    let r = call(
+        &app,
+        "root",
+        "POST",
+        "/v1/register",
+        Some(json!({"username": "Test Studio", "password": PASSWORD})),
+    )
+    .await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::CONFLICT, "user_exists")
+    );
+    let r = call(
+        &app,
+        "root",
+        "POST",
+        "/v1/register",
+        Some(json!({"username": "Carol Jones", "password": PASSWORD})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(r.json::<api::Registered>().user, "carol-jones");
 }

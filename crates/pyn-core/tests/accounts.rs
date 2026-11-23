@@ -232,15 +232,7 @@ async fn only_administrators_manage_invitations_and_nobody_invites_above_their_o
 #[tokio::test]
 async fn user_names_and_passwords_must_be_acceptable() {
     let w = world(RegistrationMode::Open);
-    for bad in [
-        "",
-        "a",
-        "Alice",
-        "al ice",
-        "-alice",
-        "al/ice",
-        &"a".repeat(40),
-    ] {
+    for bad in ["", "a", "al.ice", "-alice", "al/ice", &"a".repeat(40)] {
         let err = w
             .svc
             .register(Registration::new(bad, PASSWORD))
@@ -258,6 +250,18 @@ async fn user_names_and_passwords_must_be_acceptable() {
         .register(Registration::new("al-ice_9", PASSWORD))
         .await
         .unwrap();
+    let signed = w
+        .svc
+        .register(Registration::new(" Bob  Smith ", PASSWORD))
+        .await
+        .unwrap();
+    assert_eq!(signed.user.as_str(), "bob-smith");
+    let err = w
+        .svc
+        .register(Registration::new("BOB-smith", PASSWORD))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PynError::UserExists(_)), "{err}");
 }
 
 #[tokio::test]

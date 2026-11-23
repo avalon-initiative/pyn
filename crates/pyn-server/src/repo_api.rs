@@ -84,7 +84,7 @@ pub(crate) async fn list_repos(
     AnyCaller(who): AnyCaller,
     Query(q): Query<ListReposQuery>,
 ) -> ApiResult<Json<Vec<api::RepoInfo>>> {
-    let owner = q.owner.map(UserId::new);
+    let owner = q.owner.map(crate::owner_path::typed_owner);
     let repos = s.repos.list(&who, owner.as_ref()).await?;
     let mut infos = Vec::with_capacity(repos.len());
     for (record, role) in repos {
@@ -158,7 +158,9 @@ pub(crate) async fn create_repo(
     NamespaceCaller(who): NamespaceCaller,
     Json(req): Json<api::CreateRepoRequest>,
 ) -> ApiResult<(StatusCode, Json<api::RepoInfo>)> {
-    let owner = req.owner.map_or_else(|| who.user.clone(), UserId::new);
+    let owner = req
+        .owner
+        .map_or_else(|| who.user.clone(), crate::owner_path::typed_owner);
     let settings = (req.lease_hours.is_some() || req.max_locks_per_user.is_some()).then(|| {
         let defaults = RepoSettings::default();
         RepoSettings {

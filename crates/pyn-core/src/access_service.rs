@@ -2396,7 +2396,10 @@ impl AccessService {
         client: Option<&str>,
     ) -> Result<UserId> {
         let limits = &self.config.limits;
-        let account_key = format!("sign-in:account:{}", bounded_key(&username.to_lowercase()));
+        let account_key = format!(
+            "sign-in:account:{}",
+            bounded_key(&account::normalize_name(username))
+        );
         let client_key = client.map(|c| format!("sign-in:client:{}", bounded_key(c)));
         // Client first: a refused client creates no per-account row.
         if let Some(key) = &client_key {
@@ -2406,7 +2409,7 @@ impl AccessService {
         self.count_limited(&account_key, limits.sign_in_per_account, SIGN_IN_WINDOW)
             .await?;
 
-        let user = UserId::new(username);
+        let user = UserId::new(account::normalize_name(username));
         let verified = match self.store.password_hash(&user).await? {
             Some(hash) => self.passwords.verify(password, &hash).await,
             None => {

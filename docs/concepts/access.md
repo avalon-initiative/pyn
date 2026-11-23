@@ -73,7 +73,7 @@ teams. Teams are managed with `pyn team ...` (see [teams](repositories.md#teams)
 
 ## Accounts and signing in
 
-People have accounts: a unique user name (2 to 39 lowercase letters, digits, `-` or `_`; not one of the
+People have accounts: a unique user name (2 to 39 lowercase letters, digits, `-` or `_`, after [normalising](repositories.md#addresses-and-namespaces) a typed name: spaces become `-` and case is ignored, so `Ada Lovelace` registers as `ada-lovelace`; not one of the
 [reserved names](repositories.md#addresses-and-namespaces)) and a password of at least ten
 characters (at most 256), stored only as a salted argon2id hash. `pyn login <name>` checks the password and saves an expiring session
 for that server in your user configuration directory (`~/.config/pyn/credentials.toml`, readable only by you: the directory is `0700`, the file `0600`, written atomically under an advisory lock file, `.credentials.lock`, so concurrent commands lose no entry), the way a git

@@ -387,7 +387,7 @@ async fn a_rename_needs_the_password_a_free_name_and_an_unfrozen_account() {
             .unwrap_err();
         assert!(matches!(err, PynError::UserExists(_)), "{taken}: {err}");
     }
-    for bad in ["alice", "A", "Alicia", "admin"] {
+    for bad in ["alice", "A", "ALICE", "admin"] {
         let err = w
             .access
             .rename_account(&alice, bad, Some(PASSWORD))

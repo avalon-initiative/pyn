@@ -181,7 +181,7 @@ pub(crate) async fn add_member(
         .role
         .as_deref()
         .map_or(Ok(OrgRole::Member), parse_role)?;
-    let user = UserId::new(req.user);
+    let user = crate::owner_path::typed_owner(req.user);
     let added = s
         .access
         .add_org_member(&who, &UserId::new(org), &user, role)
