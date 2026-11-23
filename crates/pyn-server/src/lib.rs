@@ -733,7 +733,7 @@ fn status_for(e: &PynError) -> StatusCode {
         PynError::Unauthenticated(_)
         | PynError::SecondFactorRequired
         | PynError::SecondFactorInvalid
-        | PynError::PasskeyInvalid(_)
+        | PynError::PasskeyInvalid { .. }
         | PynError::ExternalSignInFailed(_) => StatusCode::UNAUTHORIZED,
         PynError::ExternalProviderUnavailable(_) | PynError::EmailDeliveryFailed(_) => {
             StatusCode::BAD_GATEWAY

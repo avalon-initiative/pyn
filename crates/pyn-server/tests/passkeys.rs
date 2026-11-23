@@ -435,6 +435,77 @@ async fn a_passkey_signs_in_without_a_password_and_skips_the_second_step() {
 }
 
 #[tokio::test]
+async fn a_discoverable_sign_in_returns_the_user_handle_registration_offered() {
+    let s = server();
+    let session = s.account("alice").await;
+    let mut device = SoftwareAuthenticator::new(1);
+    let r = s
+        .call(
+            &session,
+            "POST",
+            "/v1/me/passkeys/register/begin",
+            Some(json!({"password": PASSWORD})),
+        )
+        .await;
+    let begun: api::PasskeyRegistrationBegun = json(&r);
+    let made = device.create(
+        RP,
+        ORIGIN,
+        &B64.decode(&begun.public_key.challenge).unwrap(),
+    );
+    let r = s
+        .call(
+            &session,
+            "POST",
+            "/v1/me/passkeys/register/finish",
+            Some(json!({
+                "ceremony": begun.ceremony,
+                "credential": {
+                    "id": B64.encode(&device.credential_id),
+                    "type": "public-key",
+                    "response": {
+                        "clientDataJSON": B64.encode(&made.client_data_json),
+                        "attestationObject": B64.encode(&made.attestation_object),
+                        "transports": ["internal", "hybrid"],
+                    },
+                },
+            })),
+        )
+        .await;
+    assert_eq!(r.status.as_u16(), 201);
+
+    let r = s
+        .browser("/v1/session/passkey/begin", json!({}), ORIGIN)
+        .await;
+    let ask: api::PasskeyAuthenticationBegun = json(&r);
+    let mut answer = s.assertion(&ask.ceremony, &ask.public_key.challenge, &mut device);
+    answer["credential"]["response"]["userHandle"] = json!(begun.public_key.user.id);
+    let r = s
+        .browser("/v1/session/passkey/finish", answer, ORIGIN)
+        .await;
+    assert_eq!(
+        r.status.as_u16(),
+        200,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+
+    let r = s
+        .browser("/v1/session/passkey/begin", json!({}), ORIGIN)
+        .await;
+    let ask: api::PasskeyAuthenticationBegun = json(&r);
+    let mut answer = s.assertion(&ask.ceremony, &ask.public_key.challenge, &mut device);
+    answer["credential"]["response"]["userHandle"] = json!(B64.encode(b"someone else"));
+    let r = s
+        .browser("/v1/session/passkey/finish", answer, ORIGIN)
+        .await;
+    assert_eq!(
+        (r.status.as_u16(), code_of(&r).as_str()),
+        (401, "passkey_user_handle_mismatch")
+    );
+}
+
+#[tokio::test]
 async fn a_ceremony_answers_once_and_a_foreign_origin_is_refused() {
     let s = server();
     let session = s.account("alice").await;
@@ -466,7 +537,7 @@ async fn a_ceremony_answers_once_and_a_foreign_origin_is_refused() {
         .await;
     assert_eq!(
         (r.status.as_u16(), code_of(&r).as_str()),
-        (401, "passkey_invalid")
+        (401, "passkey_ceremony_expired")
     );
 
     let r = s

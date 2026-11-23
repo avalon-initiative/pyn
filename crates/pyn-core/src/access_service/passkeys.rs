@@ -2,6 +2,7 @@
 //! the in-house verification in `pyn-webauthn`.
 
 use super::*;
+use crate::error::PasskeyReason;
 use crate::relying_party::{self, RelyingParty};
 use crate::two_factor::{
     self, CHALLENGE_MINUTES, ChallengePurpose, ChallengeRecord, MAX_PASSKEYS,
@@ -58,8 +59,41 @@ pub struct PasskeyRegistered {
     pub fresh_until: DateTime<Utc>,
 }
 
-fn invalid(why: impl std::fmt::Display) -> PynError {
-    PynError::PasskeyInvalid(why.to_string())
+/// Refuses a ceremony and logs the reason (never the answer's bytes).
+fn refuse(reason: PasskeyReason, detail: impl std::fmt::Display) -> PynError {
+    let detail = detail.to_string();
+    tracing::warn!(code = reason.code(), %detail, "passkey ceremony refused");
+    PynError::PasskeyInvalid { reason, detail }
+}
+
+/// Maps a verification failure to its cause.
+fn refused(e: pyn_webauthn::Error) -> PynError {
+    use pyn_webauthn::Error as E;
+    let reason = match e {
+        E::ChallengeMismatch => PasskeyReason::ChallengeMismatch,
+        E::OriginNotAllowed | E::CrossOrigin => PasskeyReason::OriginNotAllowed,
+        E::RpIdHashMismatch => PasskeyReason::RpIdMismatch,
+        E::UserNotVerified => PasskeyReason::UserVerificationRequired,
+        E::SignatureInvalid => PasskeyReason::SignatureInvalid,
+        _ => PasskeyReason::Other,
+    };
+    refuse(reason, e)
+}
+
+/// The user handle of an account's first passkey: stable and opaque, so the browser's and the server's copies agree.
+fn derived_user_handle(user: &UserId) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    Sha256::new()
+        .chain_update(b"pyn passkey user handle v1\0")
+        .chain_update(user.as_str().as_bytes())
+        .finalize()
+        .to_vec()
+}
+
+fn user_handle_of(existing: &[PasskeyRecord], user: &UserId) -> Vec<u8> {
+    existing
+        .first()
+        .map_or_else(|| derived_user_handle(user), |p| p.user_handle.clone())
 }
 
 fn random_bytes<const N: usize>() -> Result<[u8; N]> {
@@ -133,7 +167,12 @@ impl AccessService {
             .await?;
         taken
             .filter(|c| c.purpose == purpose && c.user.as_ref() == user)
-            .ok_or_else(|| invalid("the ceremony expired or was already used; start again"))
+            .ok_or_else(|| {
+                refuse(
+                    PasskeyReason::CeremonyExpired,
+                    "the ceremony expired or was already used; start again",
+                )
+            })
     }
 
     /// Starts registering a passkey. An account without a second factor proves its password (one with none, a signed-in
@@ -155,10 +194,7 @@ impl AccessService {
                 "an account holds at most {MAX_PASSKEYS} passkeys"
             )));
         }
-        let user_handle = match existing.first() {
-            Some(p) => p.user_handle.clone(),
-            None => random_bytes::<32>()?.to_vec(),
-        };
+        let user_handle = user_handle_of(&existing, &actor.user);
         let challenge = self
             .issue_challenge(Some(&actor.user), ChallengePurpose::Register)
             .await?;
@@ -203,7 +239,7 @@ impl AccessService {
                 require_user_verification: true,
             },
         )
-        .map_err(invalid)?;
+        .map_err(refused)?;
         let name = two_factor::validate_label(name.unwrap_or("Passkey"))?;
         let existing = self.passkeys(user).await?;
         if existing.len() >= MAX_PASSKEYS {
@@ -219,10 +255,7 @@ impl AccessService {
             name,
             credential_id: registration.credential_id,
             public_key: registration.cose_key,
-            user_handle: match existing.first() {
-                Some(p) => p.user_handle.clone(),
-                None => random_bytes::<32>()?.to_vec(),
-            },
+            user_handle: user_handle_of(&existing, user),
             sign_count: registration.sign_count,
             transports: registration.transports,
             backup_eligible: registration.backup_eligible,
@@ -231,7 +264,10 @@ impl AccessService {
             last_used_at: None,
         };
         if !self.store.create_passkey(passkey.clone()).await? {
-            return Err(invalid("that authenticator is already registered"));
+            return Err(refuse(
+                PasskeyReason::AlreadyRegistered,
+                "that authenticator is already registered",
+            ));
         }
         let recovery_codes = if first {
             Some(self.new_recovery_codes(user).await?)
@@ -414,7 +450,12 @@ impl AccessService {
         answer: &PasskeyAssertion,
         owner: Option<&UserId>,
     ) -> Result<PasskeyRecord> {
-        let unknown = || invalid("that passkey is not registered");
+        let unknown = || {
+            refuse(
+                PasskeyReason::NotRegistered,
+                "that passkey is not registered",
+            )
+        };
         let passkey = self
             .store
             .passkey_by_credential(&answer.credential_id)
@@ -426,7 +467,10 @@ impl AccessService {
             .as_ref()
             .is_some_and(|h| !h.is_empty() && *h != passkey.user_handle)
         {
-            return Err(unknown());
+            return Err(refuse(
+                PasskeyReason::UserHandleMismatch,
+                "the user handle does not belong to that passkey",
+            ));
         }
         let origins: Vec<&str> = rp.origins.iter().map(String::as_str).collect();
         let assertion = pyn_webauthn::verify_assertion(
@@ -442,10 +486,11 @@ impl AccessService {
                 require_user_verification: true,
             },
         )
-        .map_err(invalid)?;
+        .map_err(refused)?;
         if assertion.counter == CounterVerdict::Regressed {
             self.report_clone(&passkey).await?;
-            return Err(invalid(
+            return Err(refuse(
+                PasskeyReason::CounterRegressed,
                 "its signature counter did not increase, so it may have been cloned",
             ));
         }
@@ -461,7 +506,10 @@ impl AccessService {
             )
             .await?;
         if !recorded {
-            return Err(invalid("that sign-in was already used; start again"));
+            return Err(refuse(
+                PasskeyReason::Replayed,
+                "that sign-in was already used; start again",
+            ));
         }
         Ok(passkey)
     }
