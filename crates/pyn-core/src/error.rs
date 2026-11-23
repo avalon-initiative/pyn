@@ -132,6 +132,12 @@ pub enum PynError {
     UserExists(UserId),
     #[error("invalid invitation: {0}")]
     InvalidInvite(String),
+    #[error("there is no server invitation {0}")]
+    ServerInvitationNotFound(String),
+    #[error("that account's email address is already confirmed")]
+    EmailAlreadyConfirmed,
+    #[error("email verification is off on this server, so there is no confirmation to send")]
+    EmailVerificationOff,
     #[error("too many attempts; try again in {retry_after_secs} seconds")]
     TooManyAttempts { retry_after_secs: i64 },
     #[error("{}", inactive_message(*.0))]
@@ -388,6 +394,9 @@ impl PynError {
             Self::RegistrationClosed => "registration_closed",
             Self::UserExists(_) => "user_exists",
             Self::InvalidInvite(_) => "invalid_invite",
+            Self::ServerInvitationNotFound(_) => "server_invitation_not_found",
+            Self::EmailAlreadyConfirmed => "email_already_confirmed",
+            Self::EmailVerificationOff => "email_verification_off",
             Self::TooManyAttempts { .. } => "too_many_attempts",
             Self::AccountInactive(status) => match status {
                 AccountStatus::PendingVerification => "email_not_verified",

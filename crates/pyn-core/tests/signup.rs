@@ -357,8 +357,8 @@ async fn resending_replaces_the_old_link_and_says_nothing_about_unknown_addresse
         .unwrap();
     assert_eq!(
         w.mail.sent().len(),
-        2,
-        "a verified account is not mailed again"
+        3,
+        "a verified account gets only the welcome message, no new link"
     );
 }
 

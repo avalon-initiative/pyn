@@ -186,17 +186,19 @@ async fn sign_up_then_verify_then_sign_in() {
         (StatusCode::FORBIDDEN, "email_not_verified")
     );
 
+    let link_token = token_in(&s.mail);
     let r = send(
         &s.app,
         post(
             "/v1/register/verify",
-            serde_json::json!({"token": token_in(&s.mail)}),
+            serde_json::json!({"token": link_token}),
             None,
         ),
     )
     .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json::<api::Registered>().status, "active");
+    assert_eq!(s.mail.sent()[1].subject, "Welcome to pyn");
     assert_eq!(
         send(&s.app, post("/v1/login", login, None)).await.status,
         StatusCode::OK
@@ -206,7 +208,7 @@ async fn sign_up_then_verify_then_sign_in() {
         &s.app,
         post(
             "/v1/register/verify",
-            serde_json::json!({"token": token_in(&s.mail)}),
+            serde_json::json!({"token": link_token}),
             None,
         ),
     )

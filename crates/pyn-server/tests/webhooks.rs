@@ -452,3 +452,45 @@ async fn changes_reach_the_server_audit_log_without_secrets() {
     );
     assert!(!text.contains(&made.secret) && !text.contains(&rotated.secret));
 }
+
+#[tokio::test]
+async fn event_types_are_a_closed_set_with_descriptions() {
+    let app = server(WebhookSettings::default()).await;
+    let r = send(&app, "root", "GET", "/v1/admin/webhooks/event-types", None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let types: Vec<api::WebhookEventTypeInfo> = r.json();
+    assert_eq!(types.len(), api::KNOWN_EVENT_TYPES.len());
+    assert!(
+        types
+            .iter()
+            .any(|t| t.name == "lock.forced" && !t.description.is_empty())
+    );
+    let r = send(&app, "", "GET", "/v1/admin/webhooks/event-types", None).await;
+    assert_ne!(r.status, StatusCode::OK);
+
+    let body = json!({"name": "ci", "url": "https://example.com/", "event_types": ["repository.archived"]});
+    let r = send(&app, "root", "POST", "/v1/admin/webhooks", Some(body)).await;
+    assert!(r.is(StatusCode::BAD_REQUEST, "invalid_request"));
+
+    let made = create(&app, "root").await;
+    let uri = format!("/v1/admin/webhooks/{}", made.webhook.id);
+    let r = send(
+        &app,
+        "root",
+        "PATCH",
+        &uri,
+        Some(json!({"event_types": ["lock.acquired", "nope.nothing"]})),
+    )
+    .await;
+    assert!(r.is(StatusCode::BAD_REQUEST, "invalid_request"));
+    let r = send(
+        &app,
+        "root",
+        "PATCH",
+        &uri,
+        Some(json!({"event_types": ["lock.acquired"]})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json::<api::Webhook>().event_types, ["lock.acquired"]);
+}

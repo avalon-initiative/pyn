@@ -118,11 +118,16 @@ pub enum AuditAction {
     AccessSessionStarted,
     AccessSessionReached,
     AccessSessionEnded,
+    AccountAddedByAdmin,
+    AccountConfirmationResent,
+    ServerInvitationCreated,
+    ServerInvitationRevoked,
+    ServerInvitationUsed,
     Delete,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 91] = [
+    pub const ALL: [AuditAction; 96] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -213,6 +218,11 @@ impl AuditAction {
         AuditAction::AccessSessionStarted,
         AuditAction::AccessSessionReached,
         AuditAction::AccessSessionEnded,
+        AuditAction::AccountAddedByAdmin,
+        AuditAction::AccountConfirmationResent,
+        AuditAction::ServerInvitationCreated,
+        AuditAction::ServerInvitationRevoked,
+        AuditAction::ServerInvitationUsed,
         AuditAction::Delete,
     ];
 
@@ -308,6 +318,11 @@ impl AuditAction {
             Self::AccessSessionStarted => "access_session_started",
             Self::AccessSessionReached => "access_session_reached",
             Self::AccessSessionEnded => "access_session_ended",
+            Self::AccountAddedByAdmin => "account_added_by_admin",
+            Self::AccountConfirmationResent => "account_confirmation_resent",
+            Self::ServerInvitationCreated => "server_invitation_created",
+            Self::ServerInvitationRevoked => "server_invitation_revoked",
+            Self::ServerInvitationUsed => "server_invitation_used",
             Self::Delete => "delete",
         }
     }

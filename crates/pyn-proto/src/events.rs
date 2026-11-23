@@ -353,6 +353,55 @@ pub const KNOWN_EVENT_TYPES: [&str; 22] = [
     "lock.forced",
 ];
 
+/// The one-line description of a known event type, as offered to a webhook form.
+pub fn event_type_description(event_type: &str) -> Option<&'static str> {
+    Some(match event_type {
+        "account.created" => {
+            "An account was created (sign-up, first external sign-in or by an administrator)."
+        }
+        "account.approved" => "An administrator approved a pending account.",
+        "account.disabled" => "An administrator disabled an account.",
+        "account.enabled" => "An administrator enabled a disabled account.",
+        "account.deletion_scheduled" => "An account was scheduled for deletion.",
+        "account.deletion_restored" => "A scheduled account deletion was cancelled.",
+        "account.deleted" => "An account was deleted for good.",
+        "account.renamed" => "An account changed its name.",
+        "organization.created" => "An organization was created.",
+        "organization.deleted" => "An organization was deleted.",
+        "repository.created" => "A repository was created.",
+        "repository.renamed" => "A repository was renamed.",
+        "repository.deleted" => "A repository was deleted.",
+        "repository.storage_cap_changed" => "A repository's storage cap was set or cleared.",
+        "owner.limits_changed" => "An owner's limits were changed.",
+        "owner.frozen" => "An owner was frozen: it can read but not write.",
+        "owner.unfrozen" => "A frozen owner was unfrozen.",
+        "owner.limit_reached" => "An operation was refused because an owner reached a limit.",
+        "lock.acquired" => "A path was locked.",
+        "lock.released" => "A lock was released, or consumed by a check-in.",
+        "lock.expired" => "A lock lapsed and its lease ended.",
+        "lock.forced" => "An administrator or a policy change broke a lock.",
+        _ => return None,
+    })
+}
+
+/// A webhook event type name; the schema is the closed set of every type a subscription may list.
+pub struct WebhookEventType;
+
+impl utoipa::PartialSchema for WebhookEventType {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{ObjectBuilder, SchemaType, Type};
+        ObjectBuilder::new()
+            .schema_type(SchemaType::Type(Type::String))
+            .enum_values(Some(KNOWN_EVENT_TYPES))
+            .description(Some(
+                "An event type; `GET /v1/admin/webhooks/event-types` describes each.",
+            ))
+            .into()
+    }
+}
+
+impl ToSchema for WebhookEventType {}
+
 impl EventData {
     /// The event's `type` string.
     pub fn event_type(&self) -> &str {

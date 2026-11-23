@@ -249,6 +249,9 @@ impl AccessState {
         if let Some(p) = self.passwords.remove(user) {
             self.passwords.insert(new.clone(), p);
         }
+        if self.password_change.remove(user) {
+            self.password_change.insert(new.clone());
+        }
         if let Some(l) = self.limits.remove(user) {
             self.limits.insert(new.clone(), l);
         }
@@ -296,6 +299,12 @@ impl AccessState {
             })
             .collect();
         for i in self.invites.values_mut() {
+            swap(&mut i.created_by);
+            if let Some(u) = i.used_by.as_mut() {
+                swap(u);
+            }
+        }
+        for i in self.server_invitations.values_mut() {
             swap(&mut i.created_by);
             if let Some(u) = i.used_by.as_mut() {
                 swap(u);

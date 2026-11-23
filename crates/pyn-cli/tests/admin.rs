@@ -462,3 +462,47 @@ fn an_access_session_acts_as_an_account_until_it_is_ended() {
     let mine = env.ok(&home, "alice", &["--json", "whoami"]);
     assert!(mine.contains("alice"), "{mine}");
 }
+
+#[test]
+fn server_invitations_are_created_listed_and_revoked_and_accounts_are_added() {
+    let (env, home) = set_up();
+
+    let code = env.ok(&home, "root", &["admin", "invite", "create", "--days", "3"]);
+    assert!(code.trim().starts_with("pynv_"), "{code}");
+    let listed = cell_rows(&env.ok(&home, "root", &["admin", "invite", "list"]));
+    assert_eq!(
+        listed[0],
+        ["STATE", "EXPIRES", "BY", "EMAIL", "GRANT", "ID"]
+    );
+    assert_eq!(
+        (listed[1][0].as_str(), listed[1][2].as_str()),
+        ("pending", "root")
+    );
+    let id = listed[1].last().unwrap().clone();
+    let out = env.ok(&home, "root", &["admin", "invite", "revoke", &id]);
+    assert!(out.contains("revoked"), "{out}");
+    let listed = cell_rows(&env.ok(&home, "root", &["admin", "invite", "list"]));
+    assert_eq!(listed[1][0], "revoked");
+    let missing = env.fails(
+        &home,
+        "root",
+        &["admin", "invite", "revoke", "ffffffffffff"],
+    );
+    assert!(missing.contains("server_invitation_not_found"), "{missing}");
+
+    let out = env.run_stdin(
+        &home,
+        "root",
+        &["admin", "user", "add", "dana", "--password-stdin"],
+        "one-time password\n",
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("added dana"));
+    let login = env.run_stdin(
+        &home,
+        "-",
+        &["login", "dana", "--password-stdin"],
+        "one-time password\n",
+    );
+    assert!(login.status.success(), "{}", text(&login));
+}

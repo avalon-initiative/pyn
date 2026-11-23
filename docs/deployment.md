@@ -115,11 +115,13 @@ Then, when Docker and the Compose file are available and `PYN_SERVER_VERSION` is
 
 ### Email
 
-pyn sends email only for address verification on an open-registration server. It is optional, and nothing is sent unless you configure it:
+pyn sends email for address verification on an open-registration server, a short welcome message once an address is confirmed, and a [server invitation](concepts/access.md#server-invitations-and-adding-an-account) an administrator addresses to someone. It is optional, and nothing is sent unless you configure it:
 
 - **none** (default): no mailer. Open sign-up then needs no email address and does no verification, so a second person can create an account at once. Pair open registration with `PYN_REQUIRE_APPROVAL=true` if you want a gate.
 - **log** (`PYN_MAILER=log`): for trying things out. Each message, with its verification link, is written to the server log (`docker compose logs server | grep -A8 PYN-MAILER-LOG`); nothing is delivered. The links are secrets, so the server warns at start and refuses it on a non-loopback `PYN_ADDR`. The container listens on `0.0.0.0`, so under Compose it also needs `PYN_MAILER_LOG_ALLOW_NON_LOOPBACK=true`, which is safe only while the port stays published on loopback and nobody else reads the log.
 - **smtp** (`PYN_MAILER=smtp`): real delivery through any SMTP server you can use, such as your provider's. Set `PYN_SMTP_HOST`, `PYN_SMTP_FROM`, usually `PYN_SMTP_USER` and `PYN_SMTP_PASSWORD`, and optionally `PYN_SMTP_PORT` (587) and `PYN_SMTP_TLS` (`starttls`, `tls` or `none`). Verification turns on by itself; the settings are in [configuration](configuration.md) and `deploy/.env.example`.
+
+The welcome message is plain text with no tracking: what pyn is, where the security settings and two-factor are (`/_/settings/security`) and that an administrator can help. An administrator can resend a confirmation link (`POST /v1/admin/users/{user}/resend-confirmation`, limited to three messages per address and hour) and sees which mailer is on, never its host or credentials, in `GET /v1/admin/settings` (`email.mailer` `none`, `log` or `smtp`, `email.verification`), so the web app can say when no email will be sent.
 
 A message that cannot be sent never blocks the sign-up that asked for it; the failure is logged (`email delivery failed`, the recipient's domain and the reason, never the password) and the person asks an administrator.
 

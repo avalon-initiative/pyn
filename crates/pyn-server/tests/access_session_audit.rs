@@ -339,6 +339,11 @@ const REACHABLE: &[AuditAction] = &[
 /// Actions no access session can produce, because the routes that write them are refused to it (`access_session_not_allowed`,
 /// `docs/concepts/access.md#what-a-session-reaches`), are not caused by a request, or record the session itself.
 const UNREACHABLE: &[AuditAction] = &[
+    AuditAction::AccountAddedByAdmin,
+    AuditAction::AccountConfirmationResent,
+    AuditAction::ServerInvitationCreated,
+    AuditAction::ServerInvitationRevoked,
+    AuditAction::ServerInvitationUsed,
     AuditAction::MemberAdded,
     AuditAction::RoleChanged,
     AuditAction::RolePermissionsChanged,

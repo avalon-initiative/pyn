@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::caller::{AdminCaller, ServiceCaller};
 use crate::{ApiResult, AppState};
 
-fn info(a: AccountRecord) -> api::AccountInfo {
+pub(crate) fn info(a: AccountRecord) -> api::AccountInfo {
     info_with(a, None)
 }
 

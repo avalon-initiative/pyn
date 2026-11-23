@@ -8,12 +8,13 @@ use chrono::{DateTime, Duration, Utc};
 use crate::access::needs::*;
 use crate::access::{
     AccessMode, AccountKind, AccountRecord, AccountStatus, Credential, GrantLevel, GrantNeed,
-    GrantScope, Identity, InvitationAccept, InvitationCreate, InviteId, InviteRecord, NewAccount,
-    ORG_DELETE_MARK_SECONDS, OrgCreation, OrgInvitation, OrgMemberAdd, OrgRole, Permission,
-    Principal, RegistrationMode, RepoAccess, Role, RoleDefinitions, RoleSource, ServerSettings,
-    ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
-    TokenId, TokenRecord, TokenResource, VerificationRecord, account, grant_delta, invite,
-    service_credential, session, ssh, token, verification,
+    GrantScope, Identity, InvitationAccept, InvitationCreate, InvitationGrant, InviteId,
+    InviteRecord, NewAccount, ORG_DELETE_MARK_SECONDS, OrgCreation, OrgInvitation, OrgMemberAdd,
+    OrgRole, Permission, Principal, RegistrationMode, RepoAccess, Role, RoleDefinitions,
+    RoleSource, ServerInvitation, ServerSettings, ServiceCredentialRecord, ServiceScope,
+    SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord, TokenResource,
+    VerificationRecord, account, grant_delta, invite, server_invite, service_credential, session,
+    ssh, token, verification,
 };
 use crate::access_session::{
     AccessSessionEnd, AccessSessionReach, AccessSessionReason, AccessSessionRecord,
@@ -28,7 +29,7 @@ use crate::deletion::{
     AccountDeletion, AccountPurge, DeletionSchedule, DeletionSweep, NAME_RESERVATION_DAYS,
     NameReservation, PurgeBlockers,
 };
-use crate::email::{EmailMessage, EmailSender, NullEmailSender};
+use crate::email::{EmailMessage, EmailSender, MailerKind, NullEmailSender, welcome_message};
 use crate::error::{PynError, Result};
 use crate::limit_events::{DomainEvent, LimitsEvent};
 use crate::limits::{Limits, LimitsChange, StorageCaps};
@@ -70,6 +71,7 @@ mod recovery;
 mod repo_policy;
 mod requirements;
 mod self_service;
+mod server_invitations;
 mod setup;
 mod teams;
 mod two_factor;
@@ -85,6 +87,7 @@ pub use passkeys::{
 };
 pub use recovery::{AdminRecovery, HOST_RECOVERY_ACTOR};
 pub use self_service::{AccountRename, MAX_ACCOUNT_EMAILS};
+pub use server_invitations::{CreatedServerInvitation, NewServerInvitation};
 pub use setup::{SetupRequest, SetupStatus, generate_setup_token};
 pub use teams::TeamDetail;
 pub use two_factor::{TotpConfirmed, TotpEnrolment, TwoFactorStatus};
@@ -449,6 +452,29 @@ pub trait AccessStore: Send + Sync {
 
     /// Marks the invitation used by `user` if it is still unused, unrevoked and unexpired; false otherwise.
     async fn use_invite(&self, id: &InviteId, user: &UserId, now: DateTime<Utc>) -> Result<bool>;
+
+    async fn create_server_invitation(&self, invitation: ServerInvitation) -> Result<()>;
+
+    async fn get_server_invitation(&self, id: &InviteId) -> Result<Option<ServerInvitation>>;
+
+    /// Every server invitation, newest first.
+    async fn list_server_invitations(&self) -> Result<Vec<ServerInvitation>>;
+
+    /// Marks the invitation revoked; false if there is none. Revoking twice is harmless.
+    async fn revoke_server_invitation(&self, id: &InviteId, now: DateTime<Utc>) -> Result<bool>;
+
+    /// Marks the invitation used by `user` if it is still unused, unrevoked and unexpired; false otherwise.
+    async fn use_server_invitation(
+        &self,
+        id: &InviteId,
+        user: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<bool>;
+
+    /// Marks the account's password as one the person must replace at their next sign-in, or clears the mark.
+    async fn set_password_change_required(&self, user: &UserId, required: bool) -> Result<()>;
+
+    async fn password_change_required(&self, user: &UserId) -> Result<bool>;
 
     /// Links a key to its account; false if another account (or this one) already has the same key.
     async fn add_ssh_key(&self, key: SshKeyRecord) -> Result<bool>;
@@ -1015,6 +1041,9 @@ pub(crate) fn bounded_key(part: &str) -> String {
 
 /// Longest an invitation can be valid, in hours (one year).
 pub const MAX_INVITE_HOURS: i64 = 8760;
+/// How long a server invitation lasts when the administrator names no expiry, and the longest it can last.
+pub const DEFAULT_SERVER_INVITE_DAYS: i64 = 7;
+pub const MAX_SERVER_INVITE_DAYS: i64 = 90;
 const SIGN_IN_WINDOW: Duration = Duration::minutes(15);
 const REGISTER_WINDOW: Duration = Duration::hours(1);
 const MAIL_WINDOW: Duration = Duration::hours(1);
@@ -1033,6 +1062,12 @@ pub struct ServiceCredentialLimits {
 }
 
 /// Server settings that shape who can join and how long a sign-in lasts.
+/// What a registration code turned out to be.
+enum Invitation {
+    Repo(InviteRecord),
+    Server(ServerInvitation),
+}
+
 #[derive(Debug, Clone)]
 pub struct AccessConfig {
     pub registration: RegistrationMode,
@@ -2488,8 +2523,10 @@ impl AccessService {
         let invite = if open {
             None
         } else {
-            let invite = self.check_invitation(request.invite).await?;
-            self.require_grantable(&invite.repo, &user).await?;
+            let invite = self.check_any_invitation(request.invite).await?;
+            if let Invitation::Repo(record) = &invite {
+                self.require_grantable(&record.repo, &user).await?;
+            }
             Some(invite)
         };
         let email = request.email.map(account::normalize_email).transpose()?;
@@ -2514,9 +2551,14 @@ impl AccessService {
             let email = email.expect("checked above");
             return self.register_unverified(user, email, password_hash).await;
         }
-        if let Some(invite) = &invite
-            && !self.store.use_invite(&invite.id, &user, now).await?
-        {
+        let used = match &invite {
+            Some(Invitation::Repo(r)) => Some(self.store.use_invite(&r.id, &user, now).await?),
+            Some(Invitation::Server(r)) => {
+                Some(self.store.use_server_invitation(&r.id, &user, now).await?)
+            }
+            None => None,
+        };
+        if used == Some(false) {
             return Err(PynError::InvalidInvite("it has already been used".into()));
         }
         let signup = if open && self.config.require_approval {
@@ -2544,18 +2586,24 @@ impl AccessService {
         {
             return Err(PynError::UserExists(user));
         }
-        if let Some(invite) = invite {
-            self.store
-                .set_role(&invite.repo, &user, invite.role)
+        match invite {
+            Some(Invitation::Repo(invite)) => {
+                self.store
+                    .set_role(&invite.repo, &user, invite.role)
+                    .await?;
+                let detail = format!("{user} registered as {}", invite.role);
+                self.record(
+                    &invite.repo,
+                    (&user).into(),
+                    AuditAction::MemberAdded,
+                    detail,
+                )
                 .await?;
-            let detail = format!("{user} registered as {}", invite.role);
-            self.record(
-                &invite.repo,
-                (&user).into(),
-                AuditAction::MemberAdded,
-                detail,
-            )
-            .await?;
+            }
+            Some(Invitation::Server(invite)) => {
+                self.accept_server_invitation(&invite, &user).await?
+            }
+            None => {}
         }
         let status = match signup {
             SignupStage::PendingApproval => AccountStatus::PendingApproval,
@@ -2642,13 +2690,24 @@ impl AccessService {
         Ok(())
     }
 
-    /// Sends one message; a failure is logged and never fails the action that asked for it.
-    pub(crate) async fn deliver(&self, message: EmailMessage) {
+    /// Sends one message; a failure is logged and never fails the action that asked for it. True when it was sent.
+    pub(crate) async fn deliver(&self, message: EmailMessage) -> bool {
         let domain = message.to.rsplit_once('@').map_or("unknown", |(_, d)| d);
         let domain = domain.to_string();
         if let Err(e) = self.email.send(message).await {
             tracing::warn!(to_domain = %domain, error = %e, "email delivery failed; the person needs an administrator's help");
+            return false;
         }
+        true
+    }
+
+    pub fn now(&self) -> DateTime<Utc> {
+        self.clock.now()
+    }
+
+    /// Which mailer is configured and whether sign-up verifies addresses.
+    pub fn email_status(&self) -> (MailerKind, bool) {
+        (self.email.kind(), self.config.require_email_verification)
     }
 
     /// Confirms an address from the token in its email. The account then becomes active, or waits for
@@ -2692,6 +2751,13 @@ impl AccessService {
             SignupStage::PendingApproval => AccountStatus::PendingApproval,
             _ => AccountStatus::Active,
         };
+        self.deliver(welcome_message(
+            &record.email,
+            account.user.as_str(),
+            &self.public_url(),
+            next == SignupStage::PendingApproval,
+        ))
+        .await;
         Ok(SignUp {
             user: account.user,
             status,
@@ -2735,6 +2801,15 @@ impl AccessService {
             }
         }
         Ok(())
+    }
+
+    async fn check_any_invitation(&self, code: Option<&str>) -> Result<Invitation> {
+        match code {
+            Some(c) if server_invite::parse(c).is_some() => {
+                Ok(Invitation::Server(self.check_server_invitation(c).await?))
+            }
+            other => Ok(Invitation::Repo(self.check_invitation(other).await?)),
+        }
     }
 
     async fn check_invitation(&self, code: Option<&str>) -> Result<InviteRecord> {
@@ -2868,6 +2943,9 @@ impl AccessService {
         }
         let hash = self.passwords.hash(new).await?;
         self.store.set_password_hash(&actor.user, &hash).await?;
+        self.store
+            .set_password_change_required(&actor.user, false)
+            .await?;
         self.store
             .revoke_sign_in_tokens(&actor.user, self.clock.now())
             .await?;

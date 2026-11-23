@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use pyn_core::{EmailMessage, EmailSender, NullEmailSender};
+use pyn_core::{EmailMessage, EmailSender, MailerKind, NullEmailSender};
 use pyn_smtp::{SmtpSender, SmtpSettings, SmtpTls};
 
 /// First line of every message the logging sender writes; grep the server log for it.
@@ -25,6 +25,10 @@ impl EmailSender for LogEmailSender {
 
     fn delivers(&self) -> bool {
         false
+    }
+
+    fn kind(&self) -> MailerKind {
+        MailerKind::Log
     }
 }
 

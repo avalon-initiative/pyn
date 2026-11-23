@@ -43,6 +43,35 @@ pub enum AdminCommand {
     /// Webhook subscriptions for lifecycle events, and their signing secrets.
     #[command(subcommand, alias = "webhooks")]
     Webhook(crate::webhook::WebhookCommand),
+    /// Invitations to the server itself: a one-time code, optionally emailed, with an optional role.
+    #[command(subcommand)]
+    Invite(InviteCommand),
+}
+
+#[derive(Subcommand)]
+pub enum InviteCommand {
+    /// Create an invitation; its code is shown once.
+    Create {
+        /// Send the code to this address when the server has a mailer.
+        #[arg(long)]
+        email: Option<String>,
+        /// Days the code works, 1 to 90; the server's default is 7.
+        #[arg(long)]
+        days: Option<u32>,
+        /// Also give a role in this personal repository, written owner/name (with --role).
+        #[arg(long, requires = "role", conflicts_with = "org")]
+        repo: Option<String>,
+        /// Also make the person a member of this organization with --role (owner or member).
+        #[arg(long, requires = "role")]
+        org: Option<String>,
+        /// The role in the repository or organization.
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// List invitations, newest first; never their codes.
+    List,
+    /// Revoke an unused invitation by its id.
+    Revoke { id: String },
 }
 
 #[derive(Subcommand)]
@@ -55,6 +84,15 @@ pub enum AdminUserCommand {
         #[arg(long, default_value_t = 100)]
         limit: usize,
     },
+    /// Add an account with a one-time password the person must change at first sign-in.
+    Add {
+        name: String,
+        /// Read the password from one line of standard input instead of prompting.
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Send a fresh confirmation link to an account still waiting on its email address.
+    ResendConfirmation { user: String },
     /// Approve an account that waits for approval.
     Approve { user: String },
     /// Disable an account: it cannot sign in and its tokens and keys stop working.
@@ -190,7 +228,79 @@ pub fn run(api: &Api, cmd: AdminCommand) -> Result<()> {
         AdminCommand::Frozen { owner } => crate::freeze::show(api, &owner),
         AdminCommand::Limits(cmd) => crate::limits::run(api, cmd),
         AdminCommand::Webhook(cmd) => crate::webhook::run(api, cmd),
+        AdminCommand::Invite(cmd) => invite(api, cmd),
     }
+}
+
+fn invite(api: &Api, cmd: InviteCommand) -> Result<()> {
+    match cmd {
+        InviteCommand::Create {
+            email,
+            days,
+            repo,
+            org,
+            role,
+        } => {
+            let grant = role.map(|role| api::ServerInvitationGrant {
+                repository: repo,
+                organization: org,
+                role,
+            });
+            let body = api::CreateServerInvitationRequest {
+                email,
+                expires_in_days: days,
+                grant,
+            };
+            let made: api::CreatedServerInvitation = api
+                .send(
+                    api.request(Method::POST, "/v1/admin/invitations")
+                        .json(&body),
+                )?
+                .json()?;
+            println!("{}", made.code);
+            let sent = if made.emailed {
+                "emailed"
+            } else {
+                "not emailed"
+            };
+            eprintln!(
+                "invitation {} created, expires {}, {sent}; this is the only time the code is shown",
+                made.invitation.id,
+                time::local(made.invitation.expires_at)
+            );
+        }
+        InviteCommand::List => {
+            let all: Vec<api::ServerInvitationInfo> =
+                api.send(api.get("/v1/admin/invitations"))?.json()?;
+            let rows: Vec<Vec<String>> = all
+                .into_iter()
+                .map(|i| {
+                    let grant = i.grant.map_or("-".to_string(), |g| {
+                        let target = g.repository.or(g.organization).unwrap_or_default();
+                        format!("{}@{target}", g.role)
+                    });
+                    vec![
+                        format!("{:?}", i.status).to_lowercase(),
+                        time::local(i.expires_at),
+                        i.created_by,
+                        i.email.unwrap_or_else(|| "-".into()),
+                        grant,
+                        i.id,
+                    ]
+                })
+                .collect();
+            table::show(
+                &["STATE", "EXPIRES", "BY", "EMAIL", "GRANT", "ID"],
+                &rows,
+                "no invitations",
+            );
+        }
+        InviteCommand::Revoke { id } => {
+            api.send(api.request(Method::DELETE, &format!("/v1/admin/invitations/{id}")))?;
+            println!("revoked {id}");
+        }
+    }
+    Ok(())
 }
 
 fn user(api: &Api, cmd: AdminUserCommand) -> Result<()> {
@@ -218,6 +328,30 @@ fn user(api: &Api, cmd: AdminUserCommand) -> Result<()> {
                 &rows,
                 "no accounts",
             );
+        }
+        AdminUserCommand::Add {
+            name,
+            password_stdin,
+        } => {
+            let password = credentials::read_new_password(password_stdin)?;
+            let body = api::AddAccountRequest {
+                username: name,
+                password,
+            };
+            let added: api::AccountInfo = api
+                .send(api.request(Method::POST, "/v1/admin/users").json(&body))?
+                .json()?;
+            println!(
+                "added {}; the password is one-time and must be changed at first sign-in",
+                added.user
+            );
+        }
+        AdminUserCommand::ResendConfirmation { user } => {
+            api.send(api.request(
+                Method::POST,
+                &format!("/v1/admin/users/{user}/resend-confirmation"),
+            ))?;
+            println!("confirmation sent to {user}");
         }
         AdminUserCommand::Approve { user } => {
             let who = account_action(api, &user, "approve", None)?;

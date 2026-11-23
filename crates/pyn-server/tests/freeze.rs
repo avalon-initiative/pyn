@@ -438,6 +438,13 @@ const EXEMPT: &[(&str, &str)] = &[
     ("set_access_mode", "an operator action"),
     ("revoke_admin", "an operator action"),
     ("approve", "an operator action"),
+    ("add_account", "an operator action"),
+    ("resend_confirmation", "an operator action"),
+    (
+        "create_server_invitation",
+        "an operator action; a grant into a frozen owner is refused (tests/server_invitations.rs)",
+    ),
+    ("revoke_server_invitation", "an operator action"),
     ("disable", "an operator action"),
     ("enable", "an operator action"),
     ("admin_delete_account", "an operator action"),

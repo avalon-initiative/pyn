@@ -456,9 +456,9 @@ The person running the server chooses how people join with `PYN_REGISTRATION`:
 
 | Mode | Who can create an account |
 | --- | --- |
-| `invite` (default) | anyone with an invitation from a member who has `manage_users` in a repository |
+| `invite` (default) | anyone with an invitation: from a member who has `manage_users` in a repository, or a [server invitation](#server-invitations-and-adding-an-account) from an administrator |
 | `open` | anyone; the account has no role in any repository (it can read public ones) until someone adds it. Meant for a public server; see [protecting open registration](#protecting-open-registration) before exposing it to the internet |
-| `closed` | nobody on their own; someone with `manage_users` adds people with `pyn user add` |
+| `closed` | nobody on their own; someone with `manage_users` adds people with `pyn user add`, or an administrator [adds an account](#server-invitations-and-adding-an-account) |
 
 Someone with `manage_users` in a repository can add people to it by hand with `POST /v1/repos/{owner}/{name}/users`, but
 that creates an account, so it follows the registration policy: on a `closed` or `invite` server, or an `open` one that
@@ -480,6 +480,39 @@ on the repository: it needs a [full-scope credential](#full-scope-credentials) a
 repositories or to fewer permissions is refused with `403 forbidden`, even one that holds `manage_users` there and even one
 of a server administrator, and a service credential with `403 service_credential_not_allowed`. Listing and revoking a
 repository's invitations stay `manage_users` actions in that repository.
+
+### Server invitations and adding an account
+
+A repository invitation needs a repository and a role in it, so it cannot bring a person onto the server on its own terms. A
+server administrator therefore has a second kind, a **server invitation**: a one-time code (`pynv_`, then 12 hex digits of id
+and 64 of secret) for the server itself, with an optional role in one repository or one organization. It is a separate
+record from a repository invitation, not a wrapper over one, and `pyn register <name> --invite <code>` and the sign-up form take either kind. It
+works only in `invite` mode, like any code. Creating, listing and revoking are administrator actions on a full-scope
+credential; a service credential or a narrower token is refused with `403 server_admin_required`.
+
+| Route | Does |
+| --- | --- |
+| `POST /v1/admin/invitations` | `{email?, expires_in_days?, grant?}` gives `201 {code, emailed, invitation}`. `expires_in_days` is 1 to 90 and defaults to 7. `grant` is `{repository: "owner/name", role}` or `{organization, role}` (a repository role `reader`, `writer`, `maintainer` or `admin`, an organization role `member` or `owner`); an organization's repository is granted through the organization. The code is shown once and never stored. `400 invalid_request` for a bad address, expiry, role or grant, `404 repo_not_found` or `org_not_found` for the target |
+| `GET /v1/admin/invitations` | every invitation, newest first, as `{id, email, grant, created_by, created_at, expires_at, status, used_at, used_by, revoked_at}` with `status` `pending`, `used`, `revoked` or `expired`; never the code |
+| `DELETE /v1/admin/invitations/{id}` | `204`, and the code stops working; revoking twice is harmless. `404 server_invitation_not_found`, and `400 invalid_request` for one already used |
+
+An address is optional. When one is given and a [mailer](../deployment.md#email) is configured, the server emails the code
+with the `pyn register` command (plain text, no tracking, limited like other mail to three messages per address and hour: `429 too_many_attempts`), and `emailed` says
+whether a mailer took it. Without an address or a mailer nothing is sent and the administrator passes the code on. The address is kept only
+to tell invitations apart in the list. With the `log` mailer the message goes to the server log, not to a person.
+
+Registering with a code consumes it, so a second use, a revoked code and an expired one are each `400 invalid_invite`
+(`it has already been used`, `it has been revoked`, `it has expired`), the same code as for a repository invitation. The new
+account is active at once (an invitation does not require address verification), and the grant is applied: a repository
+role is set and logged in the repository's log as `member_added`, an organization membership is added (counting against the organization's member
+limit) and logged in the organization's log as `org_member_added`. Creating, revoking and using an invitation are server-log entries
+`server_invitation_created`, `server_invitation_revoked` and `server_invitation_used` (never the code).
+
+An administrator can also add an account directly, with `POST /v1/admin/users` and `{username, password}` (`201`, the account as `GET /v1/admin/users` lists it;
+`400 invalid_request` for a bad name or a password under 10 characters, `409 user_exists`). The account is active and has no
+role anywhere. The password is **one-time**: the account is marked as needing a new one, `POST /v1/session` and `GET /v1/session` answer
+`password_change_required: true` for it, and the mark clears when the person changes the password (`PUT /v1/me/password`) or the host recovers the administrator account with `pyn-server recover-admin`. The mark is advisory:
+the server does not refuse other requests until then, so a client (the web app) is the one that sends the person to the password page. The server log has an `account_added_by_admin` entry.
 
 ## Protecting open registration
 
@@ -554,12 +587,15 @@ is off, or on but nothing is delivered (the `log` sender).
 | `POST /v1/register` | `{username, password, email?, invite?}` gives `201 {user, status}`; `status` is `active`, `pending_verification` or `pending_approval` |
 | `POST /v1/register/verify` | `{token}` gives `200 {user, status}`; `400 invalid_verification` for an unknown, used or expired link |
 | `POST /v1/register/resend` | `{email}` gives `202`, always |
+| `POST /v1/admin/users/{user}/resend-confirmation` | an administrator resends the confirmation link to an account still waiting on its address: `202`. `409 email_already_confirmed` for an account past that step, `409 email_verification_off` on a server that does not verify addresses, `404 user_not_found`, `429 too_many_attempts` (the three-per-address-and-hour mail limit). Admin only; a `account_confirmation_resent` entry goes to the server log |
+| `POST /v1/admin/users` | `{username, password}`: [add an account](#server-invitations-and-adding-an-account) with a one-time password |
+| `GET`/`POST /v1/admin/invitations`, `DELETE /v1/admin/invitations/{id}` | [server invitations](#server-invitations-and-adding-an-account) |
 | `POST /v1/login`, `POST /v1/session` | `{username, password, code?}`; `403` `email_not_verified`, `approval_pending` or `account_disabled` after a right password; `401` `second_factor_required` or `second_factor_invalid` for an account with a [second factor](#two-factor-authentication); an account scheduled for deletion by its owner signs in, with a credential that reaches only the deletion routes |
 | `GET /v1/me/emails`, `POST /v1/me/emails {address}`, `POST /v1/me/emails/{address}/resend`, `PUT /v1/me/emails/{address}/primary`, `DELETE /v1/me/emails/{address}` | [your addresses](#your-email-addresses); `POST` gives `201` with the pending address |
 | `PUT /v1/me/username` | `{username, password}` gives `200 {old_name, new_name, repositories}`; see [changing your username](#changing-your-username) |
 | `GET /v1/me` | `{id, user, admin}` |
 | `GET /v1/admin/users?status=&limit=` | accounts oldest first: `{id, user, email, email_verified, status, disabled_at, disabled_reason, purge_at, admin, created_at}`; `purge_at` is the scheduled deletion time, as in `GET /v1/account/deletion`, or null |
-| `GET /v1/admin/settings` | `{account_deletion: {window_days, disabled_retention_days}, administrators: {active, single}, storage: {kind, bucket, status}, certificate: {state, host, trusted, not_before, not_after, days_left, names, issuer, last_checked, last_error}}`: the effective deletion window and disabled-account retention, read-only (set by the environment variables below), the count of active administrators (`single` is true when exactly one exists, so a client can warn), and the content store (`kind` `memory`, `filesystem` or `s3`; `bucket` for `s3`; `status` `ok` or `degraded`, see [storage](storage.md#s3-compatible-store)), and the TLS certificate served at the public address (`state` `ok`, `expiring`, `expired`, `unreachable` or `unchecked`; see [HTTPS](../deployment.md#the-server-watches-the-certificate)) |
+| `GET /v1/admin/settings` | `{account_deletion: {window_days, disabled_retention_days}, administrators: {active, single}, storage: {kind, bucket, status}, certificate: {state, host, trusted, not_before, not_after, days_left, names, issuer, last_checked, last_error}, email: {mailer, verification}}`: the effective deletion window and disabled-account retention, read-only (set by the environment variables below), the count of active administrators (`single` is true when exactly one exists, so a client can warn), and the content store (`kind` `memory`, `filesystem` or `s3`; `bucket` for `s3`; `status` `ok` or `degraded`, see [storage](storage.md#s3-compatible-store)), the TLS certificate served at the public address (`state` `ok`, `expiring`, `expired`, `unreachable` or `unchecked`; see [HTTPS](../deployment.md#the-server-watches-the-certificate)), and whether email is sent (`mailer` `none`, `log` or `smtp`, never a host or a credential; `verification` whether sign-up confirms addresses), so a client can say plainly that no mail will go out |
 | `POST /v1/admin/users/{user}/approve` | `{}`; the updated account |
 | `POST /v1/admin/users/{user}/disable` | `{reason?}`; the updated account. `409 last_server_admin` if the account is the only active administrator |
 | `POST /v1/admin/users/{user}/enable` | the updated account; also cancels a scheduled deletion |
@@ -569,8 +605,8 @@ is off, or on but nothing is delivered (the `log` sender).
 | `PUT /v1/admin/access` | `{access_mode}`: the [server access mode](#server-access-mode) now in force; administrators only, never a service credential |
 | `GET`/`PUT /v1/admin/two-factor`, `POST /v1/admin/users/{user}/two-factor/reset` | [requiring two-factor authentication](#requiring-two-factor-authentication) and an administrator's reset of an account's factors |
 | `DELETE /v1/admin/users/{user}/admin` | revokes the flag; the updated account. `409 last_server_admin` if no other active administrator would remain; revoking from a non-administrator changes nothing |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_deletion_scheduled`, `account_deletion_restored`, `account_deleted`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
-| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `two_factor_added`, `two_factor_removed`, `recovery_codes_regenerated`, `recovery_code_used`, `two_factor_reset`, `passkey_added`, `passkey_removed`, `passkey_clone_suspected`, `server_two_factor_requirement_changed`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_deletion_scheduled`, `account_deletion_restored`, `account_deleted`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked`, `account_added_by_admin`, `account_confirmation_resent`, `server_invitation_created`, `server_invitation_revoked`, `server_invitation_used` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
+| `GET /v1/admin/audit?before=&limit=` | `account_approved`, `account_disabled`, `account_enabled`, `account_renamed`, `email_added`, `email_verified`, `email_primary_changed`, `email_removed`, `two_factor_added`, `two_factor_removed`, `recovery_codes_regenerated`, `recovery_code_used`, `two_factor_reset`, `passkey_added`, `passkey_removed`, `passkey_clone_suspected`, `server_two_factor_requirement_changed`, `admin_granted`, `admin_revoked`, `owner_limits_changed`, `owner_frozen`, `owner_unfrozen`, `server_setup_completed`, `server_access_mode_changed`, `external_account_created`, `external_identity_linked`, `external_identity_unlinked`, `account_added_by_admin`, `account_confirmation_resent`, `server_invitation_created`, `server_invitation_revoked`, `server_invitation_used` and the `webhook_*` [webhook](webhooks.md) events, same page shape as a repository's |
 
 On the command line (server administrators; each listing is an aligned table with the name last):
 
@@ -580,6 +616,8 @@ On the command line (server administrators; each listing is an aligned table wit
 | `pyn admin user delete <user> [--now] --reason <text>` | deletes a disabled account after the recovery window, or at once with `--now` |
 | `pyn account delete [--password-stdin]`, `pyn account restore`, `pyn account status` | your own account: schedule its deletion (password again), cancel it, show the deadline |
 | `pyn admin user approve <user>`, `disable <user> [--reason R]`, `enable <user>` | the account routes above |
+| `pyn admin user add <name> [--password-stdin]`, `pyn admin user resend-confirmation <user>` | [add an account](#server-invitations-and-adding-an-account) with a one-time password (asked twice, or one line on standard input), and resend a confirmation link |
+| `pyn admin invite create [--email E] [--days N] [--repo owner/name \| --org O] [--role R]`, `list`, `revoke <id>` | [server invitations](#server-invitations-and-adding-an-account); `create` prints the code alone on stdout and says on stderr that it is shown once; `list` columns `STATE EXPIRES BY EMAIL GRANT ID` |
 | `pyn admin grant <user>`, `pyn admin revoke <user>` | grant or revoke the administrator flag |
 | `pyn admin service-credential create <name> --scopes manage_accounts,manage_organizations,manage_limits,manage_webhooks,manage_freeze [--expires-at T] [--allow-from ADDR,CIDR] [--rate-limit N]` | prints the secret alone on stdout; it is shown once. The options are [hardening](#hardening-a-service-credential) |
 | `pyn admin service-credential list`, `revoke <name>` | columns `STATE CREATED LAST USED FROM BY SCOPES NAME`; `STATE` is `active`, `expired` or `revoked`, and revoked and expired ones are listed |

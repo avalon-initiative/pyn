@@ -442,6 +442,164 @@
         "x-pyn-reach": "admin_only"
       }
     },
+    "/v1/admin/invitations": {
+      "get": {
+        "tags": [
+          "server_invitation_api"
+        ],
+        "operationId": "list_server_invitations",
+        "responses": {
+          "200": {
+            "description": "newest first; never with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServerInvitationInfo"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
+      },
+      "post": {
+        "tags": [
+          "server_invitation_api"
+        ],
+        "operationId": "create_server_invitation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateServerInvitationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "the code is shown once; `emailed` says whether a mailer took the message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedServerInvitation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a bad address, an expiry outside 1 to 90 days, an unknown role, or a grant naming both or neither of repository and organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required: also for any service credential or narrower token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found or org_not_found for the grant's target",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: too many messages to that address this hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
+      }
+    },
+    "/v1/admin/invitations/{id}": {
+      "delete": {
+        "tags": [
+          "server_invitation_api"
+        ],
+        "operationId": "revoke_server_invitation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "the invitation's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "the code stops working; revoking twice is harmless"
+          },
+          "400": {
+            "description": "invalid_request: the invitation was already used",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "server_invitation_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
+      }
+    },
     "/v1/admin/limits": {
       "get": {
         "tags": [
@@ -1126,6 +1284,65 @@
           }
         },
         "x-pyn-reach": "service:manage_accounts"
+      },
+      "post": {
+        "tags": [
+          "server_invitation_api"
+        ],
+        "operationId": "add_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "an active account whose password is one-time: its first sign-in answers `password_change_required`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: a bad name or a password under 10 characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "user_exists, or name_reserved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
       }
     },
     "/v1/admin/users/{user}/access-sessions": {
@@ -1607,6 +1824,71 @@
         "x-pyn-reach": "service:manage_accounts"
       }
     },
+    "/v1/admin/users/{user}/resend-confirmation": {
+      "post": {
+        "tags": [
+          "server_invitation_api"
+        ],
+        "operationId": "resend_confirmation",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's user name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "a fresh link was sent; a failed delivery is only logged"
+          },
+          "403": {
+            "description": "server_admin_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "email_already_confirmed, or email_verification_off when the server does not verify addresses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: three messages to one address per hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "admin_only"
+      }
+    },
     "/v1/admin/users/{user}/two-factor/reset": {
       "post": {
         "tags": [
@@ -1722,11 +2004,45 @@
             }
           },
           "400": {
-            "description": "invalid_request: bad name, url (https only, no user info or fragment) or event type",
+            "description": "invalid_request: bad name, url (https only, no user info or fragment) or an event type outside the known set",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "service:manage_webhooks"
+      }
+    },
+    "/v1/admin/webhooks/event-types": {
+      "get": {
+        "tags": [
+          "webhook_api"
+        ],
+        "operationId": "list_webhook_event_types",
+        "responses": {
+          "200": {
+            "description": "every type a subscription may list, in the documented order, with a one-line description",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WebhookEventTypeInfo"
+                  }
                 }
               }
             }
@@ -1878,7 +2194,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: nothing to change, or a bad name, url or event type",
+            "description": "invalid_request: nothing to change, or a bad name, url or an event type outside the known set",
             "content": {
               "application/json": {
                 "schema": {
@@ -11860,6 +12176,23 @@
           }
         }
       },
+      "AddAccountRequest": {
+        "type": "object",
+        "description": "An account an administrator creates with a one-time password.",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The one-time password: the person must replace it at their first sign-in."
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
       "AddEmailRequest": {
         "type": "object",
         "required": [
@@ -12000,7 +12333,8 @@
           "account_deletion",
           "administrators",
           "storage",
-          "certificate"
+          "certificate",
+          "email"
         ],
         "properties": {
           "account_deletion": {
@@ -12011,6 +12345,9 @@
           },
           "certificate": {
             "$ref": "#/components/schemas/CertificateSettings"
+          },
+          "email": {
+            "$ref": "#/components/schemas/EmailSettings"
           },
           "storage": {
             "$ref": "#/components/schemas/StorageSettings"
@@ -12859,6 +13196,37 @@
           }
         }
       },
+      "CreateServerInvitationRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where to send the code; used only when a mailer is configured, and stored only to tell invitations apart."
+          },
+          "expires_in_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days the code works, 1 to 90; 7 when left out.",
+            "minimum": 0
+          },
+          "grant": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ServerInvitationGrant"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "CreateServiceCredentialRequest": {
         "type": "object",
         "required": [
@@ -12991,9 +13359,9 @@
           "event_types": {
             "type": "array",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/WebhookEventType"
             },
-            "description": "Event types to deliver, such as `repository.created`; empty or left out means every type."
+            "description": "Event types to deliver, such as `repository.created`; empty or left out means every type. An unknown type is\nrefused with `400 invalid_request`."
           },
           "name": {
             "type": "string",
@@ -13018,6 +13386,27 @@
           },
           "info": {
             "$ref": "#/components/schemas/InviteInfo"
+          }
+        }
+      },
+      "CreatedServerInvitation": {
+        "type": "object",
+        "required": [
+          "code",
+          "emailed",
+          "invitation"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Give this to the person being invited, as `pyn register <name> --invite <code>` or in the sign-up form. Shown once."
+          },
+          "emailed": {
+            "type": "boolean",
+            "description": "The message was handed to a configured mailer; false when no address was given or no mailer is on."
+          },
+          "invitation": {
+            "$ref": "#/components/schemas/ServerInvitationInfo"
           }
         }
       },
@@ -13163,6 +13552,23 @@
               "null"
             ],
             "description": "Shown to administrators; not to the account holder."
+          }
+        }
+      },
+      "EmailSettings": {
+        "type": "object",
+        "description": "Whether the server sends email.",
+        "required": [
+          "mailer",
+          "verification"
+        ],
+        "properties": {
+          "mailer": {
+            "$ref": "#/components/schemas/MailerKind"
+          },
+          "verification": {
+            "type": "boolean",
+            "description": "Whether sign-up must confirm the address (`PYN_EMAIL_VERIFICATION`, on by default when a mailer is set)."
           }
         }
       },
@@ -13984,6 +14390,15 @@
             "type": "string"
           }
         }
+      },
+      "MailerKind": {
+        "type": "string",
+        "description": "Which mailer the server sends with. Never carries a host or a credential.",
+        "enum": [
+          "none",
+          "log",
+          "smtp"
+        ]
       },
       "Me": {
         "type": "object",
@@ -16851,6 +17266,108 @@
           }
         }
       },
+      "ServerInvitationGrant": {
+        "type": "object",
+        "description": "The role a server invitation gives in one repository or one organization; exactly one of the two targets.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "organization": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An organization's name."
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`owner/name` of a personal repository."
+          },
+          "role": {
+            "type": "string",
+            "description": "A repository role (`reader`, `writer`, `maintainer`, `admin`) or an organization role (`member`, `owner`)."
+          }
+        }
+      },
+      "ServerInvitationInfo": {
+        "type": "object",
+        "description": "A server invitation as an administrator sees it; the code is never part of it.",
+        "required": [
+          "id",
+          "created_by",
+          "created_at",
+          "expires_at",
+          "status"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "grant": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ServerInvitationGrant"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ServerInvitationStatus"
+          },
+          "used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "used_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ServerInvitationStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "used",
+          "revoked",
+          "expired"
+        ]
+      },
       "ServiceCredentialInfo": {
         "type": "object",
         "required": [
@@ -16939,6 +17456,10 @@
           "expires_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "password_change_required": {
+            "type": "boolean",
+            "description": "True when an administrator set the password and the person must replace it (`PUT /v1/me/password`).\nAdvisory: the server does not refuse other requests until it is changed."
           },
           "user": {
             "type": "string"
@@ -18072,9 +18593,9 @@
               "null"
             ],
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/WebhookEventType"
             },
-            "description": "Replaces the list; an empty list means every type."
+            "description": "Replaces the list; an empty list means every type. An unknown type is refused with `400 invalid_request`."
           },
           "name": {
             "type": [
@@ -18392,6 +18913,52 @@
           "delivered",
           "failed"
         ]
+      },
+      "WebhookEventType": {
+        "type": "string",
+        "description": "An event type; `GET /v1/admin/webhooks/event-types` describes each.",
+        "enum": [
+          "account.created",
+          "account.approved",
+          "account.disabled",
+          "account.enabled",
+          "account.deletion_scheduled",
+          "account.deletion_restored",
+          "account.deleted",
+          "account.renamed",
+          "organization.created",
+          "organization.deleted",
+          "repository.created",
+          "repository.renamed",
+          "repository.deleted",
+          "repository.storage_cap_changed",
+          "owner.limits_changed",
+          "owner.frozen",
+          "owner.unfrozen",
+          "owner.limit_reached",
+          "lock.acquired",
+          "lock.released",
+          "lock.expired",
+          "lock.forced"
+        ]
+      },
+      "WebhookEventTypeInfo": {
+        "type": "object",
+        "description": "One event type a webhook subscription may list.",
+        "required": [
+          "name",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "One line saying when it is raised."
+          },
+          "name": {
+            "type": "string",
+            "description": "The dotted name, such as `repository.created`."
+          }
+        }
       },
       "WebhookSecretInfo": {
         "type": "object",

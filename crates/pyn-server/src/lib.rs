@@ -58,6 +58,7 @@ pub mod request_limits;
 mod requirements_api;
 pub mod routes;
 mod self_service_api;
+mod server_invitation_api;
 mod session_api;
 pub mod settings;
 mod setup_api;
@@ -177,6 +178,11 @@ struct RepoAddress {
         profile_api::get_org_avatar,
         repo_api::my_locks,
         admin_api::list_accounts,
+        server_invitation_api::add_account,
+        server_invitation_api::resend_confirmation,
+        server_invitation_api::list_invitations,
+        server_invitation_api::create_invitation,
+        server_invitation_api::revoke_invitation,
         admin_api::approve,
         admin_api::disable,
         admin_api::enable,
@@ -209,6 +215,7 @@ struct RepoAddress {
         freeze_api::owner_freeze,
         freeze_api::freeze_owner,
         freeze_api::unfreeze_owner,
+        webhook_api::list_webhook_event_types,
         webhook_api::create_webhook,
         webhook_api::list_webhooks,
         webhook_api::get_webhook,
@@ -512,6 +519,14 @@ struct RepoAddress {
         api::DeletionBlockers,
         api::AccountDeletionSettings,
         api::AdminSettings,
+        api::EmailSettings,
+        api::MailerKind,
+        api::ServerInvitationGrant,
+        api::CreateServerInvitationRequest,
+        api::ServerInvitationStatus,
+        api::ServerInvitationInfo,
+        api::CreatedServerInvitation,
+        api::AddAccountRequest,
         api::UpdateStatus,
         api::AdministratorSummary,
         api::StorageSettings,
@@ -548,6 +563,8 @@ struct RepoAddress {
         api::CreatedWebhook,
         api::RotatedWebhookSecret,
         api::WebhookDelivery,
+        api::WebhookEventTypeInfo,
+        api::WebhookEventType,
         api::WebhookDeliveryStatus,
         api::WebhookDeliveryPage
     ))
@@ -627,6 +644,8 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::LockRequired(_)
         | PynError::NotLocked(_)
         | PynError::UserExists(_)
+        | PynError::EmailAlreadyConfirmed
+        | PynError::EmailVerificationOff
         | PynError::EmailUnavailable
         | PynError::EmailRefused(_)
         | PynError::RepoExists(_)
@@ -702,6 +721,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::ServiceCredentialNotFound(_)
         | PynError::AccessSessionNotFound(_)
         | PynError::WebhookNotFound(_)
+        | PynError::ServerInvitationNotFound(_)
         | PynError::WebhookSecretNotFound { .. }
         | PynError::WebhookDeliveryNotFound { .. }
         | PynError::UserNotFound(_)

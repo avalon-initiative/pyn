@@ -74,6 +74,7 @@ pub struct AdminSettings {
     pub administrators: AdministratorSummary,
     pub storage: StorageSettings,
     pub certificate: CertificateSettings,
+    pub email: crate::EmailSettings,
 }
 
 /// What the server's periodic TLS handshake against its own public address (`PYN_PUBLIC_URL`) saw.

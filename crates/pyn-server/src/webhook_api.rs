@@ -35,9 +35,41 @@ fn webhook_dto(d: WebhookDetail) -> api::Webhook {
     }
 }
 
+/// Refuses a type outside the closed set; the core only checks the form.
+fn check_known_types(types: &[String]) -> Result<(), PynError> {
+    match types
+        .iter()
+        .find(|t| !api::KNOWN_EVENT_TYPES.contains(&t.as_str()))
+    {
+        Some(t) => Err(PynError::InvalidRequest(format!(
+            "unknown event type {t:?}: list them with GET /v1/admin/webhooks/event-types"
+        ))),
+        None => Ok(()),
+    }
+}
+
+#[utoipa::path(get, path = "/v1/admin/webhooks/event-types", operation_id = "list_webhook_event_types",
+    responses((status = 200, body = Vec<api::WebhookEventTypeInfo>, description = "every type a subscription may list, in the documented order, with a one-line description"),
+              (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_webhooks")))]
+pub(crate) async fn list_webhook_event_types(
+    ServiceCaller(_who): ServiceCaller,
+) -> Json<Vec<api::WebhookEventTypeInfo>> {
+    Json(
+        api::KNOWN_EVENT_TYPES
+            .iter()
+            .map(|t| api::WebhookEventTypeInfo {
+                name: (*t).to_string(),
+                description: api::event_type_description(t)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+            .collect(),
+    )
+}
+
 #[utoipa::path(post, path = "/v1/admin/webhooks", operation_id = "create_webhook", request_body = api::CreateWebhookRequest, responses(
     (status = 201, body = api::CreatedWebhook, description = "the signing secret is shown once"),
-    (status = 400, body = api::ErrorBody, description = "invalid_request: bad name, url (https only, no user info or fragment) or event type"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request: bad name, url (https only, no user info or fragment) or an event type outside the known set"),
     (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_webhooks"),
 ))]
 pub(crate) async fn create_webhook(
@@ -45,6 +77,7 @@ pub(crate) async fn create_webhook(
     ServiceCaller(who): ServiceCaller,
     Json(req): Json<api::CreateWebhookRequest>,
 ) -> ApiResult<(StatusCode, Json<api::CreatedWebhook>)> {
+    check_known_types(&req.event_types)?;
     let (detail, issued) = s
         .access
         .create_webhook(
@@ -94,7 +127,7 @@ pub(crate) async fn get_webhook(
     params(("id" = i64, Path, description = "the subscription's id")),
     request_body = api::UpdateWebhookRequest, responses(
     (status = 200, body = api::Webhook),
-    (status = 400, body = api::ErrorBody, description = "invalid_request: nothing to change, or a bad name, url or event type"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request: nothing to change, or a bad name, url or an event type outside the known set"),
     (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_webhooks"),
     (status = 404, body = api::ErrorBody, description = "webhook_not_found"),
 ))]
@@ -104,6 +137,7 @@ pub(crate) async fn update_webhook(
     Path(id): Path<i64>,
     Json(req): Json<api::UpdateWebhookRequest>,
 ) -> ApiResult<Json<api::Webhook>> {
+    check_known_types(req.event_types.as_deref().unwrap_or_default())?;
     let update = SubscriptionUpdate {
         name: req.name,
         url: req.url,

@@ -3,7 +3,7 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use pyn_core::{AccountDeletion, UserId};
+use pyn_core::{AccountDeletion, MailerKind, UserId};
 use pyn_proto as api;
 
 use crate::caller::{FullScopeCaller, ServiceCaller};
@@ -129,5 +129,16 @@ pub(crate) async fn admin_settings(
         },
         storage: s.storage.settings(),
         certificate: s.certificate.settings(),
+        email: {
+            let (mailer, verification) = s.access.email_status();
+            api::EmailSettings {
+                mailer: match mailer {
+                    MailerKind::None => api::MailerKind::None,
+                    MailerKind::Log => api::MailerKind::Log,
+                    MailerKind::Smtp => api::MailerKind::Smtp,
+                },
+                verification,
+            }
+        },
     }))
 }
