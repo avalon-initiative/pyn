@@ -61,7 +61,7 @@ step() { echo "smoke: $*"; }
 
 latest_web_version() {
   local tag
-  tag=$(curl --silent --fail --location --max-time 20 https://api.github.com/repos/avalon-initiative/pyn-web/releases?per_page=1 |
+  tag=$(curl --silent --fail --location --max-time 20 ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} https://api.github.com/repos/avalon-initiative/pyn-web/releases?per_page=1 |
     sed -n 's/.*"tag_name": *"v\{0,1\}\([0-9]*\.[0-9]*\.[0-9]*\)[^"]*".*/\1/p' | head -n 1)
   [[ -n $tag ]] || fail "could not find the newest pyn-web release, pre-releases included; pass the web version as the second argument"
   echo "$tag"
