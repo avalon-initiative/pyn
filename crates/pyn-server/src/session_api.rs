@@ -55,8 +55,9 @@ pub(crate) fn set_cookie(value: &str, max_age_secs: i64, secure: bool) -> Header
     HeaderValue::from_str(&cookie).expect("cookie is ASCII")
 }
 
-fn info(session: &SessionRecord) -> api::SessionInfo {
+fn info(session: &SessionRecord, password_change_required: bool) -> api::SessionInfo {
     api::SessionInfo {
+        password_change_required,
         user: session.user.to_string(),
         csrf_token: session.csrf_token.clone(),
         expires_at: session.expires_at,
@@ -142,7 +143,10 @@ pub(crate) async fn sign_in(
             client.as_deref(),
         )
         .await?;
-    Ok(session_response(&s, &headers, &record, &cookie))
+    let change = s.access.password_change_required(&record.user).await?;
+    Ok(session_response_with(
+        &s, &headers, &record, &cookie, change,
+    ))
 }
 
 /// The session's info with its cookie set.
@@ -152,8 +156,18 @@ pub(crate) fn session_response(
     record: &SessionRecord,
     cookie: &str,
 ) -> Response {
+    session_response_with(s, headers, record, cookie, false)
+}
+
+fn session_response_with(
+    s: &AppState,
+    headers: &HeaderMap,
+    record: &SessionRecord,
+    cookie: &str,
+    password_change_required: bool,
+) -> Response {
     let max_age = s.access.session_lifetime().num_seconds();
-    let mut res = Json(info(record)).into_response();
+    let mut res = Json(info(record, password_change_required)).into_response();
     res.headers_mut().insert(
         SET_COOKIE,
         set_cookie(cookie, max_age, is_https(s, headers)),
@@ -165,8 +179,12 @@ pub(crate) fn session_response(
     (status = 200, body = api::SessionInfo, description = "also answers while the account is scheduled for deletion, so it can be restored"),
     (status = 401, body = api::ErrorBody, description = "not signed in"),
 ))]
-pub(crate) async fn current(SessionCaller(record): SessionCaller) -> Json<api::SessionInfo> {
-    Json(info(&record))
+pub(crate) async fn current(
+    State(s): State<AppState>,
+    SessionCaller(record): SessionCaller,
+) -> ApiResult<Json<api::SessionInfo>> {
+    let change = s.access.password_change_required(&record.user).await?;
+    Ok(Json(info(&record, change)))
 }
 
 #[utoipa::path(delete, path = "/v1/session", responses(

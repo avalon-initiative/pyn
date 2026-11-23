@@ -333,6 +333,8 @@ impl PgMetadataStore {
         for sql in [
             "UPDATE org_repo_creation_rules SET subject = $2 WHERE kind = 'user' AND subject = $1",
             "UPDATE invites SET used_by = $2 WHERE used_by = $1",
+            "UPDATE server_invitations SET used_by = $2 WHERE used_by = $1",
+            "UPDATE server_invitations SET created_by = $2 WHERE created_by = $1",
             "UPDATE org_invitations SET invited_by = $2 WHERE invited_by = $1",
             "UPDATE webhook_subscriptions SET created_by = $2 WHERE created_by = $1",
         ] {

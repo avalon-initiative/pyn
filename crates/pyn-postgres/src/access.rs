@@ -12,14 +12,14 @@ use pyn_core::{
     AccountPurge, AccountRecord, AccountStatus, AdminRevoke, Avatar, CreationEffect, CreationRule,
     CreationScope, CreationSubject, DeletionSchedule, EmailAdd, EmailRemove, EventDraft,
     ExternalCreate, ExternalIdentity, GrantLevel, IdentityUnlink, InvitationAccept,
-    InvitationCreate, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent, MemberCreation,
-    NameReservation, NewAccount, NewExternalAccount, NewSecret, OVERFLOW_ROUTE, OidcFlow,
-    OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgProfile, OrgRole, OrgSettings, Permission,
-    PrimaryChange, Profile, ProfileFields, ProfileVisibility, PynError, RateLimitStore, RateState,
-    ReachNote, RegistrationMode, RenameOutcome, RepoAccess, RepoId, RepoPolicy, Result, Role,
-    RoleDefinitions, ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord,
-    SignupStage, SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord,
-    TokenResource, UserId, VerificationRecord,
+    InvitationCreate, InvitationGrant, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent,
+    MemberCreation, NameReservation, NewAccount, NewExternalAccount, NewSecret, OVERFLOW_ROUTE,
+    OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgProfile, OrgRole, OrgSettings,
+    Permission, PrimaryChange, Profile, ProfileFields, ProfileVisibility, PynError, RateLimitStore,
+    RateState, ReachNote, RegistrationMode, RenameOutcome, RepoAccess, RepoId, RepoPolicy, Result,
+    Role, RoleDefinitions, ServerInvitation, ServerSettings, ServiceCredentialRecord, ServiceScope,
+    SessionRecord, SignupStage, SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId,
+    TokenRecord, TokenResource, UserId, VerificationRecord,
 };
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -234,6 +234,34 @@ fn invite_from(row: &PgRow) -> Result<InviteRecord> {
         secret_hash: row.get("secret_hash"),
         repo: RepoId::new(row.get::<String, _>("repo")),
         role: Role::from_str(row.get("role"))?,
+        created_by: UserId::new(row.get::<String, _>("created_by")),
+        created_at: row.get("created_at"),
+        expires_at: row.get("expires_at"),
+        used_at: row.get("used_at"),
+        used_by: row.get::<Option<String>, _>("used_by").map(UserId::new),
+        revoked_at: row.get("revoked_at"),
+    })
+}
+
+fn server_invitation_from(row: &PgRow) -> Result<ServerInvitation> {
+    let repo: Option<String> = row.get("repo");
+    let org: Option<String> = row.get("org");
+    let grant = match (repo, org) {
+        (Some(repo), _) => Some(InvitationGrant::Repository {
+            repo: RepoId::new(repo),
+            role: Role::from_str(row.get("repo_role"))?,
+        }),
+        (None, Some(org)) => Some(InvitationGrant::Organization {
+            org: UserId::new(org),
+            role: OrgRole::from_str(row.get("org_role"))?,
+        }),
+        (None, None) => None,
+    };
+    Ok(ServerInvitation {
+        id: InviteId(row.get("id")),
+        secret_hash: row.get("secret_hash"),
+        email: row.get("email"),
+        grant,
         created_by: UserId::new(row.get::<String, _>("created_by")),
         created_at: row.get("created_at"),
         expires_at: row.get("expires_at"),
@@ -955,6 +983,113 @@ impl AccessStore for PgMetadataStore {
         .await
         .map_err(db)?;
         Ok(done.rows_affected() > 0)
+    }
+
+    async fn create_server_invitation(&self, invitation: ServerInvitation) -> Result<()> {
+        let (repo, repo_role, org, org_role) = match &invitation.grant {
+            Some(InvitationGrant::Repository { repo, role }) => {
+                (Some(repo.as_str()), Some(role.as_str()), None, None)
+            }
+            Some(InvitationGrant::Organization { org, role }) => {
+                (None, None, Some(org.as_str()), Some(role.as_str()))
+            }
+            None => (None, None, None, None),
+        };
+        sqlx::query(
+            "INSERT INTO server_invitations (id, secret_hash, email, repo, repo_role, org, org_role, created_by, created_at, expires_at, used_at, used_by, revoked_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        )
+        .bind(&invitation.id.0)
+        .bind(&invitation.secret_hash)
+        .bind(&invitation.email)
+        .bind(repo)
+        .bind(repo_role)
+        .bind(org)
+        .bind(org_role)
+        .bind(invitation.created_by.as_str())
+        .bind(invitation.created_at)
+        .bind(invitation.expires_at)
+        .bind(invitation.used_at)
+        .bind(invitation.used_by.as_ref().map(UserId::as_str))
+        .bind(invitation.revoked_at)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn get_server_invitation(&self, id: &InviteId) -> Result<Option<ServerInvitation>> {
+        let row = sqlx::query(
+            "SELECT id, secret_hash, email, repo, repo_role, org, org_role, created_by, created_at, expires_at, used_at, used_by, revoked_at
+             FROM server_invitations WHERE id = $1",
+        )
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(server_invitation_from).transpose()
+    }
+
+    async fn list_server_invitations(&self) -> Result<Vec<ServerInvitation>> {
+        let rows = sqlx::query(
+            "SELECT id, secret_hash, email, repo, repo_role, org, org_role, created_by, created_at, expires_at, used_at, used_by, revoked_at
+             FROM server_invitations ORDER BY created_at DESC, id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(server_invitation_from).collect()
+    }
+
+    async fn revoke_server_invitation(&self, id: &InviteId, now: DateTime<Utc>) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE server_invitations SET revoked_at = COALESCE(revoked_at, $2) WHERE id = $1",
+        )
+        .bind(&id.0)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn use_server_invitation(
+        &self,
+        id: &InviteId,
+        user: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE server_invitations SET used_at = $3, used_by = $2
+             WHERE id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > $3",
+        )
+        .bind(&id.0)
+        .bind(user.as_str())
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn set_password_change_required(&self, user: &UserId, required: bool) -> Result<()> {
+        sqlx::query("UPDATE users SET password_change_required = $2 WHERE id = $1")
+            .bind(user.as_str())
+            .bind(required)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn password_change_required(&self, user: &UserId) -> Result<bool> {
+        let required: Option<bool> =
+            sqlx::query_scalar("SELECT password_change_required FROM users WHERE id = $1")
+                .bind(user.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?;
+        Ok(required.unwrap_or(false))
     }
 
     async fn add_ssh_key(&self, key: SshKeyRecord) -> Result<bool> {

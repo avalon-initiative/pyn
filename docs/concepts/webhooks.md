@@ -16,13 +16,14 @@ and `pyn admin webhook`. Anyone else gets `403 server_admin_required`, and a ser
 | `id` | Assigned by the server. |
 | `name` | A label, 1 to 256 bytes. |
 | `url` | Where deliveries are sent, see [URL rules](#url-rules). |
-| `event_types` | Types to deliver, such as `repository.created`; empty means every type. Types are an open set, so only the form is checked (lowercase letters, digits, `.` and `_`, at most 64 types). A type nothing raises simply never matches. |
+| `event_types` | Types to deliver, such as `repository.created`; empty means every type. Types are a closed set, the [event types](events.md#event-types) the server raises: an unknown type is `400 invalid_request` on create and update, and `GET /v1/admin/webhooks/event-types` lists them with a description. At most 64 types. |
 | `enabled` | A disabled subscription receives nothing. Default true. |
 | `secrets` | The active secrets: `id`, `created_at` and `encrypted`, never the value. |
 | `created_at`, `updated_at`, `created_by` | When and by whom. |
 
 | Route | Does |
 | --- | --- |
+| `GET /v1/admin/webhooks/event-types` | `[{name, description}]`: every type a subscription may list, in the order of the [events page](events.md#event-types). The same set is the enum of `event_types` in the OpenAPI document |
 | `POST /v1/admin/webhooks` | `{name, url, event_types?, enabled?}`; `201` with `{webhook, secret}`. The secret is shown here once |
 | `GET /v1/admin/webhooks` | every subscription, oldest first |
 | `GET /v1/admin/webhooks/{id}` | one subscription; `404 webhook_not_found` |

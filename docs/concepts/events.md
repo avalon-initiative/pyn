@@ -71,7 +71,7 @@ def verify(header: str, body: bytes, secrets: list[str], window: int = 300) -> b
 
 ## Open types and versioning
 
-Event types are an open set. A receiver must ignore a type it does not know (acknowledge it and do nothing) instead of
+A subscription chooses from the closed [set above](#event-types), but the set grows, so a receiver must ignore a type it does not know (acknowledge it and do nothing) instead of
 failing, so new types can be added without breaking anyone. In the same way, new optional
 fields may appear in `data`; receivers ignore fields they do not know.
 
@@ -99,6 +99,37 @@ user, organization or repository also carries its id, in a field named after the
   the limits routes and the usage routes, `repo_id` on repository usage, and `user_id` on the repository `me` route.
 - Actors (`actor`) and lock holders (`holder`) are still named only by name: an actor can be a service credential, which
   has no account.
+
+## Event types
+
+The set is closed for subscriptions: a [webhook](webhooks.md) lists only these types, and the server refuses any other.
+`GET /v1/admin/webhooks/event-types` returns the same list with the one-line descriptions below, and the OpenAPI schema
+`WebhookEventType` is its enum, so a client never has to type a name.
+
+| Type | Raised when (each has a section below) |
+| --- | --- |
+| `account.created` | An account was created (sign-up, first external sign-in or by an administrator). |
+| `account.approved` | An administrator approved a pending account. |
+| `account.disabled` | An administrator disabled an account. |
+| `account.enabled` | An administrator enabled a disabled account. |
+| `account.deletion_scheduled` | An account was scheduled for deletion. |
+| `account.deletion_restored` | A scheduled account deletion was cancelled. |
+| `account.deleted` | An account was deleted for good. |
+| `account.renamed` | An account changed its name. |
+| `organization.created` | An organization was created. |
+| `organization.deleted` | An organization was deleted. |
+| `repository.created` | A repository was created. |
+| `repository.renamed` | A repository was renamed. |
+| `repository.deleted` | A repository was deleted. |
+| `repository.storage_cap_changed` | A repository's storage cap was set or cleared. |
+| `owner.limits_changed` | An owner's limits were changed. |
+| `owner.frozen` | An owner was frozen: it can read but not write. |
+| `owner.unfrozen` | A frozen owner was unfrozen. |
+| `owner.limit_reached` | An operation was refused because an owner reached a limit. |
+| `lock.acquired` | A path was locked. |
+| `lock.released` | A lock was released, or consumed by a check-in. |
+| `lock.expired` | A lock lapsed and its lease ended. |
+| `lock.forced` | An administrator or a policy change broke a lock. |
 
 ## Events
 

@@ -10,8 +10,8 @@ use pyn_object::ObjectId;
 use crate::access::{
     AccessMode, AccountKind, AccountRecord, AccountStatus, InvitationAccept, InvitationCreate,
     InviteId, InviteRecord, NewAccount, OrgInvitation, OrgRole, Permission, Role, RoleDefinitions,
-    ServerSettings, ServiceCredentialRecord, SessionRecord, SignupStage, SshKeyRecord, TeamRecord,
-    TokenId, TokenRecord, VerificationRecord,
+    ServerInvitation, ServerSettings, ServiceCredentialRecord, SessionRecord, SignupStage,
+    SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
 use crate::access_service::{
     AccessStore, AccountDisable, AdminRevoke, OrgDeleteMark, OrgMemberChange,
@@ -2095,6 +2095,8 @@ struct AccessState {
     profiles: HashMap<UserId, Profile>,
     org_profiles: HashMap<UserId, OrgProfile>,
     invites: HashMap<InviteId, InviteRecord>,
+    server_invitations: HashMap<InviteId, ServerInvitation>,
+    password_change: HashSet<UserId>,
     ssh_keys: Vec<SshKeyRecord>,
     roles: HashMap<(RepoId, UserId), Role>,
     org_roles: HashMap<(UserId, UserId), OrgRole>,
@@ -3695,6 +3697,7 @@ impl AccessStore for MemoryAccessStore {
         self.outbox.queue(events)?;
         let record = st.accounts.remove(user).expect("checked above");
         st.passwords.remove(user);
+        st.password_change.remove(user);
         st.verifications.retain(|_, v| &v.user != user);
         st.invites.retain(|_, i| &i.created_by != user);
         st.ssh_keys.retain(|k| &k.user != user);
@@ -3912,6 +3915,80 @@ impl AccessStore for MemoryAccessStore {
         invite.used_at = Some(now);
         invite.used_by = Some(user.clone());
         Ok(true)
+    }
+
+    async fn create_server_invitation(&self, invitation: ServerInvitation) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .server_invitations
+            .insert(invitation.id.clone(), invitation);
+        Ok(())
+    }
+
+    async fn get_server_invitation(&self, id: &InviteId) -> Result<Option<ServerInvitation>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .server_invitations
+            .get(id)
+            .cloned())
+    }
+
+    async fn list_server_invitations(&self) -> Result<Vec<ServerInvitation>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st.server_invitations.values().cloned().collect();
+        out.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(out)
+    }
+
+    async fn revoke_server_invitation(&self, id: &InviteId, now: DateTime<Utc>) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let Some(invitation) = st.server_invitations.get_mut(id) else {
+            return Ok(false);
+        };
+        invitation.revoked_at.get_or_insert(now);
+        Ok(true)
+    }
+
+    async fn use_server_invitation(
+        &self,
+        id: &InviteId,
+        user: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        let Some(invitation) = st.server_invitations.get_mut(id) else {
+            return Ok(false);
+        };
+        if invitation.used_at.is_some()
+            || invitation.revoked_at.is_some()
+            || invitation.expires_at <= now
+        {
+            return Ok(false);
+        }
+        invitation.used_at = Some(now);
+        invitation.used_by = Some(user.clone());
+        Ok(true)
+    }
+
+    async fn set_password_change_required(&self, user: &UserId, required: bool) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        if required {
+            st.password_change.insert(user.clone());
+        } else {
+            st.password_change.remove(user);
+        }
+        Ok(())
+    }
+
+    async fn password_change_required(&self, user: &UserId) -> Result<bool> {
+        Ok(self.state.lock().unwrap().password_change.contains(user))
     }
 
     async fn add_ssh_key(&self, key: SshKeyRecord) -> Result<bool> {

@@ -1063,6 +1063,47 @@ pub struct InviteRecord {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+/// What a server invitation gives the new account besides the account itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvitationGrant {
+    Repository { repo: RepoId, role: Role },
+    Organization { org: UserId, role: OrgRole },
+}
+
+/// A one-time invitation to the server itself, created by an administrator. Only a hash of its secret is kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerInvitation {
+    pub id: InviteId,
+    pub secret_hash: String,
+    /// The address it was meant for; the server never reads mail sent there.
+    pub email: Option<String>,
+    pub grant: Option<InvitationGrant>,
+    pub created_by: UserId,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
+    pub used_by: Option<UserId>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// Server invitation codes look like `pynv_<12 hex id>_<64 hex secret>`.
+pub mod server_invite {
+    use super::*;
+
+    const PREFIX: &str = "pynv_";
+
+    pub fn generate() -> Result<(InviteId, String, String)> {
+        let (id, secret, hash) = token::random_parts()?;
+        Ok((InviteId(id.clone()), format!("{PREFIX}{id}_{secret}"), hash))
+    }
+
+    pub fn parse(raw: &str) -> Option<(InviteId, &str)> {
+        let rest = raw.strip_prefix(PREFIX)?;
+        let (id, secret) = rest.split_once('_')?;
+        token::is_id_and_secret(id, secret).then(|| (InviteId(id.to_string()), secret))
+    }
+}
+
 /// Invitation codes look like `pyni_<12 hex id>_<64 hex secret>`.
 pub mod invite {
     use super::*;

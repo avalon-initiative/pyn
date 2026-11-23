@@ -4,6 +4,17 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::WebhookEventType;
+
+/// One event type a webhook subscription may list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WebhookEventTypeInfo {
+    /// The dotted name, such as `repository.created`.
+    pub name: String,
+    /// One line saying when it is raised.
+    pub description: String,
+}
+
 /// An active signing secret. Its value is shown once, when it is created, and never again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct WebhookSecretInfo {
@@ -35,8 +46,10 @@ pub struct CreateWebhookRequest {
     pub name: String,
     /// `https` only (`http` when the operator allows it), no user name or password, no fragment, at most 2048 bytes.
     pub url: String,
-    /// Event types to deliver, such as `repository.created`; empty or left out means every type.
+    /// Event types to deliver, such as `repository.created`; empty or left out means every type. An unknown type is
+    /// refused with `400 invalid_request`.
     #[serde(default)]
+    #[schema(value_type = Vec<WebhookEventType>)]
     pub event_types: Vec<String>,
     /// Defaults to true.
     #[serde(default = "enabled_by_default")]
@@ -54,8 +67,9 @@ pub struct UpdateWebhookRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
-    /// Replaces the list; an empty list means every type.
+    /// Replaces the list; an empty list means every type. An unknown type is refused with `400 invalid_request`.
     #[serde(default)]
+    #[schema(value_type = Option<Vec<WebhookEventType>>)]
     pub event_types: Option<Vec<String>>,
     #[serde(default)]
     pub enabled: Option<bool>,

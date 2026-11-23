@@ -21,7 +21,7 @@ use crate::{
     AppState, access_api, access_session_api, admin_api, branch_api, caller, deletion_api,
     freeze_api, lfs_api, limits_api, merge_api, oidc_api, org_api, org_settings_api, passkeys_api,
     profile_api, push_api, repo_api, repo_policy_api, requirements_api, self_service_api,
-    session_api, setup_api, team_api, two_factor_api, webhook_api,
+    server_invitation_api, session_api, setup_api, team_api, two_factor_api, webhook_api,
 };
 
 const fn need(resource: TokenResource, level: GrantLevel) -> GrantNeed {
@@ -183,6 +183,31 @@ fn table() -> Vec<Entry> {
             admin_api::list_accounts,
         ),
         post(
+            "/v1/admin/users",
+            Reach::AdminOnly,
+            server_invitation_api::add_account,
+        ),
+        post(
+            "/v1/admin/users/{user}/resend-confirmation",
+            Reach::AdminOnly,
+            server_invitation_api::resend_confirmation,
+        ),
+        get(
+            "/v1/admin/invitations",
+            Reach::AdminOnly,
+            server_invitation_api::list_invitations,
+        ),
+        post(
+            "/v1/admin/invitations",
+            Reach::AdminOnly,
+            server_invitation_api::create_invitation,
+        ),
+        delete(
+            "/v1/admin/invitations/{id}",
+            Reach::AdminOnly,
+            server_invitation_api::revoke_invitation,
+        ),
+        post(
             "/v1/admin/users/{user}/approve",
             Reach::Service(ServiceScope::ManageAccounts),
             admin_api::approve,
@@ -302,6 +327,11 @@ fn table() -> Vec<Entry> {
             "/v1/admin/webhooks",
             Reach::Service(ServiceScope::ManageWebhooks),
             webhook_api::list_webhooks,
+        ),
+        get(
+            "/v1/admin/webhooks/event-types",
+            Reach::Service(ServiceScope::ManageWebhooks),
+            webhook_api::list_webhook_event_types,
         ),
         post(
             "/v1/admin/webhooks",

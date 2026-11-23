@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex};
 use chrono::{Duration, TimeZone, Utc};
 
 use crate::access::{
-    AccessMode, AccountKind, AccountStatus, InvitationAccept, InvitationCreate, InviteId,
-    InviteRecord, NewAccount, OrgInvitation, OrgRole, Permission, Principal, RegistrationMode,
-    RepoAccess, Role, RoleDefinitions, RoleSource, ServerSettings, ServiceCredentialRecord,
-    ServiceScope, SessionRecord, SignupStage, SshKeyRecord, TeamRecord, TokenId, TokenRecord,
-    VerificationRecord,
+    AccessMode, AccountKind, AccountStatus, InvitationAccept, InvitationCreate, InvitationGrant,
+    InviteId, InviteRecord, NewAccount, OrgInvitation, OrgRole, Permission, Principal,
+    RegistrationMode, RepoAccess, Role, RoleDefinitions, RoleSource, ServerInvitation,
+    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
+    SshKeyRecord, TeamRecord, TokenId, TokenRecord, VerificationRecord,
 };
 use crate::clock::Clock;
 use crate::fixtures::new_token;
@@ -5923,6 +5923,146 @@ pub async fn invitations_are_single_use_expire_and_can_be_revoked(store: Access)
     );
 }
 
+fn server_invitation(id: &str, created: i64, expires: i64) -> ServerInvitation {
+    ServerInvitation {
+        id: InviteId(id.to_string()),
+        secret_hash: "22".repeat(32),
+        email: None,
+        grant: None,
+        created_by: user("alice"),
+        created_at: at(created),
+        expires_at: at(expires),
+        used_at: None,
+        used_by: None,
+        revoked_at: None,
+    }
+}
+
+pub async fn server_invitations_are_single_use_expire_and_can_be_revoked(store: Access) {
+    let mut with_repo = server_invitation("aaaaaaaaaaaa", 1, 60);
+    with_repo.email = Some("bob@example.com".into());
+    with_repo.grant = Some(InvitationGrant::Repository {
+        repo: RepoId::new("game"),
+        role: Role::Writer,
+    });
+    let mut with_org = server_invitation("bbbbbbbbbbbb", 5, 60);
+    with_org.grant = Some(InvitationGrant::Organization {
+        org: user("studio"),
+        role: OrgRole::Member,
+    });
+    for i in [
+        with_repo.clone(),
+        with_org.clone(),
+        server_invitation("cccccccccccc", 3, 10),
+    ] {
+        store.create_server_invitation(i).await.unwrap();
+    }
+    let listed = store.list_server_invitations().await.unwrap();
+    let ids: Vec<_> = listed.iter().map(|i| i.id.0.as_str()).collect();
+    assert_eq!(ids, ["bbbbbbbbbbbb", "cccccccccccc", "aaaaaaaaaaaa"]);
+    assert_eq!(listed[0], with_org);
+    assert_eq!(listed[2], with_repo);
+
+    let a = InviteId("aaaaaaaaaaaa".into());
+    assert!(
+        store
+            .use_server_invitation(&a, &user("bob"), at(20))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .use_server_invitation(&a, &user("carol"), at(21))
+            .await
+            .unwrap(),
+        "single use"
+    );
+    let used = store.get_server_invitation(&a).await.unwrap().unwrap();
+    assert_eq!(
+        (used.used_at, used.used_by),
+        (Some(at(20)), Some(user("bob")))
+    );
+
+    let expired = InviteId("cccccccccccc".into());
+    assert!(
+        !store
+            .use_server_invitation(&expired, &user("bob"), at(11))
+            .await
+            .unwrap(),
+        "expired"
+    );
+
+    let b = InviteId("bbbbbbbbbbbb".into());
+    assert!(store.revoke_server_invitation(&b, at(30)).await.unwrap());
+    assert!(store.revoke_server_invitation(&b, at(40)).await.unwrap());
+    assert_eq!(
+        store
+            .get_server_invitation(&b)
+            .await
+            .unwrap()
+            .unwrap()
+            .revoked_at,
+        Some(at(30))
+    );
+    assert!(
+        !store
+            .use_server_invitation(&b, &user("bob"), at(31))
+            .await
+            .unwrap(),
+        "revoked"
+    );
+    let missing = InviteId("ffffffffffff".into());
+    assert!(
+        !store
+            .revoke_server_invitation(&missing, at(1))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .get_server_invitation(&missing)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+pub async fn a_password_change_mark_is_set_cleared_and_defaults_off(store: Access) {
+    store.ensure_user(&user("alice"), at(0)).await.unwrap();
+    assert!(
+        !store
+            .password_change_required(&user("alice"))
+            .await
+            .unwrap()
+    );
+    store
+        .set_password_change_required(&user("alice"), true)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .password_change_required(&user("alice"))
+            .await
+            .unwrap()
+    );
+    store
+        .set_password_change_required(&user("alice"), false)
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .password_change_required(&user("alice"))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .password_change_required(&user("nobody"))
+            .await
+            .unwrap()
+    );
+}
+
 fn ssh_key(id: &str, owner: &str, fingerprint: &str, created: i64) -> SshKeyRecord {
     SshKeyRecord {
         id: id.to_string(),
@@ -9239,6 +9379,8 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; role_definitions_apply_overrides_to_defaults);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; accounts_hold_a_unique_name_and_a_password);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; invitations_are_single_use_expire_and_can_be_revoked);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; server_invitations_are_single_use_expire_and_can_be_revoked);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_password_change_mark_is_set_cleared_and_defaults_off);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; ssh_keys_are_unique_across_accounts_and_can_be_found_and_deleted);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; sessions_are_found_deleted_and_swept_when_expired);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; repos_of_lists_a_users_roles_and_forgetting_a_repo_clears_its_access);

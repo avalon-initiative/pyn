@@ -69,6 +69,9 @@ impl AccessService {
         }
         self.store.set_admin(&user, true).await?;
         self.store.set_password_hash(&user, &hash).await?;
+        self.store
+            .set_password_change_required(&user, false)
+            .await?;
 
         let mut tokens_revoked = 0;
         for token in self.store.list_tokens(&user).await? {

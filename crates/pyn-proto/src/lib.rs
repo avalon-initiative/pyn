@@ -14,6 +14,8 @@ mod readiness;
 pub use readiness::*;
 mod update;
 pub use update::*;
+mod server_invitations;
+pub use server_invitations::*;
 mod webhooks;
 pub use webhooks::*;
 
@@ -2110,6 +2112,10 @@ pub const CSRF_HEADER: &str = "x-pyn-csrf";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SessionInfo {
     pub user: String,
+    /// True when an administrator set the password and the person must replace it (`PUT /v1/me/password`).
+    /// Advisory: the server does not refuse other requests until it is changed.
+    #[serde(default)]
+    pub password_change_required: bool,
     /// Send as the `X-Pyn-CSRF` header on every POST, PUT and DELETE.
     pub csrf_token: String,
     pub expires_at: DateTime<Utc>,
