@@ -13907,6 +13907,23 @@
           }
         }
       },
+      "EmailFailure": {
+        "type": "object",
+        "description": "A refused send. The error never carries a recipient address or a credential.",
+        "required": [
+          "at",
+          "error"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
       "EmailSettings": {
         "type": "object",
         "description": "Whether the server sends email.",
@@ -13915,6 +13932,25 @@
           "verification"
         ],
         "properties": {
+          "last_failure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EmailFailure",
+                "description": "The newest send the mailer refused since the server started; null when none failed."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_sent_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When a message last went out since the server started; null when none has."
+          },
           "mailer": {
             "$ref": "#/components/schemas/MailerKind"
           },

@@ -61,12 +61,13 @@ pub use access::{
 };
 pub use access_service::{
     ACCOUNT_DELETION_ACTOR, AccessConfig, AccessService, AccessStore, AccountDisable, AdminRevoke,
-    CreatedServerInvitation, DEFAULT_SERVER_INVITE_DAYS, DEFAULT_TOKEN_DAYS, ExternalPolicy,
-    ExternalSignIn, MAX_INVITE_HOURS, MAX_SERVER_INVITE_DAYS, NewServerInvitation, NewToken,
-    OidcBegin, OidcFinish, OidcStart, OrgAdd, OrgDeleteMark, OrgMemberChange, OwnerFreezeState,
-    OwnerLimits, PasskeyAssertion, PasskeyAttestation, PasskeyCreation, PasskeyRegistered,
-    PasskeyRequest, RateLimits, Registration, RepoMember, SERVER_AUDIT_ID, ServiceCredentialLimits,
-    SetupRequest, SetupStatus, SignUp, TeamDetail, TokenExpiry, generate_setup_token,
+    CreatedServerInvitation, DEFAULT_SERVER_INVITE_DAYS, DEFAULT_TOKEN_DAYS, EmailStatus,
+    ExternalPolicy, ExternalSignIn, MAX_INVITE_HOURS, MAX_SERVER_INVITE_DAYS, MailFailure,
+    NewServerInvitation, NewToken, OidcBegin, OidcFinish, OidcStart, OrgAdd, OrgDeleteMark,
+    OrgMemberChange, OwnerFreezeState, OwnerLimits, PasskeyAssertion, PasskeyAttestation,
+    PasskeyCreation, PasskeyRegistered, PasskeyRequest, RateLimits, Registration, RepoMember,
+    SERVER_AUDIT_ID, ServiceCredentialLimits, SetupRequest, SetupStatus, SignUp, TeamDetail,
+    TokenExpiry, generate_setup_token,
 };
 pub use access_service::{
     AdminRecovery, CreateWebhook, DeliveryPage, HOST_RECOVERY_ACTOR, IssuedSecret, TotpConfirmed,
