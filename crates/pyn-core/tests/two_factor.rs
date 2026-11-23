@@ -268,13 +268,13 @@ async fn sign_in_asks_for_the_code_after_a_right_password_and_a_code_works_once(
     assert!(token.sign_in);
     is(
         w.access
-            .start_session_with("alice", PASSWORD, Some(&code), None)
+            .start_session_with("alice", PASSWORD, Some(&code), false, None)
             .await,
         "second_factor_invalid",
     );
     let next = w.code_next(&e);
     w.access
-        .start_session_with("alice", PASSWORD, Some(&next), None)
+        .start_session_with("alice", PASSWORD, Some(&next), false, None)
         .await
         .unwrap();
 }
@@ -449,7 +449,7 @@ async fn a_sign_in_that_passed_the_second_factor_is_fresh_and_tokens_are_never_c
     let code = w.code_next(&e);
     let (record, cookie) = w
         .access
-        .start_session_with("alice", PASSWORD, Some(&code), None)
+        .start_session_with("alice", PASSWORD, Some(&code), false, None)
         .await
         .unwrap();
     let (who, _) = w.access.authenticate_session(&cookie).await.unwrap();

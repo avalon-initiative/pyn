@@ -5380,3 +5380,59 @@ async fn capabilities_report_the_server_version_and_revision() {
         option_env!("PYN_REVISION").filter(|r| !r.is_empty())
     );
 }
+
+#[tokio::test]
+async fn staying_signed_in_lengthens_the_session_and_its_cookie() {
+    let st = state_with(false, RegistrationMode::Open).await;
+    let app = router(st);
+    app.clone()
+        .oneshot(anon(
+            "POST",
+            "/v1/register",
+            serde_json::json!({"username": "alice", "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    let sign_in = |extra: serde_json::Value| {
+        let mut body = serde_json::json!({"username": "alice", "password": PASSWORD});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let app = app.clone();
+        async move {
+            let res = app
+                .oneshot(anon("POST", "/v1/session", body))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            let set = res.headers()["set-cookie"].to_str().unwrap().to_string();
+            let info: api::SessionInfo = body_json(res).await;
+            (set, info)
+        }
+    };
+    let days = |secs: i64| secs / 86_400;
+    let max_age = |set: &str| -> i64 {
+        set.split("Max-Age=")
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let left =
+        |info: &api::SessionInfo| days((info.expires_at - chrono::Utc::now()).num_seconds() + 60);
+
+    for extra in [
+        serde_json::json!({}),
+        serde_json::json!({"remember": false}),
+    ] {
+        let (set, info) = sign_in(extra).await;
+        assert_eq!(max_age(&set), 30 * 86_400, "{set}");
+        assert_eq!(left(&info), 30);
+    }
+    let (set, info) = sign_in(serde_json::json!({"remember": true})).await;
+    assert_eq!(max_age(&set), 90 * 86_400, "{set}");
+    assert_eq!(left(&info), 90);
+}

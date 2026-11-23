@@ -330,6 +330,7 @@ impl AccessService {
         &self,
         ceremony: &str,
         answer: &PasskeyAssertion,
+        remember: bool,
         client: Option<&str>,
     ) -> Result<(SessionRecord, String)> {
         let rp = self.require_relying_party()?;
@@ -347,7 +348,7 @@ impl AccessService {
         if let Some(key) = &key {
             self.limits.refund(key, self.clock.now()).await?;
         }
-        let (record, cookie) = self.open_session(user.clone()).await?;
+        let (record, cookie) = self.open_session(user.clone(), remember).await?;
         let now = self.clock.now();
         let until = now + Duration::minutes(two_factor::FRESH_MINUTES);
         self.store

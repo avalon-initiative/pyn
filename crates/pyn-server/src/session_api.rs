@@ -140,6 +140,7 @@ pub(crate) async fn sign_in(
             &req.username,
             &req.password,
             req.code.as_deref(),
+            req.remember,
             client.as_deref(),
         )
         .await?;
@@ -166,7 +167,7 @@ fn session_response_with(
     cookie: &str,
     password_change_required: bool,
 ) -> Response {
-    let max_age = s.access.session_lifetime().num_seconds();
+    let max_age = (record.expires_at - record.created_at).num_seconds();
     let mut res = Json(info(record, password_change_required)).into_response();
     res.headers_mut().insert(
         SET_COOKIE,

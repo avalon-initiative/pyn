@@ -201,7 +201,7 @@ The web signs in with `POST /v1/session` (user name and password, throttled like
 (only a hash of its cookie value is stored) and sets an `HttpOnly`, `SameSite=Lax` cookie, `pyn_session`, that page scripts
 cannot read; it is also `Secure` when the request arrived over HTTPS (`X-Forwarded-Proto: https` from a TLS-terminating
 proxy) or when `PYN_PUBLIC_URL` (or the address recorded by setup) is `https://`. The server warns at startup when that address
-is not https and it is bound beyond loopback. A session lasts `PYN_SESSION_DAYS` (30 by default) and resolves to the user's current role in the repository being
+is not https and it is bound beyond loopback. A session lasts `PYN_SESSION_DAYS` (30 by default), or `PYN_SESSION_REMEMBER_DAYS` (90 by default, never shorter) when the sign-in sent `"remember": true` ("stay signed in"; `POST /v1/session` and the passkey sign-in finish take it, and absent or false keeps the usual lifetime). The lifetime is fixed when the session starts: using it never extends it, and `SessionInfo.expires_at` and the cookie's `Max-Age` both report it. A session resolves to the user's current role in the repository being
 used on every request, so a role change applies at once. `GET /v1/session` returns the signed-in user and a CSRF token
 (what the user may do in one repository is `GET /v1/repos/{owner}/{name}/me`); `DELETE /v1/session` signs out and removes
 the session on the server.

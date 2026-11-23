@@ -253,7 +253,7 @@ impl AccessService {
             }
             None => return Err(PynError::ExternalNotLinked),
         };
-        let (session, cookie) = self.open_session(user).await?;
+        let (session, cookie) = self.open_session(user, false).await?;
         Ok(ExternalSignIn::SignedIn {
             session,
             cookie,

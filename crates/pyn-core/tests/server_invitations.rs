@@ -412,7 +412,7 @@ async fn an_added_account_has_a_one_time_password_until_it_changes_it() {
 
     let (session, cookie) = w
         .svc
-        .start_session_with("erin", "one-time password", None, None)
+        .start_session_with("erin", "one-time password", None, false, None)
         .await
         .unwrap();
     assert_eq!(session.user, erin);

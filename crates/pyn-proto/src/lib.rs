@@ -1830,6 +1830,10 @@ pub struct LoginRequest {
     /// account gets `401 second_factor_required` after a right password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    /// `POST /v1/session` only: stay signed in for `PYN_SESSION_REMEMBER_DAYS` instead of `PYN_SESSION_DAYS`.
+    /// Absent or false keeps the usual lifetime.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remember: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -2098,6 +2102,9 @@ pub struct PasskeyAssertionCredential {
 pub struct PasskeyAssertionRequest {
     pub ceremony: String,
     pub credential: PasskeyAssertionCredential,
+    /// Passkey sign-in only: stay signed in for `PYN_SESSION_REMEMBER_DAYS`. Ignored by the fresh check.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remember: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
