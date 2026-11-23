@@ -157,17 +157,18 @@ impl AccessService {
         Ok((record, token))
     }
 
-    /// Like `start_session`, with the second factor's code.
+    /// Like `start_session`, with the second factor's code and whether to stay signed in for longer.
     pub async fn start_session_with(
         &self,
         username: &str,
         password: &str,
         code: Option<&str>,
+        remember: bool,
         client: Option<&str>,
     ) -> Result<(SessionRecord, String)> {
         let user = self.verify_sign_in(username, password, client).await?;
         let passed = self.sign_in_second_factor(&user, code).await?;
-        let (record, cookie) = self.open_session(user.clone()).await?;
+        let (record, cookie) = self.open_session(user.clone(), remember).await?;
         if passed {
             let now = self.clock.now();
             let until = now + Duration::minutes(FRESH_MINUTES);

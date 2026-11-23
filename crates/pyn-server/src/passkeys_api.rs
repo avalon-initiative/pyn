@@ -292,6 +292,7 @@ pub(crate) async fn finish_sign_in(
         .finish_passkey_sign_in(
             &req.ceremony,
             &assertion_from(&req.credential)?,
+            req.remember,
             client.as_deref(),
         )
         .await?;

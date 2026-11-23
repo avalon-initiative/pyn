@@ -165,7 +165,7 @@ async fn a_discoverable_sign_in_carries_the_user_handle_the_browser_stored_at_re
     let mut reply = answer(&mut device, &ask);
     reply.user_handle = Some(begun.user_handle.clone());
     w.access
-        .finish_passkey_sign_in(&ask.ceremony, &reply, None)
+        .finish_passkey_sign_in(&ask.ceremony, &reply, false, None)
         .await
         .unwrap();
 }
@@ -303,7 +303,12 @@ async fn a_passkey_signs_in_without_a_password_with_the_fresh_check_open() {
     assert!(ask.allow.is_empty());
     let (record, cookie) = w
         .access
-        .finish_passkey_sign_in(&ask.ceremony, &answer(&mut device, &ask), Some("1.2.3.4"))
+        .finish_passkey_sign_in(
+            &ask.ceremony,
+            &answer(&mut device, &ask),
+            false,
+            Some("1.2.3.4"),
+        )
         .await
         .unwrap();
     assert_eq!(record.user, user("alice"));
@@ -347,12 +352,12 @@ async fn a_challenge_works_once_and_only_for_a_few_minutes() {
     let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
     let reply = answer(&mut device, &ask);
     w.access
-        .finish_passkey_sign_in(&ask.ceremony, &reply, None)
+        .finish_passkey_sign_in(&ask.ceremony, &reply, false, None)
         .await
         .unwrap();
     is(
         w.access
-            .finish_passkey_sign_in(&ask.ceremony, &reply, None)
+            .finish_passkey_sign_in(&ask.ceremony, &reply, false, None)
             .await,
         "passkey_ceremony_expired",
     );
@@ -362,7 +367,7 @@ async fn a_challenge_works_once_and_only_for_a_few_minutes() {
     w.clock.advance(Duration::minutes(6));
     is(
         w.access
-            .finish_passkey_sign_in(&ask.ceremony, &reply, None)
+            .finish_passkey_sign_in(&ask.ceremony, &reply, false, None)
             .await,
         "passkey_ceremony_expired",
     );
@@ -370,7 +375,7 @@ async fn a_challenge_works_once_and_only_for_a_few_minutes() {
     let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
     is(
         w.access
-            .finish_passkey_sign_in("not-a-ceremony", &answer(&mut device, &ask), None)
+            .finish_passkey_sign_in("not-a-ceremony", &answer(&mut device, &ask), false, None)
             .await,
         "passkey_ceremony_expired",
     );
@@ -384,6 +389,7 @@ async fn a_challenge_works_once_and_only_for_a_few_minutes() {
             .finish_passkey_sign_in(
                 &wrong_purpose.ceremony,
                 &answer(&mut device, &wrong_purpose),
+                false,
                 None,
             )
             .await,
@@ -403,7 +409,7 @@ async fn a_bad_answer_is_refused_and_spends_its_challenge() {
     let mut stranger = SoftwareAuthenticator::new(9);
     is(
         w.access
-            .finish_passkey_sign_in(&ask.ceremony, &answer(&mut stranger, &ask), None)
+            .finish_passkey_sign_in(&ask.ceremony, &answer(&mut stranger, &ask), false, None)
             .await,
         "passkey_not_registered",
     );
@@ -413,7 +419,7 @@ async fn a_bad_answer_is_refused_and_spends_its_challenge() {
     forged.signature[10] ^= 1;
     is(
         w.access
-            .finish_passkey_sign_in(&ask.ceremony, &forged, None)
+            .finish_passkey_sign_in(&ask.ceremony, &forged, false, None)
             .await,
         "passkey_signature_invalid",
     );
@@ -429,7 +435,7 @@ async fn a_bad_answer_is_refused_and_spends_its_challenge() {
     };
     is(
         w.access
-            .finish_passkey_sign_in(&ask.ceremony, &wrong_origin, None)
+            .finish_passkey_sign_in(&ask.ceremony, &wrong_origin, false, None)
             .await,
         "passkey_origin_not_allowed",
     );
@@ -439,7 +445,7 @@ async fn a_bad_answer_is_refused_and_spends_its_challenge() {
     wrong_handle.user_handle = Some(b"someone else".to_vec());
     is(
         w.access
-            .finish_passkey_sign_in(&ask.ceremony, &wrong_handle, None)
+            .finish_passkey_sign_in(&ask.ceremony, &wrong_handle, false, None)
             .await,
         "passkey_user_handle_mismatch",
     );
@@ -452,7 +458,7 @@ async fn a_bad_answer_is_refused_and_spends_its_challenge() {
             .clone(),
     );
     w.access
-        .finish_passkey_sign_in(&ask.ceremony, &right_handle, None)
+        .finish_passkey_sign_in(&ask.ceremony, &right_handle, false, None)
         .await
         .unwrap();
 }
@@ -529,7 +535,7 @@ async fn a_counter_that_does_not_advance_is_refused_reported_and_not_stored() {
 
     let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
     w.access
-        .finish_passkey_sign_in(&ask.ceremony, &answer(&mut device, &ask), None)
+        .finish_passkey_sign_in(&ask.ceremony, &answer(&mut device, &ask), false, None)
         .await
         .unwrap();
 
@@ -544,7 +550,7 @@ async fn a_counter_that_does_not_advance_is_refused_reported_and_not_stored() {
     };
     is(
         w.access
-            .finish_passkey_sign_in(&ask.ceremony, &replayed, None)
+            .finish_passkey_sign_in(&ask.ceremony, &replayed, false, None)
             .await,
         "passkey_counter_regressed",
     );
@@ -590,7 +596,7 @@ async fn an_authenticator_that_keeps_no_counter_signs_in_repeatedly() {
             user_handle: None,
         };
         w.access
-            .finish_passkey_sign_in(&ask.ceremony, &reply, None)
+            .finish_passkey_sign_in(&ask.ceremony, &reply, false, None)
             .await
             .unwrap();
     }
@@ -820,8 +826,62 @@ async fn a_disabled_account_cannot_sign_in_with_a_passkey() {
     let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
     is(
         w.access
-            .finish_passkey_sign_in(&ask.ceremony, &answer(&mut device, &ask), None)
+            .finish_passkey_sign_in(&ask.ceremony, &answer(&mut device, &ask), false, None)
             .await,
         "account_disabled",
     );
+}
+
+#[tokio::test]
+async fn staying_signed_in_lengthens_a_session_by_the_remember_setting() {
+    let w = world();
+    signup(&w, "alice").await;
+    let mut device = SoftwareAuthenticator::new(1);
+    let now = w.clock.now();
+
+    let (usual, _) = w
+        .access
+        .start_session_with("alice", PASSWORD, None, false, None)
+        .await
+        .unwrap();
+    assert_eq!(usual.expires_at, now + Duration::days(30));
+    let (kept, _) = w
+        .access
+        .start_session_with("alice", PASSWORD, None, true, None)
+        .await
+        .unwrap();
+    assert_eq!(kept.expires_at, now + Duration::days(90));
+
+    register(&w, "alice", &device, Some(PASSWORD)).await;
+    let ask = w.access.begin_passkey_sign_in(None, None).await.unwrap();
+    let (by_key, cookie) = w
+        .access
+        .finish_passkey_sign_in(&ask.ceremony, &answer(&mut device, &ask), true, None)
+        .await
+        .unwrap();
+    assert_eq!(by_key.expires_at, now + Duration::days(90));
+
+    // Using the session never moves its end.
+    w.clock.advance(Duration::days(40));
+    let (_, again) = w.access.authenticate_session(&cookie).await.unwrap();
+    assert_eq!(again.expires_at, by_key.expires_at);
+}
+
+#[tokio::test]
+async fn the_remember_lifetime_is_never_shorter_than_the_usual_one() {
+    let clock = Arc::new(ManualClock::new(
+        Utc.with_ymd_and_hms(2026, 11, 8, 9, 0, 0).unwrap(),
+    ));
+    let access = AccessService::new(
+        Arc::new(MemoryAccessStore::new()),
+        clock,
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(AccessConfig {
+        session_days: 30,
+        session_remember_days: 7,
+        ..AccessConfig::default()
+    });
+    assert_eq!(access.session_lifetime(true), Duration::days(30));
+    assert_eq!(access.session_lifetime(false), Duration::days(30));
 }

@@ -14774,6 +14774,10 @@
           "password": {
             "type": "string"
           },
+          "remember": {
+            "type": "boolean",
+            "description": "`POST /v1/session` only: stay signed in for `PYN_SESSION_REMEMBER_DAYS` instead of `PYN_SESSION_DAYS`.\nAbsent or false keeps the usual lifetime."
+          },
           "username": {
             "type": "string"
           }
@@ -15875,6 +15879,10 @@
           },
           "credential": {
             "$ref": "#/components/schemas/PasskeyAssertionCredential"
+          },
+          "remember": {
+            "type": "boolean",
+            "description": "Passkey sign-in only: stay signed in for `PYN_SESSION_REMEMBER_DAYS`. Ignored by the fresh check."
           }
         }
       },
