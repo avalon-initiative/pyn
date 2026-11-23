@@ -165,7 +165,7 @@ async fn a_discoverable_sign_in_carries_the_user_handle_the_browser_stored_at_re
     let mut reply = answer(&mut device, &ask);
     reply.user_handle = Some(begun.user_handle.clone());
     w.access
-        .finish_passkey_sign_in(&ask.ceremony, &reply, None)
+        .finish_passkey_sign_in(&ask.ceremony, &reply, false, None)
         .await
         .unwrap();
 }
