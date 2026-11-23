@@ -105,7 +105,7 @@ At start the server also sweeps spool files left by a process that died and runs
 `pyn-server --check-config` runs the same start-up parsing and cross-checks as the real start, without starting anything, and reports every problem at once instead of the first. Run it with the environment you intend to start with, for example before `docker compose up`:
 
 ```bash
-docker compose run --rm --no-deps server pyn-server --check-config
+docker compose run --rm --no-deps server --check-config
 ```
 
 `--no-deps` keeps Compose from starting the database. Outside Compose, run `pyn-server --check-config` with the same `PYN_*` variables set (a native install: the variables of the service's environment file).

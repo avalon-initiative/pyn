@@ -396,24 +396,24 @@ check_server() {
     return 0
   fi
   if ! have_docker; then
-    say "docker compose was not found, so the server's own check was skipped: run it later with docker compose run --rm --no-deps server pyn-server --check-config"
+    say "docker compose was not found, so the server's own check was skipped: run it later with docker compose run --rm --no-deps server --check-config"
     return 0
   fi
   [ -f "$compose" ] || return 0
   say "running the server's own check (docker compose run, up to ${SERVER_CHECK_TIMEOUT}s; a missing image is pulled first)"
   out=$(mktemp)
   if command -v timeout >/dev/null 2>&1; then
-    (cd "$dir" && timeout "$SERVER_CHECK_TIMEOUT" docker compose run --rm --no-deps -T server pyn-server --check-config) >"$out" 2>&1 </dev/null || rc=$?
+    (cd "$dir" && timeout "$SERVER_CHECK_TIMEOUT" docker compose run --rm --no-deps -T server --check-config) >"$out" 2>&1 </dev/null || rc=$?
   else
-    (cd "$dir" && docker compose run --rm --no-deps -T server pyn-server --check-config) >"$out" 2>&1 </dev/null || rc=$?
+    (cd "$dir" && docker compose run --rm --no-deps -T server --check-config) >"$out" 2>&1 </dev/null || rc=$?
   fi
   while IFS= read -r line; do echo "    ${c_dim}$line${c_reset}"; done <"$out"
   case $rc in
     0) say "the server accepts this configuration"
        warnings=$((warnings + $(grep -c '^warning:' "$out" || true))) ;;
-    124) problem "the server's own check did not finish in ${SERVER_CHECK_TIMEOUT}s: run docker compose run --rm --no-deps server pyn-server --check-config yourself to see why" ;;
+    124) problem "the server's own check did not finish in ${SERVER_CHECK_TIMEOUT}s: run docker compose run --rm --no-deps server --check-config yourself to see why" ;;
     1) problem "the server's own check found problems (above): change those PYN_* lines in $env" ;;
-    *) warn "the server's own check could not run (exit $rc, output above): is the image pullable? Run it yourself: docker compose run --rm --no-deps server pyn-server --check-config" ;;
+    *) warn "the server's own check could not run (exit $rc, output above): is the image pullable? Run it yourself: docker compose run --rm --no-deps server --check-config" ;;
   esac
   rm -f "$out"
   return 0
