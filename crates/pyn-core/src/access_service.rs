@@ -1085,6 +1085,8 @@ pub struct AccessConfig {
     /// The access mode until setup stores one (`PYN_ACCESS`).
     pub access_mode: AccessMode,
     pub session_days: i64,
+    /// Lifetime of a session started with "stay signed in"; never shorter than `session_days`.
+    pub session_remember_days: i64,
     /// Open registration only: an account stays inactive until its email address is confirmed.
     pub require_email_verification: bool,
     /// Open registration only: an administrator approves each new account after it is verified.
@@ -1143,6 +1145,7 @@ impl Default for AccessConfig {
             registration: RegistrationMode::InviteOnly,
             access_mode: AccessMode::Private,
             session_days: 30,
+            session_remember_days: 90,
             require_email_verification: true,
             require_approval: false,
             limits: RateLimits::default(),
@@ -2470,11 +2473,11 @@ impl AccessService {
         password: &str,
         client: Option<&str>,
     ) -> Result<(SessionRecord, String)> {
-        self.start_session_with(username, password, None, client)
+        self.start_session_with(username, password, None, false, client)
             .await
     }
 
-    async fn open_session(&self, user: UserId) -> Result<(SessionRecord, String)> {
+    async fn open_session(&self, user: UserId, remember: bool) -> Result<(SessionRecord, String)> {
         let now = self.clock.now();
         self.store.delete_expired_sessions(now).await?;
         let (cookie, csrf_token, id_hash) = session::generate()?;
@@ -2483,7 +2486,7 @@ impl AccessService {
             user,
             csrf_token,
             created_at: now,
-            expires_at: now + Duration::days(self.config.session_days),
+            expires_at: now + self.session_lifetime(remember),
         };
         self.store.create_session(record.clone()).await?;
         Ok((record, cookie))
@@ -2537,8 +2540,16 @@ impl AccessService {
         Ok(())
     }
 
-    pub fn session_lifetime(&self) -> Duration {
-        Duration::days(self.config.session_days)
+    /// A session's fixed lifetime; it is never extended while in use.
+    pub fn session_lifetime(&self, remember: bool) -> Duration {
+        let days = if remember {
+            self.config
+                .session_remember_days
+                .max(self.config.session_days)
+        } else {
+            self.config.session_days
+        };
+        Duration::days(days)
     }
 
     /// Creates an account on the server's terms: open (after any verification and approval), with an invitation

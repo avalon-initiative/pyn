@@ -615,3 +615,36 @@ impl Server {
         self.clock.now()
     }
 }
+
+#[tokio::test]
+async fn a_passkey_sign_in_can_stay_signed_in() {
+    let s = server();
+    let session = s.account("alice").await;
+    let mut device = SoftwareAuthenticator::new(1);
+    s.register(&session, &device, Some(PASSWORD)).await;
+    let mut lifetimes = Vec::new();
+    for remember in [false, true] {
+        let r = s
+            .browser("/v1/session/passkey/begin", json!({}), ORIGIN)
+            .await;
+        let begun: api::PasskeyAuthenticationBegun = json(&r);
+        let mut answer = s.assertion(&begun.ceremony, &begun.public_key.challenge, &mut device);
+        answer["remember"] = json!(remember);
+        let r = s
+            .browser("/v1/session/passkey/finish", answer, ORIGIN)
+            .await;
+        assert_eq!(r.status.as_u16(), 200);
+        let cookie = r.headers["set-cookie"].to_str().unwrap();
+        let max_age: i64 = cookie
+            .split("Max-Age=")
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        lifetimes.push(max_age / 86_400);
+    }
+    assert_eq!(lifetimes, [30, 90]);
+}

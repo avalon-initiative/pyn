@@ -52,6 +52,7 @@ fn a_clean_environment_is_ok_and_says_what_it_did_not_check() {
 fn every_problem_is_reported_not_only_the_first() {
     let output = check(&[
         ("PYN_SESSION_DAYS", "many"),
+        ("PYN_SESSION_REMEMBER_DAYS", "forever"),
         ("PYN_TRUSTED_PROXIES", "3"),
         ("PYN_S3_REGION", "eu-west-1"),
         ("PYN_MAILER", "console"),
@@ -59,9 +60,10 @@ fn every_problem_is_reported_not_only_the_first() {
     ]);
     assert_eq!(output.status.code(), Some(1), "{}", out(&output));
     let found = problems(&output);
-    assert_eq!(found.len(), 5, "{found:?}");
+    assert_eq!(found.len(), 6, "{found:?}");
     for name in [
         "PYN_SESSION_DAYS",
+        "PYN_SESSION_REMEMBER_DAYS",
         "PYN_TRUSTED_PROXIES",
         "PYN_S3_REGION",
         "PYN_MAILER",
@@ -71,7 +73,7 @@ fn every_problem_is_reported_not_only_the_first() {
     }
     let lines = lines(&output);
     assert!(
-        lines.contains(&"5 problem(s) found".to_string()),
+        lines.contains(&"6 problem(s) found".to_string()),
         "{lines:?}"
     );
     assert!(lines.last().unwrap().starts_with("not checked:"));

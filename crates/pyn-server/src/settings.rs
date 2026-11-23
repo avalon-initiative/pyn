@@ -682,6 +682,11 @@ impl Settings {
             number("PYN_SESSION_DAYS", defaults.session_days),
             defaults.session_days,
         );
+        let session_remember_days = c.or_default(
+            "PYN_SESSION_REMEMBER_DAYS",
+            number("PYN_SESSION_REMEMBER_DAYS", defaults.session_remember_days),
+            defaults.session_remember_days,
+        );
         let mut rate =
             |name: &'static str, default: u32| c.or_default(name, number(name, default), default);
         let limits = RateLimits {
@@ -756,6 +761,7 @@ impl Settings {
             registration,
             access_mode,
             session_days,
+            session_remember_days,
             require_email_verification: verification,
             require_approval: flag("PYN_REQUIRE_APPROVAL"),
             limits,

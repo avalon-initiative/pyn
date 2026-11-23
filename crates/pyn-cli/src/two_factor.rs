@@ -33,6 +33,7 @@ pub fn login(api: &Api, username: &str, password: &str) -> Result<api::CreatedTo
             username: username.to_string(),
             password: password.to_string(),
             code: code.take(),
+            remember: false,
         };
         let sent = api.send(api.anonymous(Method::POST, "/v1/login").json(&body));
         match sent {
