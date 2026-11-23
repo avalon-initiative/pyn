@@ -736,6 +736,10 @@ there is no remote back door; whoever can run commands on the server host (or in
 
 ### Lost administrator
 
+Locked out by two-step verification (lost authenticator app, passkey and recovery codes) is the same case: `recover-admin`
+removes the administrator's factors, so the password signs in again. Save the ten recovery codes when the first factor is
+enrolled; they are shown once.
+
 The server never removes or disables its last active administrator, so if that person leaves or loses their credentials,
 nobody can administer it through the API. On the host, run `recover-admin` with the same database settings the server
 uses (`PYN_DATABASE_URL`; with Compose the container already has them):
