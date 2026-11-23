@@ -30,4 +30,5 @@ jobs:
       - name: Smoke-test the release
         env:
           VERSION: ${{ inputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: scripts/smoke-release.sh "$VERSION"

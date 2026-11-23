@@ -2,7 +2,7 @@
 # Smoke-tests a published release: pulls the images, runs deploy/docker-compose.yml, checks the server and web app,
 # completes first-run setup, then does the same over https through the optional caddy service with an internal certificate
 # (redirect, exported root, forwarded protocol across both proxies, the certificate's expiry). Usage: scripts/smoke-release.sh <server-version> [<web-version>] (for example 0.1.0 0.1.3).
-# The web version defaults to the latest pyn-web release, since the two are released independently. Needs docker compose, curl, openssl. Set SMOKE_SKIP_TLS=1 to run only the plain pass.
+# The web version defaults to the newest pyn-web release, pre-releases included, since the two are released independently. Needs docker compose, curl, openssl. Set SMOKE_SKIP_TLS=1 to run only the plain pass.
 set -euo pipefail
 
 # The first bare-token line under the setup token header; startup log lines may be interleaved in between.
@@ -16,7 +16,7 @@ version=${1:-}
 web_version=${2:-}
 semver='^v?[0-9]+\.[0-9]+\.[0-9]+$'
 if [[ ! $version =~ $semver ]] || { [[ -n $web_version ]] && [[ ! $web_version =~ $semver ]]; }; then
-  echo "usage: $0 <server-version> [<web-version>]   (X.Y.Z, without a title suffix; the web version defaults to the latest pyn-web release)" >&2
+  echo "usage: $0 <server-version> [<web-version>]   (X.Y.Z, without a title suffix; the web version defaults to the newest pyn-web release, pre-releases included)" >&2
   exit 2
 fi
 version=${version#v}
@@ -61,9 +61,9 @@ step() { echo "smoke: $*"; }
 
 latest_web_version() {
   local tag
-  tag=$(curl --silent --fail --location --max-time 20 https://api.github.com/repos/avalon-initiative/pyn-web/releases/latest |
+  tag=$(curl --silent --fail --location --max-time 20 ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} https://api.github.com/repos/avalon-initiative/pyn-web/releases?per_page=1 |
     sed -n 's/.*"tag_name": *"v\{0,1\}\([0-9]*\.[0-9]*\.[0-9]*\)[^"]*".*/\1/p' | head -n 1)
-  [[ -n $tag ]] || fail "could not find the latest pyn-web release; pass the web version as the second argument"
+  [[ -n $tag ]] || fail "could not find the newest pyn-web release, pre-releases included; pass the web version as the second argument"
   echo "$tag"
 }
 [[ -n $web_version ]] || web_version=$(latest_web_version)
