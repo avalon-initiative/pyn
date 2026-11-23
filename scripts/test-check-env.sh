@@ -86,10 +86,12 @@ run
 expect "v0.1.99 is still older than the first release with the flag" lacks "$log" "compose run"
 newdir clean3 docker-compose.yml "${good[@]}" PYN_SERVER_VERSION=v0.9.0
 run
-expect "a newer release runs the server check" has "$log" "docker compose run --rm --no-deps -T server pyn-server --check-config"
+expect "a newer release runs the server check" has "$log" "docker compose run --rm --no-deps -T server --check-config"
 newdir clean4 docker-compose.yml "${good[@]}" PYN_SERVER_VERSION=v0.10.0
 run
-expect "v0.10.0 counts as newer than v0.2.0, not older" has "$log" "pyn-server --check-config"
+expect "v0.10.0 counts as newer than v0.2.0, not older" has "$log" "server --check-config"
+expect "the call does not repeat the image entrypoint (the server image already runs pyn-server)" lacks "$src/scripts/check-env.sh" "server pyn-server"
+expect "the server image's entrypoint is pyn-server" grep -q '^ENTRYPOINT \["pyn-server"\]' "$src/Dockerfile"
 
 # The server check call
 reset
@@ -97,7 +99,7 @@ newdir srv docker-compose.yml "${good[@]}" PYN_SERVER_VERSION=v0.2.0
 extra_env=(FAKE_OUT="configuration ok")
 run
 expect "the server check passes through" ok_rc
-expect "it runs in the deployment folder" has "$log" "[$d] docker compose run --rm --no-deps -T server pyn-server --check-config"
+expect "it runs in the deployment folder" has "$log" "[$d] docker compose run --rm --no-deps -T server --check-config"
 expect "it is wrapped in timeout 60" has "$log" "timeout 60"
 expect "its output is shown" has "$out" "configuration ok"
 expect "ok is reported" has "$out" "the server accepts this configuration"

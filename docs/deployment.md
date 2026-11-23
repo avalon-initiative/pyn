@@ -94,7 +94,7 @@ Logs go to standard error as plain text; read them with `docker compose logs`. T
 
 ### Checking the configuration
 
-Before `docker compose up`, or after editing `.env`, run `scripts/check-env.sh` ([below](#checking-your-env-before-an-upgrade)), which also runs `docker compose run --rm --no-deps server pyn-server --check-config` on a release that has it. It starts nothing and lists every wrong or inconsistent `PYN_*` setting, and any `PYN_` variable the server does not read. See [checking a configuration](configuration.md#checking-a-configuration).
+Before `docker compose up`, or after editing `.env`, run `scripts/check-env.sh` ([below](#checking-your-env-before-an-upgrade)), which also runs `docker compose run --rm --no-deps server --check-config` on a release that has it. It starts nothing and lists every wrong or inconsistent `PYN_*` setting, and any `PYN_` variable the server does not read. See [checking a configuration](configuration.md#checking-a-configuration).
 
 ### Checking your .env before an upgrade
 
@@ -111,7 +111,7 @@ It checks, without Docker:
 - `PYN_TRUSTED_PROXIES` needs `PYN_TRUST_FORWARDED_FOR=true`, as the server also requires;
 - `PYN_*` keys the server does not read, with a suggestion for a misspelling. The known names are a list inside the script, kept equal to the server's by a test, so the server's own check stays authoritative.
 
-Then, when Docker and the Compose file are available and `PYN_SERVER_VERSION` is a release that has `--check-config` (0.2.0 or later), it runs `docker compose run --rm --no-deps -T server pyn-server --check-config` with a 60 second limit and shows its output ([checking a configuration](configuration.md#checking-a-configuration)); exit 1 from it counts as problems. An older release treats an unknown argument as a start-up request, so the script never calls it there: it says the server-side check needs a newer release and skips it. The server-side check also runs only after the file checks pass, and it pulls the image first if it is missing, so run it after setting the new tag you are upgrading to.
+Then, when Docker and the Compose file are available and `PYN_SERVER_VERSION` is a release that has `--check-config` (0.2.0 or later), it runs `docker compose run --rm --no-deps -T server --check-config` with a 60 second limit and shows its output ([checking a configuration](configuration.md#checking-a-configuration)); exit 1 from it counts as problems. An older release treats an unknown argument as a start-up request, so the script never calls it there: it says the server-side check needs a newer release and skips it. The server-side check also runs only after the file checks pass, and it pulls the image first if it is missing, so run it after setting the new tag you are upgrading to.
 
 ### Email
 
