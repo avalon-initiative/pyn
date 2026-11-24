@@ -175,14 +175,22 @@ pub(crate) async fn create_repo(
             max_locks: req.max_locks_per_user,
         }
     });
+    let starter = req
+        .starter_policy
+        .unwrap_or(true)
+        .then_some(match req.starter_default {
+            Some(api::Mode::Exclusive) => pyn_core::Mode::Exclusive,
+            _ => pyn_core::Mode::Shared,
+        });
     let record = s
         .repos
-        .create(
+        .create_with_starter(
             &who,
             &owner,
             &req.name,
             req.visibility.map(visibility_from),
             settings,
+            starter,
         )
         .await?;
     let limit = s.repos.lock_limit(&record).await?;

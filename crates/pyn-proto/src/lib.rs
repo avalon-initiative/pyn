@@ -1319,6 +1319,12 @@ pub struct CreateRepoRequest {
     pub lease_hours: Option<u32>,
     /// Locks one user may hold; defaults to the server's. A limit in the repository's policy file overrides it.
     pub max_locks_per_user: Option<u32>,
+    /// Defaults to `true`: the first commit holds `.pyn/pyn.toml` with the starter policy (shared by default, exclusive
+    /// rules for object and binary files). `false` leaves the repository empty, under the server's initial policy.
+    pub starter_policy: Option<bool>,
+    /// The starter policy's `[meta] default`: whether paths no entry covers are `shared` or `exclusive`. Defaults to
+    /// `shared`; ignored when `starter_policy` is `false`.
+    pub starter_default: Option<Mode>,
 }
 
 /// Fields left out stay as they are.

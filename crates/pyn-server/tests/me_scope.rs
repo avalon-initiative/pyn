@@ -186,7 +186,7 @@ async fn world() -> World {
         &full,
         "POST",
         "/v1/repos",
-        Some(json!({"owner": "alice", "name": "game"})),
+        Some(json!({"starter_policy": false, "owner": "alice", "name": "game"})),
     )
     .await;
     assert!(

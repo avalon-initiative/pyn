@@ -207,7 +207,7 @@ async fn setup(app: &Router, access: &AccessService) -> Creds {
         &root,
         "POST",
         "/v1/repos",
-        Some(json!({"name": "seed"})),
+        Some(json!({"starter_policy": false, "name": "seed"})),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);

@@ -13759,6 +13759,24 @@
             ],
             "description": "The namespace to create it in: the caller's own account name, or an organization whose repository-creation\npolicy lets them. Defaults to the caller."
           },
+          "starter_default": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Mode",
+                "description": "The starter policy's `[meta] default`: whether paths no entry covers are `shared` or `exclusive`. Defaults to\n`shared`; ignored when `starter_policy` is `false`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "starter_policy": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Defaults to `true`: the first commit holds `.pyn/pyn.toml` with the starter policy (shared by default, exclusive\nrules for object and binary files). `false` leaves the repository empty, under the server's initial policy."
+          },
           "visibility": {
             "oneOf": [
               {
