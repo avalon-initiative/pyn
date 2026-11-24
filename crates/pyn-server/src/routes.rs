@@ -20,7 +20,7 @@ use utoipa::openapi::extensions::Extensions;
 use crate::{
     AppState, access_api, access_session_api, admin_api, branch_api, caller, deletion_api,
     diff_api, freeze_api, lfs_api, limits_api, merge_api, oidc_api, org_api, org_settings_api,
-    passkeys_api, profile_api, push_api, repo_api, repo_policy_api, requirements_api,
+    passkeys_api, profile_api, pulls_api, push_api, repo_api, repo_policy_api, requirements_api,
     self_service_api, server_invitation_api, session_api, setup_api, team_api, two_factor_api,
     webhook_api,
 };
@@ -1105,6 +1105,61 @@ fn table() -> Vec<Entry> {
             "/v1/repos/{owner}/{name}/lines",
             Reach::PublicRepoRead(need(Contents, Read)),
             diff_api::file_lines,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/pulls",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            pulls_api::list_pulls,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/pulls",
+            Reach::RepoScoped(need(Contents, Write)),
+            pulls_api::create_pull,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/pulls/{number}",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            pulls_api::get_pull,
+        ),
+        patch(
+            "/v1/repos/{owner}/{name}/pulls/{number}",
+            Reach::RepoScoped(need(Contents, Read)),
+            pulls_api::update_pull,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/pulls/{number}/commits",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            pulls_api::pull_commits,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/pulls/{number}/diff",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            pulls_api::pull_diff,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/pulls/{number}/events",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            pulls_api::pull_events,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/pulls/{number}/comments",
+            Reach::RepoScoped(need(Contents, Read)),
+            pulls_api::comment_pull,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/pulls/{number}/close",
+            Reach::RepoScoped(need(Contents, Read)),
+            pulls_api::close_pull,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/pulls/{number}/reopen",
+            Reach::RepoScoped(need(Contents, Read)),
+            pulls_api::reopen_pull,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/pulls/{number}/merge",
+            Reach::RepoScoped(need(Contents, Write)),
+            pulls_api::merge_pull,
         ),
         post(
             "/v1/repos/{owner}/{name}/branches",

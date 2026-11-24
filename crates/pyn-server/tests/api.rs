@@ -2976,7 +2976,8 @@ async fn checkin_text(app: &axum::Router, repo: &str, token: &str, path: &str) {
     assert_eq!(r.status(), StatusCode::OK);
 }
 
-const READ_ROUTES: [&str; 10] = [
+const READ_ROUTES: [&str; 11] = [
+    "pulls",
     "policy",
     "compare?head=main",
     "diff?head=main",
@@ -4352,6 +4353,202 @@ async fn a_diff_returns_hunks_with_mode_lock_and_expandable_lines() {
         let r = send(&app, "GET", &format!("{base}/{url}"), &alice, None).await;
         assert!(r.status().is_client_error(), "{url}");
     }
+}
+
+#[tokio::test]
+async fn a_pull_request_is_opened_discussed_and_merged_through_the_api() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let base = "/v1/repos/alice/game";
+    let one = put_blob(&app, "game", &alice, "one\n").await;
+    let two = put_blob(&app, "game", &alice, "two\n").await;
+    let post = |uri: String, body: serde_json::Value| {
+        let (app, alice) = (app.clone(), alice.clone());
+        async move { send(&app, "POST", &uri, &alice, Some(body)).await }
+    };
+    let r = post(
+        format!("{base}/checkin"),
+        serde_json::json!({"path": "a.txt", "content": one, "base_revision": null, "message": "m"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = post(
+        format!("{base}/branches"),
+        serde_json::json!({"name": "topic"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = post(
+        format!("{base}/checkin"),
+        serde_json::json!({"path": "a.txt", "content": two, "base_revision": 1, "message": "edit a", "branch": "topic"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let r = post(
+        format!("{base}/pulls"),
+        serde_json::json!({"title": "Edit a", "body": "because", "head": "topic"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let p: api::PullRequest = body_json(r).await;
+    assert_eq!(
+        (p.summary.number, p.summary.state),
+        (1, api::PullRequestState::Open)
+    );
+    assert_eq!(
+        (p.summary.base.as_str(), p.summary.head.as_str()),
+        ("main", "topic")
+    );
+    assert_eq!(p.summary.author.user, "alice");
+    assert_eq!(
+        (p.commits, p.changed_files, p.additions, p.deletions),
+        (1, 1, 1, 1)
+    );
+    assert_eq!(p.outcome, Some(api::MergeOutcome::FastForward));
+    assert!(p.locks.is_empty() && p.conflicts.is_empty());
+    assert!(p.head_commit.is_some() && p.base_commit.is_some());
+
+    let r = post(
+        format!("{base}/pulls"),
+        serde_json::json!({"title": "Again", "head": "topic"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let r = post(
+        format!("{base}/pulls"),
+        serde_json::json!({"title": "", "head": "topic"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/pulls?state=open"),
+        &alice,
+        None,
+    )
+    .await;
+    let page: api::PullRequestPage = body_json(r).await;
+    assert_eq!(page.pulls.len(), 1);
+    assert_eq!((page.pulls[0].comments, page.next_before), (0, None));
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/pulls?state=weird"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    let r = send(&app, "GET", &format!("{base}/pulls/9"), &alice, None).await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/pulls/1/commits"),
+        &alice,
+        None,
+    )
+    .await;
+    let commits: Vec<api::PullCommit> = body_json(r).await;
+    assert_eq!((commits.len(), commits[0].message.as_str()), (1, "edit a"));
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/pulls/1/diff?context=1"),
+        &alice,
+        None,
+    )
+    .await;
+    let d: api::RepoDiff = body_json(r).await;
+    assert_eq!(
+        (
+            d.files[0].path.as_str(),
+            d.files[0].additions,
+            d.files[0].deletions
+        ),
+        ("a.txt", 1, 1)
+    );
+
+    let r = post(
+        format!("{base}/pulls/1/comments"),
+        serde_json::json!({"body": "nice"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let c: api::PullEvent = body_json(r).await;
+    assert_eq!(
+        (c.kind, c.body.as_deref()),
+        (api::PullEventKind::Comment, Some("nice"))
+    );
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/pulls/1/events?after={}", c.id),
+        &alice,
+        None,
+    )
+    .await;
+    let later: Vec<api::PullEvent> = body_json(r).await;
+    assert!(later.is_empty());
+    let r = send(
+        &app,
+        "PATCH",
+        &format!("{base}/pulls/1"),
+        &alice,
+        Some(serde_json::json!({"draft": true})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = post(format!("{base}/pulls/1/merge"), serde_json::json!({})).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let err: api::ErrorBody = body_json(r).await;
+    assert_eq!(err.code, "pull_request_draft");
+    let r = send(
+        &app,
+        "PATCH",
+        &format!("{base}/pulls/1"),
+        &alice,
+        Some(serde_json::json!({"draft": false})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let r = post(format!("{base}/pulls/1/close"), serde_json::json!({})).await;
+    let closed: api::PullRequest = body_json(r).await;
+    assert_eq!(closed.summary.state, api::PullRequestState::Closed);
+    let r = post(format!("{base}/pulls/1/reopen"), serde_json::json!({})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = post(
+        format!("{base}/pulls/1/merge"),
+        serde_json::json!({"message": "ignored"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let merged: api::PullRequest = body_json(r).await;
+    assert_eq!(merged.summary.state, api::PullRequestState::Merged);
+    assert!(merged.merge_commit.is_some() && merged.summary.merged_by.is_some());
+    assert_eq!(merged.summary.comments, 1);
+    let r = post(format!("{base}/pulls/1/merge"), serde_json::json!({})).await;
+    let err: api::ErrorBody = body_json(r).await;
+    assert_eq!(err.code, "pull_request_not_open");
+
+    let r = send(&app, "GET", &format!("{base}/pulls/1/events"), &alice, None).await;
+    let events: Vec<api::PullEvent> = body_json(r).await;
+    let kinds: Vec<_> = events.iter().map(|e| e.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            api::PullEventKind::Comment,
+            api::PullEventKind::Closed,
+            api::PullEventKind::Reopened,
+            api::PullEventKind::Merged
+        ]
+    );
 }
 
 #[tokio::test]
