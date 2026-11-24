@@ -254,6 +254,22 @@ pub struct Branch {
     pub active: bool,
 }
 
+/// A tag: an immutable name pointing at a commit. It never moves; deleting it frees the name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Tag {
+    pub name: String,
+    /// The commit the tag points at.
+    pub commit: String,
+    /// The note given when the tag was made; null when there was none.
+    #[schema(required = true)]
+    pub message: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+    /// The committed time of the tagged commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committed_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CompareStatus {
@@ -316,6 +332,16 @@ pub struct CreateBranchRequest {
     pub name: String,
     /// A branch name, or a commit id or abbreviation of at least 4 digits; the default branch's head if omitted.
     pub start: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CreateTagRequest {
+    /// Git ref rules apply: no spaces, none of `~ ^ : ? * [ \`, no `..`.
+    pub name: String,
+    /// A branch or tag name, or a commit id or abbreviation of at least 4 digits; the default branch's head if omitted.
+    pub target: Option<String>,
+    /// An optional note kept with the tag.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

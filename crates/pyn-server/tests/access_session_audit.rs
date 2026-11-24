@@ -247,6 +247,7 @@ async fn write_everything(w: &World, who: &Cred) {
             json!({"path": "Content/b.umap"}),
         ),
         ("branch", "/branches", json!({"name": "feat"})),
+        ("tag", "/tags", json!({"name": "v1"})),
         (
             "check-in on the branch",
             "/checkin",
@@ -285,6 +286,9 @@ async fn write_everything(w: &World, who: &Cred) {
     send(w, who, "DELETE", &format!("{repo}/branches/feat2"), None)
         .await
         .ok("delete branch");
+    send(w, who, "DELETE", &format!("{repo}/tags/v1"), None)
+        .await
+        .ok("delete tag");
 }
 
 async fn lfs_lock_id(w: &World, who: &Cred) -> String {
@@ -333,6 +337,8 @@ const REACHABLE: &[AuditAction] = &[
     AuditAction::BranchMerged,
     AuditAction::BranchRenamed,
     AuditAction::BranchDeleted,
+    AuditAction::TagCreated,
+    AuditAction::TagDeleted,
     AuditAction::Delete,
 ];
 

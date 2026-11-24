@@ -291,6 +291,36 @@ impl MetadataStore for CountingStore {
         self.inner.rename_branch(repo, from, to).await
     }
 
+    async fn list_tags(&self, repo: &RepoId) -> crate::Result<Vec<crate::Tag>> {
+        self.count();
+        self.inner.list_tags(repo).await
+    }
+
+    async fn get_tag(&self, repo: &RepoId, name: &str) -> crate::Result<Option<crate::Tag>> {
+        self.count();
+        self.inner.get_tag(repo, name).await
+    }
+
+    async fn create_tag(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        at: &ObjectId,
+        message: Option<&str>,
+        by: &UserId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<crate::Tag> {
+        self.count();
+        self.inner
+            .create_tag(repo, name, at, message, by, now)
+            .await
+    }
+
+    async fn delete_tag(&self, repo: &RepoId, name: &str) -> crate::Result<()> {
+        self.count();
+        self.inner.delete_tag(repo, name).await
+    }
+
     async fn get_commit(
         &self,
         repo: &RepoId,

@@ -41,6 +41,10 @@ pub struct TagArgs {
     /// Do not sign, whatever `tag.gpgsign` says.
     #[arg(long, overrides_with_all = ["sign", "local_user"])]
     pub(crate) no_sign: bool,
+    /// Use the server's tags, which are immutable and shared, instead of the local store's. A workspace without the local
+    /// store always does.
+    #[arg(long)]
+    pub(crate) server: bool,
 }
 
 impl TagArgs {
@@ -222,6 +226,9 @@ fn create(git: &GitHome, args: &TagArgs, name: &str, target: Option<&str>) -> Re
 
 pub fn tag(git: &GitHome, args: TagArgs) -> Result<()> {
     args.check_modes();
+    if args.server {
+        bail!("--server needs a pyn server workspace; a git repository keeps its tags itself");
+    }
     if args.delete {
         return delete(
             &git.repo,
