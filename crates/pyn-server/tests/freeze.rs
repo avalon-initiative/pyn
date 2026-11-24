@@ -258,6 +258,37 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
             Some(json!({"source": "old", "target": "main"})),
         ),
         case(
+            "create_pull",
+            "POST",
+            format!("{repo}/pulls"),
+            Some(json!({"title": "t", "head": "old"})),
+        ),
+        case(
+            "update_pull",
+            "PATCH",
+            format!("{repo}/pulls/1"),
+            Some(json!({"title": "t"})),
+        ),
+        case(
+            "comment_pull",
+            "POST",
+            format!("{repo}/pulls/1/comments"),
+            Some(json!({"body": "b"})),
+        ),
+        case("close_pull", "POST", format!("{repo}/pulls/1/close"), None),
+        case(
+            "reopen_pull",
+            "POST",
+            format!("{repo}/pulls/1/reopen"),
+            None,
+        ),
+        case(
+            "merge_pull",
+            "POST",
+            format!("{repo}/pulls/1/merge"),
+            Some(json!({})),
+        ),
+        case(
             "assemble_object",
             "POST",
             format!("{repo}/objects/assemble"),
