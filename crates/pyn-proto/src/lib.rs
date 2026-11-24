@@ -12,6 +12,8 @@ mod diff;
 pub use diff::*;
 mod events;
 pub use events::*;
+mod pulls;
+pub use pulls::*;
 mod readiness;
 pub use readiness::*;
 mod update;
