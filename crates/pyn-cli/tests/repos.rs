@@ -74,15 +74,31 @@ fn the_about_block_is_set_edited_and_shown() {
     assert_eq!(field(&edited, "description"), "-");
     assert_eq!(field(&edited, "website"), "https://example.com");
     assert_eq!(field(&edited, "topics"), "-");
-    assert_eq!(field(&edited, "languages"), "-", "the starter policy is not code");
+    assert_eq!(
+        field(&edited, "languages"),
+        "-",
+        "the starter policy is not code"
+    );
 
     let tagged = env.ok(
         &home,
         "alice",
-        &["repo", "edit", "alice/tools", "--topic", "Rust", "--topic", "build"],
+        &[
+            "repo",
+            "edit",
+            "alice/tools",
+            "--topic",
+            "Rust",
+            "--topic",
+            "build",
+        ],
     );
     assert_eq!(field(&tagged, "topics"), "rust, build");
-    let untagged = env.ok(&home, "alice", &["repo", "edit", "alice/tools", "--no-topics"]);
+    let untagged = env.ok(
+        &home,
+        "alice",
+        &["repo", "edit", "alice/tools", "--no-topics"],
+    );
     assert_eq!(field(&untagged, "topics"), "-");
 
     let refused = env.fails(

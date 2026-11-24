@@ -107,6 +107,7 @@ pub use history::{
     HistoryPage, HistoryScan, PathHistoryPage, decode_path_cursor, encode_path_cursor,
 };
 pub use integrity::{BreakKind, Problem, VerifyReport};
+pub use languages::LanguageShare;
 pub use limit_events::{
     DomainEvent, LimitEvents, LimitKind, LimitReached, LimitsEvent, LockChange, LockEventBuilder,
     MemoryLimitEvents,
@@ -135,7 +136,6 @@ pub use profile::{
 pub use profiles::{Profiles, PublicProfile};
 pub use pyn_gitattr::lockable::Disagreement;
 pub use pyn_object::{FileMode, ObjectId};
-pub use languages::LanguageShare;
 pub use ratelimit::{RateLimitStore, RateState};
 pub use repo::{
     DEFAULT_MAX_LOCKS_PER_USER, MAX_LOCKS_PER_USER_CEILING, RepoAbout, RepoRecord, RepoSettings,

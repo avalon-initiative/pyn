@@ -1734,9 +1734,10 @@ impl RepoService {
         files.truncate(LANGUAGE_MAX_PATHS);
         let ids: Vec<ObjectId> = files.iter().map(|(_, c)| *c).collect();
         let sizes = self.meta.content_sizes(&self.repo, &ids).await?;
-        let shares = Arc::new(crate::languages::breakdown(files.iter().map(|(p, c)| {
-            (p.as_str(), sizes.get(c).copied().unwrap_or_default())
-        })));
+        let shares =
+            Arc::new(crate::languages::breakdown(files.iter().map(|(p, c)| {
+                (p.as_str(), sizes.get(c).copied().unwrap_or_default())
+            })));
         *self.languages.lock().unwrap() = Some((head, shares.clone()));
         Ok(shares)
     }

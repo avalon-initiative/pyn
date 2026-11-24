@@ -551,7 +551,10 @@ pub async fn tree_rejects_missing_directories_and_files(store: Store) {
 
 pub async fn languages_count_bytes_at_the_default_head_and_follow_new_commits(store: Store) {
     let h = harness(store);
-    assert!(h.svc.languages().await.unwrap().is_empty(), "an empty repository");
+    assert!(
+        h.svc.languages().await.unwrap().is_empty(),
+        "an empty repository"
+    );
     for (p, text) in [
         ("Source/a.cpp", "int main() {}"),
         ("Source/b.rs", "fn main() {}\n"),
@@ -575,11 +578,21 @@ pub async fn languages_count_bytes_at_the_default_head_and_follow_new_commits(st
 
     let c = blob(&h, "fn main() { let x = 1; }\n").await;
     h.svc
-        .checkin(&who("alice"), &path("Source/b.rs"), c, None, "longer".into())
+        .checkin(
+            &who("alice"),
+            &path("Source/b.rs"),
+            c,
+            Some(RevisionId(1)),
+            "longer".into(),
+        )
         .await
         .unwrap();
     let top = h.svc.languages().await.unwrap()[0].clone();
-    assert_eq!((top.name.as_str(), top.bytes), ("Rust", 25), "a new head recomputes");
+    assert_eq!(
+        (top.name.as_str(), top.bytes),
+        ("Rust", 25),
+        "a new head recomputes"
+    );
 }
 
 pub async fn content_sizes_report_the_recorded_length_of_known_contents(store: Store) {
