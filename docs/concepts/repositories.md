@@ -278,10 +278,48 @@ unset), so whoever can see the repository sees them.
   read, and the result is kept per head commit, so it is computed again only after a new commit. `language` is the first entry's name,
   null when the list is empty. Revisions recorded before sizes were kept count as 0 bytes.
 - **Updated:** `updated_at` is the time of the newest commit on the default branch, null for an empty repository.
+- **Forks:** `fork_of`, `fork_count` and `allow_private_forks`; see [Forks](#forks).
 
 On the command line: `pyn repo create name --description TEXT --website URL --topic T ...`, `pyn repo edit owner/name [--description TEXT]
 [--website URL] [--topic T ... | --no-topics]` (an empty value clears the field, and `--topic` replaces every topic) and `pyn repo show
 owner/name` (description, website, topics, languages as percentages, updated, visibility, created, stars, watchers and your role).
+
+## Forks
+
+A fork is a copy of a repository under another owner, to work on without access to the original (decision #1282, settled in #1303).
+
+- **What is copied.** `POST /v1/repos/{owner}/{name}/forks` with `{owner?, name?}` (the caller and the source's name by default)
+  copies the source's files and history: every branch and tag, their commits, trees and revisions, and its LFS objects. The policy
+  comes along as part of the content (`.pyn/pyn.toml` at each branch head, and the source's initial policy), so the fork has its own
+  copy from then on; its lease and lock limit settings and its description are copied too, its topics, website and storage cap are not.
+  Nothing else is: **no locks** (a lock on the source means nothing to the fork, and the fork's locks mean nothing to the source),
+  no members, roles, invitations, tokens, watches, stars, upload sessions or pull requests. The caller becomes the fork's `admin`
+  (an organization's owners are already), and its audit log starts with a `repo_created` event whose detail reads `forked
+  alice/game to bob/game (public)`. Later commits to either repository stay in that repository.
+- **Who can fork.** Anyone who can read the source, with a credential that may create repositories in the target namespace (their own,
+  or an organization whose [creation policy](#repository-creation-policy) allows the source's visibility; a token must be unscoped and
+  carry `manage_roles`). A public repository can always be forked. A private one only when its owner allows it: the repository
+  setting `allow_private_forks` (`false` by default, set with `PATCH`, never copied to a fork); otherwise `403 fork_forbidden`. A
+  repository the caller cannot see is `404 repo_not_found`, as everywhere.
+- **Visibility follows the root.** A fork takes the source's visibility at the time it is made: public root, public fork; private root,
+  private fork. A fork of a private repository cannot be made public while its source is private (`400 invalid_request`). When the root's
+  visibility changes later, its forks keep theirs: a public fork of a root made private stays public (its content was already public),
+  and a private fork of a root made public stays private until its owner makes it public, which is then allowed.
+- **The link.** Every repository payload carries `fork_of` (`{owner, name}` of the source, or null) and `fork_count` (forks of this
+  repository, whoever owns them). `fork_of` is null for an original, once the source is deleted (the fork keeps everything it copied and
+  becomes an ordinary repository), and when the caller can see the fork but not a private source, so a fork never reveals a private
+  repository's address. `GET /v1/repos/{owner}/{name}/forks` lists the forks the caller may see, ordered by owner then name. Pull requests
+  between a fork and its source come later (#696).
+- **Storage.** A fork counts in full against the forking owner's [storage limit](limits.md): its revision and LFS bytes, as if
+  uploaded, even where the server shares the stored objects. A fork that would take the owner past the limit is refused with
+  `409 storage_limit_reached`, whose message says how many bytes the fork needs, how many the owner uses and the limit, and nothing is
+  created. The owner's repository limit applies too (`409 repo_limit_reached`).
+- **Caps.** A repository may have at most 1,000 forks (`PYN_MAX_FORKS_PER_REPO`) and an owner may own at most 100 forks
+  (`PYN_MAX_FORKS_PER_OWNER`); past either, `409 fork_limit_reached` names the repository or the owner. A cap of 0 turns forking off.
+  The counts, the limits and the copy are one atomic step, so racing forks cannot pass a cap.
+
+On the command line: `pyn repo fork owner/name [--name NAME] [--owner ORG]`, `pyn repo forks owner/name` (`VISIBILITY`, `CREATED`,
+`REPOSITORY`) and `pyn repo edit owner/name --allow-private-forks true|false`; `pyn repo show` prints `forked from` and `forks`.
 
 ## Who can do what
 

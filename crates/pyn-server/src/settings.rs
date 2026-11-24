@@ -9,7 +9,8 @@ use pyn_core::gate::{DEFAULT_UPLOADS_PER_SERVER, DEFAULT_UPLOADS_PER_USER};
 use pyn_core::memory::MemoryAccessStore;
 use pyn_core::merge::default_concurrent_merges;
 use pyn_core::{
-    AccessConfig, AccessService, DEFAULT_BRANCH_STALE_DAYS, EmailSender, ExternalPolicy, Limits,
+    AccessConfig, AccessService, DEFAULT_BRANCH_STALE_DAYS, DEFAULT_MAX_FORKS_PER_OWNER,
+    DEFAULT_MAX_FORKS_PER_REPOSITORY, EmailSender, ExternalPolicy, Limits,
     MemoryLimitEvents, NullEmailSender, RateLimits, Rules, SecretKey, SystemClock, WebhookSettings,
 };
 use pyn_oidc::{HttpOidcProvider, OidcConfig};
@@ -316,6 +317,8 @@ pub struct Settings {
     pub uploads_per_server: u32,
     pub merges: usize,
     pub branch_stale_days: u32,
+    /// Forks one repository may have and one owner may own.
+    pub fork_caps: (u64, u64),
     pub update_check: bool,
     pub cert_interval: Option<Duration>,
 }
@@ -447,6 +450,18 @@ impl Settings {
                 DEFAULT_BRANCH_STALE_DAYS
             }
         };
+        let fork_caps = (
+            c.or_default(
+                "PYN_MAX_FORKS_PER_REPO",
+                number("PYN_MAX_FORKS_PER_REPO", DEFAULT_MAX_FORKS_PER_REPOSITORY),
+                DEFAULT_MAX_FORKS_PER_REPOSITORY,
+            ),
+            c.or_default(
+                "PYN_MAX_FORKS_PER_OWNER",
+                number("PYN_MAX_FORKS_PER_OWNER", DEFAULT_MAX_FORKS_PER_OWNER),
+                DEFAULT_MAX_FORKS_PER_OWNER,
+            ),
+        );
         let default_merges = default_concurrent_merges();
         let merges = c.or_default(
             "PYN_MAX_CONCURRENT_MERGES",
@@ -499,6 +514,7 @@ impl Settings {
             uploads_per_server,
             merges,
             branch_stale_days,
+            fork_caps,
             update_check,
             cert_interval,
         }

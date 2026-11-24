@@ -15,7 +15,7 @@ use pyn_core::{
     BREAKDOWN_PATHS, Branch, ChangesetItem, Commit, CommitFilter, EventDraft, FileMode,
     FolderUsage, HeadCounts, HistoryBy, HistoryCursor, HistoryScan, LfsObject, Lock, LockChange,
     LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person, PushedCommit,
-    PynError, REPO_ALGORITHM, RepoAbout, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings,
+    ForkLimits, PynError, REPO_ALGORITHM, RepoAbout, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings,
     RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, Tag, TusCancel,
     TusClaim, TusSession, UploadReservation, Usage, UserId, Visibility,
 };
@@ -167,6 +167,19 @@ fn mode_from(s: &str) -> Result<Mode> {
     }
 }
 
+/// The per-repository tables a fork copies, keyed by a `repo` column; locks, upload sessions and pull requests stay behind.
+const FORKED_TABLES: [&str; 9] = [
+    "revisions",
+    "repo_commits",
+    "commits",
+    "commit_pointers",
+    "branches",
+    "repo_tags",
+    "trees",
+    "repo_objects",
+    "lfs_objects",
+];
+
 fn repo_from(row: &PgRow) -> Result<RepoRecord> {
     Ok(RepoRecord {
         id: RepoId::new(row.get::<String, _>("id")),
@@ -176,6 +189,7 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
         settings: RepoSettings {
             lease_hours: row.get::<i32, _>("lease_hours") as u32,
             max_locks: row.get::<Option<i32>, _>("max_locks").map(|n| n as u32),
+            allow_private_forks: row.get("allow_private_forks"),
         },
         storage_cap: row
             .get::<Option<i64>, _>("max_storage_bytes")
@@ -187,6 +201,7 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
             website: row.get("website"),
             topics: row.get("topics"),
         },
+        fork_of: row.get::<Option<String>, _>("fork_of").map(RepoId::new),
     })
 }
 
@@ -2717,8 +2732,8 @@ impl MetadataStore for PgMetadataStore {
         }
         let inserted = sqlx::query(
             "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy,
-                 created_at, description, website, topics)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                 created_at, description, website, topics, allow_private_forks, fork_of)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(repo.id.as_str())
         .bind(repo.owner.as_str())
@@ -2732,6 +2747,8 @@ impl MetadataStore for PgMetadataStore {
         .bind(&repo.about.description)
         .bind(&repo.about.website)
         .bind(&repo.about.topics)
+        .bind(repo.settings.allow_private_forks)
+        .bind(repo.fork_of.as_ref().map(RepoId::as_str))
         .execute(&mut *tx)
         .await;
         match inserted {
@@ -2752,6 +2769,176 @@ impl MetadataStore for PgMetadataStore {
             Err(e) if is_unique_violation(&e) => Err(PynError::RepoExists(repo.address())),
             Err(e) => Err(db(e)),
         }
+    }
+
+    async fn fork_repo_with_events(
+        &self,
+        fork: RepoRecord,
+        limits: ForkLimits,
+        events: &[EventDraft],
+    ) -> Result<RepoRecord> {
+        let source = fork
+            .fork_of
+            .clone()
+            .ok_or_else(|| PynError::RepoNotFound(fork.address()))?;
+        let owner = fork.owner.as_str();
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        // Serializes the counts and usage read below against other creations, forks and capped writes.
+        for key in [
+            format!("pyn:repos:{owner}"),
+            format!("pyn:forks:{source}"),
+            format!("pyn:storage:{owner}"),
+        ] {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(key)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        let row = sqlx::query(
+            "SELECT s.owner || '/' || s.name AS address,
+                    EXISTS (SELECT 1 FROM repositories WHERE owner = $2 AND lower(name) = lower($3)) AS taken,
+                    (SELECT count(*) FROM repositories WHERE owner = $2) AS owned,
+                    (SELECT count(*) FROM repositories WHERE owner = $2 AND fork_of IS NOT NULL) AS owned_forks,
+                    (SELECT count(*) FROM repositories WHERE fork_of = $1) AS forks
+             FROM repositories s WHERE s.id = $1 FOR SHARE",
+        )
+        .bind(source.as_str())
+        .bind(owner)
+        .bind(&fork.name)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or_else(|| PynError::RepoNotFound(fork.address()))?;
+        if row.get::<bool, _>("taken") {
+            return Err(PynError::RepoExists(fork.address()));
+        }
+        if let Some(limit) = limits.repositories
+            && row.get::<i64, _>("owned") as u64 >= limit
+        {
+            return Err(PynError::RepoLimitReached {
+                owner: owner.to_string(),
+                limit,
+            });
+        }
+        if let Some(limit) = limits.per_repository
+            && row.get::<i64, _>("forks") as u64 >= limit
+        {
+            let what = row.get("address");
+            return Err(PynError::ForkLimitReached { what, limit });
+        }
+        if let Some(limit) = limits.per_owner
+            && row.get::<i64, _>("owned_forks") as u64 >= limit
+        {
+            let what = owner.to_string();
+            return Err(PynError::ForkLimitReached { what, limit });
+        }
+        if let Some(limit) = limits.storage_bytes {
+            let used = (owner_stored(&mut tx, &fork.owner).await?
+                + owner_lfs(&mut tx, &fork.owner).await?) as u64;
+            let stored: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(size), 0)::bigint
+                 FROM (SELECT DISTINCT content, size FROM revisions WHERE repo = $1) d",
+            )
+            .bind(source.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            let needed = (stored + repo_lfs(&mut *tx, &source).await?) as u64;
+            if used + needed > limit {
+                return Err(PynError::ForkStorageLimitReached {
+                    owner: owner.to_string(),
+                    limit,
+                    used,
+                    needed,
+                });
+            }
+        }
+        sqlx::query(
+            "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy,
+                 created_at, description, website, topics, allow_private_forks, fork_of)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        )
+        .bind(fork.id.as_str())
+        .bind(owner)
+        .bind(&fork.name)
+        .bind(fork.visibility.as_str())
+        .bind(fork.settings.lease_hours as i32)
+        .bind(fork.settings.max_locks.map(|n| n as i32))
+        .bind(fork.storage_cap.map(|n| n as i64))
+        .bind(&fork.initial_policy)
+        .bind(fork.created_at)
+        .bind(&fork.about.description)
+        .bind(&fork.about.website)
+        .bind(&fork.about.topics)
+        .bind(fork.settings.allow_private_forks)
+        .bind(source.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            if is_unique_violation(&e) {
+                PynError::RepoExists(fork.address())
+            } else {
+                db(e)
+            }
+        })?;
+        for table in FORKED_TABLES {
+            let columns: Vec<String> = sqlx::query_scalar(
+                "SELECT column_name::text FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = $1 ORDER BY ordinal_position",
+            )
+            .bind(table)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(db)?;
+            let list = columns
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let values = columns
+                .iter()
+                .map(|c| if c == "repo" { "$2::text".to_string() } else { format!("\"{c}\"") })
+                .collect::<Vec<_>>()
+                .join(", ");
+            sqlx::query(AssertSqlSafe(format!(
+                "INSERT INTO {table} ({list}) SELECT {values} FROM {table} WHERE repo = $1"
+            )))
+            .bind(source.as_str())
+            .bind(fork.id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        }
+        sqlx::query("DELETE FROM repo_redirects WHERE owner = $1 AND name_lower = lower($2)")
+            .bind(owner)
+            .bind(&fork.name)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        self.queue_events(&mut tx, events).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(fork)
+    }
+
+    async fn list_forks(&self, source: &RepoId) -> Result<Vec<RepoRecord>> {
+        let rows = sqlx::query(
+            "SELECT * FROM repositories WHERE fork_of = $1 ORDER BY owner COLLATE \"C\", name COLLATE \"C\"",
+        )
+        .bind(source.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(repo_from).collect()
+    }
+
+    async fn count_forks(&self, source: &RepoId) -> Result<u64> {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM repositories WHERE fork_of = $1")
+            .bind(source.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(n as u64)
     }
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
@@ -2878,6 +3065,7 @@ impl MetadataStore for PgMetadataStore {
             "UPDATE repositories SET name = COALESCE($2, name), visibility = COALESCE($3, visibility),
                  lease_hours = COALESCE($4, lease_hours),
                  max_locks = CASE WHEN $5 THEN $6 ELSE max_locks END,
+                 allow_private_forks = CASE WHEN $5 THEN $15 ELSE allow_private_forks END,
                  max_storage_bytes = CASE WHEN $7 THEN $8 ELSE max_storage_bytes END,
                  description = CASE WHEN $9 THEN $10 ELSE description END,
                  website = CASE WHEN $11 THEN $12 ELSE website END,
@@ -2899,6 +3087,7 @@ impl MetadataStore for PgMetadataStore {
         .bind(update.website.clone().flatten())
         .bind(update.topics.is_some())
         .bind(update.topics.clone().unwrap_or_default())
+        .bind(update.settings.is_some_and(|s| s.allow_private_forks))
         .fetch_optional(&mut *tx)
         .await;
         match updated {

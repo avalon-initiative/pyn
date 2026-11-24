@@ -1288,6 +1288,19 @@ pub struct RepoInfo {
     #[serde(default)]
     #[schema(required = true)]
     pub updated_at: Option<DateTime<Utc>>,
+    /// The repository this one was forked from; null for an original, when the source was deleted, and when the
+    /// caller cannot see the source.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub fork_of: Option<RepoRef>,
+    /// How many repositories were forked from this one, whoever owns them and whatever their visibility.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub fork_count: u64,
+    /// Whether people who can read this private repository may fork it; a public one can always be forked.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub allow_private_forks: bool,
     pub visibility: Visibility,
     /// How long a lock lasts before it expires unless renewed.
     pub lease_hours: u32,
@@ -1325,6 +1338,25 @@ pub struct RepoInfo {
     #[serde(default)]
     #[schema(required = true)]
     pub watcher_count: u64,
+}
+
+/// A repository's address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepoRef {
+    pub owner: String,
+    pub name: String,
+}
+
+/// Body of `POST /v1/repos/{owner}/{name}/forks`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct ForkRepoRequest {
+    /// The namespace to fork into: the caller, or an organization whose repository-creation policy allows the source's
+    /// visibility. Defaults to the caller.
+    #[serde(default)]
+    pub owner: Option<String>,
+    /// Defaults to the source's name.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// One programming language's share of a repository, detected from file names.
@@ -1457,6 +1489,9 @@ pub struct CreateRepoRequest {
     /// At most 20 topics of 1 to 50 lowercase letters, digits or `-`; uppercase is lowered and repeats dropped.
     #[serde(default)]
     pub topics: Option<Vec<String>>,
+    /// Whether people who can read the repository may fork it while it is private. Defaults to `false`.
+    #[serde(default)]
+    pub allow_private_forks: Option<bool>,
 }
 
 /// Fields left out stay as they are.
@@ -1493,6 +1528,9 @@ pub struct UpdateRepoRequest {
     /// Replaces every topic; `[]` removes them all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topics: Option<Vec<String>>,
+    /// Whether people who can read the repository may fork it while it is private.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_private_forks: Option<bool>,
 }
 
 /// Tells an explicit `null` (`Some(None)`) from an absent field (`None`).

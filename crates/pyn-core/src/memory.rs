@@ -39,7 +39,7 @@ use crate::profile::{
     Avatar, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
 };
 use crate::ratelimit::{RateLimitStore, RateState};
-use crate::repo::{RepoRecord, RepoUpdate, Visibility};
+use crate::repo::{ForkLimits, RepoRecord, RepoUpdate, Visibility};
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
@@ -1875,6 +1875,109 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(repo)
     }
 
+    async fn fork_repo_with_events(
+        &self,
+        fork: RepoRecord,
+        limits: ForkLimits,
+        events: &[EventDraft],
+    ) -> Result<RepoRecord> {
+        let mut st = self.state.lock().unwrap();
+        let source = fork
+            .fork_of
+            .clone()
+            .filter(|s| st.repos.contains_key(s))
+            .ok_or_else(|| PynError::RepoNotFound(fork.address()))?;
+        let owner = &fork.owner;
+        if st
+            .repos
+            .values()
+            .any(|r| &r.owner == owner && r.name.eq_ignore_ascii_case(&fork.name))
+        {
+            return Err(PynError::RepoExists(fork.address()));
+        }
+        let owned = st.repos.values().filter(|r| &r.owner == owner);
+        if let Some(limit) = limits.repositories
+            && owned.clone().count() as u64 >= limit
+        {
+            return Err(PynError::RepoLimitReached {
+                owner: owner.to_string(),
+                limit,
+            });
+        }
+        if let Some(limit) = limits.per_repository
+            && st.repos.values().filter(|r| r.fork_of.as_ref() == Some(&source)).count() as u64
+                >= limit
+        {
+            let what = st.repos[&source].address();
+            return Err(PynError::ForkLimitReached { what, limit });
+        }
+        if let Some(limit) = limits.per_owner
+            && owned.filter(|r| r.fork_of.is_some()).count() as u64 >= limit
+        {
+            let what = owner.to_string();
+            return Err(PynError::ForkLimitReached { what, limit });
+        }
+        if let Some(limit) = limits.storage_bytes {
+            let used = st.stored_by(owner) + st.lfs_by(owner);
+            let needed = st.stored_in(&source) + st.lfs_in(&source);
+            if used + needed > limit {
+                return Err(PynError::ForkStorageLimitReached {
+                    owner: owner.to_string(),
+                    limit,
+                    used,
+                    needed,
+                });
+            }
+        }
+        self.outbox.queue(events)?;
+        let (from, to) = (&source, &fork.id);
+        fn copy<K: Clone + Eq + std::hash::Hash, V: Clone>(
+            map: &mut HashMap<K, V>,
+            pick: impl Fn(&K) -> Option<K>,
+        ) {
+            let copies: Vec<_> = map
+                .iter()
+                .filter_map(|(k, v)| pick(k).map(|k| (k, v.clone())))
+                .collect();
+            map.extend(copies);
+        }
+        let swap = |r: &RepoId| (r == from).then(|| to.clone());
+        copy(&mut st.revisions, |(r, p)| swap(r).map(|r| (r, p.clone())));
+        copy(&mut st.sizes, |(r, c)| swap(r).map(|r| (r, *c)));
+        copy(&mut st.trees, |(r, c)| swap(r).map(|r| (r, *c)));
+        copy(&mut st.pointers, |(r, c)| swap(r).map(|r| (r, *c)));
+        copy(&mut st.uploads, |(r, c)| swap(r).map(|r| (r, *c)));
+        copy(&mut st.lfs, |(r, o)| swap(r).map(|r| (r, o.clone())));
+        copy(&mut st.commits, swap);
+        copy(&mut st.branches, swap);
+        copy(&mut st.tags, swap);
+        st.redirects
+            .remove(&(fork.owner.clone(), fork.name.to_lowercase()));
+        st.repos.insert(fork.id.clone(), fork.clone());
+        Ok(fork)
+    }
+
+    async fn list_forks(&self, source: &RepoId) -> Result<Vec<RepoRecord>> {
+        let st = self.state.lock().unwrap();
+        let mut forks: Vec<_> = st
+            .repos
+            .values()
+            .filter(|r| r.fork_of.as_ref() == Some(source))
+            .cloned()
+            .collect();
+        forks.sort_by(|a, b| (a.owner.as_str(), &a.name).cmp(&(b.owner.as_str(), &b.name)));
+        Ok(forks)
+    }
+
+    async fn count_forks(&self, source: &RepoId) -> Result<u64> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .repos
+            .values()
+            .filter(|r| r.fork_of.as_ref() == Some(source))
+            .count() as u64)
+    }
+
     async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
         let st = self.state.lock().unwrap();
         Ok(st
@@ -2026,6 +2129,11 @@ impl MetadataStore for MemoryMetadataStore {
         st.reservations.retain(|_, (r, _, _)| r != id);
         st.redirects.retain(|_, r| r != id);
         st.pulls.remove(id);
+        for repo in st.repos.values_mut() {
+            if repo.fork_of.as_ref() == Some(id) {
+                repo.fork_of = None;
+            }
+        }
         Ok(st.repos.remove(id).is_some())
     }
 

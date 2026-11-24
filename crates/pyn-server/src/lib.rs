@@ -170,6 +170,8 @@ struct RepoAddress {
         access_api::me,
         profile_api::get_profile,
         profile_api::list_starred,
+        repo_api::fork_repo,
+        repo_api::list_forks,
         repo_api::get_star,
         repo_api::put_star,
         repo_api::delete_star,
@@ -507,6 +509,8 @@ struct RepoAddress {
         api::StartedAccessSession,
         api::Visibility,
         api::RepoInfo,
+        api::RepoRef,
+        api::ForkRepoRequest,
         api::StarState,
         api::StarredRepo,
         api::WatchLevel,
@@ -693,6 +697,8 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::RepoLimitReached { .. }
         | PynError::MemberLimitReached { .. }
         | PynError::StorageLimitReached { .. }
+        | PynError::ForkStorageLimitReached { .. }
+        | PynError::ForkLimitReached { .. }
         | PynError::RepoStorageLimitReached { .. }
         | PynError::StaleBase { .. }
         | PynError::LockRequired(_)
@@ -749,6 +755,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::NotOrgOwner(_)
         | PynError::NotOrgMember(_)
         | PynError::RepoCreateForbidden { .. }
+        | PynError::ForkForbidden(..)
         | PynError::NotRepoMember(_)
         | PynError::ExternalNotLinked
         | PynError::PasswordSignInDisabled

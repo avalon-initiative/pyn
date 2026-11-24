@@ -138,8 +138,9 @@ pub use pyn_object::{FileMode, ObjectId};
 pub use languages::LanguageShare;
 pub use ratelimit::{RateLimitStore, RateState};
 pub use repo::{
-    DEFAULT_MAX_LOCKS_PER_USER, MAX_LOCKS_PER_USER_CEILING, RepoAbout, RepoRecord, RepoSettings,
-    RepoUpdate, Visibility, validate_max_locks,
+    DEFAULT_MAX_FORKS_PER_OWNER, DEFAULT_MAX_FORKS_PER_REPOSITORY, DEFAULT_MAX_LOCKS_PER_USER,
+    ForkLimits, MAX_LOCKS_PER_USER_CEILING, RepoAbout, RepoRecord, RepoSettings, RepoUpdate,
+    Visibility, validate_max_locks,
 };
 pub use repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,

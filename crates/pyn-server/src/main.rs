@@ -309,6 +309,7 @@ async fn main() -> anyhow::Result<()> {
         uploads_per_server,
         merges,
         branch_stale_days,
+        fork_caps,
         update_check,
         cert_interval,
     } = settings;
@@ -498,6 +499,7 @@ async fn main() -> anyhow::Result<()> {
     repos = repos.with_upload_limits(uploads_per_user, uploads_per_server);
     repos = repos.with_max_concurrent_merges(merges);
     repos = repos.with_branch_stale_days(branch_stale_days);
+    repos = repos.with_fork_caps(fork_caps.0, fork_caps.1);
     tracing::info!(
         bytes = repos.unreferenced_upload_cap(),
         "cap on unreferenced uploads per repository"
