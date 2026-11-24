@@ -9,6 +9,13 @@ fn revision_text(r: &Option<RevisionId>) -> String {
     r.map_or("none".into(), |r| format!("r{r}"))
 }
 
+fn locked_paths(held: &[(RepoPath, UserId)]) -> String {
+    held.iter()
+        .map(|(p, u)| format!("{p} by {u}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn reason_suffix(reason: &Option<String>) -> String {
     reason.as_ref().map_or(String::new(), |r| format!(" ({r})"))
 }
@@ -110,6 +117,19 @@ pub enum PynError {
     MergeConflict(Vec<RepoPath>),
     #[error("{0} moved since the merge was computed; merge again")]
     MergeStale(String),
+    #[error("pull request #{0} not found")]
+    PullRequestNotFound(u64),
+    #[error("pull request #{0} already proposes these branches and is still open")]
+    PullRequestExists(u64),
+    #[error("pull request #{number} is {state}")]
+    PullRequestNotOpen { number: u64, state: String },
+    #[error("pull request #{0} is a draft; mark it ready before merging")]
+    PullRequestDraft(u64),
+    #[error(
+        "exclusive paths the pull request changes are locked by others: {}; they must release the locks first",
+        locked_paths(.0)
+    )]
+    PullLocksHeld(Vec<(RepoPath, UserId)>),
     #[error("{0} cannot be fast-forwarded to the source; its history has diverged")]
     NotFastForward(String),
     #[error("the push is not valid: {0}")]
@@ -423,6 +443,11 @@ impl PynError {
             Self::BranchNotMerged(_) => "branch_not_merged",
             Self::MergeConflict(_) => "merge_conflict",
             Self::MergeStale(_) => "merge_stale",
+            Self::PullRequestNotFound(_) => "pull_request_not_found",
+            Self::PullRequestExists(_) => "pull_request_exists",
+            Self::PullRequestNotOpen { .. } => "pull_request_not_open",
+            Self::PullRequestDraft(_) => "pull_request_draft",
+            Self::PullLocksHeld(_) => "pull_locks_held",
             Self::NotFastForward(_) => "not_fast_forward",
             Self::PushInvalid(_) => "push_invalid",
             Self::PushUnsupported(_) => "push_unsupported",

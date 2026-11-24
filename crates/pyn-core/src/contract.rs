@@ -45,6 +45,8 @@ mod compare;
 pub use compare::*;
 mod diff;
 pub use diff::*;
+mod pulls;
+pub use pulls::*;
 mod commit_filters;
 pub use commit_filters::*;
 mod branch_policy;
@@ -3472,6 +3474,18 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_direct_diff_measures_from_the_base_and_a_merge_base_diff_from_the_fork);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_file_too_large_to_diff_is_listed_without_hunks);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; file_lines_are_a_range_of_a_path_at_a_revision);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pull_request_is_opened_listed_and_found_by_number);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; opening_a_pull_request_is_checked);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; anyone_who_can_read_comments_and_the_events_are_ordered);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pull_request_is_edited_closed_and_reopened);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pull_request_merges_by_fast_forward_or_merge_commit);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_draft_cannot_merge_until_it_is_ready);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_head_already_in_the_base_merges_without_a_commit);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_conflicted_pull_request_reports_the_paths_and_refuses_to_merge);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; locks_others_hold_on_changed_paths_block_a_merge_unless_overridden);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_force_unlock_holder_may_merge_over_locks);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; renaming_a_branch_keeps_its_pull_requests);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_repository_removes_its_pull_requests);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_branch_reports_the_committed_time_of_its_head);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_summary_of_a_branch_counts_that_branchs_files);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; commit_filters_match_author_time_message_and_path);
@@ -4294,6 +4308,10 @@ impl HookedMeta {
 
 #[async_trait::async_trait]
 impl MetadataStore for HookedMeta {
+    fn pulls(&self) -> &dyn crate::pull::PullStore {
+        self.inner.pulls()
+    }
+
     async fn acquire_lock_with_events(
         &self,
         repo: &RepoId,

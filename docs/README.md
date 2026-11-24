@@ -28,6 +28,7 @@ Markdown, plus the generated OpenAPI document; `make docs-check` verifies relati
 - [Branches: branch heads, commits on a branch, exclusive paths across branches](concepts/branches.md)
 - [Merging: merge base, merge commits, conflicts and resolution](concepts/merging.md)
 - [Diffs: line hunks between two revisions, context expansion, lock state per path](concepts/diff.md)
+- [Pull requests: proposing a merge, comments, merging with lock awareness](concepts/pull-requests.md)
 - [Tamper-evident history: the frozen hash encoding, chained audit log, `pyn verify`](concepts/integrity.md)
 - [Configuration: every environment variable](configuration.md)
 - [Deployment and backups: Docker Compose, native systemd install, TLS, upgrades, backup and restore](deployment.md)

@@ -34,6 +34,10 @@ impl CountingStore {
 
 #[async_trait::async_trait]
 impl MetadataStore for CountingStore {
+    fn pulls(&self) -> &dyn crate::pull::PullStore {
+        self.inner.pulls()
+    }
+
     async fn acquire_lock_with_events(
         &self,
         repo: &RepoId,

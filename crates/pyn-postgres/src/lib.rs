@@ -36,6 +36,7 @@ mod counts;
 mod hashing;
 mod history_migration;
 mod profile;
+mod pulls;
 mod self_service;
 mod tus;
 mod two_factor;
@@ -2886,6 +2887,10 @@ impl MetadataStore for PgMetadataStore {
         ))
     }
 
+    fn pulls(&self) -> &dyn pyn_core::pull::PullStore {
+        self
+    }
+
     async fn delete_repo_with_events(&self, id: &RepoId, events: &[EventDraft]) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         for stmt in [
@@ -2900,6 +2905,8 @@ impl MetadataStore for PgMetadataStore {
             "DELETE FROM lfs_objects WHERE repo = $1",
             "DELETE FROM tus_sessions WHERE repo = $1",
             "DELETE FROM upload_reservations WHERE repo = $1",
+            "DELETE FROM pull_requests WHERE repo = $1",
+            "DELETE FROM pull_events WHERE repo = $1",
         ] {
             sqlx::query(stmt)
                 .bind(id.as_str())
