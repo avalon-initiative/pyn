@@ -10268,6 +10268,959 @@
         "x-pyn-reach": "repo_scoped:policy:write"
       }
     },
+    "/v1/repos/{owner}/{name}/pulls": {
+      "get": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.\nList a repository's pull requests.",
+        "operationId": "list_pulls",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "open, merged or closed; every state if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "base",
+            "in": "query",
+            "description": "only pull requests into this branch",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "head",
+            "in": "query",
+            "description": "only pull requests from this branch",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "description": "only this account's pull requests",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "the `next_before` of the previous page",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 100, default 30",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "newest first; `comments` is counted, the change counts, locks and mergeability are on the single pull request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for an unknown state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      },
+      "post": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "Open a pull request.",
+        "operationId": "create_pull",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePullRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: bad title or body, the same branch twice, a head with nothing to merge",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "needs the checkin permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "pull_request_exists: an open one has the same branches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "repo_scoped:contents:write"
+      }
+    },
+    "/v1/repos/{owner}/{name}/pulls/{number}": {
+      "get": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "One pull request with its mergeability, change counts, locks and participants.",
+        "operationId": "get_pull",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "the pull request's number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequest"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "pull_request_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      },
+      "patch": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "Change an open pull request's title, body or draft flag.",
+        "operationId": "update_pull",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "the pull request's number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePullRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "only the author, or someone with the checkin permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "pull_request_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "pull_request_not_open",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "repo_scoped:contents:read"
+      }
+    },
+    "/v1/repos/{owner}/{name}/pulls/{number}/close": {
+      "post": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "Close an open pull request.",
+        "operationId": "close_pull",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "the pull request's number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequest"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "only the author, or someone with the checkin permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "pull_request_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "pull_request_not_open",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "repo_scoped:contents:read"
+      }
+    },
+    "/v1/repos/{owner}/{name}/pulls/{number}/comments": {
+      "post": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "Comment on a pull request in any state.",
+        "operationId": "comment_pull",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "the pull request's number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommentPullRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for an empty or oversized comment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "needs the read permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "pull_request_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "repo_scoped:contents:read"
+      }
+    },
+    "/v1/repos/{owner}/{name}/pulls/{number}/commits": {
+      "get": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "The commits of a pull request.",
+        "operationId": "pull_commits",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "the pull request's number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the commits the head has and the base lacks, at most 1000",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PullCommit"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "pull_request_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      }
+    },
+    "/v1/repos/{owner}/{name}/pulls/{number}/diff": {
+      "get": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "The line diff of a pull request.",
+        "operationId": "pull_diff",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "the pull request's number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "context",
+            "in": "query",
+            "description": "unchanged lines around each change, 0 to 100, default 3",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the changes of the head since the merge base, as the diff endpoint reports them; a closed or merged pull request is read at the commits frozen on it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoDiff"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "pull_request_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      }
+    },
+    "/v1/repos/{owner}/{name}/pulls/{number}/events": {
+      "get": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "The timeline of a pull request.",
+        "operationId": "pull_events",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "the pull request's number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "the id of the last event already seen",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 100, default 30",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the comments and state changes, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PullEvent"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a bad `after`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "pull_request_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      }
+    },
+    "/v1/repos/{owner}/{name}/pulls/{number}/merge": {
+      "post": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "Merge a pull request's head branch into its base branch.",
+        "operationId": "merge_pull",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "the pull request's number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergePullRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the merged pull request, with `merge_commit`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequest"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "needs the checkin permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "pull_request_not_found, or branch_not_found when a branch is gone",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "pull_request_not_open, pull_request_draft, merge_conflict, merge_stale, not_fast_forward, or pull_locks_held when others hold locks on changed paths and the caller lacks force_unlock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "repo_scoped:contents:write"
+      }
+    },
+    "/v1/repos/{owner}/{name}/pulls/{number}/reopen": {
+      "post": {
+        "tags": [
+          "pulls_api"
+        ],
+        "summary": "Reopen a closed pull request.",
+        "operationId": "reopen_pull",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "the pull request's number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request when the head has nothing the base lacks, or no longer exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "only the author, or someone with the checkin permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "pull_request_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "pull_request_not_open for a merged one, pull_request_exists when an open one has the same branches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "repo_scoped:contents:read"
+      }
+    },
     "/v1/repos/{owner}/{name}/push": {
       "post": {
         "tags": [
@@ -14335,6 +15288,17 @@
           }
         }
       },
+      "CommentPullRequest": {
+        "type": "object",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          }
+        }
+      },
       "Commit": {
         "type": "object",
         "description": "One atomic write: a single checkin or a whole changeset, recorded as a git commit on a branch. `id` is the git\ncommit id, so a commit can be fetched with a unique abbreviation of at least 4 digits.",
@@ -14528,6 +15492,42 @@
           "name": {
             "type": "string",
             "description": "Normalised to a canonical name (trimmed, spaces become `-`, lowercased); shares the namespace with user names: 2 to 39 letters, digits, `-` or `_`, not reserved. The typed form becomes the display name when it differs."
+          }
+        }
+      },
+      "CreatePullRequest": {
+        "type": "object",
+        "required": [
+          "title",
+          "head"
+        ],
+        "properties": {
+          "base": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch to merge into; the default branch if omitted."
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Markdown, up to 64 KiB."
+          },
+          "draft": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "head": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "description": "One line, 1 to 256 characters."
           }
         }
       },
@@ -16419,6 +17419,43 @@
           "conflicted"
         ]
       },
+      "MergePullRequest": {
+        "type": "object",
+        "properties": {
+          "expect_head": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The head branch's commit the caller saw."
+          },
+          "expect_target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The base branch's commit the caller saw; a different head is `409 merge_stale`."
+          },
+          "fast_forward": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MergeFastForward",
+                "description": "`allow` (the default), `never` or `only`, as for a merge."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The merge commit's message; `Merge pull request #N from <head>` if omitted."
+          }
+        }
+      },
       "MergeReport": {
         "type": "object",
         "description": "What a merge does, or did.",
@@ -17953,6 +18990,305 @@
             "minimum": 0
           },
           "user": {
+            "type": "string"
+          }
+        }
+      },
+      "PullCommit": {
+        "type": "object",
+        "description": "A commit of a pull request's range, oldest first.",
+        "required": [
+          "id",
+          "message",
+          "author",
+          "committed_at"
+        ],
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/PublicIdentity"
+          },
+          "committed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "PullConflict": {
+        "type": "object",
+        "description": "A path whose merge would conflict.",
+        "required": [
+          "path",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/MergeConflictKind"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "PullEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "actor",
+          "at"
+        ],
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/PublicIdentity"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Markdown of a comment."
+          },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit a `merged` event wrote."
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique and increasing within the repository; pass the last one as `after`."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PullEventKind"
+          }
+        }
+      },
+      "PullEventKind": {
+        "type": "string",
+        "enum": [
+          "comment",
+          "merged",
+          "closed",
+          "reopened"
+        ]
+      },
+      "PullRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PullRequestSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "body",
+              "commits",
+              "changed_files",
+              "additions",
+              "deletions",
+              "locks",
+              "participants"
+            ],
+            "properties": {
+              "additions": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "base_commit": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The base branch's commit the same way (before the merge, for a merged one); pass it as `expect_target`."
+              },
+              "body": {
+                "type": "string"
+              },
+              "changed_files": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "commits": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Commits in the range, at most 1000.",
+                "minimum": 0
+              },
+              "conflicts": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PullConflict"
+                },
+                "description": "The paths that would conflict, when `outcome` is `conflicted`."
+              },
+              "deletions": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "head_commit": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The head branch's commit: what an open pull request would merge, or what it merged or was closed at.\nAbsent for an open pull request whose head branch is gone."
+              },
+              "locks": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Lock"
+                },
+                "description": "Live locks on the paths it changes, whoever holds them; those held by others block the merge unless the merger\nmay force unlocks. Empty once closed or merged."
+              },
+              "merge_commit": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The commit a merge wrote; absent unless merged, and for a head that was already in the base."
+              },
+              "outcome": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/MergeOutcome",
+                    "description": "What merging would do now; only for an open pull request whose branches exist."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "participants": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PublicIdentity"
+                },
+                "description": "The author and everyone who commented, in order of first appearance."
+              }
+            }
+          }
+        ],
+        "description": "One pull request with what the page for it shows."
+      },
+      "PullRequestPage": {
+        "type": "object",
+        "required": [
+          "pulls",
+          "next_before"
+        ],
+        "properties": {
+          "next_before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass as `before` to fetch the next, older page; null on the last page.",
+            "minimum": 0
+          },
+          "pulls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PullRequestSummary"
+            },
+            "description": "Newest first."
+          }
+        }
+      },
+      "PullRequestState": {
+        "type": "string",
+        "enum": [
+          "open",
+          "merged",
+          "closed"
+        ]
+      },
+      "PullRequestSummary": {
+        "type": "object",
+        "description": "A pull request as a list shows it.",
+        "required": [
+          "number",
+          "title",
+          "state",
+          "draft",
+          "author",
+          "base",
+          "head",
+          "opened_at",
+          "comments"
+        ],
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/PublicIdentity"
+          },
+          "base": {
+            "type": "string",
+            "description": "The branch that moves when it merges."
+          },
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "comments": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Comments on it.",
+            "minimum": 0
+          },
+          "draft": {
+            "type": "boolean",
+            "description": "A draft cannot be merged until it is marked ready."
+          },
+          "head": {
+            "type": "string",
+            "description": "The branch whose commits are proposed."
+          },
+          "merged_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "merged_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicIdentity",
+                "description": "Who merged it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "opened_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "state": {
+            "$ref": "#/components/schemas/PullRequestState"
+          },
+          "title": {
             "type": "string"
           }
         }
@@ -20506,6 +21842,30 @@
               {
                 "type": "null"
               }
+            ]
+          }
+        }
+      },
+      "UpdatePullRequest": {
+        "type": "object",
+        "description": "Only the fields present change.",
+        "properties": {
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "draft": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
             ]
           }
         }
