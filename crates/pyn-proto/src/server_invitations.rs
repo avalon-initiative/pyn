@@ -28,7 +28,7 @@ pub struct EmailSettings {
     /// When a message last went out since the server started; null when none has.
     #[serde(default)]
     pub last_sent_at: Option<DateTime<Utc>>,
-    /// The newest connection check (start-up, or `pyn-server --check-config` does not count): the mail server answered and accepted the sign-in, without a message sent. Null before the first check or when no mailer sends.
+    /// The connection check this server ran at start: connect and sign in to the mail server without sending. Null before it finishes, or when the mailer is not SMTP.
     #[serde(default)]
     pub last_check: Option<EmailCheck>,
 }
