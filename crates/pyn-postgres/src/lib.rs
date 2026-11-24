@@ -3076,7 +3076,7 @@ mod tests {
             .execute(&store.pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (8, 11, 42, 46)")
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (8, 11, 42, 46, 72)")
             .execute(&store.pool)
             .await
             .unwrap();
