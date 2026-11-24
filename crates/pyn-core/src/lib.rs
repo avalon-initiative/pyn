@@ -29,6 +29,7 @@ pub mod org_settings;
 pub mod passwords;
 pub mod profile;
 pub mod profiles;
+pub mod pull;
 pub mod ratelimit;
 pub mod relying_party;
 pub mod repo;

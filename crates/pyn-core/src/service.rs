@@ -6,6 +6,7 @@ mod fetch;
 mod lfs;
 mod lfs_tus;
 mod merging;
+mod pulls;
 mod push;
 mod push_merge;
 mod uploads;
@@ -26,6 +27,7 @@ pub use fetch::{
     FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES, FETCH_MAX_LIMIT, FetchPage,
     FetchQuery, FetchedCommit,
 };
+pub use pulls::{MergePull, OpenPull, PullDetail, PullMergeability};
 pub use push::{PushObjects, Pushed};
 pub use verify::VERIFY_BUDGET;
 
@@ -2261,6 +2263,10 @@ impl RepoService {
         self.ensure_writable().await?;
         validate_branch_name(to)?;
         let branch = self.meta.rename_branch(&self.repo, from, to).await?;
+        self.meta
+            .pulls()
+            .rename_pull_branch(&self.repo, from, to)
+            .await?;
         self.record_repo(
             who.into(),
             AuditAction::BranchRenamed,

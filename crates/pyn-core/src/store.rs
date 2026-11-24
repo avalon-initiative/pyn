@@ -659,6 +659,9 @@ pub trait MetadataStore: Send + Sync {
     /// Like `delete_repo`, queueing `events` in the same transaction when a repository was removed.
     async fn delete_repo_with_events(&self, id: &RepoId, events: &[EventDraft]) -> Result<bool>;
 
+    /// Pull request storage; the repository's data goes with it when the repository is deleted.
+    fn pulls(&self) -> &dyn crate::pull::PullStore;
+
     /// Repositories and stored bytes of everything the owner owns; `members` is left unset. Stored bytes count
     /// each distinct content once per repository.
     async fn owner_usage(&self, owner: &UserId) -> Result<Usage>;
