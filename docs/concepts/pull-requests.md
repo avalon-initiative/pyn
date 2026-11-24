@@ -80,6 +80,42 @@ Anyone who can read may comment, on a pull request in any state. Each comment, a
 ordered timeline: `comment` (with the `body`), `merged` (with the `commit`), `closed` and `reopened`, each with the actor and
 time. Events are never edited or removed. A pull request counts its comments.
 
+## API
+
+All under `/v1/repos/{owner}/{name}`; reads need `read` (a public repository is readable without credentials), the writes
+need the permission in the [table above](#who-may-do-what).
+
+| Request | Returns |
+| --- | --- |
+| `GET /pulls?state=&base=&head=&author=&before=&limit=` | `{pulls, next_before}`, newest first, each a summary: `number`, `title`, `state` (`open`, `merged`, `closed`), `draft`, `author` (a public identity), `base`, `head`, `opened_at`, `closed_at`, `merged_at`, `merged_by`, `comments`. `limit` is 1 to 100 (30 by default); pass `next_before` as `before` for the next page. The list leaves out the change counts, locks and mergeability, which cost a diff each |
+| `POST /pulls` `{title, body?, draft?, base?, head}` | the new pull request (`409 pull_request_exists`) |
+| `GET /pulls/{number}` | the summary fields plus `body`, `head_commit` and `base_commit` (the commits an open one would merge, or the frozen ones), `merge_commit`, `commits`, `changed_files`, `additions`, `deletions`, `outcome` and `conflicts` (an open one whose branches exist), `locks` and `participants` |
+| `PATCH /pulls/{number}` `{title?, body?, draft?}` | the updated pull request, while it is open |
+| `GET /pulls/{number}/commits` | `[{id, message, author, committed_at}]`, the commits the head has and the base lacks, oldest first, at most 1000 |
+| `GET /pulls/{number}/diff?context=` | the [diff](diff.md) of the head since the merge base, per path with its mode and lock |
+| `GET /pulls/{number}/events?after=&limit=` | `[{id, kind, actor, at, body?, commit?}]`, oldest first; pass the last `id` as `after` |
+| `POST /pulls/{number}/comments` `{body}` | the new `comment` event |
+| `POST /pulls/{number}/close`, `/reopen` | the pull request |
+| `POST /pulls/{number}/merge` `{fast_forward?, message?, expect_target?, expect_head?}` | the merged pull request |
+
+A pull request that does not exist is `404 pull_request_not_found`. The other codes are named in the sections above.
+
+## Command line
+
+`pyn pr` runs against the repository of the workspace (or `--repo owner/name`):
+
+```
+pyn pr create --title "Add b" [--body TEXT | --body-file FILE] [--draft] [--base main] [--head feature]
+pyn pr list [--state open|merged|closed|all] [--author NAME] [--base B] [--head H] [--limit N]
+pyn pr show 12 [--commits]
+pyn pr comment 12 --body "looks good"
+pyn pr close 12
+pyn pr reopen 12
+pyn pr merge 12 [--no-ff | --ff-only] [-m MESSAGE]
+```
+
+`create` proposes the workspace's branch unless `--head` names another. `list` is a table with the title last.
+
 ## Not here yet
 
 Left for the work that depends on rulesets (#153) and statuses (#155): reviews, approvals and requested changes, required
