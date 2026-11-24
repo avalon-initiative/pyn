@@ -1,5 +1,7 @@
 # Concepts
 
+New here? [Shared and exclusive paths](shared-and-exclusive.md) is the model on one page.
+
 pyn separates three things that most version control systems fuse together. Each exists per [repository](repositories.md): a
 server hosts many, addressed as `owner/name`.
 

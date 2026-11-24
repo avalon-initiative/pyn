@@ -1,4 +1,7 @@
-# Phase 1 scope
+# Phase 1 scope and what came after
+
+A history page: what Phase 1 set out to prove and what has landed since. Open work is tracked in the repository's issues, and the
+planned git-style commands are the *planned* rows of [git compatibility](concepts/git-compatibility.md).
 
 Prove one thing: a team can safely collaborate on a repository containing both mergeable source and exclusive assets.
 
