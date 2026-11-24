@@ -180,7 +180,18 @@ mod tests {
     #[test]
     fn names_outside_the_alphabet_are_refused() {
         for bad in [
-            "", " ", "-x", "_x", ".x", "x.", "a/b", "a!b", "é", "ünï", "x y.", &"x".repeat(101),
+            "",
+            " ",
+            "-x",
+            "_x",
+            ".x",
+            "x.",
+            "a/b",
+            "a!b",
+            "é",
+            "ünï",
+            "x y.",
+            &"x".repeat(101),
         ] {
             assert!(validate_name(bad).is_err(), "{bad:?}");
         }

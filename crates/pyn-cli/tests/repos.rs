@@ -113,7 +113,7 @@ fn repositories_are_created_listed_and_deleted() {
     assert!(taken.contains("repo_exists"), "{taken}");
     let elsewhere = env.fails(&home, "alice", &["repo", "create", "bob/game"]);
     assert!(elsewhere.contains("not_namespace_owner"), "{elsewhere}");
-    let bad = env.fails(&home, "alice", &["repo", "create", "Not Ok"]);
+    let bad = env.fails(&home, "alice", &["repo", "create", "Not!Ok"]);
     assert!(bad.contains("invalid_repo_name"), "{bad}");
     let vis = env.fails(
         &home,
@@ -136,7 +136,11 @@ fn repositories_are_created_listed_and_deleted() {
 fn repository_names_are_url_forms_and_resolve_ignoring_case() {
     let env = start_empty();
     let home = env.dir("home");
-    let out = env.ok(&home, "alice", &["repo", "create", "My Game", "--no-policy"]);
+    let out = env.ok(
+        &home,
+        "alice",
+        &["repo", "create", "My Game", "--no-policy"],
+    );
     assert!(out.contains("created alice/my-game"), "{out}");
     let taken = env.fails(&home, "alice", &["repo", "create", "MY  game"]);
     assert!(taken.contains("repo_exists"), "{taken}");

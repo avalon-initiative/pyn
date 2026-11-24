@@ -2106,7 +2106,7 @@ async fn anyone_can_create_repositories_in_their_own_namespace() {
         "POST",
         "/v1/repos",
         &alice,
-        Some(serde_json::json!({"starter_policy": false, "name": "Not Ok"})),
+        Some(serde_json::json!({"starter_policy": false, "name": "Not!Ok"})),
     )
     .await;
     assert_eq!(bad.status(), StatusCode::BAD_REQUEST);

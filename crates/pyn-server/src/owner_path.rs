@@ -57,7 +57,7 @@ pub(crate) fn canonical_path(path: &str) -> Option<String> {
         let fits = want
             .iter()
             .zip(rest)
-            .all(|(w, got)| matches!(*w, "@" | "*") || w == got);
+            .all(|(w, got)| matches!(*w, "@" | "#" | "*") || w == got);
         if fits {
             names.extend(
                 want.iter()
