@@ -14,7 +14,7 @@ impl PgMetadataStore {
     pub(crate) async fn profile_row(&self, user: &UserId) -> Result<Profile> {
         let row = sqlx::query(
             "SELECT display_name, bio, location, company, links, avatar_content, avatar_type, avatar_size,
-                    show_display_name, show_bio, show_location, show_company, show_links, show_avatar
+                    show_display_name, show_bio, show_location, show_company, show_links, show_avatar, show_starred
              FROM account_profiles WHERE user_id = $1",
         )
         .bind(user.as_str())
@@ -41,6 +41,7 @@ impl PgMetadataStore {
                 company: row.get("show_company"),
                 links: row.get("show_links"),
                 avatar: row.get("show_avatar"),
+                starred: row.get("show_starred"),
             },
         })
     }
@@ -96,10 +97,10 @@ impl PgMetadataStore {
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO account_profiles (user_id, show_display_name, show_bio, show_location, show_company,
-                 show_links, show_avatar, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 show_links, show_avatar, show_starred, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (user_id) DO UPDATE SET show_display_name = $2, show_bio = $3, show_location = $4,
-                 show_company = $5, show_links = $6, show_avatar = $7, updated_at = $8",
+                 show_company = $5, show_links = $6, show_avatar = $7, show_starred = $8, updated_at = $9",
         )
         .bind(user.as_str())
         .bind(v.display_name)
@@ -108,6 +109,7 @@ impl PgMetadataStore {
         .bind(v.company)
         .bind(v.links)
         .bind(v.avatar)
+        .bind(v.starred)
         .bind(now)
         .execute(conn)
         .await

@@ -153,7 +153,7 @@ async fn world() -> World {
         "POST",
         "/v1/repos",
         &Cred::bearer(&alice),
-        Some(json!({"name": "game", "visibility": "private"})),
+        Some(json!({"starter_policy": false, "name": "game", "visibility": "private"})),
     )
     .await;
     assert_eq!(created.status, StatusCode::CREATED);

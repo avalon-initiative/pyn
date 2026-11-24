@@ -10477,6 +10477,175 @@
         "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
+    "/v1/repos/{owner}/{name}/star": {
+      "get": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "get_star",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "whether the caller starred the repository, and how many accounts did",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StarState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found: no such repository, or one the caller cannot read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      },
+      "put": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "put_star",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "starred; starring again changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StarState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found: no such repository, or one the caller cannot read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: too many stars and unstars in an hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      },
+      "delete": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "delete_star",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "unstarred; removing a star that is not there changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StarState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found: no such repository, or one the caller cannot read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: too many stars and unstars in an hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      }
+    },
     "/v1/repos/{owner}/{name}/storage-cap": {
       "put": {
         "tags": [
@@ -11862,6 +12031,61 @@
           },
           "404": {
             "description": "user_not_found, or avatar_not_found when the user has none or hides it from the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "optional_sign_in"
+      }
+    },
+    "/v1/users/{user}/starred": {
+      "get": {
+        "tags": [
+          "profile_api"
+        ],
+        "operationId": "list_starred",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "description": "the account's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the repositories the user starred that the caller may see, newest star first, with the caller's role in each; a private repository never appears to someone with no role in it, and a profile that hides its stars (`visibility.starred`) lists none to everyone but its owner, indistinguishable from no stars",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StarredRepo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "credentials were sent but are not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "user_not_found: no such user, or an organization, or an account that is disabled or not yet approved",
             "content": {
               "application/json": {
                 "schema": {
@@ -13622,6 +13846,24 @@
               "null"
             ],
             "description": "The namespace to create it in: the caller's own account name, or an organization whose repository-creation\npolicy lets them. Defaults to the caller."
+          },
+          "starter_default": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Mode",
+                "description": "The starter policy's `[meta] default`: whether paths no entry covers are `shared` or `exclusive`. Defaults to\n`shared`; ignored when `starter_policy` is `false`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "starter_policy": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Defaults to `true`: the first commit holds `.pyn/pyn.toml` with the starter policy (shared by default, exclusive\nrules for object and binary files). `false` leaves the repository empty, under the server's initial policy."
           },
           "visibility": {
             "oneOf": [
@@ -16635,6 +16877,10 @@
           },
           "location": {
             "type": "boolean"
+          },
+          "starred": {
+            "type": "boolean",
+            "description": "The list of repositories the account starred."
           }
         }
       },
@@ -17078,7 +17324,9 @@
           "lease_hours",
           "max_locks_per_user",
           "max_locks_set_by_policy",
-          "created_at"
+          "created_at",
+          "star_count",
+          "starred"
         ],
         "properties": {
           "created_at": {
@@ -17153,6 +17401,16 @@
                 "type": "null"
               }
             ]
+          },
+          "star_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many accounts starred the repository. Anyone who can read the repository sees it, private ones included.",
+            "minimum": 0
+          },
+          "starred": {
+            "type": "boolean",
+            "description": "Whether the caller starred it; false for a signed-out caller."
           },
           "visibility": {
             "$ref": "#/components/schemas/Visibility"
@@ -18457,6 +18715,41 @@
           },
           "user": {
             "type": "string"
+          }
+        }
+      },
+      "StarState": {
+        "type": "object",
+        "description": "A repository's star count and whether the caller starred it.",
+        "required": [
+          "starred",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "starred": {
+            "type": "boolean"
+          }
+        }
+      },
+      "StarredRepo": {
+        "type": "object",
+        "description": "One repository in an account's list of stars.",
+        "required": [
+          "starred_at",
+          "repo"
+        ],
+        "properties": {
+          "repo": {
+            "$ref": "#/components/schemas/RepoInfo"
+          },
+          "starred_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

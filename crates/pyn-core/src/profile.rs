@@ -87,6 +87,7 @@ pub struct ProfileVisibility {
     pub company: bool,
     pub links: bool,
     pub avatar: bool,
+    pub starred: bool,
 }
 
 impl Default for ProfileVisibility {
@@ -98,6 +99,7 @@ impl Default for ProfileVisibility {
             company: true,
             links: true,
             avatar: true,
+            starred: true,
         }
     }
 }

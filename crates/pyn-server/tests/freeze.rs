@@ -190,7 +190,7 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
             "create_repo",
             "POST",
             "/v1/repos".into(),
-            Some(json!({"owner": owner, "name": "fresh"})),
+            Some(json!({"starter_policy": false, "owner": owner, "name": "fresh"})),
         ),
         case(
             "update_repo",
@@ -510,6 +510,14 @@ const EXEMPT: &[(&str, &str)] = &[
         "delete_avatar",
         "the account's own settings, not content under an owner",
     ),
+    (
+        "put_star",
+        "the account's own mark, not content under an owner",
+    ),
+    (
+        "delete_star",
+        "the account's own mark, not content under an owner",
+    ),
     ("login", "sign-in is unchanged"),
     ("sign_in", "sign-in is unchanged"),
     ("begin_sign_in", "sign-in is unchanged"),
@@ -610,7 +618,7 @@ async fn fixture() -> Fixture {
             &alice,
             "POST",
             "/v1/repos",
-            Some(json!({"owner": owner, "name": "game"})),
+            Some(json!({"starter_policy": false, "owner": owner, "name": "game"})),
         )
         .await;
         assert_eq!(r.status, StatusCode::CREATED, "{owner}");

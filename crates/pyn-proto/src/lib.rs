@@ -840,6 +840,9 @@ pub struct ProfileVisibility {
     pub links: bool,
     #[serde(default = "visible")]
     pub avatar: bool,
+    /// The list of repositories the account starred.
+    #[serde(default = "visible")]
+    pub starred: bool,
 }
 
 impl Default for ProfileVisibility {
@@ -851,6 +854,7 @@ impl Default for ProfileVisibility {
             company: true,
             links: true,
             avatar: true,
+            starred: true,
         }
     }
 }
@@ -1228,9 +1232,31 @@ pub struct RepoInfo {
     #[serde(default)]
     pub exclusive_read_only_source: ReadOnlySource,
     pub created_at: DateTime<Utc>,
+    /// How many accounts starred the repository. Anyone who can read the repository sees it, private ones included.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub star_count: u64,
+    /// Whether the caller starred it; false for a signed-out caller.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub starred: bool,
     /// The caller's role in the repository; absent when they have none.
     #[schema(value_type = Option<Role>)]
     pub role: Option<String>,
+}
+
+/// A repository's star count and whether the caller starred it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StarState {
+    pub starred: bool,
+    pub count: u64,
+}
+
+/// One repository in an account's list of stars.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StarredRepo {
+    pub starred_at: DateTime<Utc>,
+    pub repo: RepoInfo,
 }
 
 /// A repository in the administrator's listing.
@@ -1293,6 +1319,12 @@ pub struct CreateRepoRequest {
     pub lease_hours: Option<u32>,
     /// Locks one user may hold; defaults to the server's. A limit in the repository's policy file overrides it.
     pub max_locks_per_user: Option<u32>,
+    /// Defaults to `true`: the first commit holds `.pyn/pyn.toml` with the starter policy (shared by default, exclusive
+    /// rules for object and binary files). `false` leaves the repository empty, under the server's initial policy.
+    pub starter_policy: Option<bool>,
+    /// The starter policy's `[meta] default`: whether paths no entry covers are `shared` or `exclusive`. Defaults to
+    /// `shared`; ignored when `starter_policy` is `false`.
+    pub starter_default: Option<Mode>,
 }
 
 /// Fields left out stay as they are.

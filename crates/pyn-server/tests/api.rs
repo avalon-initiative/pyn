@@ -1965,11 +1965,59 @@ async fn create_repo(app: &axum::Router, token: &str, name: &str) -> api::RepoIn
         "POST",
         "/v1/repos",
         token,
-        Some(serde_json::json!({"name": name})),
+        Some(serde_json::json!({"starter_policy": false, "name": name})),
     )
     .await;
     assert_eq!(r.status(), StatusCode::CREATED);
     body_json(r).await
+}
+
+#[tokio::test]
+async fn creation_commits_the_starter_policy_unless_turned_off() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let cases = [
+        (
+            "on",
+            serde_json::json!({}),
+            api::PolicySource::File,
+            api::PolicyMode::Shared,
+        ),
+        (
+            "off",
+            serde_json::json!({"starter_policy": false}),
+            api::PolicySource::Initial,
+            api::PolicyMode::Shared,
+        ),
+        (
+            "locked",
+            serde_json::json!({"starter_policy": true, "starter_default": "exclusive"}),
+            api::PolicySource::File,
+            api::PolicyMode::Exclusive,
+        ),
+    ];
+    for (name, extra, source, default_mode) in cases {
+        let mut body = extra;
+        body["name"] = name.into();
+        let r = send(&app, "POST", "/v1/repos", &alice, Some(body)).await;
+        assert_eq!(r.status(), StatusCode::CREATED, "{name}");
+        let r = send(
+            &app,
+            "GET",
+            &format!("/v1/repos/alice/{name}/policy"),
+            &alice,
+            None,
+        )
+        .await;
+        let policy: api::ActivePolicy = body_json(r).await;
+        assert_eq!(policy.source, source, "{name}");
+        assert_eq!(policy.default_mode, default_mode, "{name}");
+        assert_eq!(
+            policy.commit.is_some(),
+            source == api::PolicySource::File,
+            "{name}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1992,7 +2040,7 @@ async fn repository_names_keep_their_case_and_resolve_ignoring_it() {
         "POST",
         "/v1/repos",
         &alice,
-        Some(serde_json::json!({"name": "mygame"})),
+        Some(serde_json::json!({"starter_policy": false, "name": "mygame"})),
     )
     .await;
     assert_eq!(dup.status(), StatusCode::CONFLICT);
@@ -2027,7 +2075,7 @@ async fn anyone_can_create_repositories_in_their_own_namespace() {
         "POST",
         "/v1/repos",
         &alice,
-        Some(serde_json::json!({"name": "game"})),
+        Some(serde_json::json!({"starter_policy": false, "name": "game"})),
     )
     .await;
     assert_eq!(dup.status(), StatusCode::CONFLICT);
@@ -2038,7 +2086,7 @@ async fn anyone_can_create_repositories_in_their_own_namespace() {
         "POST",
         "/v1/repos",
         &alice,
-        Some(serde_json::json!({"name": "Not Ok"})),
+        Some(serde_json::json!({"starter_policy": false, "name": "Not Ok"})),
     )
     .await;
     assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
@@ -2052,7 +2100,7 @@ async fn anyone_can_create_repositories_in_their_own_namespace() {
         "POST",
         "/v1/repos",
         &alice,
-        Some(serde_json::json!({"owner": "bob", "name": "game"})),
+        Some(serde_json::json!({"starter_policy": false, "owner": "bob", "name": "game"})),
     )
     .await;
     assert_eq!(elsewhere.status(), StatusCode::FORBIDDEN);
@@ -2063,7 +2111,11 @@ async fn anyone_can_create_repositories_in_their_own_namespace() {
 
     let anon_create = app
         .clone()
-        .oneshot(anon("POST", "/v1/repos", serde_json::json!({"name": "x"})))
+        .oneshot(anon(
+            "POST",
+            "/v1/repos",
+            serde_json::json!({"starter_policy": false, "name": "x"}),
+        ))
         .await
         .unwrap();
     assert_eq!(anon_create.status(), StatusCode::UNAUTHORIZED);
@@ -2389,7 +2441,7 @@ async fn a_token_works_only_in_the_repositories_it_was_made_for() {
         "POST",
         "/v1/repos",
         &made.token,
-        Some(serde_json::json!({"name": "three"})),
+        Some(serde_json::json!({"starter_policy": false, "name": "three"})),
     )
     .await;
     assert_eq!(
@@ -2750,7 +2802,7 @@ async fn the_lock_limit_is_set_at_creation_overridden_by_the_policy_file_and_enf
         "POST",
         "/v1/repos",
         &alice,
-        Some(serde_json::json!({"name": "game", "max_locks_per_user": 2})),
+        Some(serde_json::json!({"starter_policy": false, "name": "game", "max_locks_per_user": 2})),
     )
     .await;
     assert_eq!(r.status(), StatusCode::CREATED);
@@ -2764,7 +2816,7 @@ async fn the_lock_limit_is_set_at_creation_overridden_by_the_policy_file_and_enf
         "POST",
         "/v1/repos",
         &alice,
-        Some(serde_json::json!({"name": "bad", "max_locks_per_user": 0})),
+        Some(serde_json::json!({"starter_policy": false, "name": "bad", "max_locks_per_user": 0})),
     )
     .await;
     assert_eq!(zero.status(), StatusCode::BAD_REQUEST);
@@ -2951,7 +3003,7 @@ async fn visible_world() -> Visible {
             "POST",
             "/v1/repos",
             &alice,
-            Some(serde_json::json!({"name": name, "visibility": visibility})),
+            Some(serde_json::json!({"starter_policy": false, "name": name, "visibility": visibility})),
         )
         .await;
         assert_eq!(r.status(), StatusCode::CREATED);
@@ -3170,7 +3222,9 @@ async fn explore_pages_in_address_order_and_refuses_a_bad_cursor() {
             "POST",
             "/v1/repos",
             &v.bob,
-            Some(serde_json::json!({"name": name, "visibility": "public"})),
+            Some(
+                serde_json::json!({"starter_policy": false, "name": name, "visibility": "public"}),
+            ),
         )
         .await;
         assert_eq!(r.status(), StatusCode::CREATED);

@@ -768,6 +768,21 @@ enum RepoCommand {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
+    /// Star a repository you can read; starring it again changes nothing.
+    Star {
+        /// `owner/name`.
+        name: String,
+    },
+    /// Remove your star from a repository.
+    Unstar {
+        /// `owner/name`.
+        name: String,
+    },
+    /// List the repositories someone starred that you may see, newest star first.
+    Starred {
+        /// The account; you by default.
+        user: Option<String>,
+    },
     /// Make a repository public (anyone may read it) or private (members only). Owner and admin only.
     Visibility {
         /// `owner/name`.
@@ -3667,6 +3682,17 @@ fn parse_visibility(v: &str) -> Result<api::Visibility> {
     }
 }
 
+fn set_star(api: &Api, name: &str, on: bool) -> Result<()> {
+    let (owner, short) = address::split_repo(name)?;
+    let method = if on { Method::PUT } else { Method::DELETE };
+    let state: api::StarState = api
+        .send(api.request(method, &format!("/v1/repos/{owner}/{short}/star")))?
+        .json()?;
+    let verb = if on { "starred" } else { "unstarred" };
+    println!("{verb} {name} ({} stars)", state.count);
+    Ok(())
+}
+
 fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
     match cmd {
         RepoCommand::Create {
@@ -3678,20 +3704,22 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             no_policy,
             default,
         } => {
-            let policy = match (policy, no_policy) {
-                (Some(file), _) => Some(
-                    std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?,
+            let file = match &policy {
+                Some(file) => Some(
+                    std::fs::read(file).with_context(|| format!("reading {}", file.display()))?,
                 ),
-                (None, false) => {
-                    let mode = init_pyn::choose_default(
-                        default,
-                        interactive(),
-                        &mut std::io::stdin().lock(),
-                        &mut std::io::stderr(),
-                    )?;
-                    Some(init_pyn::starter_policy(mode).into_bytes())
-                }
-                (None, true) => None,
+                None => None,
+            };
+            let starter = file.is_none() && !no_policy;
+            let starter_default = if starter {
+                Some(init_pyn::choose_default(
+                    default,
+                    interactive(),
+                    &mut std::io::stdin().lock(),
+                    &mut std::io::stderr(),
+                )?)
+            } else {
+                None
             };
             let (owner, name) = match name.split_once('/') {
                 Some((owner, name)) => (Some(owner.to_string()), name.to_string()),
@@ -3704,6 +3732,11 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 visibility,
                 lease_hours,
                 max_locks_per_user: max_locks,
+                starter_policy: Some(starter),
+                starter_default: starter_default.map(|mode| match mode {
+                    init_pyn::DefaultMode::Shared => api::Mode::Shared,
+                    init_pyn::DefaultMode::Exclusive => api::Mode::Exclusive,
+                }),
             };
             let org = body.owner.clone().unwrap_or_default();
             let made: api::RepoInfo = api
@@ -3711,7 +3744,10 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 .map_err(|e| explain_create_refusal(e, &org))?
                 .json()?;
             println!("created {}/{}", made.owner, made.name);
-            if let Some(bytes) = policy {
+            if starter {
+                println!("added {POLICY_PATH}");
+            }
+            if let Some(bytes) = file {
                 let repo = format!("/v1/repos/{}/{}", made.owner, made.name);
                 submit_policy(api, &repo, bytes)
                     .context("the repository was created, but its policy was not accepted")?;
@@ -3769,6 +3805,32 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 })
                 .collect();
             table::show(&["ROLE", "REPOSITORY"], &rows, "no public repositories");
+        }
+        RepoCommand::Star { name } => set_star(api, &name, true)?,
+        RepoCommand::Unstar { name } => set_star(api, &name, false)?,
+        RepoCommand::Starred { user } => {
+            let user = match user {
+                Some(user) => user,
+                None => api.send(api.get("/v1/me"))?.json::<api::Account>()?.user,
+            };
+            let starred: Vec<api::StarredRepo> = api
+                .send(api.get(&format!("/v1/users/{user}/starred")))?
+                .json()?;
+            let rows: Vec<Vec<String>> = starred
+                .into_iter()
+                .map(|s| {
+                    vec![
+                        time::local(s.starred_at),
+                        s.repo.star_count.to_string(),
+                        format!("{}/{}", s.repo.owner, s.repo.name),
+                    ]
+                })
+                .collect();
+            table::show(
+                &["STARRED", "STARS", "REPOSITORY"],
+                &rows,
+                "no starred repositories",
+            );
         }
         RepoCommand::Visibility { name, visibility } => {
             let (owner, short) = address::split_repo(&name)?;

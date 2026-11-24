@@ -140,7 +140,7 @@ pub use repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
     Standing, SubjectKind,
 };
-pub use repositories::Repositories;
+pub use repositories::{Repositories, StarState};
 pub use rules::{Mode, PathFilter, PathMatch, RuleEntry, Rules};
 pub use service::{
     ActivePolicy, COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeEntry, ChangeKind, CommitPage,

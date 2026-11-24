@@ -262,6 +262,13 @@ impl AccessState {
                 ((repo, u), r)
             })
             .collect();
+        self.stars = std::mem::take(&mut self.stars)
+            .into_iter()
+            .map(|((repo, mut u), at)| {
+                swap(&mut u);
+                ((repo, u), at)
+            })
+            .collect();
         self.org_roles = std::mem::take(&mut self.org_roles)
             .into_iter()
             .map(|((org, mut u), r)| {
