@@ -152,7 +152,14 @@ async fn service(app: &Router, name: &str, scopes: &[&str]) -> String {
 }
 
 async fn make_repo(app: &Router, who: &str, name: &str) -> Reply {
-    send(app, who, "POST", "/v1/repos", Some(json!({"name": name}))).await
+    send(
+        app,
+        who,
+        "POST",
+        "/v1/repos",
+        Some(json!({"starter_policy": false, "name": name})),
+    )
+    .await
 }
 
 #[tokio::test]
@@ -641,7 +648,7 @@ async fn owner_usage_and_limits_need_a_full_scope_credential() {
         &alice,
         "POST",
         "/v1/repos",
-        Some(json!({"owner": "acme", "name": "plans", "visibility": "private"})),
+        Some(json!({"starter_policy": false, "owner": "acme", "name": "plans", "visibility": "private"})),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);

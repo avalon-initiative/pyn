@@ -190,7 +190,7 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
             "create_repo",
             "POST",
             "/v1/repos".into(),
-            Some(json!({"owner": owner, "name": "fresh"})),
+            Some(json!({"starter_policy": false, "owner": owner, "name": "fresh"})),
         ),
         case(
             "update_repo",
@@ -610,7 +610,7 @@ async fn fixture() -> Fixture {
             &alice,
             "POST",
             "/v1/repos",
-            Some(json!({"owner": owner, "name": "game"})),
+            Some(json!({"starter_policy": false, "owner": owner, "name": "game"})),
         )
         .await;
         assert_eq!(r.status, StatusCode::CREATED, "{owner}");

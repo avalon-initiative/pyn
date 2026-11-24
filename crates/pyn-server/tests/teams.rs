@@ -513,7 +513,13 @@ async fn only_someone_who_can_grant_the_role_may_set_a_team_role() {
 async fn teams_belong_to_organizations_and_repositories_of_users_have_none() {
     let o = acme().await;
     let (app, alice) = (&o.app, &o.alice);
-    post(app, alice, "/v1/repos", json!({"name": "mine"})).await;
+    post(
+        app,
+        alice,
+        "/v1/repos",
+        json!({"starter_policy": false, "name": "mine"}),
+    )
+    .await;
     let r = call(
         app,
         alice,

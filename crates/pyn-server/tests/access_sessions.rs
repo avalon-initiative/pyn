@@ -176,7 +176,7 @@ async fn scene() -> Scene {
             &alice,
             "POST",
             "/v1/repos",
-            Some(json!({"owner": owner, "name": name})),
+            Some(json!({"starter_policy": false, "owner": owner, "name": name})),
         )
         .await;
         assert_eq!(r.status, StatusCode::CREATED);
@@ -195,7 +195,7 @@ async fn scene() -> Scene {
         &alice,
         "POST",
         "/v1/repos",
-        Some(json!({"owner": "acme", "name": "tools"})),
+        Some(json!({"starter_policy": false, "owner": "acme", "name": "tools"})),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);

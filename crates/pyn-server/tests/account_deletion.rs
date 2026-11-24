@@ -292,7 +292,7 @@ async fn an_account_owning_a_repository_names_it_in_the_refusal() {
         "POST",
         "/v1/repos",
         Some(("bearer", &alice)),
-        Some(serde_json::json!({"name": "game"})),
+        Some(serde_json::json!({"starter_policy": false, "name": "game"})),
     )
     .await;
     assert_eq!(
