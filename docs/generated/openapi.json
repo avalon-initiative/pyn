@@ -8767,6 +8767,36 @@
               "type": "integer",
               "minimum": 0
             }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "description": "keep revisions written by this account name (as in the revision's `author`); repeatable, any of them matches; repository history only",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "keep revisions made at or after this RFC 3339 instant; repository history only",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "keep revisions made at or before this RFC 3339 instant; repository history only",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -8780,11 +8810,69 @@
             }
           },
           "400": {
-            "description": "invalid_request for a bad filter or cursor, or path combined with filter",
+            "description": "invalid_request for a bad filter, cursor or timestamp, path combined with filter, or path combined with author, since or until",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "branch_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      }
+    },
+    "/v1/repos/{owner}/{name}/history/authors": {
+      "get": {
+        "tags": [],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
+        "operationId": "history_authors",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "description": "the branch to read; the default branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryAuthors"
                 }
               }
             }
@@ -14577,6 +14665,22 @@
           "fresh_until": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "HistoryAuthors": {
+        "type": "object",
+        "description": "The accounts that wrote revisions on a branch, for a history author filter.",
+        "required": [
+          "authors"
+        ],
+        "properties": {
+          "authors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Account names as written in the revisions (what `author` filters on), sorted; a renamed account's older revisions keep its old name."
           }
         }
       },

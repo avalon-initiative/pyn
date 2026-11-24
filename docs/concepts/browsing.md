@@ -63,8 +63,16 @@ Watchers, forks and tags do not exist on the server and are not reported.
 | Parameter | Meaning |
 | --- | --- |
 | `filter` | a glob over paths; only matching revisions are returned. A bad pattern is `400 invalid_request` |
+| `author` | an account name as written in the revision's `author`; repeatable, a revision by any of the given names matches. A renamed account's older revisions keep the name they were written under |
+| `since`, `until` | RFC 3339 instants; keep revisions made at or after `since` and at or before `until`. A bad value is `400 invalid_request` |
 | `limit` | page size, default 50, at most 200 (a larger value is capped, 0 is 1) |
 | `before` | the previous page's `next_cursor`; omit for the first page. Not parsable is `400 invalid_request` |
+
+`author`, `since` and `until` apply to the repository-wide mode and combine with `filter` (all must hold); with `path` they are
+`400 invalid_request`. `GET /v1/repos/{owner}/{name}/history/authors?branch=` needs `read` and answers `{ authors }`, the sorted
+distinct authors of the revisions the branch contains, for a filter control to offer. On a pyn server, `pyn log --author`,
+`--since` and `--until` select commits instead (see [commits](commits.md#filtering-commits)); the revision filters are an API
+feature for clients that list revisions.
 
 A request examines a bounded number of revisions. When a selective `filter` uses that up before the page is full, the response holds
 what matched so far and a `next_cursor`: keep following it until `next_cursor` is absent.

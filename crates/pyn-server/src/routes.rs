@@ -1061,6 +1061,11 @@ fn table() -> Vec<Entry> {
             crate::history,
         ),
         get(
+            "/v1/repos/{owner}/{name}/history/authors",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            crate::history_authors,
+        ),
+        get(
             "/v1/repos/{owner}/{name}/verify",
             Reach::PublicRepoRead(need(Contents, Read)),
             crate::verify,

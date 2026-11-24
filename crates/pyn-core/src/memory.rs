@@ -25,7 +25,7 @@ use crate::branch::{Branch, DEFAULT_BRANCH, conflicts};
 use crate::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use crate::deletion::{AccountDeletion, AccountPurge, DeletionSchedule, NameReservation};
 use crate::error::{PynError, Result};
-use crate::history::{HistoryCursor, HistoryScan};
+use crate::history::{HistoryBy, HistoryCursor, HistoryScan};
 use crate::limit_events::{LimitsEvent, LockChange, LockEventBuilder};
 use crate::limits::{
     FolderUsage, Limits, LimitsChange, PathUsage, RepoBreakdown, RepoUsage, StorageCap, Usage,
@@ -1708,12 +1708,13 @@ impl MetadataStore for MemoryMetadataStore {
         &self,
         repo: &RepoId,
         within: Option<&ObjectId>,
-        filter: Option<&PathFilter>,
+        by: &HistoryBy,
         before: Option<&HistoryCursor>,
         limit: usize,
         budget: usize,
     ) -> Result<HistoryScan> {
         let budget = budget.max(1);
+        let filter = by.path.as_ref();
         let st = self.state.lock().unwrap();
         let reachable = within.map(|t| st.ancestors(repo, t));
         let mut revs: Vec<&Revision> = st
@@ -1723,6 +1724,7 @@ impl MetadataStore for MemoryMetadataStore {
             .flat_map(|(_, revs)| revs)
             .filter(|r| reachable.as_ref().is_none_or(|a| a.contains(&r.commit)))
             .filter(|r| before.is_none_or(|b| history_key(r) < b.sort_key()))
+            .filter(|r| by.matches_who_and_when(r))
             .filter(|r| {
                 filter
                     .and_then(PathFilter::prefix)
@@ -1749,6 +1751,24 @@ impl MetadataStore for MemoryMetadataStore {
             revisions,
             resume: None,
         })
+    }
+
+    async fn history_authors(
+        &self,
+        repo: &RepoId,
+        within: Option<&ObjectId>,
+    ) -> Result<Vec<String>> {
+        let st = self.state.lock().unwrap();
+        let reachable = within.map(|t| st.ancestors(repo, t));
+        let authors: std::collections::BTreeSet<&str> = st
+            .revisions
+            .iter()
+            .filter(|((r, _), _)| r == repo)
+            .flat_map(|(_, revs)| revs)
+            .filter(|r| reachable.as_ref().is_none_or(|a| a.contains(&r.commit)))
+            .map(|r| r.author.as_str())
+            .collect();
+        Ok(authors.into_iter().map(str::to_string).collect())
     }
 
     async fn create_repo_capped_with_events(

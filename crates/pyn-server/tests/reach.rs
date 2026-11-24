@@ -1082,6 +1082,7 @@ const REPOSITORY_ROUTES: &[(&str, &str, &str)] = &[
     ("POST", "/objects/missing", "repo_scoped:contents:write"),
     ("POST", "/objects/assemble", "repo_scoped:contents:write"),
     ("GET", "/history", "public_repo_read:contents:read"),
+    ("GET", "/history/authors", "public_repo_read:contents:read"),
     ("GET", "/verify", "public_repo_read:contents:read"),
     ("GET", "/commits", "public_repo_read:contents:read"),
     ("GET", "/commits/{commit}", "public_repo_read:contents:read"),

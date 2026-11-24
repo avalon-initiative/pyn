@@ -301,6 +301,7 @@ struct RepoAddress {
         missing_objects,
         assemble_object,
         history,
+        history_authors,
         verify,
         list_commits,
         get_commit,
@@ -321,6 +322,7 @@ struct RepoAddress {
         api::Lock,
         api::Revision,
         api::HistoryPage,
+        api::HistoryAuthors,
         api::VerifyReport,
         api::VerifyProblem,
         api::Commit,
@@ -1327,13 +1329,43 @@ async fn assemble_object(
     }))
 }
 
-#[derive(Deserialize)]
 struct HistoryQuery {
     branch: Option<String>,
     path: Option<String>,
     filter: Option<String>,
     before: Option<String>,
     limit: Option<usize>,
+    since: Option<String>,
+    until: Option<String>,
+}
+
+impl HistoryQuery {
+    /// Reads the pairs by hand because the repeatable `author` parameter does not fit a typed query.
+    fn from_pairs(raw: &[(String, String)]) -> Result<Self, PynError> {
+        let one = |key: &str| raw.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        Ok(Self {
+            branch: one("branch"),
+            path: one("path"),
+            filter: one("filter"),
+            before: one("before"),
+            limit: one("limit")
+                .map(|v| {
+                    v.parse().map_err(|_| {
+                        PynError::InvalidRequest(format!("limit is not a number: {v:?}"))
+                    })
+                })
+                .transpose()?,
+            since: one("since"),
+            until: one("until"),
+        })
+    }
+}
+
+fn authors_param(raw: &[(String, String)]) -> Vec<String> {
+    raw.iter()
+        .filter(|(k, _)| k == "author")
+        .map(|(_, v)| v.clone())
+        .collect()
 }
 
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
@@ -1343,16 +1375,40 @@ struct HistoryQuery {
            ("path" = Option<String>, Query, description = "one path's revisions, oldest first, paged; excludes filter"),
            ("filter" = Option<String>, Query, description = "glob over paths for repository history; no slash matches at any depth"),
            ("before" = Option<String>, Query, description = "the previous page's next_cursor, for repository history and for path"),
-           ("limit" = Option<usize>, Query, description = "page size, default 50, max 200")),
+           ("limit" = Option<usize>, Query, description = "page size, default 50, max 200"),
+           ("author" = Option<Vec<String>>, Query, description = "keep revisions written by this account name (as in the revision's `author`); repeatable, any of them matches; repository history only"),
+           ("since" = Option<String>, Query, description = "keep revisions made at or after this RFC 3339 instant; repository history only"),
+           ("until" = Option<String>, Query, description = "keep revisions made at or before this RFC 3339 instant; repository history only")),
     responses((status = 200, body = api::HistoryPage),
               (status = 404, body = api::ErrorBody, description = "branch_not_found"),
-              (status = 400, body = api::ErrorBody, description = "invalid_request for a bad filter or cursor, or path combined with filter")))]
+              (status = 400, body = api::ErrorBody, description = "invalid_request for a bad filter, cursor or timestamp, path combined with filter, or path combined with author, since or until")))]
 async fn history(
     State(s): State<AppState>,
     RepoReader { repo, .. }: RepoReader,
-    Query(q): Query<HistoryQuery>,
+    Query(raw): Query<Vec<(String, String)>>,
 ) -> ApiResult<Json<api::HistoryPage>> {
+    let q = HistoryQuery::from_pairs(&raw)?;
+    let mut by = pyn_core::HistoryBy {
+        path: None,
+        authors: authors_param(&raw),
+        since: q
+            .since
+            .as_deref()
+            .map(|t| rfc3339("since", t))
+            .transpose()?,
+        until: q
+            .until
+            .as_deref()
+            .map(|t| rfc3339("until", t))
+            .transpose()?,
+    };
     if let Some(path) = q.path {
+        if by.has_who_or_when() {
+            return Err(PynError::InvalidRequest(
+                "path cannot be combined with author, since or until".into(),
+            )
+            .into());
+        }
         if q.filter.is_some() {
             return Err(
                 PynError::InvalidRequest("path cannot be combined with filter".into()).into(),
@@ -1375,13 +1431,13 @@ async fn history(
             next_cursor: page.next.map(encode_path_cursor),
         }));
     }
-    let filter = q.filter.as_deref().map(PathFilter::new).transpose()?;
+    by.path = q.filter.as_deref().map(PathFilter::new).transpose()?;
     let before = q.before.as_deref().map(HistoryCursor::decode).transpose()?;
     let page = repo
         .service
-        .repo_history_on(
+        .repo_history_by_on(
             branch_of(q.branch.as_deref()),
-            filter.as_ref(),
+            &by,
             before.as_ref(),
             q.limit,
         )
@@ -1392,6 +1448,28 @@ async fn history(
         revisions,
         next_cursor: page.next.map(|c| c.encode()),
     }))
+}
+
+#[derive(Deserialize)]
+struct AuthorsQuery {
+    branch: Option<String>,
+}
+
+/// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/history/authors",
+    params(RepoAddress,
+           ("branch" = Option<String>, Query, description = "the branch to read; the default branch if omitted")),
+    responses((status = 200, body = api::HistoryAuthors),
+              (status = 404, body = api::ErrorBody, description = "branch_not_found")))]
+async fn history_authors(
+    RepoReader { repo, .. }: RepoReader,
+    Query(q): Query<AuthorsQuery>,
+) -> ApiResult<Json<api::HistoryAuthors>> {
+    let authors = repo
+        .service
+        .history_authors_on(branch_of(q.branch.as_deref()))
+        .await?;
+    Ok(Json(api::HistoryAuthors { authors }))
 }
 
 #[derive(Deserialize)]

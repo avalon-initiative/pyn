@@ -13,7 +13,7 @@ use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
     BREAKDOWN_PATHS, Branch, ChangesetItem, Commit, CommitFilter, EventDraft, FileMode,
-    FolderUsage, HeadCounts, HistoryCursor, HistoryScan, LfsObject, Lock, LockChange,
+    FolderUsage, HeadCounts, HistoryBy, HistoryCursor, HistoryScan, LfsObject, Lock, LockChange,
     LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person, PushedCommit,
     PynError, REPO_ALGORITHM, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings,
     RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, TusCancel,
@@ -2477,11 +2477,12 @@ impl MetadataStore for PgMetadataStore {
         &self,
         repo: &RepoId,
         within: Option<&ObjectId>,
-        filter: Option<&PathFilter>,
+        by: &HistoryBy,
         before: Option<&HistoryCursor>,
         limit: usize,
         budget: usize,
     ) -> Result<HistoryScan> {
+        let filter = by.path.as_ref();
         // The glob runs here, so one ordered query is read row by row until `limit` rows match or the budget is spent.
         let budget = budget.max(1);
         let rows_wanted = if filter.is_some_and(|f| f.prefix().is_none()) {
@@ -2497,6 +2498,9 @@ impl MetadataStore for PgMetadataStore {
                AND ($3::timestamptz IS NULL
                     OR (created_at, path COLLATE \"C\", id) < ($3, $4::text COLLATE \"C\", $5::bigint))
                AND ($7::text IS NULL OR starts_with(path, $7))
+               AND (cardinality($8::text[]) = 0 OR author = ANY($8))
+               AND ($9::timestamptz IS NULL OR created_at >= $9)
+               AND ($10::timestamptz IS NULL OR created_at <= $10)
              ORDER BY created_at DESC, path COLLATE \"C\" DESC, id DESC
              LIMIT $6"
         )))
@@ -2507,6 +2511,9 @@ impl MetadataStore for PgMetadataStore {
         .bind(before.map(|c| c.id.0 as i64))
         .bind(rows_wanted as i64)
         .bind(filter.and_then(PathFilter::prefix))
+        .bind(&by.authors)
+        .bind(by.since)
+        .bind(by.until)
         .fetch(&self.pool);
         let mut revisions = Vec::new();
         let mut examined = 0;
@@ -2530,6 +2537,26 @@ impl MetadataStore for PgMetadataStore {
             revisions,
             resume: if spent { last } else { None },
         })
+    }
+
+    async fn history_authors(
+        &self,
+        repo: &RepoId,
+        within: Option<&ObjectId>,
+    ) -> Result<Vec<String>> {
+        sqlx::query_scalar(AssertSqlSafe(format!(
+            "{ANCESTORS}
+             SELECT author FROM (
+                 SELECT DISTINCT author FROM revisions
+                 WHERE repo = $2 AND ($1::text IS NULL OR commit_id IN (SELECT id FROM anc))
+             ) found
+             ORDER BY author COLLATE \"C\""
+        )))
+        .bind(within.map(ObjectId::to_hex))
+        .bind(repo.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)
     }
 
     async fn create_repo_capped_with_events(
