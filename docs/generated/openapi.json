@@ -7242,7 +7242,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7290,7 +7290,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7342,7 +7342,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7430,7 +7430,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7528,7 +7528,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7590,7 +7590,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7670,7 +7670,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7728,7 +7728,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7817,7 +7817,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7915,7 +7915,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7993,7 +7993,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8082,7 +8082,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8161,7 +8161,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8311,7 +8311,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8381,7 +8381,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8458,7 +8458,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8553,7 +8553,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8651,7 +8651,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8720,7 +8720,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8796,7 +8796,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -8866,7 +8866,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9001,7 +9001,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9060,7 +9060,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9101,7 +9101,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9161,7 +9161,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9212,7 +9212,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9311,7 +9311,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9355,7 +9355,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9436,7 +9436,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9486,7 +9486,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9530,7 +9530,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9602,7 +9602,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9694,7 +9694,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9773,7 +9773,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9858,7 +9858,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -9927,7 +9927,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10012,7 +10012,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10074,7 +10074,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10157,7 +10157,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10217,7 +10217,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10288,7 +10288,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10397,7 +10397,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10447,7 +10447,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10527,7 +10527,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10590,7 +10590,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10650,7 +10650,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10747,7 +10747,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10796,7 +10796,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10855,7 +10855,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10916,7 +10916,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -10996,7 +10996,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11065,7 +11065,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11129,7 +11129,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11210,7 +11210,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11282,7 +11282,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11360,7 +11360,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11401,7 +11401,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11462,7 +11462,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11531,7 +11531,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11628,7 +11628,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11677,7 +11677,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -11746,7 +11746,7 @@
           {
             "name": "name",
             "in": "path",
-            "description": "The repository's name within its owner; matched ignoring case.",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
             "required": true,
             "schema": {
               "type": "string"
@@ -14303,7 +14303,8 @@
             "minimum": 0
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Normalised to a canonical name (trimmed, spaces become `-`, lowercased): 1 to 100 letters, digits, `-`, `_` or `.`, starting with a letter or digit and not ending in `.`."
           },
           "owner": {
             "type": [
@@ -20213,7 +20214,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The new name, normalised like a new repository's."
           },
           "visibility": {
             "oneOf": [
