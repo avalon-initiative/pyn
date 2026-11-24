@@ -193,6 +193,12 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
             Some(json!({"starter_policy": false, "owner": owner, "name": "fresh"})),
         ),
         case(
+            "fork_repo",
+            "POST",
+            format!("{repo}/forks"),
+            Some(json!({"owner": owner, "name": "forked"})),
+        ),
+        case(
             "update_repo",
             "PATCH",
             repo.clone(),
