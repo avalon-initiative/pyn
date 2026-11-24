@@ -109,6 +109,14 @@ pub enum PynError {
         "invalid branch name {0:?}: use git's ref rules, with no spaces and none of ~ ^ : ? * [ \\ or .."
     )]
     InvalidBranchName(String),
+    #[error("the repository has no tag {0}")]
+    TagNotFound(String),
+    #[error("a tag named {0} already exists, or is a folder of one that does")]
+    TagExists(String),
+    #[error(
+        "invalid tag name {0:?}: use git's ref rules, with no spaces and none of ~ ^ : ? * [ \\ or .."
+    )]
+    InvalidTagName(String),
     #[error(
         "the branch {0} is not fully merged into the default branch; delete it with force to discard it"
     )]
@@ -440,6 +448,9 @@ impl PynError {
             Self::BranchNotFound(_) => "branch_not_found",
             Self::BranchExists(_) => "branch_exists",
             Self::InvalidBranchName(_) => "invalid_branch_name",
+            Self::TagNotFound(_) => "tag_not_found",
+            Self::TagExists(_) => "tag_exists",
+            Self::InvalidTagName(_) => "invalid_tag_name",
             Self::BranchNotMerged(_) => "branch_not_merged",
             Self::MergeConflict(_) => "merge_conflict",
             Self::MergeStale(_) => "merge_stale",

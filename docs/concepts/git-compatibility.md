@@ -166,7 +166,7 @@ The commands named in decision #218.
 | `git pull` | `pyn pull` on a git home | git home only | Fetch, then merge through `pyn merge`; see [Pull on a git home](#pull-on-a-git-home). On a pyn server it fetches into the local store and merges (a workspace cloned with `--no-local-store` runs `pyn update`), see [Remotes on a pyn server](#remotes-on-a-pyn-server). |
 | `git push` | `pyn push` on a git home | git home only | See [Push on a git home](#push-on-a-git-home). On a pyn server it publishes the local commits of the current branch to the branch it follows, or of the branches named; `-u`, `--delete <branch>` and `origin :<branch>` work (also without the store), a branch with no upstream is refused as with `push.default=simple`, and a branch the server lacks is created by the push (a workspace cloned with `--no-local-store` prints that there is nothing to push, because a commit goes straight to the server); see [Remotes on a pyn server](#remotes-on-a-pyn-server) and [local branches](workspace.md#local-branches). |
 | `git remote` | `pyn remote` | git home; pyn server partly | On a git home it lists and edits the remotes in `.git/config`, see [Remotes](#remotes). On a pyn server `pyn remote`, `pyn remote -v` and `pyn remote get-url origin` show the one remote, `origin`: the server and repository set by `--server` and `--repo` or `pyn config set server` and `repo`; `add`, `remove`, `rename` and `set-url` say that a server home has exactly one home and exit `1`. |
-| `git tag [-a] [-s] [-u <keyid>] [--no-sign] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` | supported | See [Tags](#tags). On a pyn server the tags are local-only refs in the local store (workspaces with `local_store` on); they are never pushed, and `-s`, `-u` are refused (#447). |
+| `git tag [-a] [-s] [-u <keyid>] [--no-sign] [-m <msg>] [-f] [<name> [<commit>]]`, `-d`, `-l` | `pyn tag ...` | supported | See [Tags](#tags). On a pyn server the tags are local-only refs in the local store (workspaces with `local_store` on); they are never pushed, and `-s`, `-u` are refused (#447). `--server` (implied without the local store) uses the repository's immutable [server tags](branches.md#tags) instead, and refuses `-f`. |
 | `git stash [push] [-p] [-u] [-k] [-m <msg>] [-- <paths>]`, `list`, `pop`, `apply` (`--index`), `drop`, `clear`, `show`, `branch`, `create`, `store` | `pyn stash ...` on a git home | git home only | See [Stashing](#stashing). On a pyn server it prints the git-command message. |
 | `git clean [-n] [-f] [-d] [-x\|-X] [-q] [-i] [-e <pattern>] [--] [<path>...]` | `pyn clean ...` on a git home | git home only | See [Clean](#clean). Without `-f`, `-n` or `-i` it refuses, as `clean.requireForce` does; `-i` is git's menu; pathspecs are git's, see [Pathspecs](#pathspecs). |
 
@@ -2234,8 +2234,8 @@ byte as git writes it. There is no editor, so `-a` needs `-m`. `-f` replaces a t
 On a pyn server workspace with `local_store` on, `pyn tag` has the same create, list (`-l`), `-a`/`-m`, `-f` and `-d` forms, with the
 tag refs kept in the local store (`refs/tags/` there). The tagger is the signed-in account (`<account>@pyn.invalid`), `HEAD` is
 the workspace branch's local tip, and the commit is `HEAD~N`, a hash or another tag. Tags are local only: `pyn push` and
-`pyn pull` neither send nor fetch them, the server has no tag concept (publishing tags is a separate decision and needs a contract
-change), and a workspace without the store refuses `tag` and says how to turn the store on. `pyn show`, `pyn diff` and `pyn log` accept a tag name
+`pyn pull` neither send nor fetch them, the server's own immutable [tags](branches.md#tags) are a separate list, reached with `pyn tag --server` (a workspace without
+the store uses it automatically). `pyn show`, `pyn diff` and `pyn log` accept a tag name
 wherever they take a commit (`log v1..v2`, `log v1~2`, `log ^v1 HEAD`). Signing (`-s`, `-u`) needs a git home.
 
 ### Signing

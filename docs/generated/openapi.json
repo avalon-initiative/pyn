@@ -11046,6 +11046,259 @@
         "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
+    "/v1/repos/{owner}/{name}/tags": {
+      "get": {
+        "tags": [
+          "tag_api"
+        ],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.",
+        "operationId": "list_tags",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "every tag, ordered by name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Tag"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      },
+      "post": {
+        "tags": [
+          "tag_api"
+        ],
+        "summary": "Create a tag at a commit.",
+        "operationId": "create_tag",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tag"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_tag_name, ambiguous_commit for the target, or invalid_request when the repository has no commit to tag",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "needs the checkin permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "commit_not_found: the target names no commit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "tag_exists: the name is taken, or is a folder of another tag's name; a tag is never moved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "repo_scoped:contents:write"
+      }
+    },
+    "/v1/repos/{owner}/{name}/tags/{tag}": {
+      "get": {
+        "tags": [
+          "tag_api"
+        ],
+        "operationId": "get_tag",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "path",
+            "description": "the tag's name; a slash may be sent as is or as %2F",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tag"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "tag_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      },
+      "delete": {
+        "tags": [
+          "tag_api"
+        ],
+        "summary": "Delete a tag's name; its commit stays.",
+        "operationId": "delete_tag",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "path",
+            "description": "the tag's name; a slash may be sent as is or as %2F",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "description": "needs the checkin permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "tag_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "repo_scoped:contents:write"
+      }
+    },
     "/v1/repos/{owner}/{name}/teams": {
       "get": {
         "tags": [
@@ -14415,6 +14668,32 @@
               "type": "string"
             },
             "description": "At least one of `manage_accounts`, `manage_organizations`, `manage_limits`, `manage_webhooks`, `manage_freeze`."
+          }
+        }
+      },
+      "CreateTagRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An optional note kept with the tag."
+          },
+          "name": {
+            "type": "string",
+            "description": "Git ref rules apply: no spaces, none of `~ ^ : ? * [ \\`, no `..`."
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A branch or tag name, or a commit id or abbreviation of at least 4 digits; the default branch's head if omitted."
           }
         }
       },
@@ -19693,6 +19972,48 @@
             "format": "int64",
             "description": "The stranded revision of the path.",
             "minimum": 0
+          }
+        }
+      },
+      "Tag": {
+        "type": "object",
+        "description": "A tag: an immutable name pointing at a commit. It never moves; deleting it frees the name.",
+        "required": [
+          "name",
+          "commit",
+          "message",
+          "created_at",
+          "created_by"
+        ],
+        "properties": {
+          "commit": {
+            "type": "string",
+            "description": "The commit the tag points at."
+          },
+          "committed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The committed time of the tagged commit."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The note given when the tag was made; null when there was none."
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
