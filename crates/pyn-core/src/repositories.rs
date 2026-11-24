@@ -23,6 +23,8 @@ use crate::store::MetadataStore;
 use crate::types::{Lock, UserId};
 use crate::webhook::OutboxEvent;
 
+mod stars;
+pub use stars::StarState;
 mod visible;
 
 fn limit_detail(settings: &RepoSettings) -> String {

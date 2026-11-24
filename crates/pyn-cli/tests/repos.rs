@@ -35,6 +35,41 @@ fn explore_lists_public_repositories_whatever_the_role() {
 }
 
 #[test]
+fn stars_are_set_removed_and_listed() {
+    let env = start_empty();
+    let home = env.dir("home");
+    env.ok(
+        &home,
+        "alice",
+        &["repo", "create", "alice/tools", "--visibility", "public"],
+    );
+
+    let out = env.ok(&home, "bob", &["repo", "star", "alice/tools"]);
+    assert!(out.contains("starred alice/tools (1 stars)"), "{out}");
+    let again = env.ok(&home, "bob", &["repo", "star", "alice/tools"]);
+    assert!(again.contains("(1 stars)"), "{again}");
+    let missing = env.fails(&home, "bob", &["repo", "star", "alice/nothing"]);
+    assert!(missing.contains("repo_not_found"), "{missing}");
+
+    let listed = env.ok(&home, "bob", &["repo", "starred"]);
+    let rows = cell_rows(&listed);
+    assert_eq!(rows[0], ["STARRED", "STARS", "REPOSITORY"]);
+    assert_eq!(rows[1][1..], ["1", "alice/tools"]);
+    assert_eq!(
+        env.ok(&home, "alice", &["repo", "starred", "bob"]),
+        listed,
+        "another account's list reads the same"
+    );
+
+    let out = env.ok(&home, "bob", &["repo", "unstar", "alice/tools"]);
+    assert!(out.contains("unstarred alice/tools (0 stars)"), "{out}");
+    assert_eq!(
+        env.ok(&home, "bob", &["repo", "starred"]).trim(),
+        "no starred repositories"
+    );
+}
+
+#[test]
 fn repositories_are_created_listed_and_deleted() {
     let env = start_empty();
     let home = env.dir("home");

@@ -87,6 +87,8 @@ mod self_service;
 pub use self_service::*;
 mod profiles;
 pub use profiles::*;
+mod stars;
+pub use stars::*;
 mod two_factor;
 pub use two_factor::*;
 mod object_store;
@@ -9519,6 +9521,9 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_display_name_and_a_url_and_replace_them_together);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_are_apart_from_user_profiles_and_go_with_the_org);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_people_search_lists_active_accounts_and_matches_only_what_is_visible);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; stars_are_one_per_user_and_repository_and_counted);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_users_stars_list_newest_first_and_only_theirs);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; stars_go_with_their_repository_and_follow_a_rename);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

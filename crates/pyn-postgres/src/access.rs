@@ -457,9 +457,69 @@ impl AccessStore for PgMetadataStore {
         Ok(rows.into_iter().map(RepoId::new).collect())
     }
 
+    async fn add_star(&self, repo: &RepoId, user: &UserId, now: DateTime<Utc>) -> Result<bool> {
+        let done = sqlx::query(
+            "INSERT INTO repo_stars (repo, user_id, created_at) VALUES ($1, $2, $3)
+             ON CONFLICT (repo, user_id) DO NOTHING",
+        )
+        .bind(repo.as_str())
+        .bind(user.as_str())
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn remove_star(&self, repo: &RepoId, user: &UserId) -> Result<bool> {
+        let done = sqlx::query("DELETE FROM repo_stars WHERE repo = $1 AND user_id = $2")
+            .bind(repo.as_str())
+            .bind(user.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn has_star(&self, repo: &RepoId, user: &UserId) -> Result<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM repo_stars WHERE repo = $1 AND user_id = $2)",
+        )
+        .bind(repo.as_str())
+        .bind(user.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)
+    }
+
+    async fn star_count(&self, repo: &RepoId) -> Result<u64> {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM repo_stars WHERE repo = $1")
+            .bind(repo.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(n as u64)
+    }
+
+    async fn stars_of(&self, user: &UserId) -> Result<Vec<(RepoId, DateTime<Utc>)>> {
+        let rows: Vec<(String, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT repo, created_at FROM repo_stars WHERE user_id = $1
+             ORDER BY created_at DESC, repo",
+        )
+        .bind(user.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .into_iter()
+            .map(|(r, at)| (RepoId::new(r), at))
+            .collect())
+    }
+
     async fn delete_repo_access(&self, repo: &RepoId) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         for stmt in [
+            "DELETE FROM repo_stars WHERE repo = $1",
             "DELETE FROM memberships WHERE repo = $1",
             "DELETE FROM team_repo_roles WHERE repo = $1",
             "DELETE FROM role_permissions WHERE repo = $1",

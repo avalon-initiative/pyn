@@ -75,6 +75,7 @@ mod requirements;
 mod self_service;
 mod server_invitations;
 mod setup;
+mod stars;
 mod teams;
 mod two_factor;
 mod webhooks;
@@ -150,7 +151,20 @@ pub trait AccessStore: Send + Sync {
     /// The repositories the user has a role in, ordered by id.
     async fn repos_of(&self, user: &UserId) -> Result<Vec<RepoId>>;
 
-    /// Removes the repository's memberships, team roles, role overrides and invitations.
+    /// Marks the repository for the user; false if it already was.
+    async fn add_star(&self, repo: &RepoId, user: &UserId, now: DateTime<Utc>) -> Result<bool>;
+
+    /// Removes the mark; false if there was none.
+    async fn remove_star(&self, repo: &RepoId, user: &UserId) -> Result<bool>;
+
+    async fn has_star(&self, repo: &RepoId, user: &UserId) -> Result<bool>;
+
+    async fn star_count(&self, repo: &RepoId) -> Result<u64>;
+
+    /// The repositories the user marked with when, newest first.
+    async fn stars_of(&self, user: &UserId) -> Result<Vec<(RepoId, DateTime<Utc>)>>;
+
+    /// Removes the repository's memberships, team roles, role overrides, invitations and stars.
     async fn delete_repo_access(&self, repo: &RepoId) -> Result<()>;
 
     /// The defaults with the repository's overrides applied.

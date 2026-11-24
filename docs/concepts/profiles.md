@@ -21,11 +21,11 @@ address is never part of a profile response, whoever asks.
 
 ## Privacy
 
-The owner can hide each of `display_name`, `bio`, `location`, `company`, `links` and the avatar. Every field is visible by
+The owner can hide each of `display_name`, `bio`, `location`, `company`, `links`, the avatar and the list of repositories the account [starred](repositories.md#stars) (`starred`). Every field is visible by
 default, so existing accounts and clients are unchanged. The setting is a `visibility` object of booleans (`false` hides):
 
 ```json
-{ "display_name": true, "bio": false, "location": true, "company": true, "links": true, "avatar": false }
+{ "display_name": true, "bio": false, "location": true, "company": true, "links": true, "avatar": false, "starred": true }
 ```
 
 - `PUT /v1/me/profile` takes an optional `visibility`. Left out, the stored setting is kept (so a client that does not know
@@ -49,6 +49,7 @@ copy a client already displays outlives it.
 | `GET /v1/users` | The people directory: browse and search accounts. Signed out on a `public` server, rate limited. |
 | `GET /v1/users/{user}` | The public profile. Works signed out on a `public` server. |
 | `GET /v1/users/{user}/avatar` | The avatar image. Works signed out on a `public` server. |
+| `GET /v1/users/{user}/starred` | The repositories the user starred that the viewer may see, newest first; empty when the user hides it. Works signed out on a `public` server. |
 | `PUT /v1/me/profile` | Replaces your display name, bio, location, company and links. A field left out is cleared. |
 | `PUT /v1/me/avatar` | Sets your avatar from the request body (the raw image bytes). |
 | `DELETE /v1/me/avatar` | Removes your avatar. |
