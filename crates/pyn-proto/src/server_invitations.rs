@@ -28,6 +28,28 @@ pub struct EmailSettings {
     /// When a message last went out since the server started; null when none has.
     #[serde(default)]
     pub last_sent_at: Option<DateTime<Utc>>,
+    /// The newest connection check (start-up, or `pyn-server --check-config` does not count): the mail server answered and accepted the sign-in, without a message sent. Null before the first check or when no mailer sends.
+    #[serde(default)]
+    pub last_check: Option<EmailCheck>,
+}
+
+/// A check of the mailer's connection and sign-in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EmailCheck {
+    pub at: DateTime<Utc>,
+    /// What is wrong, in plain words; null when the check passed. Never carries a credential.
+    #[schema(required = true)]
+    pub error: Option<String>,
+}
+
+/// How the test message went.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TestEmailResult {
+    /// The mailer accepted the message for delivery.
+    pub delivered: bool,
+    /// Why it was refused; null when delivered. Never carries the address or a credential.
+    #[schema(required = true)]
+    pub error: Option<String>,
 }
 
 /// A refused send. The error never carries a recipient address or a credential.

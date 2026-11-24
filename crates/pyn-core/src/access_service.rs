@@ -1303,6 +1303,22 @@ pub struct AccessService {
 struct MailHealth {
     last_failure: Option<MailFailure>,
     last_sent_at: Option<DateTime<Utc>>,
+    last_check: Option<MailCheck>,
+}
+
+/// The newest connection check of the mailer (sign-in without sending); `error` is set when it failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailCheck {
+    pub at: DateTime<Utc>,
+    pub error: Option<String>,
+}
+
+/// The outcome of the test message an administrator asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestEmail {
+    pub delivered: bool,
+    /// The mailer's reason when it was not delivered; never carries the address.
+    pub error: Option<String>,
 }
 
 /// A send the mailer refused; the error never carries the recipient address.
@@ -1319,6 +1335,7 @@ pub struct EmailStatus {
     pub verification: bool,
     pub last_failure: Option<MailFailure>,
     pub last_sent_at: Option<DateTime<Utc>>,
+    pub last_check: Option<MailCheck>,
 }
 
 fn stronger(
@@ -2858,7 +2875,60 @@ impl AccessService {
             verification: self.config.require_email_verification,
             last_failure: health.last_failure.clone(),
             last_sent_at: health.last_sent_at,
+            last_check: health.last_check.clone(),
         }
+    }
+
+    /// Tries the mailer's connection and sign-in, keeps the outcome for the status and returns the error, if any.
+    pub async fn check_mailer(&self) -> std::result::Result<(), String> {
+        let result = self.email.check().await;
+        self.mail_health.lock().unwrap().last_check = Some(MailCheck {
+            at: self.clock.now(),
+            error: result.clone().err(),
+        });
+        result
+    }
+
+    /// Sends a test message to the administrator's primary address and reports how it went; the outcome also lands
+    /// in the status. A mailer that sends nothing is `invalid_request`.
+    pub async fn send_test_email(&self, actor: &Identity) -> Result<TestEmail> {
+        self.require_admin_scope(actor, ServiceScope::ManageAccounts)
+            .await?;
+        if !self.email.delivers() {
+            return Err(PynError::InvalidRequest(
+                "the server's mailer sends nothing (PYN_MAILER is none or log)".into(),
+            ));
+        }
+        let to = self
+            .store
+            .account_emails(&actor.user)
+            .await?
+            .into_iter()
+            .find(|e| e.verified_at.is_some())
+            .map(|e| e.address)
+            .ok_or_else(|| {
+                PynError::InvalidRequest(
+                    "the account has no verified address to send the test to".into(),
+                )
+            })?;
+        let delivered = self
+            .deliver(EmailMessage {
+                to,
+                subject: "pyn test email".into(),
+                body: "This message confirms that the pyn server can send email.\n".into(),
+            })
+            .await;
+        let error = if delivered {
+            None
+        } else {
+            self.mail_health
+                .lock()
+                .unwrap()
+                .last_failure
+                .as_ref()
+                .map(|f| f.error.clone())
+        };
+        Ok(TestEmail { delivered, error })
     }
 
     /// Confirms an address from the token in its email. The account then becomes active, or waits for

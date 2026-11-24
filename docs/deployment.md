@@ -125,6 +125,8 @@ The welcome message goes out whenever a mailer is configured and an address is k
 
 A message that cannot be sent never blocks the sign-up that asked for it; the failure is logged (`email delivery failed`, the recipient's domain and the reason, never the password or the address) and shown as `email.last_failure` in the admin settings, so a wrong app password or a blocked port is visible there and in the log, and the person asks an administrator.
 
+The server also checks the mailer at start, in the background so a slow mail server never delays it: with `PYN_MAILER=smtp` it connects and signs in without sending, logs `mailer check passed` or a warning that says in plain words what is wrong (refused credentials, unreachable host, TLS mismatch, or a host that does not fit the account's provider, such as `smtp.mail.com` for a Gmail address), and keeps the result as `email.last_check` (`at`, and `error` when it failed) in `GET /v1/admin/settings`. `pyn-server --check-config` runs the same check ([configuration](configuration.md#checking-a-configuration)). An administrator can send a test message to their own primary verified address with `POST /v1/admin/email/test` (service credentials need `manage_accounts`): the answer is `{ delivered, error }`, the outcome also lands in `email.last_sent_at` or `email.last_failure`, and `400 invalid_request` says that the mailer sends nothing (none or log) or that the account has no verified address.
+
 ### The web app
 
 The web app is its own image, `ghcr.io/avalon-initiative/pyn-web:<tag>`, versioned and released on its own, separately from `pyn-core` (its tags are its own). It serves the

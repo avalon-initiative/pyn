@@ -220,3 +220,72 @@ async fn a_failed_send_shows_in_the_status_and_a_later_success_is_recorded() {
         .unwrap();
     assert!(ok.svc.email_status().last_sent_at.is_some());
 }
+
+struct Failing;
+
+#[async_trait]
+impl EmailSender for Failing {
+    async fn send(&self, _message: EmailMessage) -> pyn_core::Result<()> {
+        Err(PynError::EmailDeliveryFailed("535 credentials invalid".into()))
+    }
+
+    async fn check(&self) -> Result<(), String> {
+        Err("the mail server refused the user name or password".into())
+    }
+}
+
+fn admin() -> pyn_core::Identity {
+    pyn_core::Identity {
+        user: UserId::new("root"),
+        credential: pyn_core::Credential::Session,
+    }
+}
+
+#[tokio::test]
+async fn a_test_email_goes_to_the_administrators_verified_address_and_reports_the_outcome() {
+    let w = world(RegistrationMode::Closed, true, true);
+    w.svc
+        .complete_setup(setup_request(Some("root@example.org")))
+        .await
+        .unwrap();
+    let err = w.svc.send_test_email(&admin()).await.unwrap_err();
+    assert!(matches!(err, PynError::InvalidRequest(_)), "no verified address yet: {err}");
+
+    let link = w.mail.sent().pop().unwrap();
+    w.svc.verify_email(&token_in(&link.body)).await.unwrap();
+    let sent = w.svc.send_test_email(&admin()).await.unwrap();
+    assert!(sent.delivered && sent.error.is_none());
+    let last = w.mail.sent().pop().unwrap();
+    assert_eq!((last.subject.as_str(), last.to.as_str()), ("pyn test email", "root@example.org"));
+    assert!(w.svc.email_status().last_sent_at.is_some());
+}
+
+#[tokio::test]
+async fn a_failing_mailer_shows_in_the_test_and_the_check() {
+    let store = Arc::new(MemoryAccessStore::new());
+    let svc = AccessService::new(
+        store,
+        Arc::new(ManualClock::new(Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap())),
+        Arc::new(pyn_core::MemoryLimitEvents::new()),
+    )
+    .with_config(AccessConfig {
+        require_email_verification: false,
+        ..AccessConfig::default()
+    })
+    .with_email(Arc::new(Failing))
+    .with_setup_token(TOKEN)
+    .unwrap();
+    svc.complete_setup(setup_request(Some("root@example.org")))
+        .await
+        .unwrap();
+    assert!(svc.email_status().last_check.is_none());
+    let why = svc.check_mailer().await.unwrap_err();
+    assert!(why.contains("user name or password"));
+    let check = svc.email_status().last_check.unwrap();
+    assert_eq!(check.error.as_deref(), Some(why.as_str()));
+
+    assert!(
+        svc.email_status().last_failure.is_some(),
+        "the welcome already failed"
+    );
+}

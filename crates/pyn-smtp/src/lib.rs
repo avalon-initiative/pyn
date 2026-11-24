@@ -1,5 +1,7 @@
 //! `EmailSender` over SMTP (rustls, aws-lc-rs); one bounded attempt per message.
 
+mod diagnose;
+
 use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
@@ -61,9 +63,12 @@ impl fmt::Debug for SmtpSettings {
     }
 }
 
+pub use diagnose::{explain, host_mismatch};
+
 pub struct SmtpSender {
     transport: AsyncSmtpTransport<Tokio1Executor>,
     from: Mailbox,
+    settings: SmtpSettings,
 }
 
 impl SmtpSender {
@@ -90,6 +95,7 @@ impl SmtpSender {
         Ok(Self {
             transport: builder.build(),
             from,
+            settings: settings.clone(),
         })
     }
 }
@@ -113,8 +119,17 @@ impl EmailSender for SmtpSender {
             .map_err(failed)?;
         match tokio::time::timeout(ATTEMPT * 2, self.transport.send(mail)).await {
             Ok(Ok(_)) => Ok(()),
-            Ok(Err(e)) => Err(failed(e)),
-            Err(_) => Err(failed("timed out")),
+            Ok(Err(e)) => Err(failed(explain(&self.settings, &e.to_string()))),
+            Err(_) => Err(failed(explain(&self.settings, "timed out"))),
+        }
+    }
+
+    async fn check(&self) -> Result<(), String> {
+        match tokio::time::timeout(ATTEMPT * 2, self.transport.test_connection()).await {
+            Ok(Ok(true)) => Ok(()),
+            Ok(Ok(false)) => Err(explain(&self.settings, "the server did not answer the connection test")),
+            Ok(Err(e)) => Err(explain(&self.settings, &e.to_string())),
+            Err(_) => Err(explain(&self.settings, "timed out")),
         }
     }
 }
