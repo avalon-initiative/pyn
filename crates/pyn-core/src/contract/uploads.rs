@@ -1181,14 +1181,22 @@ impl MetadataStore for BudgetGateStore {
         &self,
         repo: &RepoId,
         within: Option<&ObjectId>,
-        filter: Option<&crate::PathFilter>,
+        by: &crate::HistoryBy,
         before: Option<&crate::HistoryCursor>,
         limit: usize,
         budget: usize,
     ) -> crate::Result<crate::HistoryScan> {
         self.inner
-            .repo_history(repo, within, filter, before, limit, budget)
+            .repo_history(repo, within, by, before, limit, budget)
             .await
+    }
+
+    async fn history_authors(
+        &self,
+        repo: &RepoId,
+        within: Option<&ObjectId>,
+    ) -> crate::Result<Vec<String>> {
+        self.inner.history_authors(repo, within).await
     }
 
     async fn create_repo_capped_with_events(

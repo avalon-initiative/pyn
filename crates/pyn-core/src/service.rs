@@ -43,8 +43,8 @@ use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::freeze::OwnerWrites;
 use crate::history::{
-    HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryCursor, HistoryPage,
-    PathHistoryPage,
+    HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryBy, HistoryCursor,
+    HistoryPage, PathHistoryPage,
 };
 use crate::integrity::{BreakKind, check_events, revision_breaks, verify_revisions};
 use crate::limit_events::{DomainEvent, LockChange};
@@ -1996,6 +1996,21 @@ impl RepoService {
         before: Option<&HistoryCursor>,
         limit: Option<usize>,
     ) -> Result<HistoryPage> {
+        let by = HistoryBy {
+            path: filter.cloned(),
+            ..HistoryBy::default()
+        };
+        self.repo_history_by_on(branch, &by, before, limit).await
+    }
+
+    /// Like `repo_history_on`, narrowed by `by`: path glob, authors and time.
+    pub async fn repo_history_by_on(
+        &self,
+        branch: &str,
+        by: &HistoryBy,
+        before: Option<&HistoryCursor>,
+        limit: Option<usize>,
+    ) -> Result<HistoryPage> {
         let limit = limit
             .unwrap_or(HISTORY_DEFAULT_LIMIT)
             .clamp(1, HISTORY_MAX_LIMIT);
@@ -2010,7 +2025,7 @@ impl RepoService {
             .repo_history(
                 &self.repo,
                 Some(&tip),
-                filter,
+                by,
                 before,
                 limit + 1,
                 HISTORY_SCAN_BUDGET,
@@ -2025,6 +2040,14 @@ impl RepoService {
             scan.resume
         };
         Ok(HistoryPage { revisions, next })
+    }
+
+    /// The distinct authors of the revisions `branch` contains, sorted; empty for a branch with no commits.
+    pub async fn history_authors_on(&self, branch: &str) -> Result<Vec<String>> {
+        match self.head_of(branch).await? {
+            Some(tip) => self.meta.history_authors(&self.repo, Some(&tip)).await,
+            None => Ok(Vec::new()),
+        }
     }
 
     /// The head of the default branch; `None` for a repository with no commits.

@@ -264,6 +264,67 @@ async fn put_text(app: &axum::Router, text: &str) -> String {
 }
 
 #[tokio::test]
+async fn history_filters_by_author_and_time_and_lists_its_authors() {
+    let app = app().await;
+    for (user, path) in [("bob", "a.txt"), ("alice", "b.txt")] {
+        let content = put_text(&app, path).await;
+        let body = serde_json::json!({"path": path, "content": content, "base_revision": null, "message": path});
+        let r = app
+            .clone()
+            .oneshot(json_post("/v1/repos/owner/game/checkin", user, body))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{user}");
+    }
+    let paths = |query: &'static str| {
+        let app = app.clone();
+        async move {
+            let uri = format!("/v1/repos/owner/game/history{query}");
+            let (status, body) = get_as(&app, &uri, "alice").await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            let page: api::HistoryPage = serde_json::from_slice(&body).unwrap();
+            page.revisions
+                .into_iter()
+                .map(|r| r.path)
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(paths("?author=bob").await, ["a.txt"]);
+    assert_eq!(paths("?author=bob&author=alice").await.len(), 2);
+    assert!(paths("?author=carol").await.is_empty());
+    assert_eq!(paths("?since=2000-01-01T00:00:00Z").await.len(), 2);
+    assert!(paths("?since=2999-01-01T00:00:00Z").await.is_empty());
+    assert!(paths("?until=2000-01-01T00:00:00Z").await.is_empty());
+    assert_eq!(
+        paths("?author=bob&filter=*.txt&until=2999-01-01T00:00:00Z").await,
+        ["a.txt"]
+    );
+
+    for uri in [
+        "/v1/repos/owner/game/history?since=yesterday",
+        "/v1/repos/owner/game/history?until=2020-01-01",
+        "/v1/repos/owner/game/history?path=a.txt&author=bob",
+    ] {
+        let (status, body) = get_as(&app, uri, "alice").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        let err: api::ErrorBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!(err.code, "invalid_request", "{uri}");
+    }
+
+    let (status, body) = get_as(&app, "/v1/repos/owner/game/history/authors", "alice").await;
+    assert_eq!(status, StatusCode::OK);
+    let list: api::HistoryAuthors = serde_json::from_slice(&body).unwrap();
+    assert_eq!(list.authors, ["alice", "bob"]);
+    let (status, _) = get_as(
+        &app,
+        "/v1/repos/owner/game/history/authors?branch=nope",
+        "alice",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn a_path_history_is_paged_oldest_first_by_a_cursor() {
     let app = app().await;
     for i in 1..=3u64 {

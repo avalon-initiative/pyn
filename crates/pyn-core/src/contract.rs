@@ -842,6 +842,66 @@ pub async fn repo_history_pages_without_gaps_or_repeats(store: Store) {
     assert!(second.next.is_none());
 }
 
+pub async fn repo_history_filters_by_author_and_time(store: Store) {
+    use crate::HistoryBy;
+    let h = harness(store);
+    let t0 = h.clock.now();
+    let put = async |who_: &str, p: &str, text: &str, minutes: i64| {
+        h.clock.advance(Duration::minutes(minutes));
+        let p = path(p);
+        let base = h.svc.head(&p).await.unwrap().map(|r| r.id);
+        let c = blob(&h, text).await;
+        h.svc
+            .checkin(&who(who_), &p, c, base, text.into())
+            .await
+            .unwrap();
+    };
+    put("alice", "a.ts", "a1", 1).await;
+    put("bob", "b.ts", "b1", 1).await;
+    put("alice", "c.ts", "c1", 1).await;
+    put("bob", "a.ts", "a2", 1).await;
+    let list = async |by: HistoryBy| {
+        labels(
+            &h.svc
+                .repo_history_by_on("main", &by, None, None)
+                .await
+                .unwrap()
+                .revisions,
+        )
+    };
+    let by = |authors: &[&str]| HistoryBy {
+        authors: authors.iter().map(|a| a.to_string()).collect(),
+        ..Default::default()
+    };
+    assert_eq!(list(by(&["bob"])).await, ["a.ts@2", "b.ts@1"]);
+    assert_eq!(
+        list(by(&["bob", "alice"])).await.len(),
+        4,
+        "several authors are alternatives"
+    );
+    assert!(list(by(&["carol"])).await.is_empty());
+    let at = |m: i64| Some(t0 + Duration::minutes(m));
+    let window = HistoryBy {
+        since: at(2),
+        until: at(3),
+        ..Default::default()
+    };
+    assert_eq!(
+        list(window).await,
+        ["c.ts@1", "b.ts@1"],
+        "both ends inclusive"
+    );
+    let both = HistoryBy {
+        authors: vec!["bob".into()],
+        since: at(3),
+        ..Default::default()
+    };
+    assert_eq!(list(both).await, ["a.ts@2"]);
+    let authors = h.svc.history_authors_on("main").await.unwrap();
+    assert_eq!(authors, ["alice", "bob"]);
+    assert!(h.svc.history_authors_on("nope").await.is_err());
+}
+
 pub async fn repo_history_is_per_repository(store: Store) {
     let h = harness(store.clone());
     let other = service_in(&store, &h, "other");
@@ -3346,6 +3406,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_is_newest_first_across_paths);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_filters_by_glob);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_pages_without_gaps_or_repeats);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_filters_by_author_and_time);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_is_per_repository);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_appends_a_checkpoint_with_the_old_content);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; restore_needs_the_lock_and_the_right_confirmation);
@@ -4778,14 +4839,22 @@ impl MetadataStore for HookedMeta {
         &self,
         repo: &RepoId,
         within: Option<&ObjectId>,
-        filter: Option<&crate::PathFilter>,
+        by: &crate::HistoryBy,
         before: Option<&crate::HistoryCursor>,
         limit: usize,
         budget: usize,
     ) -> crate::Result<crate::HistoryScan> {
         self.inner
-            .repo_history(repo, within, filter, before, limit, budget)
+            .repo_history(repo, within, by, before, limit, budget)
             .await
+    }
+
+    async fn history_authors(
+        &self,
+        repo: &RepoId,
+        within: Option<&ObjectId>,
+    ) -> crate::Result<Vec<String>> {
+        self.inner.history_authors(repo, within).await
     }
 
     async fn create_repo_capped_with_events(

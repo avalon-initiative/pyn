@@ -1702,6 +1702,13 @@ pub struct AuditEntry {
     pub previous: Option<String>,
 }
 
+/// The accounts that wrote revisions on a branch, for a history author filter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct HistoryAuthors {
+    /// Account names as written in the revisions (what `author` filters on), sorted; a renamed account's older revisions keep its old name.
+    pub authors: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct HistoryPage {
     /// With `path`: that path's revisions, oldest first. Without: newest first.

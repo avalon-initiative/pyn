@@ -3,12 +3,11 @@ use chrono::{DateTime, Utc};
 
 use crate::branch::{Branch, DEFAULT_BRANCH};
 use crate::error::Result;
-use crate::history::{HistoryCursor, HistoryScan};
+use crate::history::{HistoryBy, HistoryCursor, HistoryScan};
 use crate::limit_events::LockEventBuilder;
 use crate::limits::{RepoBreakdown, RepoUsage, StorageCap, Usage};
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::repo::{RepoRecord, RepoUpdate};
-use crate::rules::PathFilter;
 use crate::tree::HeadCounts;
 use crate::webhook::EventDraft;
 use pyn_object::ObjectId;
@@ -528,7 +527,7 @@ pub trait MetadataStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<Revision>>;
 
-    /// At most `limit` revisions of the repository matching `filter`, newest first by (created_at, path, id) with paths
+    /// At most `limit` revisions of the repository matching `by` (path glob, authors, time), newest first by (created_at, path, id) with paths
     /// compared bytewise, strictly before `before` when given; with `within`, only those made in that commit or an
     /// ancestor. The scan examines at most `budget` revisions; if that ends it before `limit` matches, `resume`
     /// is the position after the last one examined.
@@ -536,11 +535,18 @@ pub trait MetadataStore: Send + Sync {
         &self,
         repo: &RepoId,
         within: Option<&ObjectId>,
-        filter: Option<&PathFilter>,
+        by: &HistoryBy,
         before: Option<&HistoryCursor>,
         limit: usize,
         budget: usize,
     ) -> Result<HistoryScan>;
+
+    /// The distinct authors of the revisions in `within` (all branches when `None`), sorted bytewise.
+    async fn history_authors(
+        &self,
+        repo: &RepoId,
+        within: Option<&ObjectId>,
+    ) -> Result<Vec<String>>;
 
     /// Registers the repository; `RepoExists` if the owner already has one with that name.
     async fn create_repo(&self, repo: RepoRecord) -> Result<RepoRecord> {
