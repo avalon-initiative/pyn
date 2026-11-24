@@ -20,15 +20,15 @@ impl Repositories {
             .await?;
         principal.require(Permission::Read)?;
         let source = open.record;
+        let target = self
+            .creation_target(actor, owner, source.visibility)
+            .await?;
         if source.visibility == Visibility::Private && !source.settings.allow_private_forks {
             return Err(PynError::ForkForbidden(
                 source.address(),
                 "its owner does not allow forks of this private repository".into(),
             ));
         }
-        let target = self
-            .creation_target(actor, owner, source.visibility)
-            .await?;
         let record = RepoRecord {
             id: repo::generate_id()?,
             owner: owner.clone(),
