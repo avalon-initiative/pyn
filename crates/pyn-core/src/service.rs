@@ -51,6 +51,7 @@ use crate::history::{
     HistoryPage, PathHistoryPage,
 };
 use crate::integrity::{BreakKind, check_events, revision_breaks, verify_revisions};
+use crate::languages::LanguageShare;
 use crate::limit_events::{DomainEvent, LockChange};
 use crate::limits::{StorageCap, StorageCaps};
 use crate::object::ObjectStore;
@@ -203,6 +204,8 @@ struct LiveCount {
 /// Largest repository whose summary re-counts exclusive paths against the live rules; larger ones report the recorded count.
 const SUMMARY_LIVE_MAX_FILES: u64 = 100_000;
 const SUMMARY_PAGE: usize = 5_000;
+/// The language breakdown reads at most this many paths of the default branch, in path order.
+pub const LANGUAGE_MAX_PATHS: usize = 50_000;
 
 /// The rules in force and the policy revision they came from (`None` for the initial rules).
 struct Applied {
@@ -241,6 +244,7 @@ pub struct RepoService {
     /// Parsed policy files by revision, which never change.
     parsed: Mutex<HashMap<RevisionId, Arc<Rules>>>,
     live_exclusive: Mutex<Option<LiveCount>>,
+    languages: Mutex<Option<(ObjectId, Arc<Vec<LanguageShare>>)>>,
     meta: Arc<dyn MetadataStore>,
     objects: Arc<dyn ObjectStore>,
     audit: Arc<dyn AuditStore>,
@@ -275,6 +279,7 @@ impl RepoService {
             }),
             parsed: Mutex::new(HashMap::new()),
             live_exclusive: Mutex::new(None),
+            languages: Mutex::new(None),
             meta,
             objects,
             audit,
@@ -1702,6 +1707,41 @@ impl RepoService {
 
     /// Live paths of `head` that the current rules make exclusive. The stored count follows recorded modes, which a policy
     /// change to shared leaves behind, so it is re-counted (once per head and policy) when it is not already zero.
+    /// Bytes per language at the head of the default branch, largest first; computed once per head.
+    pub async fn languages(&self) -> Result<Arc<Vec<LanguageShare>>> {
+        let Some(head) = self.head_of(DEFAULT_BRANCH).await? else {
+            return Ok(Arc::default());
+        };
+        if let Some((at, shares)) = &*self.languages.lock().unwrap()
+            && *at == head
+        {
+            return Ok(shares.clone());
+        }
+        let (mut files, mut after) = (Vec::new(), None);
+        while files.len() < LANGUAGE_MAX_PATHS {
+            let page = self
+                .meta
+                .snapshot_page(&self.repo, &head, None, after.as_ref(), SUMMARY_PAGE)
+                .await?;
+            let Some(last) = page.last() else { break };
+            after = Some(last.path.clone());
+            files.extend(
+                page.into_iter()
+                    .filter(|r| crate::languages::language_of(r.path.as_str()).is_some())
+                    .map(|r| (r.path, r.content)),
+            );
+        }
+        files.truncate(LANGUAGE_MAX_PATHS);
+        let ids: Vec<ObjectId> = files.iter().map(|(_, c)| *c).collect();
+        let sizes = self.meta.content_sizes(&self.repo, &ids).await?;
+        let shares =
+            Arc::new(crate::languages::breakdown(files.iter().map(|(p, c)| {
+                (p.as_str(), sizes.get(c).copied().unwrap_or_default())
+            })));
+        *self.languages.lock().unwrap() = Some((head, shares.clone()));
+        Ok(shares)
+    }
+
     async fn live_exclusive(&self, head: &ObjectId, counts: &HeadCounts) -> Result<u64> {
         if counts.exclusive_files == 0 || counts.files > SUMMARY_LIVE_MAX_FILES {
             return Ok(counts.exclusive_files);

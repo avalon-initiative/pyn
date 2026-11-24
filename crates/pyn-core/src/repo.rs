@@ -111,6 +111,8 @@ pub struct RepoAbout {
     pub description: Option<String>,
     /// An http or https link.
     pub website: Option<String>,
+    /// Lowercase labels, in the order given; see `languages::validate_topics`.
+    pub topics: Vec<String>,
 }
 
 impl RepoAbout {
@@ -118,6 +120,7 @@ impl RepoAbout {
         Ok(Self {
             description: validate_description(self.description)?,
             website: validate_website(self.website)?,
+            topics: crate::languages::validate_topics(self.topics)?,
         })
     }
 }
@@ -140,6 +143,8 @@ pub struct RepoUpdate {
     pub description: Option<Option<String>>,
     /// `Some(None)` clears the website.
     pub website: Option<Option<String>>,
+    /// Replaces every topic; an empty list removes them.
+    pub topics: Option<Vec<String>>,
 }
 
 pub const MAX_DESCRIPTION_CHARS: usize = 350;

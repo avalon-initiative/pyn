@@ -250,6 +250,7 @@ fn create_on_server(
             default: None,
             description: None,
             website: None,
+            topics: Vec::new(),
         },
     )?;
     Settings {

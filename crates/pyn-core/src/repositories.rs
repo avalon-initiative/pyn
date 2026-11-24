@@ -42,6 +42,14 @@ pub struct OwnerReport {
     pub repositories: Vec<(RepoRecord, RepoUsage)>,
 }
 
+/// What a repository's default branch holds, for its About block.
+#[derive(Debug, Clone, Default)]
+pub struct CodeFacts {
+    pub languages: Arc<Vec<crate::LanguageShare>>,
+    /// The newest commit's time; `None` for an empty branch.
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// A repository found by address, with the service that enforces its policy.
 #[derive(Clone)]
 pub struct OpenRepo {
@@ -386,6 +394,16 @@ impl Repositories {
     pub async fn read_only_default(&self, record: &RepoRecord) -> Result<crate::ReadOnlyDefault> {
         let file = self.service_for(record).await?.exclusive_read_only();
         self.access.read_only_default(&record.owner, file).await
+    }
+
+    /// The language breakdown of the default branch and the time of its newest commit. Callers check access first.
+    pub async fn code_facts(&self, record: &RepoRecord) -> Result<CodeFacts> {
+        let service = self.service_for(record).await?;
+        let branch = service.branch(crate::branch::DEFAULT_BRANCH).await?;
+        Ok(CodeFacts {
+            languages: service.languages().await?,
+            updated_at: service.branch_updated_at(&branch).await?,
+        })
     }
 
     /// What one repository uses. Callers check the reader's access first.
@@ -841,6 +859,9 @@ impl Repositories {
         if let Some(website) = update.website.take() {
             update.website = Some(repo::validate_website(website)?);
         }
+        if let Some(topics) = update.topics.take() {
+            update.topics = Some(crate::languages::validate_topics(topics)?);
+        }
         let mut events = Vec::new();
         if let Some(name) = update.name.as_ref().filter(|n| **n != record.name) {
             let owner_id = self.access.account_id(&record.owner).await?;
@@ -875,6 +896,7 @@ impl Repositories {
                 record.about.description != updated.about.description,
             ),
             ("website", record.about.website != updated.about.website),
+            ("topics", record.about.topics != updated.about.topics),
         ];
         let changed: Vec<_> = about.iter().filter(|(_, c)| *c).map(|(f, _)| *f).collect();
         if !changed.is_empty() {

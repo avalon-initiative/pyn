@@ -44,6 +44,15 @@ pub(crate) async fn repo_info(
     let watch = s.repos.watch_state(&r, viewer).await?;
     let read_only = s.repos.read_only_default(&r).await?;
     let owner_id = s.access.account_id(&r.owner).await?.to_string();
+    let code = s.repos.code_facts(&r).await?;
+    let languages: Vec<api::LanguageShare> = code
+        .languages
+        .iter()
+        .map(|l| api::LanguageShare {
+            name: l.name.clone(),
+            bytes: l.bytes,
+        })
+        .collect();
     let owner_identity =
         s.access
             .org_profile_if_org(&r.owner)
@@ -61,6 +70,10 @@ pub(crate) async fn repo_info(
         name: r.name,
         description: r.about.description,
         website: r.about.website,
+        topics: r.about.topics,
+        language: languages.first().map(|l| l.name.clone()),
+        languages,
+        updated_at: code.updated_at,
         visibility: visibility_dto(r.visibility),
         lease_hours: r.settings.lease_hours,
         max_locks_per_user: limit.max,
@@ -215,6 +228,7 @@ pub(crate) async fn create_repo(
             RepoAbout {
                 description: req.description,
                 website: req.website,
+                topics: req.topics.unwrap_or_default(),
             },
         )
         .await?;
@@ -272,6 +286,7 @@ pub(crate) async fn update_repo(
         }),
         description: req.description,
         website: req.website,
+        topics: req.topics,
         ..RepoUpdate::default()
     };
     let record = s.repos.update(&who, &open.record, update).await?;

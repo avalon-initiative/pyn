@@ -259,20 +259,34 @@ follows the server) and `max_locks_set_by_policy` (true when `.pyn/pyn.toml` set
 
 ### About
 
-A repository may carry a short **description** and a **website**, shown in its About block and on repository lists. Both are
+A repository may carry a short **description**, a **website** and **topics**, shown in its About block and on repository lists, next to
+the **languages** and the **update time** the server derives from its content. The first three are
 optional and are set at creation (`description` and `website` in `POST /v1/repos`) or changed with `PATCH /v1/repos/{owner}/{name}`
 by whoever may change the repository's settings (the owner, holding `manage_roles`). In a `PATCH`, a field left out stays as it is, and
-`null` or a blank value clears it. Every repository payload carries both, `null` when unset, so whoever can see the repository sees them.
+`null` or a blank value clears a description or website. Every repository payload carries all of them (`null` or an empty list when
+unset), so whoever can see the repository sees them.
 
 - **Description:** plain text on one line, trimmed, at most 350 characters, with no control characters. A newline is refused.
 - **Website:** an `http` or `https` address of at most 200 bytes, ASCII with no spaces or backslashes and no user name or password, as
   for an organization's [url](profiles.md#organization-profiles).
 - Anything else is `400 invalid_request`, and a refused create leaves no repository behind. A change is part of the `repo_updated` audit
-  event, whose detail ends with `changed description`, `changed website` or both: the log names the fields, never their content.
+  event, whose detail ends with `changed` and the fields (`description`, `website`, `topics`): the log names the fields, never their content.
 
-On the command line: `pyn repo create name --description TEXT --website URL`, `pyn repo edit owner/name [--description TEXT]
-[--website URL]` (an empty value clears the field) and `pyn repo show owner/name` (description, website, visibility, created, stars,
-watchers and your role).
+- **Topics:** up to 20 labels of 1 to 50 lowercase letters, digits or `-`, starting with a letter or digit (`topics` in
+  `POST /v1/repos`, and in `PATCH`, where the list replaces every topic and `[]` removes them). Uppercase is lowered, repeats are
+  dropped, and the order given is kept; anything else is `400 invalid_request`. A change ends the `repo_updated` detail with `changed topics`.
+- **Languages:** derived by the server, never set. `languages` is a list of `{name, bytes}`, the bytes of each programming language
+  in the files at the head of the default branch, largest first (ties by name); a client computes percentages from `bytes`. A file's
+  language comes from its name (`.rs` is Rust, `.cpp` and `.h` C++ and C, `Makefile`, `Dockerfile` and so on); documents, data and
+  binary assets (`.md`, `.json`, `.umap`, images) count for nothing, and so do files under `.pyn/`, `node_modules/`, `vendor/`,
+  `third_party/`, `ThirdParty/`, `dist/` or `target/` and minified `.min.js` files. At most the first 50,000 paths (in path order) are
+  read, and the result is kept per head commit, so it is computed again only after a new commit. `language` is the first entry's name,
+  null when the list is empty. Revisions recorded before sizes were kept count as 0 bytes.
+- **Updated:** `updated_at` is the time of the newest commit on the default branch, null for an empty repository.
+
+On the command line: `pyn repo create name --description TEXT --website URL --topic T ...`, `pyn repo edit owner/name [--description TEXT]
+[--website URL] [--topic T ... | --no-topics]` (an empty value clears the field, and `--topic` replaces every topic) and `pyn repo show
+owner/name` (description, website, topics, languages as percentages, updated, visibility, created, stars, watchers and your role).
 
 ## Who can do what
 
@@ -436,6 +450,6 @@ repositories and permissions it carries), ordered by `owner/name` then path. Eac
 `{owner, name, path, acquired_at, expires_at}`; remove one with the repository's own `POST .../release` (`pyn unlock`), which records
 the audit event as usual. A lock in a repository the caller can no longer read is not listed.
 
-On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy] [--description TEXT] [--website URL]`, `pyn repo show owner/name`, `pyn repo edit owner/name` (see [About](#about)), `pyn repo list`, `pyn repo explore`,
+On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy] [--description TEXT] [--website URL] [--topic T ...]`, `pyn repo show owner/name`, `pyn repo edit owner/name` (see [About](#about)), `pyn repo list`, `pyn repo explore`,
 `pyn repo visibility owner/name public|private`, `pyn repo delete owner/name`, `pyn locks --mine` (your locks in every repository: repository, acquired, expires, path), and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
 `.pyn/local_only/config.toml`, so commands inside it need no flag; see [the `.pyn/` folder](workspace.md).

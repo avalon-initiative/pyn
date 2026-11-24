@@ -1347,6 +1347,18 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(out)
     }
 
+    async fn content_sizes(
+        &self,
+        repo: &RepoId,
+        contents: &[ObjectId],
+    ) -> Result<HashMap<ObjectId, u64>> {
+        let st = self.state.lock().unwrap();
+        Ok(contents
+            .iter()
+            .filter_map(|c| st.sizes.get(&(repo.clone(), *c)).map(|n| (*c, *n)))
+            .collect())
+    }
+
     async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool> {
         let st = self.state.lock().unwrap();
         Ok(st
@@ -1974,6 +1986,9 @@ impl MetadataStore for MemoryMetadataStore {
         }
         if let Some(website) = update.website {
             repo.about.website = website;
+        }
+        if let Some(topics) = update.topics {
+            repo.about.topics = topics;
         }
         if st.repos.values().any(|r| {
             &r.id != id && r.owner == repo.owner && r.name.eq_ignore_ascii_case(&repo.name)

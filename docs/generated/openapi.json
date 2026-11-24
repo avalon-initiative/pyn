@@ -15632,6 +15632,16 @@
             ],
             "description": "Defaults to `true`: the first commit holds `.pyn/pyn.toml` with the starter policy (shared by default, exclusive\nrules for object and binary files). `false` leaves the repository empty, under the server's initial policy."
           },
+          "topics": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "At most 20 topics of 1 to 50 lowercase letters, digits or `-`; uppercase is lowered and repeats dropped."
+          },
           "visibility": {
             "oneOf": [
               {
@@ -16839,6 +16849,25 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "LanguageShare": {
+        "type": "object",
+        "description": "One programming language's share of a repository, detected from file names.",
+        "required": [
+          "name",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "A display name such as `Rust` or `C++`."
           }
         }
       },
@@ -19790,6 +19819,10 @@
           "name",
           "description",
           "website",
+          "topics",
+          "languages",
+          "language",
+          "updated_at",
           "visibility",
           "lease_hours",
           "max_locks_per_user",
@@ -19823,6 +19856,20 @@
           "id": {
             "type": "string",
             "description": "Stable, never reused and unchanged by a rename; a deleted repository's id is never issued again."
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The first entry of `languages`; null when there is none."
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LanguageShare"
+            },
+            "description": "Bytes of each programming language at the head of the default branch, largest first; empty for an empty\nrepository or one with no recognised source files. A client computes percentages from `bytes`."
           },
           "lease_hours": {
             "type": "integer",
@@ -19890,6 +19937,21 @@
           "starred": {
             "type": "boolean",
             "description": "Whether the caller starred it; false for a signed-out caller."
+          },
+          "topics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Lowercase labels set by the owner, in their order; empty when none."
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the newest commit of the default branch was made; null for an empty repository."
           },
           "visibility": {
             "$ref": "#/components/schemas/Visibility"
@@ -22028,6 +22090,16 @@
               "null"
             ],
             "description": "The new name, normalised like a new repository's."
+          },
+          "topics": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replaces every topic; `[]` removes them all."
           },
           "visibility": {
             "oneOf": [

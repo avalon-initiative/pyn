@@ -781,13 +781,16 @@ enum RepoCommand {
         /// An http or https link shown with the description.
         #[arg(long)]
         website: Option<String>,
+        /// A topic; repeat for more.
+        #[arg(long = "topic")]
+        topics: Vec<String>,
     },
-    /// Show a repository: its description, website, visibility, counts and your role.
+    /// Show a repository: its description, website, topics, languages, visibility, counts and your role.
     Show {
         /// `owner/name`.
         name: String,
     },
-    /// Change a repository's description or website; an empty value clears it. Owner and admin only.
+    /// Change a repository's description, website or topics; an empty value clears it. Owner and admin only.
     Edit {
         /// `owner/name`.
         name: String,
@@ -795,6 +798,12 @@ enum RepoCommand {
         description: Option<String>,
         #[arg(long)]
         website: Option<String>,
+        /// Replace the topics with these; repeat for more.
+        #[arg(long = "topic", conflicts_with = "no_topics")]
+        topics: Vec<String>,
+        /// Remove every topic.
+        #[arg(long)]
+        no_topics: bool,
     },
     /// List the repositories you belong to.
     List {
@@ -3740,6 +3749,19 @@ fn set_star(api: &Api, name: &str, on: bool) -> Result<()> {
     Ok(())
 }
 
+/// `Rust 62.5%, C++ 37.5%`, or `-` when nothing was recognised.
+fn language_line(languages: &[api::LanguageShare]) -> String {
+    let total: u64 = languages.iter().map(|l| l.bytes).sum();
+    if total == 0 {
+        return "-".into();
+    }
+    languages
+        .iter()
+        .map(|l| format!("{} {:.1}%", l.name, l.bytes as f64 * 100.0 / total as f64))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn show_repo(r: &api::RepoInfo) {
     let visibility = match r.visibility {
         api::Visibility::Public => "public",
@@ -3748,6 +3770,15 @@ fn show_repo(r: &api::RepoInfo) {
     println!("repository   {}/{}", r.owner, r.name);
     println!("description  {}", r.description.as_deref().unwrap_or("-"));
     println!("website      {}", r.website.as_deref().unwrap_or("-"));
+    let topics = if r.topics.is_empty() {
+        "-".to_string()
+    } else {
+        r.topics.join(", ")
+    };
+    println!("topics       {topics}");
+    println!("languages    {}", language_line(&r.languages));
+    let updated = r.updated_at.map_or_else(|| "-".to_string(), time::local);
+    println!("updated      {updated}");
     println!("visibility   {visibility}");
     println!("created      {}", time::local(r.created_at));
     println!("stars        {}", r.star_count);
@@ -3767,6 +3798,7 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             default,
             description,
             website,
+            topics,
         } => {
             let file = match &policy {
                 Some(file) => Some(
@@ -3803,6 +3835,7 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 }),
                 description,
                 website,
+                topics: (!topics.is_empty()).then_some(topics),
             };
             let org = body.owner.clone().unwrap_or_default();
             let made: api::RepoInfo = api
@@ -3831,14 +3864,18 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             name,
             description,
             website,
+            topics,
+            no_topics,
         } => {
-            if description.is_none() && website.is_none() {
-                bail!("nothing to change: give --description or --website");
+            let topics = (no_topics || !topics.is_empty()).then_some(topics);
+            if description.is_none() && website.is_none() && topics.is_none() {
+                bail!("nothing to change: give --description, --website, --topic or --no-topics");
             }
             let (owner, short) = address::split_repo(&name)?;
             let body = api::UpdateRepoRequest {
                 description: description.map(Some),
                 website: website.map(Some),
+                topics,
                 ..Default::default()
             };
             let r: api::RepoInfo = api

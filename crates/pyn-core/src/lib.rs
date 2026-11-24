@@ -19,6 +19,7 @@ pub mod freeze;
 pub mod gate;
 pub mod history;
 pub mod integrity;
+pub mod languages;
 pub mod limit_events;
 pub mod limits;
 pub mod memory;
@@ -106,6 +107,7 @@ pub use history::{
     HistoryPage, HistoryScan, PathHistoryPage, decode_path_cursor, encode_path_cursor,
 };
 pub use integrity::{BreakKind, Problem, VerifyReport};
+pub use languages::LanguageShare;
 pub use limit_events::{
     DomainEvent, LimitEvents, LimitKind, LimitReached, LimitsEvent, LockChange, LockEventBuilder,
     MemoryLimitEvents,
@@ -143,7 +145,7 @@ pub use repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
     Standing, SubjectKind,
 };
-pub use repositories::{DEFAULT_BRANCH_STALE_DAYS, Repositories, StarState};
+pub use repositories::{CodeFacts, DEFAULT_BRANCH_STALE_DAYS, Repositories, StarState};
 pub use rules::{Mode, PathFilter, PathMatch, RuleEntry, Rules};
 pub use service::{
     ActivePolicy, BranchStatus, COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeEntry, ChangeKind,

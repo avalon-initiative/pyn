@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -388,6 +390,13 @@ pub trait MetadataStore: Send + Sync {
 
     /// Whether a revision of the repository, on any branch, has `content`.
     async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool>;
+
+    /// The recorded length of each of `contents` a revision of the repository holds; others are left out.
+    async fn content_sizes(
+        &self,
+        repo: &RepoId,
+        contents: &[ObjectId],
+    ) -> Result<HashMap<ObjectId, u64>>;
 
     /// Records that `repo` may reference the uploaded object `id` of `size` bytes. A new record that takes the
     /// repository's unreferenced uploads past `cap` bytes is `StorageLimitReached` and is not kept. On success the

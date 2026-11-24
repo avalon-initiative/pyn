@@ -1273,6 +1273,23 @@ pub struct RepoInfo {
     #[serde(default)]
     #[schema(required = true)]
     pub website: Option<String>,
+    /// Lowercase labels set by the owner, in their order; empty when none.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub topics: Vec<String>,
+    /// Bytes of each programming language at the head of the default branch, largest first; empty for an empty
+    /// repository or one with no recognised source files. A client computes percentages from `bytes`.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub languages: Vec<LanguageShare>,
+    /// The first entry of `languages`; null when there is none.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub language: Option<String>,
+    /// When the newest commit of the default branch was made; null for an empty repository.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub updated_at: Option<DateTime<Utc>>,
     pub visibility: Visibility,
     /// How long a lock lasts before it expires unless renewed.
     pub lease_hours: u32,
@@ -1310,6 +1327,14 @@ pub struct RepoInfo {
     #[serde(default)]
     #[schema(required = true)]
     pub watcher_count: u64,
+}
+
+/// One programming language's share of a repository, detected from file names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LanguageShare {
+    /// A display name such as `Rust` or `C++`.
+    pub name: String,
+    pub bytes: u64,
 }
 
 /// What a watcher hears about: every event of the repository, only its lock events, or nothing at all.
@@ -1432,6 +1457,9 @@ pub struct CreateRepoRequest {
     /// An http or https link; blank means none.
     #[serde(default)]
     pub website: Option<String>,
+    /// At most 20 topics of 1 to 50 lowercase letters, digits or `-`; uppercase is lowered and repeats dropped.
+    #[serde(default)]
+    pub topics: Option<Vec<String>>,
 }
 
 /// Fields left out stay as they are.
@@ -1466,6 +1494,9 @@ pub struct UpdateRepoRequest {
     )]
     #[schema(value_type = Option<String>)]
     pub website: Option<Option<String>>,
+    /// Replaces every topic; `[]` removes them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topics: Option<Vec<String>>,
 }
 
 /// Tells an explicit `null` (`Some(None)`) from an absent field (`None`).
