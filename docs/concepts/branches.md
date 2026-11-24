@@ -118,6 +118,38 @@ Because a branch keeps its policy until it picks up a later one:
 
 [Policy changes](pyn-toml.md#changing-policy) report the stranded versions of the first case.
 
+## Tags
+
+A **tag** is an immutable name that points at a [commit](commits.md) (#1424). Unlike a branch it never moves; the branch picker's
+Tags tab, a releases list and the file view at a tag read them.
+
+- Names follow the same ref rules as branch names (`invalid_tag_name`, 400), and a name cannot also be a folder of another tag's
+  name (`rel` and `rel/1` do not coexist; `tag_exists`, 409). Tags and branches are separate: `v1` can be both.
+- A tag is made at a branch's head, another tag's commit, or a commit id or abbreviation of at least 4 digits, the default
+  branch's head if none is named (`commit_not_found`, 404; `ambiguous_commit`, 400). It may carry a short message. There is no
+  update: making a tag with a taken name is refused with `tag_exists`, so a tag never moves.
+- **Deleting** removes the name only; the commit, its revisions and trees stay. The name can then be used again for another
+  commit; that is an explicit act, written to the repository's [audit log](access.md) as `tag_deleted` with the commit the tag
+  had, like `tag_created` for a new one.
+- Creating and deleting a tag need the `checkin` permission, like a branch; listing and reading need `read` (a public
+  repository answers without credentials). A frozen owner refuses both writes.
+- A branch can be started at a tag (`POST .../branches` with the tag's name as `start`), and so can another tag.
+- A tag goes with its repository when it is deleted.
+
+### Tags in the API
+
+| Request | Returns |
+| --- | --- |
+| `GET /v1/repos/{owner}/{name}/tags` | every tag ordered by name; each has `name`, `commit`, `message` (null when none), `created_at`, `created_by` and `committed_at` (the committed time of the tagged commit) |
+| `POST .../tags` `{name, target?, message?}` | the new tag; `target` is a branch or tag name, or a commit id or abbreviation, the default branch's head if omitted |
+| `GET .../tags/{tag}` | one tag (`404 tag_not_found`); a slash in the name may be sent as is or as `%2F` |
+| `DELETE .../tags/{tag}` | `204`; `404 tag_not_found` |
+
+On the command line, `pyn tag --server [<name> [<commit>]]` makes a server tag (`-m` sets the message; without a commit it tags
+the head of the server's branch the workspace is on), `pyn tag --server` or `-l [<pattern>...]` lists them and `-d <name>...`
+deletes them. A workspace without the local store has nowhere else to keep tags, so there `--server` is implied; with the local
+store on, plain `pyn tag` keeps its [local-only tags](workspace.md) apart from the server's. `-f` is refused, as a tag never moves.
+
 ## Existing data
 
 Existing history is one mainline. A one-time, idempotent startup step (`migrate_branches`, after `migrate_history`)

@@ -570,7 +570,7 @@ fn valid_body(path: &str) -> Option<&'static str> {
         "assemble" => {
             r#"{"chunks":["0000000000000000000000000000000000000000000000000000000000000000"]}"#
         }
-        "branches" => r#"{"name":"topic"}"#,
+        "branches" | "tags" => r#"{"name":"topic"}"#,
         "push" => r#"{"commits":[],"trees":[]}"#,
         _ if path.contains("/branches/") => r#"{"name":"topic2"}"#,
         _ => return None,
@@ -1108,6 +1108,45 @@ const REPOSITORY_ROUTES: &[(&str, &str, &str)] = &[
         "repo_scoped:contents:write",
     ),
     ("PATCH", "/branches/{*branch}", "repo_scoped:contents:write"),
+    ("GET", "/pulls", "public_repo_read:contents:read"),
+    ("POST", "/pulls", "repo_scoped:contents:write"),
+    ("GET", "/pulls/{number}", "public_repo_read:contents:read"),
+    ("PATCH", "/pulls/{number}", "repo_scoped:contents:read"),
+    (
+        "GET",
+        "/pulls/{number}/commits",
+        "public_repo_read:contents:read",
+    ),
+    (
+        "GET",
+        "/pulls/{number}/diff",
+        "public_repo_read:contents:read",
+    ),
+    (
+        "GET",
+        "/pulls/{number}/events",
+        "public_repo_read:contents:read",
+    ),
+    (
+        "POST",
+        "/pulls/{number}/comments",
+        "repo_scoped:contents:read",
+    ),
+    ("POST", "/pulls/{number}/close", "repo_scoped:contents:read"),
+    (
+        "POST",
+        "/pulls/{number}/reopen",
+        "repo_scoped:contents:read",
+    ),
+    (
+        "POST",
+        "/pulls/{number}/merge",
+        "repo_scoped:contents:write",
+    ),
+    ("GET", "/tags", "public_repo_read:contents:read"),
+    ("POST", "/tags", "repo_scoped:contents:write"),
+    ("GET", "/tags/{*tag}", "public_repo_read:contents:read"),
+    ("DELETE", "/tags/{*tag}", "repo_scoped:contents:write"),
 ];
 
 #[test]

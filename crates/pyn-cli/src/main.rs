@@ -54,6 +54,7 @@ mod org_settings;
 mod pathspec;
 mod policy;
 mod policy_lint;
+mod pr;
 mod probe;
 mod profile;
 mod pyn_server;
@@ -62,6 +63,7 @@ mod rename;
 mod repo_tool;
 mod rm_mv;
 mod sanitize;
+mod server_tags;
 mod short_status;
 mod snapshot;
 mod staging;
@@ -182,6 +184,9 @@ enum Command {
     Checkout(branch::CheckoutArgs),
     /// Merge a branch into the current branch.
     Merge(merging::MergeArgs),
+    /// Propose, discuss and merge changes between branches as pull requests.
+    #[command(subcommand)]
+    Pr(pr::PrCommand),
     /// Create, list and delete tags; on a pyn server they stay in the local store and are never pushed.
     Tag(git_home::TagArgs),
     /// Save, list and restore local changes (a git repository only).
@@ -2494,6 +2499,7 @@ fn run(cli: Cli) -> Result<()> {
             git_home::remote_on_server(&args, &server_url, repo_name.as_deref())?
         }
         Command::Merge(args) => merging::merge_command(&backend, ws.as_ref(), args)?,
+        Command::Pr(cmd) => pr::pr_command(&backend, cmd)?,
         Command::Branch(args) => branch::branch_command(&backend, ws.as_ref(), args)?,
         Command::Switch(args) => branch::switch_command(&backend, ws.as_ref(), args)?,
         Command::Checkout(args) => {

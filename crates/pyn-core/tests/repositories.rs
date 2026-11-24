@@ -102,6 +102,48 @@ async fn creating_a_repository_makes_the_creator_its_admin() {
 }
 
 #[tokio::test]
+async fn repository_names_are_url_forms_on_create_lookup_and_rename() {
+    let w = world();
+    let alice = session("alice");
+    let rec = w
+        .repos
+        .create(&alice, &user("alice"), "Test Repo", None, None)
+        .await
+        .unwrap();
+    assert_eq!(rec.address(), "alice/test-repo");
+
+    for typed in ["test-repo", "TeSt-RePo", "test repo", " TEST  REPO "] {
+        let open = w.repos.open("alice", typed).await.unwrap();
+        assert_eq!(open.record, rec, "{typed:?}");
+        let err = w
+            .repos
+            .create(&alice, &user("alice"), typed, None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PynError::RepoExists(_)), "{typed:?}: {err}");
+    }
+
+    let other = w
+        .repos
+        .create(&alice, &user("alice"), "Other", None, None)
+        .await
+        .unwrap();
+    assert_eq!(other.name, "other");
+    let clash = RepoUpdate {
+        name: Some("Test   REPO".into()),
+        ..Default::default()
+    };
+    let err = w.repos.update(&alice, &other, clash).await.unwrap_err();
+    assert!(matches!(err, PynError::RepoExists(_)), "{err}");
+    let renamed = RepoUpdate {
+        name: Some("Next Name".into()),
+        ..Default::default()
+    };
+    let moved = w.repos.update(&alice, &other, renamed).await.unwrap();
+    assert_eq!(moved.name, "next-name");
+}
+
+#[tokio::test]
 async fn only_valid_unique_names_in_your_own_namespace_are_accepted() {
     let w = world();
     let alice = session("alice");
@@ -121,7 +163,7 @@ async fn only_valid_unique_names_in_your_own_namespace_are_accepted() {
     );
     let err = w
         .repos
-        .create(&alice, &user("alice"), "Bad Name", None, None)
+        .create(&alice, &user("alice"), "Bad!Name", None, None)
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRepoName(_)), "{err}");

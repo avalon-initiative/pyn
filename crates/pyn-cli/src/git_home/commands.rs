@@ -346,6 +346,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         }
         Command::Policy(_) => server_only("policy"),
         Command::Audit { .. } => server_only("audit"),
+        Command::Pr(_) => server_only("pr"),
         Command::Verify { .. } => server_only("verify"),
         Command::Summary => server_only("summary"),
         Command::Login { .. }
