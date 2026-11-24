@@ -18,6 +18,15 @@ pub enum Mode {
 /// Where a repository keeps its policy file.
 pub const POLICY_PATH: &str = ".pyn/pyn.toml";
 
+/// The starter policy with `[meta] default` set to `default`; the first `default = ` line is the one in `[meta]`.
+pub fn starter_policy(default: Mode) -> String {
+    let word = match default {
+        Mode::Shared => "shared",
+        Mode::Exclusive => "exclusive",
+    };
+    DEFAULT_INITIAL_POLICY.replacen("default = \"shared\"", &format!("default = \"{word}\""), 1)
+}
+
 /// The policy a new repository starts with when the operator configures none: shared, with the unmergeable kinds locked.
 pub const DEFAULT_INITIAL_POLICY: &str = r#"# Collaboration policy: which paths are shared (merged, edited concurrently) and which are exclusive
 # (one editor at a time, through a lock). A path no entry covers uses `default`.
@@ -614,6 +623,19 @@ paths = ["Content/docs/", "**/*.md", "docs/"]
             let err = Rules::from_toml(bad).unwrap_err();
             assert!(matches!(err, PynError::InvalidRules(_)), "{bad}: {err}");
         }
+    }
+
+    #[test]
+    fn the_starter_takes_either_default_and_stays_valid_policy() {
+        for (mode, word) in [(Mode::Shared, "shared"), (Mode::Exclusive, "exclusive")] {
+            let text = starter_policy(mode);
+            let rules = Rules::from_toml(&text).unwrap();
+            assert!(text.contains(&format!("default = \"{word}\"")));
+            assert_eq!(text.matches("default = ").count(), 1);
+            assert_eq!(rules.mode_for(&p("x.png")), Mode::Exclusive);
+            assert_eq!(rules.mode_for(&p("zz/none.unknown")), mode);
+        }
+        assert_eq!(starter_policy(Mode::Shared), DEFAULT_INITIAL_POLICY);
     }
 
     #[test]

@@ -1912,6 +1912,54 @@ async fn create_repo(app: &axum::Router, token: &str, name: &str) -> api::RepoIn
 }
 
 #[tokio::test]
+async fn creation_commits_the_starter_policy_unless_turned_off() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    let cases = [
+        (
+            "on",
+            serde_json::json!({}),
+            api::PolicySource::File,
+            api::PolicyMode::Shared,
+        ),
+        (
+            "off",
+            serde_json::json!({"starter_policy": false}),
+            api::PolicySource::Initial,
+            api::PolicyMode::Shared,
+        ),
+        (
+            "locked",
+            serde_json::json!({"starter_policy": true, "starter_default": "exclusive"}),
+            api::PolicySource::File,
+            api::PolicyMode::Exclusive,
+        ),
+    ];
+    for (name, extra, source, default_mode) in cases {
+        let mut body = extra;
+        body["name"] = name.into();
+        let r = send(&app, "POST", "/v1/repos", &alice, Some(body)).await;
+        assert_eq!(r.status(), StatusCode::CREATED, "{name}");
+        let r = send(
+            &app,
+            "GET",
+            &format!("/v1/repos/alice/{name}/policy"),
+            &alice,
+            None,
+        )
+        .await;
+        let policy: api::ActivePolicy = body_json(r).await;
+        assert_eq!(policy.source, source, "{name}");
+        assert_eq!(policy.default_mode, default_mode, "{name}");
+        assert_eq!(
+            policy.commit.is_some(),
+            source == api::PolicySource::File,
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn repository_names_keep_their_case_and_resolve_ignoring_it() {
     let app = router(state_with(false, RegistrationMode::Open).await);
     let alice = register_and_sign_in(&app, "alice").await;

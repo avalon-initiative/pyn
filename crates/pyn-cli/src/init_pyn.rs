@@ -87,24 +87,6 @@ pub enum DefaultMode {
     Exclusive,
 }
 
-impl DefaultMode {
-    fn word(self) -> &'static str {
-        match self {
-            Self::Shared => "shared",
-            Self::Exclusive => "exclusive",
-        }
-    }
-}
-
-/// The starter policy with `[meta] default` set; the first `default = ` line is the one in `[meta]`.
-pub(crate) fn starter_policy(mode: DefaultMode) -> String {
-    POLICY.replacen(
-        "default = \"shared\"",
-        &format!("default = \"{}\"", mode.word()),
-        1,
-    )
-}
-
 const ASK_ATTEMPTS: usize = 3;
 
 /// The flag wins; without a terminal the answer is `shared` and nothing is asked.
@@ -285,18 +267,6 @@ mod tests {
     #[test]
     fn the_offline_starter_equals_the_servers() {
         assert_eq!(POLICY, pyn_core::rules::DEFAULT_INITIAL_POLICY);
-    }
-
-    #[test]
-    fn the_starter_takes_either_default_and_stays_valid_policy() {
-        for mode in [DefaultMode::Shared, DefaultMode::Exclusive] {
-            let text = starter_policy(mode);
-            pyn_core::rules::Rules::from_toml(&text).unwrap();
-            assert!(text.contains(&format!("default = \"{}\"", mode.word())));
-            assert_eq!(text.matches("default = ").count(), 1);
-            assert!(text.contains("\"**/*.png\""), "the exclusive list stays");
-        }
-        assert_eq!(starter_policy(DefaultMode::Shared), POLICY);
     }
 
     fn answer(text: &str, terminal: bool) -> (Result<DefaultMode>, String) {
