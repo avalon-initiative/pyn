@@ -93,6 +93,8 @@ mod stars;
 pub use stars::*;
 mod two_factor;
 pub use two_factor::*;
+mod watches;
+pub use watches::*;
 mod object_store;
 pub use object_store::*;
 
@@ -9595,6 +9597,9 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; stars_are_one_per_user_and_repository_and_counted);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_users_stars_list_newest_first_and_only_theirs);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; stars_go_with_their_repository_and_follow_a_rename);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_watch_level_is_one_per_user_and_repository_and_replaced);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_users_watches_list_newest_first_and_only_theirs);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; watches_go_with_their_repository_and_follow_a_rename);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {
         #[tokio::test(flavor = "multi_thread")]

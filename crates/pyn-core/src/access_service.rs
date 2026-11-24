@@ -53,6 +53,7 @@ use crate::two_factor::{
 };
 use crate::types::{AccountId, MAX_LABEL_BYTES, validate_label};
 use crate::types::{RepoId, UserId};
+use crate::watch::{Notification, WatchLevel};
 use crate::webhook::{EventDraft, NewSecret, WebhookStore};
 
 /// Server-wide events (account approvals and disables) are recorded in the audit store under this id, which
@@ -78,6 +79,7 @@ mod setup;
 mod stars;
 mod teams;
 mod two_factor;
+mod watches;
 mod webhooks;
 
 pub use deletion::ACCOUNT_DELETION_ACTOR;
@@ -164,7 +166,35 @@ pub trait AccessStore: Send + Sync {
     /// The repositories the user marked with when, newest first.
     async fn stars_of(&self, user: &UserId) -> Result<Vec<(RepoId, DateTime<Utc>)>>;
 
-    /// Removes the repository's memberships, team roles, role overrides, invitations and stars.
+    /// Sets the user's watch level on the repository, replacing any earlier one.
+    async fn set_watch(
+        &self,
+        repo: &RepoId,
+        user: &UserId,
+        level: WatchLevel,
+        now: DateTime<Utc>,
+    ) -> Result<()>;
+
+    /// Removes the user's level; false if there was none.
+    async fn clear_watch(&self, repo: &RepoId, user: &UserId) -> Result<bool>;
+
+    async fn watch_of(&self, repo: &RepoId, user: &UserId) -> Result<Option<WatchLevel>>;
+
+    /// Accounts watching at `All` or `Locks`; an ignoring account is not counted.
+    async fn watcher_count(&self, repo: &RepoId) -> Result<u64>;
+
+    /// The user's levels with when each was set, newest first.
+    async fn watches_of(&self, user: &UserId) -> Result<Vec<(RepoId, WatchLevel, DateTime<Utc>)>>;
+
+    /// Events queued for the user with an id above `after`, oldest first.
+    async fn notifications_of(
+        &self,
+        user: &UserId,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<Notification>>;
+
+    /// Removes the repository's memberships, team roles, role overrides, invitations, stars, watches and queued notifications.
     async fn delete_repo_access(&self, repo: &RepoId) -> Result<()>;
 
     /// The defaults with the repository's overrides applied.

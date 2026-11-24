@@ -196,10 +196,14 @@ pub enum LockChange<'a> {
 pub type LockEventBuilder<'a> = &'a (dyn Fn(LockChange<'_>) -> Result<EventDraft> + Send + Sync);
 
 impl DomainEvent {
-    /// The repository a lock event belongs to; none for other events.
+    /// The repository a lock or repository event belongs to; none for other events.
     pub fn repo_id(&self) -> Option<&RepoId> {
         match self {
-            Self::LockAcquired { repo_id, .. }
+            Self::RepositoryCreated { repo_id, .. }
+            | Self::RepositoryRenamed { repo_id, .. }
+            | Self::RepositoryDeleted { repo_id, .. }
+            | Self::RepositoryStorageCapChanged { repo_id, .. }
+            | Self::LockAcquired { repo_id, .. }
             | Self::LockReleased { repo_id, .. }
             | Self::LockExpired { repo_id, .. }
             | Self::LockForced { repo_id, .. } => Some(repo_id),

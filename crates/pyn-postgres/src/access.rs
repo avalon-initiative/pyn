@@ -20,7 +20,9 @@ use pyn_core::{
     RepoPolicy, Result, Role, RoleDefinitions, ServerInvitation, ServerSettings,
     ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind,
     TeamId, TeamRecord, TokenId, TokenRecord, TokenResource, UserId, VerificationRecord,
+    WatchLevel,
 };
+use pyn_core::{Notification, OutboxEvent};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 
@@ -516,9 +518,111 @@ impl AccessStore for PgMetadataStore {
             .collect())
     }
 
+    async fn set_watch(
+        &self,
+        repo: &RepoId,
+        user: &UserId,
+        level: WatchLevel,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO repo_watches (repo, user_id, level, updated_at) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (repo, user_id) DO UPDATE SET level = $3, updated_at = $4",
+        )
+        .bind(repo.as_str())
+        .bind(user.as_str())
+        .bind(level.as_str())
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn clear_watch(&self, repo: &RepoId, user: &UserId) -> Result<bool> {
+        let done = sqlx::query("DELETE FROM repo_watches WHERE repo = $1 AND user_id = $2")
+            .bind(repo.as_str())
+            .bind(user.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn watch_of(&self, repo: &RepoId, user: &UserId) -> Result<Option<WatchLevel>> {
+        let level: Option<String> =
+            sqlx::query_scalar("SELECT level FROM repo_watches WHERE repo = $1 AND user_id = $2")
+                .bind(repo.as_str())
+                .bind(user.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?;
+        level.map(|l| l.parse()).transpose()
+    }
+
+    async fn watcher_count(&self, repo: &RepoId) -> Result<u64> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM repo_watches WHERE repo = $1 AND level <> 'ignore'",
+        )
+        .bind(repo.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(n as u64)
+    }
+
+    async fn watches_of(&self, user: &UserId) -> Result<Vec<(RepoId, WatchLevel, DateTime<Utc>)>> {
+        let rows: Vec<(String, String, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT repo, level, updated_at FROM repo_watches WHERE user_id = $1
+             ORDER BY updated_at DESC, repo",
+        )
+        .bind(user.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|(r, l, at)| Ok((RepoId::new(r), l.parse()?, at)))
+            .collect()
+    }
+
+    async fn notifications_of(
+        &self,
+        user: &UserId,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<Notification>> {
+        let rows = sqlx::query(
+            "SELECT n.id, n.repo, e.id AS event_id, e.event_type, e.payload::text AS payload, e.created_at
+             FROM watch_notifications n JOIN webhook_events e ON e.id = n.event_id
+             WHERE n.user_id = $1 AND n.id > $2 ORDER BY n.id LIMIT $3",
+        )
+        .bind(user.as_str())
+        .bind(after)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows
+            .iter()
+            .map(|row| Notification {
+                id: row.get("id"),
+                user: user.clone(),
+                repo: RepoId::new(row.get::<String, _>("repo")),
+                event: OutboxEvent {
+                    id: row.get("event_id"),
+                    event_type: row.get("event_type"),
+                    payload: row.get("payload"),
+                    created_at: row.get("created_at"),
+                },
+            })
+            .collect())
+    }
+
     async fn delete_repo_access(&self, repo: &RepoId) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         for stmt in [
+            "DELETE FROM watch_notifications WHERE repo = $1",
+            "DELETE FROM repo_watches WHERE repo = $1",
             "DELETE FROM repo_stars WHERE repo = $1",
             "DELETE FROM memberships WHERE repo = $1",
             "DELETE FROM team_repo_roles WHERE repo = $1",

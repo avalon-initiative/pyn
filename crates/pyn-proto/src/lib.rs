@@ -1243,6 +1243,47 @@ pub struct RepoInfo {
     /// The caller's role in the repository; absent when they have none.
     #[schema(value_type = Option<Role>)]
     pub role: Option<String>,
+    /// The caller's watch level; null when they chose none, and for a signed-out caller.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub watching: Option<WatchLevel>,
+    /// How many accounts watch the repository at `all` or `locks`. Anyone who can read the repository sees it.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub watcher_count: u64,
+}
+
+/// What a watcher hears about: every event of the repository, only its lock events, or nothing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WatchLevel {
+    All,
+    Locks,
+    Ignore,
+}
+
+/// The caller's watch level on a repository and how many accounts watch it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WatchState {
+    /// Null when the caller chose no level.
+    #[schema(required = true)]
+    pub level: Option<WatchLevel>,
+    pub watchers: u64,
+}
+
+/// Body of `PUT /v1/repos/{owner}/{name}/watch`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetWatchRequest {
+    pub level: WatchLevel,
+}
+
+/// One repository in the caller's list of watched repositories.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WatchedRepo {
+    pub level: WatchLevel,
+    /// When the level was last set.
+    pub updated_at: DateTime<Utc>,
+    pub repo: RepoInfo,
 }
 
 /// A repository's star count and whether the caller starred it.
