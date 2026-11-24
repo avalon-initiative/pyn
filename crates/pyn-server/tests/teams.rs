@@ -151,7 +151,7 @@ async fn acme() -> Org {
         &app,
         &alice,
         "/v1/repos",
-        json!({"owner": "acme", "name": "game"}),
+        json!({"starter_policy": false, "owner": "acme", "name": "game"}),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);
