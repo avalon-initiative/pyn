@@ -55,6 +55,8 @@ else's work. Rows in the compatibility table marked *planned* are the roadmap.
 
 ## Quickstart
 
+New to pyn? The [quickstart](docs/quickstart.md) goes from nothing to a lock conflict in a few minutes. Coming from another tool: [git, Perforce or Unity Version Control](docs/coming-from.md); building a game: [engines](docs/engines.md).
+
 To run a release on a server (an Ubuntu or Debian host or LXC is easiest), fetch and run the installer:
 
 ```bash
