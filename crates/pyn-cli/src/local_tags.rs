@@ -48,6 +48,9 @@ pub fn run(backend: &dyn Backend, ws: Option<&Workspace>, args: TagArgs) -> Resu
     if args.sign || args.local_user.is_some() {
         bail!("signed tags need a git repository; a pyn server workspace has no signing key");
     }
+    if args.server || ws.and_then(LocalStore::open).is_none() {
+        return crate::server_tags::run(backend, ws, args);
+    }
     let store = open(ws)?;
     if args.delete {
         return git_home::delete_tags(

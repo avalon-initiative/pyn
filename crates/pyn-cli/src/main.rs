@@ -63,6 +63,7 @@ mod rename;
 mod repo_tool;
 mod rm_mv;
 mod sanitize;
+mod server_tags;
 mod short_status;
 mod snapshot;
 mod staging;

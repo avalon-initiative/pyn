@@ -570,7 +570,7 @@ fn valid_body(path: &str) -> Option<&'static str> {
         "assemble" => {
             r#"{"chunks":["0000000000000000000000000000000000000000000000000000000000000000"]}"#
         }
-        "branches" => r#"{"name":"topic"}"#,
+        "branches" | "tags" => r#"{"name":"topic"}"#,
         "push" => r#"{"commits":[],"trees":[]}"#,
         _ if path.contains("/branches/") => r#"{"name":"topic2"}"#,
         _ => return None,
@@ -1143,6 +1143,10 @@ const REPOSITORY_ROUTES: &[(&str, &str, &str)] = &[
         "/pulls/{number}/merge",
         "repo_scoped:contents:write",
     ),
+    ("GET", "/tags", "public_repo_read:contents:read"),
+    ("POST", "/tags", "repo_scoped:contents:write"),
+    ("GET", "/tags/{*tag}", "public_repo_read:contents:read"),
+    ("DELETE", "/tags/{*tag}", "repo_scoped:contents:write"),
 ];
 
 #[test]
