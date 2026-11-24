@@ -3,7 +3,7 @@
 use super::push::{Built, Files, build, objects, set};
 use super::{CountingStore, RULES, Store, blob, harness_on};
 use crate::memory::MemoryObjectStore;
-use crate::{PathFilter, RepoId};
+use crate::{HistoryBy, PathFilter, RepoId};
 use std::sync::Arc;
 
 pub async fn a_scan_that_spends_its_budget_resumes_from_a_cursor(store: Store) {
@@ -33,7 +33,14 @@ pub async fn a_scan_that_spends_its_budget_resumes_from_a_cursor(store: Store) {
     let nothing = PathFilter::new("nothing.txt").unwrap();
 
     let scan = store
-        .repo_history(h.svc.repo(), Some(&tip), Some(&nothing), None, 5, 4)
+        .repo_history(
+            h.svc.repo(),
+            Some(&tip),
+            &HistoryBy::path(nothing.clone()),
+            None,
+            5,
+            4,
+        )
         .await
         .unwrap();
     assert!(scan.revisions.is_empty());
@@ -43,7 +50,7 @@ pub async fn a_scan_that_spends_its_budget_resumes_from_a_cursor(store: Store) {
         .repo_history(
             h.svc.repo(),
             Some(&tip),
-            Some(&nothing),
+            &HistoryBy::path(nothing.clone()),
             Some(&resume),
             5,
             4,
@@ -58,7 +65,14 @@ pub async fn a_scan_that_spends_its_budget_resumes_from_a_cursor(store: Store) {
 
     let any = PathFilter::new("a.cpp").unwrap();
     let first = store
-        .repo_history(h.svc.repo(), Some(&tip), Some(&any), None, 2, 4)
+        .repo_history(
+            h.svc.repo(),
+            Some(&tip),
+            &HistoryBy::path(any.clone()),
+            None,
+            2,
+            4,
+        )
         .await
         .unwrap();
     assert_eq!(first.revisions.len(), 2);
@@ -66,7 +80,14 @@ pub async fn a_scan_that_spends_its_budget_resumes_from_a_cursor(store: Store) {
 
     let folder = PathFilter::new("Source/").unwrap();
     let by_folder = store
-        .repo_history(h.svc.repo(), Some(&tip), Some(&folder), None, 3, 4)
+        .repo_history(
+            h.svc.repo(),
+            Some(&tip),
+            &HistoryBy::path(folder.clone()),
+            None,
+            3,
+            4,
+        )
         .await
         .unwrap();
     assert_eq!(by_folder.revisions.len(), 3);

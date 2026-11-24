@@ -1,6 +1,7 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 
 use crate::error::{PynError, Result};
+use crate::rules::PathFilter;
 use crate::types::{RepoPath, Revision, RevisionId};
 
 pub const HISTORY_DEFAULT_LIMIT: usize = 50;
@@ -56,6 +57,39 @@ impl HistoryCursor {
             id: RevisionId(id.parse().map_err(|_| bad())?),
             path: RepoPath::from_stored(path).map_err(|_| bad())?,
         })
+    }
+}
+
+/// Narrows repository history by path, author and time; `Default` keeps everything.
+#[derive(Debug, Clone, Default)]
+pub struct HistoryBy {
+    pub path: Option<PathFilter>,
+    /// Account names as written in the revisions; a revision by any of them matches.
+    pub authors: Vec<String>,
+    /// Revisions made at or after this instant.
+    pub since: Option<DateTime<Utc>>,
+    /// Revisions made at or before this instant.
+    pub until: Option<DateTime<Utc>>,
+}
+
+impl HistoryBy {
+    pub fn path(filter: PathFilter) -> Self {
+        Self {
+            path: Some(filter),
+            ..Self::default()
+        }
+    }
+
+    /// Whether an author or time bound is set.
+    pub fn has_who_or_when(&self) -> bool {
+        !self.authors.is_empty() || self.since.is_some() || self.until.is_some()
+    }
+
+    /// The revision passes the author and time bounds; the path glob is applied by the scan, which budgets around it.
+    pub fn matches_who_and_when(&self, rev: &Revision) -> bool {
+        (self.authors.is_empty() || self.authors.iter().any(|a| a == rev.author.as_str()))
+            && self.since.is_none_or(|t| rev.created_at >= t)
+            && self.until.is_none_or(|t| rev.created_at <= t)
     }
 }
 

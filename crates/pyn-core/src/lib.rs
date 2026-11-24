@@ -99,8 +99,8 @@ pub use email::{
 pub use error::{PasskeyReason, PynError, Result};
 pub use freeze::{FREEZE_REASON_BYTES, MemoryOwnerWrites, OwnerWrites};
 pub use history::{
-    HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryCursor, HistoryPage,
-    HistoryScan, PathHistoryPage, decode_path_cursor, encode_path_cursor,
+    HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, HISTORY_SCAN_BUDGET, HistoryBy, HistoryCursor,
+    HistoryPage, HistoryScan, PathHistoryPage, decode_path_cursor, encode_path_cursor,
 };
 pub use integrity::{BreakKind, Problem, VerifyReport};
 pub use limit_events::{
