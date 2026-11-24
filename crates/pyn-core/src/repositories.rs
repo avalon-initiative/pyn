@@ -49,6 +49,9 @@ pub struct OpenRepo {
     pub service: Arc<RepoService>,
 }
 
+/// How long a branch may go without a commit before the branch list calls it stale.
+pub const DEFAULT_BRANCH_STALE_DAYS: u32 = 90;
+
 pub struct Repositories {
     meta: Arc<dyn MetadataStore>,
     objects: Arc<dyn ObjectStore>,
@@ -61,6 +64,7 @@ pub struct Repositories {
     unreferenced_cap: u64,
     uploads: crate::gate::UploadGate,
     merge_slots: Arc<tokio::sync::Semaphore>,
+    branch_stale_days: u32,
     services: Mutex<HashMap<crate::RepoId, (ServiceKey, Arc<RepoService>)>>,
 }
 
@@ -151,6 +155,7 @@ impl Repositories {
             merge_slots: Arc::new(tokio::sync::Semaphore::new(
                 crate::merge::default_concurrent_merges(),
             )),
+            branch_stale_days: DEFAULT_BRANCH_STALE_DAYS,
             services: Mutex::new(HashMap::new()),
         }
     }
@@ -184,6 +189,16 @@ impl Repositories {
     pub fn with_max_concurrent_merges(mut self, slots: usize) -> Self {
         self.merge_slots = Arc::new(tokio::sync::Semaphore::new(slots));
         self
+    }
+
+    /// Days without a commit after which a branch other than the default counts as stale; at least 1.
+    pub fn with_branch_stale_days(mut self, days: u32) -> Self {
+        self.branch_stale_days = days.max(1);
+        self
+    }
+
+    pub fn branch_stale_after(&self) -> chrono::Duration {
+        chrono::Duration::days(i64::from(self.branch_stale_days))
     }
 
     /// Admits one more upload by `user`, or `UploadsBusy`; hold the permit until the upload ends.
