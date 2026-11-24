@@ -160,7 +160,7 @@ async fn world() -> World {
         "/v1/repos",
         &alice,
         None,
-        Some(json!({"name": "game"})),
+        Some(json!({"starter_policy": false, "name": "game"})),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);
@@ -1025,7 +1025,7 @@ async fn a_blob_is_served_by_id_with_ranges_to_readers_of_its_repository_only() 
         "/v1/repos",
         &eve,
         None,
-        Some(json!({"name": "mine"})),
+        Some(json!({"starter_policy": false, "name": "mine"})),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);

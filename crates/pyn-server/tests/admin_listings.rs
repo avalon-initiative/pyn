@@ -126,7 +126,7 @@ async fn world() -> (Router, String, String) {
             who,
             "POST",
             "/v1/repos",
-            Some(json!({"name": name, "visibility": visibility})),
+            Some(json!({"starter_policy": false, "name": name, "visibility": visibility})),
         )
         .await;
         assert_eq!(r.status, StatusCode::CREATED);

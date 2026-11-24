@@ -109,7 +109,7 @@ async fn start(env: &[(&str, &str)]) -> Running {
     let r = http
         .post(server.url("/v1/repos"))
         .header("x-pyn-user", "root")
-        .json(&serde_json::json!({"name": "r"}))
+        .json(&serde_json::json!({"starter_policy": false, "name": "r"}))
         .send()
         .await
         .unwrap();

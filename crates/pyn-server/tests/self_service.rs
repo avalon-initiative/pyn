@@ -311,7 +311,9 @@ async fn make_repo(s: &Server, user: &str, name: &str) {
             user,
             "POST",
             "/v1/repos",
-            Some(serde_json::json!({"name": name, "visibility": "public"})),
+            Some(
+                serde_json::json!({"starter_policy": false, "name": name, "visibility": "public"}),
+            ),
         ),
     )
     .await;

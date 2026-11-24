@@ -274,8 +274,8 @@ the server and is not garbage-collected yet. Tokens that were limited to the rep
 ## The policy
 
 Each repository enforces the `.pyn/pyn.toml` at its own head, read when the server first opens the repository and replaced
-the moment a new revision of the file lands; see [Changing policy](pyn-toml.md#changing-policy). `pyn repo create` checks in
-a first policy file for the new repository (the [starter policy](pyn-toml.md#the-starter-policy), or the file given with `--policy`; `--no-policy` skips it).
+the moment a new revision of the file lands; see [Changing policy](pyn-toml.md#changing-policy). Creating a repository
+commits a first policy file for it, on by default (the [starter policy](pyn-toml.md#the-starter-policy), the `starter_policy` field of `POST /v1/repos`; `pyn repo create --no-policy` turns it off, `--policy` uses a given file).
 Until a repository has a policy file, its initial policy applies: the server's `PYN_CONFIG` file as of its creation, or
 the [starter policy](pyn-toml.md#the-starter-policy) (shared, with unmergeable kinds exclusive) if that is unset (see [`pyn.toml`](pyn-toml.md)). A repository created before initial policies existed uses the
 `PYN_CONFIG` file, or everything exclusive.

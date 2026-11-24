@@ -77,6 +77,8 @@ mod webhooks;
 pub use webhooks::*;
 mod outbox;
 pub use outbox::*;
+mod starter;
+pub use starter::*;
 mod frozen;
 pub use frozen::*;
 mod repo_cap;

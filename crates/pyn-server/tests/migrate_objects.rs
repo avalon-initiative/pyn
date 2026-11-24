@@ -596,7 +596,14 @@ async fn a_pushed_repository_with_a_chunked_file_is_intact_in_the_bucket_and_bac
     )));
     let on_fs = app_over(fs, &shared);
     let token = sign_up(&on_fs, "alice").await;
-    let (status, _) = json_call(&on_fs, "POST", "/v1/repos", &token, json!({"name": "game"})).await;
+    let (status, _) = json_call(
+        &on_fs,
+        "POST",
+        "/v1/repos",
+        &token,
+        json!({"starter_policy": false, "name": "game"}),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED);
 
     let small = b"print('hello')\n".to_vec();

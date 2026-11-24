@@ -167,7 +167,7 @@ impl Copies {
                 Method::POST,
                 "/v1/repos",
                 Some(&alice),
-                Some(json!({"name": "game"})),
+                Some(json!({"starter_policy": false, "name": "game"})),
             )
             .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");

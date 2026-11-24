@@ -154,7 +154,7 @@ async fn a_delegated_manager_cannot_change_the_repository_owner() {
         &alice,
         "POST",
         "/v1/repos",
-        Some(json!({"name": "game"})),
+        Some(json!({"starter_policy": false, "name": "game"})),
     )
     .await;
     assert_eq!(
@@ -201,7 +201,7 @@ async fn adding_an_account_follows_the_registration_policy() {
             "root",
             "POST",
             "/v1/repos",
-            Some(json!({"name": "seed"})),
+            Some(json!({"starter_policy": false, "name": "seed"})),
         )
         .await;
         let r = send(
@@ -275,7 +275,7 @@ async fn adding_an_account_needs_a_full_scope_credential() {
             "root",
             "POST",
             "/v1/repos",
-            Some(json!({"name": "seed"})),
+            Some(json!({"starter_policy": false, "name": "seed"})),
         )
         .await;
         for (name, role) in [("wendy", "admin"), ("boss", "admin")] {
@@ -371,7 +371,7 @@ async fn invitation_lifetimes_are_bounded() {
         &alice,
         "POST",
         "/v1/repos",
-        Some(json!({"name": "game"})),
+        Some(json!({"starter_policy": false, "name": "game"})),
     )
     .await;
     for hours in [
@@ -440,7 +440,7 @@ async fn a_manager_sees_only_tokens_scoped_to_repositories_they_manage() {
             &alice,
             "POST",
             "/v1/repos",
-            Some(json!({"name": name, "owner": "acme"})),
+            Some(json!({"starter_policy": false, "name": name, "owner": "acme"})),
         )
         .await;
         assert_eq!(r.status, StatusCode::CREATED, "{name}");
@@ -498,7 +498,7 @@ async fn new_writes_refuse_reserved_and_oversized_paths_and_text() {
         &alice,
         "POST",
         "/v1/repos",
-        Some(json!({"name": "game"})),
+        Some(json!({"starter_policy": false, "name": "game"})),
     )
     .await;
     let blob = {
@@ -611,7 +611,7 @@ async fn a_missing_repository_and_one_the_caller_cannot_see_answer_identically()
         &alice,
         "POST",
         "/v1/repos",
-        Some(json!({"name": "vault", "visibility": "private"})),
+        Some(json!({"starter_policy": false, "name": "vault", "visibility": "private"})),
     )
     .await;
     grant(&app, &alice, "alice/vault", "reader", "reader").await;
@@ -620,7 +620,7 @@ async fn a_missing_repository_and_one_the_caller_cannot_see_answer_identically()
         &bob,
         "POST",
         "/v1/repos",
-        Some(json!({"name": "own"})),
+        Some(json!({"starter_policy": false, "name": "own"})),
     )
     .await;
     let scoped = send(
@@ -694,7 +694,7 @@ async fn an_unknown_token_and_a_token_the_caller_cannot_manage_answer_identicall
         &alice,
         "POST",
         "/v1/repos",
-        Some(json!({"name": "game"})),
+        Some(json!({"starter_policy": false, "name": "game"})),
     )
     .await;
     let id = send(

@@ -120,7 +120,9 @@ async fn user_with_repo(app: &Router, name: &str) -> String {
         .uri("/v1/repos")
         .header("content-type", "application/json")
         .cred(&Cred::bearer(&token))
-        .body(Body::from(json!({"name": "game"}).to_string()))
+        .body(Body::from(
+            json!({"starter_policy": false, "name": "game"}).to_string(),
+        ))
         .unwrap();
     assert_eq!(
         app.clone().oneshot(req).await.unwrap().status(),
