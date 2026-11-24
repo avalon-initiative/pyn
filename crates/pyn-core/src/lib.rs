@@ -43,6 +43,7 @@ pub mod totp;
 pub mod tree;
 pub mod two_factor;
 pub mod types;
+pub mod watch;
 pub mod webhook;
 pub mod webhook_secret;
 pub mod webhook_url;
@@ -166,6 +167,7 @@ pub use types::{
     Person, PushedCommit, RepoId, RepoPath, Revision, RevisionHash, RevisionId, TeamId, TusCancel,
     TusClaim, TusSession, UserId,
 };
+pub use watch::{Notification, WatchLevel, WatchState};
 pub use webhook::{
     Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, EventDraft, FixedJitter, Jitter,
     MAX_ACTIVE_SECRETS, MAX_ATTEMPTS, NewSecret, NewSubscription, OutboxEvent, RETENTION_DAYS,

@@ -425,6 +425,14 @@ const EXEMPT: &[(&str, &str)] = &[
     ("missing_objects", "a read"),
     ("create_org", "makes a new owner, not a write under one"),
     ("decline_invitation", "declining only removes an offer"),
+    (
+        "put_watch",
+        "the caller's own preference, not a change to the owner's data",
+    ),
+    (
+        "delete_watch",
+        "the caller's own preference, not a change to the owner's data",
+    ),
     ("admin_create_org", "an operator action"),
     ("admin_delete_org", "an operator action"),
     ("set_owner_limits", "an operator action"),

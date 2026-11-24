@@ -843,6 +843,7 @@ No git equivalent; these keep their own names and are never aliased to a git com
 | `pyn invite`, `user`, `member`, `role` | Invitations, repository users, roles and what each role grants. |
 | `pyn org`, `pyn team` | Organizations and teams, and granting teams roles on repositories. |
 | `pyn repo` (`create`, `list`, `explore`, `star`, `unstar`, `starred`, `visibility`, `usage`, `delete`) | Repositories live on the server; `pyn init-git` starts a local git-home repository (see `git init` above). |
+| `pyn watch`, `unwatch`, `watching` | Which repositories you hear about: all activity, locks only or nothing. |
 | `pyn setup`, `pyn admin`, `pyn usage` | First-run setup, server administration and per-owner usage and limits. |
 
 ## Not planned
