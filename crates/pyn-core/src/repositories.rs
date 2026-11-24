@@ -286,6 +286,8 @@ impl Repositories {
     /// A live repository at `owner/name`, else the one a rename of `owner` moved away from there (decision #986).
     async fn find_or_redirect(&self, owner: &str, name: &str) -> Result<Option<RepoRecord>> {
         let owner = UserId::new(owner);
+        let name = repo::normalize_name(name);
+        let name = name.as_str();
         match self.meta.find_repo(&owner, name).await? {
             Some(live) => Ok(Some(live)),
             None => self.meta.find_repo_redirect(&owner, name).await,
@@ -295,6 +297,8 @@ impl Repositories {
     /// The current address of `owner/name` when that address is only a redirect left by a rename.
     pub async fn moved_to(&self, owner: &str, name: &str) -> Result<Option<String>> {
         let owner = UserId::new(owner);
+        let name = repo::normalize_name(name);
+        let name = name.as_str();
         if self.meta.find_repo(&owner, name).await?.is_some() {
             return Ok(None);
         }
@@ -412,7 +416,7 @@ impl Repositories {
         let operator = self.access.require_repo_cap_setter(actor, owner).await?;
         let record = self
             .meta
-            .find_repo(owner, name)
+            .find_repo(owner, &repo::normalize_name(name))
             .await?
             .ok_or_else(|| PynError::RepoNotFound(format!("{owner}/{name}")))?;
         if cap.is_some_and(|c| c > MAX_LIMIT_VALUE) {

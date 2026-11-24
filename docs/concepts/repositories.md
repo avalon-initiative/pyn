@@ -8,12 +8,17 @@ server and work across repositories.
 ## Addresses and namespaces
 
 An owner is a **namespace**: a user account or an [organization](#organizations), and its name is the account's user name or
-the organization's name. Users and organizations share one namespace, so a name belongs to exactly one of them. A repository name is 1
-to 100 ASCII letters of any case, digits, `-`, `_` or `.`, starting with a letter or digit and not ending in `.`. A name keeps
-the case it was created with (`MyGame` stays `MyGame`), but names are unique per owner ignoring case and every lookup of
-`owner/name` (API path, CLI, clone, rename) matches ignoring case, so `Game` and `game` cannot both exist under one owner and
-`alice/GAME` finds `alice/Game`. Different owners are independent: `alice/game` and `bob/game` are different repositories.
-Renaming a repository to another case of its own name is allowed. This is the current behaviour.
+the organization's name. Users and organizations share one namespace, so a name belongs to exactly one of them.
+
+**Repository names are URL forms**, like owner names. A typed name is normalised to one canonical name: trimmed, each run of
+whitespace becomes one `-`, ASCII lowercase. The canonical name is 1 to 100 characters from `a-z`, `0-9`, `-`, `_` and `.`,
+starting with a letter or digit and not ending in `.`; anything else is `400 invalid_repo_name`. The canonical name is what is
+stored, returned and compared, so `test repo`, `Test Repo` and `test-repo` are the same repository: creating one while another
+exists under the same owner is `409 repo_exists`, and a rename is normalised and checked the same way. Every lookup of
+`owner/name` (API path, request body, CLI, clone, rename) normalises the name first, so `alice/Test%20Repo` and `alice/TEST-REPO`
+find `alice/test-repo`. A repository has no separate display name. Different owners are independent: `alice/game` and
+`bob/game` are different repositories. Repositories created before this rule keep the case they were stored with and are still
+matched ignoring case; nothing migrates.
 
 **Owner names are URL forms.** A typed owner name is normalised to one canonical name: trimmed, each run of whitespace becomes a
 single `-`, and ASCII letters are lowercased, so `Test Studio`, `test-studio` and `TeSt-StuDiO` are the same owner, `test-studio`.

@@ -298,7 +298,7 @@ pub enum PynError {
     #[error("no repository {0}")]
     RepoNotFound(String),
     #[error(
-        "invalid repository name {0:?}: use 1 to 100 letters, digits, '-', '_' or '.', starting with a letter or digit"
+        "invalid repository name {0:?}: use 1 to 100 letters, digits, '-', '_' or '.' (spaces become '-', case is ignored), starting with a letter or digit"
     )]
     InvalidRepoName(String),
     #[error("only {0} can do that in their namespace")]

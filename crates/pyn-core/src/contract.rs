@@ -7818,7 +7818,7 @@ pub async fn organization_repository_creation_resolves_owner_base_and_rules(stor
     );
     let err = w
         .repos
-        .create(&session("bob"), &user("acme"), "Bad Name", None, None)
+        .create(&session("bob"), &user("acme"), "Bad!Name", None, None)
         .await
         .unwrap_err();
     assert!(matches!(err, PynError::InvalidRepoName(_)), "{err}");
