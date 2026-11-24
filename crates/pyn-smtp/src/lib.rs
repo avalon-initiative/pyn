@@ -127,7 +127,10 @@ impl EmailSender for SmtpSender {
     async fn check(&self) -> Result<(), String> {
         match tokio::time::timeout(ATTEMPT * 2, self.transport.test_connection()).await {
             Ok(Ok(true)) => Ok(()),
-            Ok(Ok(false)) => Err(explain(&self.settings, "the server did not answer the connection test")),
+            Ok(Ok(false)) => Err(explain(
+                &self.settings,
+                "the server did not answer the connection test",
+            )),
             Ok(Err(e)) => Err(explain(&self.settings, &e.to_string())),
             Err(_) => Err(explain(&self.settings, "timed out")),
         }

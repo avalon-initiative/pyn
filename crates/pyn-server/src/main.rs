@@ -206,7 +206,7 @@ async fn mailer_line(settings: &Settings) -> Option<Result<String, String>> {
 }
 
 /// Runs every start-up parse without starting anything and prints what it found.
-fn check_config() -> anyhow::Result<()> {
+async fn check_config() -> anyhow::Result<()> {
     let result = Settings::load();
     for line in unknown_in_environment() {
         println!("warning: {line}");
@@ -259,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
                 "--check-config takes no arguments\n{}",
                 pyn_server::host_admin::HELP
             );
-            return check_config();
+            return check_config().await;
         }
         _ => {}
     }
@@ -466,8 +466,12 @@ async fn main() -> anyhow::Result<()> {
         let access = access.clone();
         tokio::spawn(async move {
             match access.check_mailer().await {
-                Ok(()) => tracing::info!("mailer check passed: the SMTP server accepted the sign-in"),
-                Err(why) => tracing::warn!(%why, "mailer check failed; emails will not be delivered until this is fixed"),
+                Ok(()) => {
+                    tracing::info!("mailer check passed: the SMTP server accepted the sign-in")
+                }
+                Err(why) => {
+                    tracing::warn!(%why, "mailer check failed; emails will not be delivered until this is fixed")
+                }
             }
         });
     }

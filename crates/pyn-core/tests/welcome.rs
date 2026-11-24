@@ -226,7 +226,9 @@ struct Failing;
 #[async_trait]
 impl EmailSender for Failing {
     async fn send(&self, _message: EmailMessage) -> pyn_core::Result<()> {
-        Err(PynError::EmailDeliveryFailed("535 credentials invalid".into()))
+        Err(PynError::EmailDeliveryFailed(
+            "535 credentials invalid".into(),
+        ))
     }
 
     async fn check(&self) -> Result<(), String> {
@@ -249,14 +251,20 @@ async fn a_test_email_goes_to_the_administrators_verified_address_and_reports_th
         .await
         .unwrap();
     let err = w.svc.send_test_email(&admin()).await.unwrap_err();
-    assert!(matches!(err, PynError::InvalidRequest(_)), "no verified address yet: {err}");
+    assert!(
+        matches!(err, PynError::InvalidRequest(_)),
+        "no verified address yet: {err}"
+    );
 
     let link = w.mail.sent().pop().unwrap();
     w.svc.verify_email(&token_in(&link.body)).await.unwrap();
     let sent = w.svc.send_test_email(&admin()).await.unwrap();
     assert!(sent.delivered && sent.error.is_none());
     let last = w.mail.sent().pop().unwrap();
-    assert_eq!((last.subject.as_str(), last.to.as_str()), ("pyn test email", "root@example.org"));
+    assert_eq!(
+        (last.subject.as_str(), last.to.as_str()),
+        ("pyn test email", "root@example.org")
+    );
     assert!(w.svc.email_status().last_sent_at.is_some());
 }
 
@@ -265,7 +273,9 @@ async fn a_failing_mailer_shows_in_the_test_and_the_check() {
     let store = Arc::new(MemoryAccessStore::new());
     let svc = AccessService::new(
         store,
-        Arc::new(ManualClock::new(Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap())),
+        Arc::new(ManualClock::new(
+            Utc.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap(),
+        )),
         Arc::new(pyn_core::MemoryLimitEvents::new()),
     )
     .with_config(AccessConfig {

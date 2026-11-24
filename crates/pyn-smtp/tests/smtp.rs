@@ -47,7 +47,9 @@ async fn fake_server(offer_starttls: bool, behaviour: Behaviour) -> (u16, Seen) 
                         b"454 TLS not available\r\n"
                     } else if upper.starts_with("AUTH PLAIN") {
                         match behaviour {
-                            Behaviour::RejectAuth => b"535 5.7.8 Authentication credentials invalid\r\n",
+                            Behaviour::RejectAuth => {
+                                b"535 5.7.8 Authentication credentials invalid\r\n"
+                            }
                             _ => b"235 ok\r\n",
                         }
                     } else if upper.starts_with("MAIL FROM") {
@@ -227,7 +229,10 @@ async fn a_check_names_refused_credentials_and_a_mismatched_host() {
     s.user = Some("someone@gmail.com".into());
     let err = SmtpSender::new(&s).unwrap().check().await.unwrap_err();
     assert!(err.contains("user name or password"), "{err}");
-    assert!(err.contains("smtp.gmail.com"), "the host is 127.0.0.1: {err}");
+    assert!(
+        err.contains("smtp.gmail.com"),
+        "the host is 127.0.0.1: {err}"
+    );
     assert!(!err.contains("hunter2-secret"), "{err}");
 }
 
