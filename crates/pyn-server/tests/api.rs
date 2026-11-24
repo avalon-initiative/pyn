@@ -4674,6 +4674,99 @@ async fn a_branch_is_compared_summarised_and_dated() {
 }
 
 #[tokio::test]
+async fn the_branch_list_reports_author_distance_and_age_and_filters() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let base = "/v1/repos/alice/game";
+    let (one, two) = (
+        put_blob(&app, "game", &alice, "one").await,
+        put_blob(&app, "game", &alice, "two").await,
+    );
+    let checkin = |path: &str, content: &str, base_rev: Option<u64>, branch: Option<&str>| {
+        serde_json::json!({"path": path, "content": content, "base_revision": base_rev,
+                           "message": "m", "branch": branch})
+    };
+    for body in [checkin("a.txt", &one, None, None)] {
+        let r = send(&app, "POST", &format!("{base}/checkin"), &alice, Some(body)).await;
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/branches"),
+        &alice,
+        Some(serde_json::json!({"name": "topic"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/checkin"),
+        &alice,
+        Some(checkin("b.txt", &two, None, None)),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let list = |query: &'static str| {
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            let r = send(
+                &app,
+                "GET",
+                &format!("{base}/branches{query}"),
+                &alice,
+                None,
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::OK, "{query}");
+            body_json::<Vec<api::Branch>>(r).await
+        }
+    };
+    let all = list("").await;
+    let main = &all[0];
+    assert_eq!(
+        (
+            main.updated_by.as_deref(),
+            main.ahead,
+            main.behind,
+            main.yours,
+            main.active,
+            main.stale
+        ),
+        (Some("alice"), 0, 0, true, true, false)
+    );
+    let topic = &all[1];
+    assert_eq!(
+        (
+            topic.name.as_str(),
+            topic.ahead,
+            topic.behind,
+            topic.counts_capped,
+            topic.yours,
+            topic.active,
+            topic.stale
+        ),
+        ("topic", 0, 1, false, true, true, false)
+    );
+    assert_eq!(list("?filter=yours").await.len(), 2);
+    assert_eq!(list("?filter=active").await.len(), 2);
+    assert!(list("?filter=stale").await.is_empty());
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/branches?filter=nope"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(r).await, "invalid_request");
+}
+
+#[tokio::test]
 async fn a_reader_may_list_branches_but_not_create_them() {
     let app = router(state_with(false, RegistrationMode::Open).await);
     let alice = register_and_sign_in(&app, "alice").await;

@@ -142,12 +142,12 @@ pub use repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
     Standing, SubjectKind,
 };
-pub use repositories::{Repositories, StarState};
+pub use repositories::{DEFAULT_BRANCH_STALE_DAYS, Repositories, StarState};
 pub use rules::{Mode, PathFilter, PathMatch, RuleEntry, Rules};
 pub use service::{
-    ActivePolicy, COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeEntry, ChangeKind, CommitPage,
-    Comparison, DIFF_DEFAULT_CONTEXT, DIFF_MAX_CONTEXT, DIFF_MAX_FILE_BYTES, Deletion, Diff,
-    DiffHunk, DiffLine, DiffLineKind, DiffOptions, DiffStatus, FETCH_DEFAULT_LIMIT,
+    ActivePolicy, BranchStatus, COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeEntry, ChangeKind,
+    CommitPage, Comparison, DIFF_DEFAULT_CONTEXT, DIFF_MAX_CONTEXT, DIFF_MAX_FILE_BYTES, Deletion,
+    Diff, DiffHunk, DiffLine, DiffLineKind, DiffOptions, DiffStatus, FETCH_DEFAULT_LIMIT,
     FETCH_MAX_EXAMINED, FETCH_MAX_HAVES, FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit,
     FileDiff, FileEntry, FileLines, LINES_MAX, LockLimit, PathChange, PolicyPreview, PushObjects,
     Pushed, Recorded, RepoService, RepoServiceContext, ServiceConfig, Snapshot, SnapshotEntry,

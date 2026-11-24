@@ -7533,6 +7533,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "description": "`yours`, `active` or `stale`: keep only those branches; every branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -7545,6 +7554,16 @@
                   "items": {
                     "$ref": "#/components/schemas/Branch"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for an unknown filter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -14569,12 +14588,32 @@
           "created_by"
         ],
         "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "Not stale: the default branch and every branch committed to within the stale period."
+          },
+          "ahead": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Commits this branch has and the default branch lacks, at most 1000; 0 for the default branch.",
+            "minimum": 0
+          },
+          "behind": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Commits the default branch has and this branch lacks, at most 1000; 0 for the default branch.",
+            "minimum": 0
+          },
           "commit": {
             "type": [
               "string",
               "null"
             ],
             "description": "The commit the branch points at; null only for the default branch of a repository with no commits."
+          },
+          "counts_capped": {
+            "type": "boolean",
+            "description": "`ahead` or `behind` reached 1000, so the real number is larger."
           },
           "created_at": {
             "type": "string",
@@ -14589,6 +14628,10 @@
           "name": {
             "type": "string"
           },
+          "stale": {
+            "type": "boolean",
+            "description": "The head commit is older than the server's stale period (`PYN_BRANCH_STALE_DAYS`, 90 days by default). Never the default branch."
+          },
           "updated_at": {
             "type": [
               "string",
@@ -14596,6 +14639,17 @@
             ],
             "format": "date-time",
             "description": "The committed time of the head commit; absent for a branch with no commits."
+          },
+          "updated_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The author of the head commit; absent for a branch with no commits."
+          },
+          "yours": {
+            "type": "boolean",
+            "description": "The caller created the branch or wrote its head commit; always false without a sign-in."
           }
         }
       },
