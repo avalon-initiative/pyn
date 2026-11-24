@@ -214,7 +214,7 @@ pub struct EventDraft {
     /// The serialized envelope.
     pub payload: String,
     pub at: DateTime<Utc>,
-    /// The repository a lock event belongs to, so a stream can read one repository's events.
+    /// The repository a lock or repository event belongs to, so a stream can read one repository's events and watchers hear them.
     pub repo_id: Option<String>,
 }
 

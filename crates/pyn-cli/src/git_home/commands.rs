@@ -361,6 +361,9 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         | Command::Whoami
         | Command::Version { .. }
         | Command::Repo(_)
+        | Command::Watch { .. }
+        | Command::Unwatch { .. }
+        | Command::Watching
         | Command::Org(_)
         | Command::Invitation(_)
         | Command::Team(_)

@@ -78,6 +78,7 @@ mod unsupported;
 mod update;
 mod userconfig;
 mod verify;
+mod watch;
 mod webhook;
 mod word_diff;
 mod workspace;
@@ -601,6 +602,20 @@ enum Command {
     /// Server administration (server administrators and service credentials only).
     #[command(subcommand)]
     Admin(admin::AdminCommand),
+    /// Watch a repository you can read: hear about all its activity (the default), only its locks, or nothing.
+    Watch {
+        /// `owner/name`.
+        name: String,
+        #[arg(long, value_enum, default_value = "all")]
+        level: watch::Level,
+    },
+    /// Stop watching a repository.
+    Unwatch {
+        /// `owner/name`.
+        name: String,
+    },
+    /// List the repositories you watch, with your level in each.
+    Watching,
     /// Show what you or an organization you own use on the server, and any limits that apply.
     Usage {
         /// A user or organization; you by default.
@@ -1642,6 +1657,9 @@ fn runs_anywhere(command: &Command) -> bool {
             | Command::Invitation(_)
             | Command::Team(_)
             | Command::Repo(_)
+            | Command::Watch { .. }
+            | Command::Unwatch { .. }
+            | Command::Watching
             | Command::Usage { .. }
             | Command::Setup { .. }
             | Command::Admin(_)
@@ -2219,6 +2237,9 @@ fn run(cli: Cli) -> Result<()> {
             interactive(),
         )?,
         Command::Admin(cmd) => admin::run(backend.pyn_server("admin")?, cmd)?,
+        Command::Watch { name, level } => watch::watch(backend.pyn_server("watch")?, &name, level)?,
+        Command::Unwatch { name } => watch::unwatch(backend.pyn_server("unwatch")?, &name)?,
+        Command::Watching => watch::watching(backend.pyn_server("watching")?)?,
         Command::Usage { owner } => limits::usage(backend.pyn_server("usage")?, owner)?,
         Command::Team(cmd) => team_command(backend.pyn_server("team")?, cmd)?,
         Command::Locks { mine: true, .. } => {

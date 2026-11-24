@@ -4574,6 +4574,39 @@
         "x-pyn-reach": "full_scope"
       }
     },
+    "/v1/me/watching": {
+      "get": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "list_watching",
+        "responses": {
+          "200": {
+            "description": "the repositories the caller watches (an ignored one included) that they can still read, most recently changed first; one they lost access to is left out until access returns",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WatchedRepo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      }
+    },
     "/v1/oidc/authorize": {
       "get": {
         "tags": [
@@ -12510,6 +12543,185 @@
         "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
+    "/v1/repos/{owner}/{name}/watch": {
+      "get": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "get_watch",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the caller's watch level (null when they chose none) and how many accounts watch the repository",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found: no such repository, or one the caller cannot read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      },
+      "put": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "put_watch",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetWatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the level is set, replacing an earlier one; setting the same level again changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found: no such repository, or one the caller cannot read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: too many watch changes in an hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      },
+      "delete": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "delete_watch",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the caller's level is removed (they watch nothing, the default); removing a level that is not there changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found: no such repository, or one the caller cannot read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: too many watch changes in an hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "full_scope"
+      }
+    },
     "/v1/session": {
       "get": {
         "tags": [
@@ -19161,7 +19373,9 @@
           "max_locks_set_by_policy",
           "created_at",
           "star_count",
-          "starred"
+          "starred",
+          "watching",
+          "watcher_count"
         ],
         "properties": {
           "created_at": {
@@ -19249,6 +19463,23 @@
           },
           "visibility": {
             "$ref": "#/components/schemas/Visibility"
+          },
+          "watcher_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many accounts watch the repository at `all` or `locks`. Anyone who can read the repository sees it.",
+            "minimum": 0
+          },
+          "watching": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WatchLevel",
+                "description": "The caller's watch level; null when they chose none, and for a signed-out caller."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -20318,6 +20549,18 @@
           },
           "required": {
             "type": "boolean"
+          }
+        }
+      },
+      "SetWatchRequest": {
+        "type": "object",
+        "description": "Body of `PUT /v1/repos/{owner}/{name}/watch`.",
+        "required": [
+          "level"
+        ],
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/WatchLevel"
           }
         }
       },
@@ -21536,6 +21779,63 @@
           "public",
           "private"
         ]
+      },
+      "WatchLevel": {
+        "type": "string",
+        "description": "What a watcher hears about: every event of the repository, only its lock events, or nothing at all.",
+        "enum": [
+          "all",
+          "locks",
+          "ignore"
+        ]
+      },
+      "WatchState": {
+        "type": "object",
+        "description": "The caller's watch level on a repository and how many accounts watch it.",
+        "required": [
+          "level",
+          "watchers"
+        ],
+        "properties": {
+          "level": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WatchLevel",
+                "description": "Null when the caller chose no level."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "watchers": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "WatchedRepo": {
+        "type": "object",
+        "description": "One repository in the caller's list of watched repositories.",
+        "required": [
+          "level",
+          "updated_at",
+          "repo"
+        ],
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/WatchLevel"
+          },
+          "repo": {
+            "$ref": "#/components/schemas/RepoInfo"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the level was last set."
+          }
+        }
       },
       "Webhook": {
         "type": "object",

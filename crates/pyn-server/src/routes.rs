@@ -668,6 +668,7 @@ fn table() -> Vec<Entry> {
             profile_api::delete_org_avatar,
         ),
         get("/v1/me/locks", Reach::AnyCredential, repo_api::my_locks),
+        get("/v1/me/watching", Reach::FullScope, repo_api::list_watching),
         get("/v1/tokens", Reach::FullScope, access_api::list_tokens),
         post("/v1/tokens", Reach::FullScope, access_api::create_token),
         delete(
@@ -835,6 +836,21 @@ fn table() -> Vec<Entry> {
             "/v1/repos/{owner}/{name}/star",
             Reach::FullScope,
             repo_api::delete_star,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/watch",
+            Reach::FullScope,
+            repo_api::get_watch,
+        ),
+        put(
+            "/v1/repos/{owner}/{name}/watch",
+            Reach::FullScope,
+            repo_api::put_watch,
+        ),
+        delete(
+            "/v1/repos/{owner}/{name}/watch",
+            Reach::FullScope,
+            repo_api::delete_watch,
         ),
         get(
             "/v1/repos/{owner}/{name}/me",

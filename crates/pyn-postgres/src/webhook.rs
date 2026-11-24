@@ -72,6 +72,9 @@ fn is_uuid(s: &str) -> bool {
 /// Serializes lock events from the id they draw to commit, so they become visible in id order and a stream cursor skips none.
 const LOCK_EVENT_ORDER: i64 = 0x7079_6e5f_6c6b_6576;
 
+/// Serializes the queueing of watchers' notifications until commit, so their ids become visible in order.
+const WATCH_ORDER: i64 = 0x7079_6e5f_7761_7463;
+
 async fn append_event_in(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event_type: &str,
@@ -115,6 +118,24 @@ async fn append_event_in(
     .execute(&mut **tx)
     .await
     .map_err(db)?;
+    if let Some(repo) = repo_id {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(WATCH_ORDER)
+            .execute(&mut **tx)
+            .await
+            .map_err(db)?;
+        sqlx::query(
+            "INSERT INTO watch_notifications (user_id, repo, event_id)
+             SELECT user_id, repo, $2 FROM repo_watches
+             WHERE repo = $1 AND (level = 'all' OR (level = 'locks' AND $3 LIKE 'lock.%'))",
+        )
+        .bind(repo)
+        .bind(event.id)
+        .bind(event_type)
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+    }
     Ok(event)
 }
 

@@ -53,6 +53,7 @@ use crate::types::{
     AccountId, ChangesetItem, Commit, CommitFilter, LfsObject, Lock, Person, PushedCommit, RepoId,
     RepoPath, Revision, RevisionId, TusCancel, TusClaim, TusSession, UserId,
 };
+use crate::watch::{Notification, WatchLevel};
 use crate::webhook::{
     Delivery, DeliveryQuery, DeliveryStatus, DueDelivery, EventDraft, Jitter, MAX_ACTIVE_SECRETS,
     NewSecret, NewSubscription, OutboxEvent, Subscription, SubscriptionUpdate, WebhookSecret,
@@ -62,6 +63,8 @@ use crate::webhook::{
 mod pulls;
 mod self_service;
 mod two_factor;
+mod watches;
+use watches::WatchRegistry;
 
 type Key = (RepoId, RepoPath);
 
@@ -2186,6 +2189,7 @@ fn plain_account(user: &UserId, now: DateTime<Utc>) -> AccountRecord {
 pub struct MemoryAccessStore {
     state: Mutex<AccessState>,
     outbox: Outbox,
+    watches: Arc<Mutex<WatchRegistry>>,
 }
 
 impl MemoryAccessStore {
@@ -2202,6 +2206,46 @@ impl MemoryAccessStore {
 
 #[async_trait]
 impl AccessStore for MemoryAccessStore {
+    async fn set_watch(
+        &self,
+        repo: &RepoId,
+        user: &UserId,
+        level: WatchLevel,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.watches.lock().unwrap().set(repo, user, level, now);
+        Ok(())
+    }
+
+    async fn clear_watch(&self, repo: &RepoId, user: &UserId) -> Result<bool> {
+        Ok(self.watches.lock().unwrap().clear(repo, user))
+    }
+
+    async fn watch_of(&self, repo: &RepoId, user: &UserId) -> Result<Option<WatchLevel>> {
+        Ok(self.watches.lock().unwrap().level(repo, user))
+    }
+
+    async fn watcher_count(&self, repo: &RepoId) -> Result<u64> {
+        Ok(self.watches.lock().unwrap().count(repo))
+    }
+
+    async fn watches_of(&self, user: &UserId) -> Result<Vec<(RepoId, WatchLevel, DateTime<Utc>)>> {
+        Ok(self.watches.lock().unwrap().of(user))
+    }
+
+    async fn notifications_of(
+        &self,
+        user: &UserId,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<Notification>> {
+        Ok(self
+            .watches
+            .lock()
+            .unwrap()
+            .notifications(user, after, limit))
+    }
+
     async fn ensure_user(&self, user: &UserId, now: DateTime<Utc>) -> Result<()> {
         self.state
             .lock()
@@ -2382,6 +2426,7 @@ impl AccessStore for MemoryAccessStore {
     }
 
     async fn delete_repo_access(&self, repo: &RepoId) -> Result<()> {
+        self.watches.lock().unwrap().drop_repo(repo);
         let mut st = self.state.lock().unwrap();
         st.stars.retain(|(r, _), _| r != repo);
         st.roles.retain(|(r, _), _| r != repo);
@@ -3313,6 +3358,7 @@ impl AccessStore for MemoryAccessStore {
         let mut st = self.state.lock().unwrap();
         let outcome = st.rename_account(user, new, at);
         if matches!(outcome, RenameOutcome::Renamed { .. }) {
+            self.watches.lock().unwrap().rename_user(user, new);
             self.outbox.queue(events)?;
         }
         Ok(outcome)
@@ -3781,6 +3827,7 @@ impl AccessStore for MemoryAccessStore {
             return Ok(AccountPurge::NotDisabled);
         }
         self.outbox.queue(events)?;
+        self.watches.lock().unwrap().drop_user(user);
         let record = st.accounts.remove(user).expect("checked above");
         st.passwords.remove(user);
         st.password_change.remove(user);
@@ -4642,11 +4689,18 @@ impl WebhookState {
 #[derive(Default)]
 pub struct MemoryWebhookStore {
     state: Mutex<WebhookState>,
+    watches: Option<Arc<Mutex<WatchRegistry>>>,
 }
 
 impl MemoryWebhookStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Queues the events of a repository for the watchers `access` holds, as it appends them.
+    pub fn with_watchers(mut self, access: &MemoryAccessStore) -> Self {
+        self.watches = Some(access.watches.clone());
+        self
     }
 
     fn queue(&self, events: &[EventDraft]) -> Result<()> {
@@ -4655,6 +4709,12 @@ impl MemoryWebhookStore {
             let event = st.append_event(&e.event_type, &e.payload, e.at)?;
             if let Some(repo) = &e.repo_id {
                 st.event_repos.insert(event.id, repo.clone());
+                if let Some(watches) = &self.watches {
+                    watches
+                        .lock()
+                        .unwrap()
+                        .fan_out(&RepoId::new(repo.as_str()), &event);
+                }
             }
         }
         Ok(())
@@ -5004,6 +5064,9 @@ impl WebhookStore for MemoryWebhookStore {
             .filter(|e| e.created_at < cutoff)
             .map(|e| e.id)
             .collect();
+        if let Some(watches) = &self.watches {
+            watches.lock().unwrap().purge_before(cutoff);
+        }
         for id in &old {
             s.events.remove(id);
             s.event_repos.remove(id);
