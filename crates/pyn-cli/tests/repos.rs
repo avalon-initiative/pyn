@@ -35,6 +35,56 @@ fn explore_lists_public_repositories_whatever_the_role() {
 }
 
 #[test]
+fn a_description_and_website_are_set_edited_and_shown() {
+    let env = start_empty();
+    let home = env.dir("home");
+    env.ok(
+        &home,
+        "alice",
+        &[
+            "repo",
+            "create",
+            "alice/tools",
+            "--description",
+            "Build tools",
+        ],
+    );
+    let field = |out: &str, key: &str| {
+        out.lines()
+            .find_map(|l| l.strip_prefix(key).map(|v| v.trim().to_string()))
+            .unwrap_or_else(|| panic!("no {key} in {out}"))
+    };
+    let shown = env.ok(&home, "alice", &["repo", "show", "alice/tools"]);
+    assert_eq!(field(&shown, "description"), "Build tools");
+    assert_eq!(field(&shown, "website"), "-");
+
+    let edited = env.ok(
+        &home,
+        "alice",
+        &[
+            "repo",
+            "edit",
+            "alice/tools",
+            "--website",
+            "https://example.com",
+            "--description",
+            "",
+        ],
+    );
+    assert_eq!(field(&edited, "description"), "-");
+    assert_eq!(field(&edited, "website"), "https://example.com");
+
+    let refused = env.fails(
+        &home,
+        "alice",
+        &["repo", "edit", "alice/tools", "--website", "nope"],
+    );
+    assert!(refused.contains("invalid_request"), "{refused}");
+    let nothing = env.fails(&home, "alice", &["repo", "edit", "alice/tools"]);
+    assert!(nothing.contains("nothing to change"), "{nothing}");
+}
+
+#[test]
 fn stars_are_set_removed_and_listed() {
     let env = start_empty();
     let home = env.dir("home");

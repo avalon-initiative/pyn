@@ -15,7 +15,7 @@ use pyn_core::{
     BREAKDOWN_PATHS, Branch, ChangesetItem, Commit, CommitFilter, EventDraft, FileMode,
     FolderUsage, HeadCounts, HistoryBy, HistoryCursor, HistoryScan, LfsObject, Lock, LockChange,
     LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person, PushedCommit,
-    PynError, REPO_ALGORITHM, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings,
+    PynError, REPO_ALGORITHM, RepoAbout, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings,
     RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, Tag, TusCancel,
     TusClaim, TusSession, UploadReservation, Usage, UserId, Visibility,
 };
@@ -182,6 +182,10 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
             .map(|n| n as u64),
         initial_policy: row.get("initial_policy"),
         created_at: row.get("created_at"),
+        about: RepoAbout {
+            description: row.get("description"),
+            website: row.get("website"),
+        },
     })
 }
 
@@ -2688,8 +2692,9 @@ impl MetadataStore for PgMetadataStore {
             }
         }
         let inserted = sqlx::query(
-            "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy,
+                 created_at, description, website)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(repo.id.as_str())
         .bind(repo.owner.as_str())
@@ -2700,6 +2705,8 @@ impl MetadataStore for PgMetadataStore {
         .bind(repo.storage_cap.map(|n| n as i64))
         .bind(&repo.initial_policy)
         .bind(repo.created_at)
+        .bind(&repo.about.description)
+        .bind(&repo.about.website)
         .execute(&mut *tx)
         .await;
         match inserted {
@@ -2724,7 +2731,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
         let row = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
+            "SELECT * FROM repositories
              WHERE owner = $1 AND lower(name) = lower($2)",
         )
         .bind(owner.as_str())
@@ -2737,7 +2744,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn find_repo_redirect(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>> {
         let row = sqlx::query(
-            "SELECT r.id, r.owner, r.name, r.visibility, r.lease_hours, r.max_locks, r.max_storage_bytes, r.initial_policy, r.created_at
+            "SELECT r.*
                FROM repo_redirects d JOIN repositories r ON r.id = d.repo_id
               WHERE d.owner = $1 AND d.name_lower = lower($2)",
         )
@@ -2768,7 +2775,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn get_repo(&self, id: &RepoId) -> Result<Option<RepoRecord>> {
         let row = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
+            "SELECT * FROM repositories
              WHERE id = $1",
         )
         .bind(id.as_str())
@@ -2780,7 +2787,7 @@ impl MetadataStore for PgMetadataStore {
 
     async fn list_repos(&self, owner: Option<&UserId>) -> Result<Vec<RepoRecord>> {
         let rows = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
+            "SELECT * FROM repositories
              WHERE ($1::text IS NULL OR owner = $1) ORDER BY owner, name",
         )
         .bind(owner.map(UserId::as_str))
@@ -2796,7 +2803,7 @@ impl MetadataStore for PgMetadataStore {
         limit: usize,
     ) -> Result<Vec<RepoRecord>> {
         let rows = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
+            "SELECT * FROM repositories
              WHERE visibility = 'public' AND ($1::text IS NULL OR (owner COLLATE \"C\", name COLLATE \"C\") > ($1, $2))
              ORDER BY owner COLLATE \"C\", name COLLATE \"C\" LIMIT $3",
         )
@@ -2816,7 +2823,7 @@ impl MetadataStore for PgMetadataStore {
         limit: usize,
     ) -> Result<Vec<RepoRecord>> {
         let rows = sqlx::query(
-            "SELECT id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at FROM repositories
+            "SELECT * FROM repositories
              WHERE ($1::text IS NULL OR (owner COLLATE \"C\", name COLLATE \"C\") > ($1, $2))
                AND ($3::text IS NULL OR strpos(lower(owner || '/' || name), $3) > 0)
              ORDER BY owner COLLATE \"C\", name COLLATE \"C\" LIMIT $4",
@@ -2846,9 +2853,11 @@ impl MetadataStore for PgMetadataStore {
             "UPDATE repositories SET name = COALESCE($2, name), visibility = COALESCE($3, visibility),
                  lease_hours = COALESCE($4, lease_hours),
                  max_locks = CASE WHEN $5 THEN $6 ELSE max_locks END,
-                 max_storage_bytes = CASE WHEN $7 THEN $8 ELSE max_storage_bytes END
+                 max_storage_bytes = CASE WHEN $7 THEN $8 ELSE max_storage_bytes END,
+                 description = CASE WHEN $9 THEN $10 ELSE description END,
+                 website = CASE WHEN $11 THEN $12 ELSE website END
              WHERE id = $1
-             RETURNING id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy, created_at",
+             RETURNING *",
         )
         .bind(id.as_str())
         .bind(update.name.as_deref())
@@ -2858,6 +2867,10 @@ impl MetadataStore for PgMetadataStore {
         .bind(update.settings.and_then(|s| s.max_locks).map(|n| n as i32))
         .bind(update.storage_cap.is_some())
         .bind(update.storage_cap.flatten().map(|n| n as i64))
+        .bind(update.description.is_some())
+        .bind(update.description.clone().flatten())
+        .bind(update.website.is_some())
+        .bind(update.website.clone().flatten())
         .fetch_optional(&mut *tx)
         .await;
         match updated {

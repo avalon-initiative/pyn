@@ -252,6 +252,23 @@ A repository also reports `exclusive_read_only`, whether exclusive files are rea
 A repository reports `max_locks_per_user` (the limit in force), `max_locks_per_user_setting` (the stored setting, absent when it
 follows the server) and `max_locks_set_by_policy` (true when `.pyn/pyn.toml` sets the limit, so the setting is read-only).
 
+### About
+
+A repository may carry a short **description** and a **website**, shown in its About block and on repository lists. Both are
+optional and are set at creation (`description` and `website` in `POST /v1/repos`) or changed with `PATCH /v1/repos/{owner}/{name}`
+by whoever may change the repository's settings (the owner, holding `manage_roles`). In a `PATCH`, a field left out stays as it is, and
+`null` or a blank value clears it. Every repository payload carries both, `null` when unset, so whoever can see the repository sees them.
+
+- **Description:** plain text on one line, trimmed, at most 350 characters, with no control characters. A newline is refused.
+- **Website:** an `http` or `https` address of at most 200 bytes, ASCII with no spaces or backslashes and no user name or password, as
+  for an organization's [url](profiles.md#organization-profiles).
+- Anything else is `400 invalid_request`, and a refused create leaves no repository behind. A change is part of the `repo_updated` audit
+  event, whose detail ends with `changed description`, `changed website` or both: the log names the fields, never their content.
+
+On the command line: `pyn repo create name --description TEXT --website URL`, `pyn repo edit owner/name [--description TEXT]
+[--website URL]` (an empty value clears the field) and `pyn repo show owner/name` (description, website, visibility, created, stars,
+watchers and your role).
+
 ## Who can do what
 
 - **See a repository.** Anyone, signed in or not, if it is public (on a `private` [server](access.md#server-access-mode) signed out means no one: a signed-out request gets `404 repo_not_found`, as for a private repository); otherwise only people who have a role in it. A private
@@ -414,6 +431,6 @@ repositories and permissions it carries), ordered by `owner/name` then path. Eac
 `{owner, name, path, acquired_at, expires_at}`; remove one with the repository's own `POST .../release` (`pyn unlock`), which records
 the audit event as usual. A lock in a repository the caller can no longer read is not listed.
 
-On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy]`, `pyn repo list`, `pyn repo explore`,
+On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy] [--description TEXT] [--website URL]`, `pyn repo show owner/name`, `pyn repo edit owner/name` (see [About](#about)), `pyn repo list`, `pyn repo explore`,
 `pyn repo visibility owner/name public|private`, `pyn repo delete owner/name`, `pyn locks --mine` (your locks in every repository: repository, acquired, expires, path), and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
 `.pyn/local_only/config.toml`, so commands inside it need no flag; see [the `.pyn/` folder](workspace.md).

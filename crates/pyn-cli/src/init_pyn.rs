@@ -248,6 +248,8 @@ fn create_on_server(
             policy: Some(ws.dir.join("pyn.toml")),
             no_policy: false,
             default: None,
+            description: None,
+            website: None,
         },
     )?;
     Settings {

@@ -37,6 +37,7 @@ async fn world() -> World {
         storage_cap: None,
         initial_policy: None,
         created_at: chrono::Utc::now(),
+        about: Default::default(),
     })
     .await
     .unwrap();

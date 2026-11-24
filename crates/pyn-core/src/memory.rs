@@ -1969,6 +1969,12 @@ impl MetadataStore for MemoryMetadataStore {
         if let Some(cap) = update.storage_cap {
             repo.storage_cap = cap;
         }
+        if let Some(description) = update.description {
+            repo.about.description = description;
+        }
+        if let Some(website) = update.website {
+            repo.about.website = website;
+        }
         if st.repos.values().any(|r| {
             &r.id != id && r.owner == repo.owner && r.name.eq_ignore_ascii_case(&repo.name)
         }) {

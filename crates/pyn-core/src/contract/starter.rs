@@ -50,7 +50,15 @@ pub async fn a_starter_creation_commits_the_policy_file_first(meta: Store, acces
     let who = alice();
     for (name, default) in [("shared", Mode::Shared), ("locked", Mode::Exclusive)] {
         repos
-            .create_with_starter(&who, &who.user, name, None, None, Some(default))
+            .create_with_starter(
+                &who,
+                &who.user,
+                name,
+                None,
+                None,
+                Some(default),
+                crate::RepoAbout::default(),
+            )
             .await
             .unwrap();
         let svc = repos.open("alice", name).await.unwrap().service;

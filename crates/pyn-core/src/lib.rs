@@ -136,8 +136,8 @@ pub use pyn_gitattr::lockable::Disagreement;
 pub use pyn_object::{FileMode, ObjectId};
 pub use ratelimit::{RateLimitStore, RateState};
 pub use repo::{
-    DEFAULT_MAX_LOCKS_PER_USER, MAX_LOCKS_PER_USER_CEILING, RepoRecord, RepoSettings, RepoUpdate,
-    Visibility, validate_max_locks,
+    DEFAULT_MAX_LOCKS_PER_USER, MAX_LOCKS_PER_USER_CEILING, RepoAbout, RepoRecord, RepoSettings,
+    RepoUpdate, Visibility, validate_max_locks,
 };
 pub use repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,

@@ -101,6 +101,25 @@ pub struct RepoRecord {
     /// `pyn.toml` text in force for a branch with no policy commit; `None` (older repositories) uses the server fallback.
     pub initial_policy: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub about: RepoAbout,
+}
+
+/// What the repository's About block shows; edited like the repository's settings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoAbout {
+    /// One line of plain text.
+    pub description: Option<String>,
+    /// An http or https link.
+    pub website: Option<String>,
+}
+
+impl RepoAbout {
+    pub fn validated(self) -> Result<Self> {
+        Ok(Self {
+            description: validate_description(self.description)?,
+            website: validate_website(self.website)?,
+        })
+    }
 }
 
 impl RepoRecord {
@@ -117,6 +136,25 @@ pub struct RepoUpdate {
     pub settings: Option<RepoSettings>,
     /// `Some(None)` removes the repository's storage cap.
     pub storage_cap: Option<Option<u64>>,
+    /// `Some(None)` clears the description.
+    pub description: Option<Option<String>>,
+    /// `Some(None)` clears the website.
+    pub website: Option<Option<String>>,
+}
+
+pub const MAX_DESCRIPTION_CHARS: usize = 350;
+
+/// Trims a description; blank becomes `None`. One line of at most `MAX_DESCRIPTION_CHARS` characters.
+pub fn validate_description(value: Option<String>) -> Result<Option<String>> {
+    crate::profile::text("description", value, MAX_DESCRIPTION_CHARS, false)
+}
+
+/// Trims a website; blank becomes `None`. Checked like an organization's url.
+pub fn validate_website(value: Option<String>) -> Result<Option<String>> {
+    match value.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(url) => crate::profile::link("website", url).map(Some),
+    }
 }
 
 pub const MAX_NAME_LEN: usize = 100;
@@ -165,6 +203,43 @@ mod tests {
         }
         for bad in ["", "-x", "_x", ".x", "x.", "a/b", "a b", &"x".repeat(101)] {
             assert!(validate_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_description_is_one_trimmed_bounded_line() {
+        let ok = |s: &str| validate_description(Some(s.into())).unwrap();
+        assert_eq!(ok("  A game  "), Some("A game".into()));
+        assert_eq!(ok("   "), None);
+        assert_eq!(
+            ok(&"é".repeat(MAX_DESCRIPTION_CHARS))
+                .unwrap()
+                .chars()
+                .count(),
+            MAX_DESCRIPTION_CHARS
+        );
+        for bad in [
+            "two\nlines",
+            "tab\there",
+            &"x".repeat(MAX_DESCRIPTION_CHARS + 1),
+        ] {
+            assert!(validate_description(Some(bad.into())).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_website_is_an_http_link_without_credentials() {
+        assert_eq!(
+            validate_website(Some(" https://example.com/game ".into())).unwrap(),
+            Some("https://example.com/game".into())
+        );
+        assert_eq!(validate_website(Some("".into())).unwrap(), None);
+        for bad in [
+            "ftp://example.com",
+            "example.com",
+            "https://u:p@example.com",
+        ] {
+            assert!(validate_website(Some(bad.into())).is_err(), "{bad}");
         }
     }
 }

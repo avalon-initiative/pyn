@@ -685,6 +685,8 @@ pub fn to_pyn(args: &ConvertArgs, cwd: &Path, remote: Remote) -> Result<()> {
             max_locks_per_user: None,
             starter_policy: Some(false),
             starter_default: None,
+            description: None,
+            website: None,
         };
         let _: api::RepoInfo = api
             .send(api.request(Method::POST, "/v1/repos").json(&body))
