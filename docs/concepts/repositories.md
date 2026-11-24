@@ -338,6 +338,38 @@ An account can star a repository: a per-account mark with a public count, as on 
 
 On the command line: `pyn repo star owner/name`, `pyn repo unstar owner/name` and `pyn repo starred [user]` (`STARRED`,
 `STARS` and `REPOSITORY`, newest first).
+## Watching
+
+An account can watch a repository to be told what happens in it (decision #1282, settled in #1301). Watching stores the choice and
+queues the events for the notification inbox; the inbox itself and email are separate work (#699).
+
+- **Levels.** `all` (every event of the repository), `locks` (the pyn-specific one: `lock.acquired`, `lock.released`,
+  `lock.expired` and `lock.forced`) and `ignore` (nothing). An account with no level watches nothing, which is the default,
+  except that the account that creates a repository starts at `all` on it and can change that. Contributing does not start a watch.
+- **Who can watch.** A signed-in, full-scope credential (a session or a sign-in token; a fine-grained token or a service
+  credential never) on a repository it can read, public or private. A repository the caller cannot see answers
+  `404 repo_not_found`. Setting the same level again, or removing a level that is not there, is not an error. An account's
+  changes are limited to 120 an hour (`429 too_many_attempts`); reading is not limited. Watches are not audited.
+- **The count.** `watching` (the caller's level, or null) and `watcher_count` ride on every repository payload
+  (`GET /v1/repos`, `GET /v1/repos/{owner}/{name}`, `GET /v1/explore/repos`, a profile's `repositories`). The count is the
+  accounts at `all` or `locks`; an ignoring account is not counted. Whoever can read a repository sees its count and nobody
+  else can see the repository at all. There is no list of who watches.
+- **What is queued.** Every event that belongs to a repository goes, in the same database transaction as the change, to each
+  account watching it at a level that wants the event type: `all` takes the lock events and `repository.created`,
+  `repository.renamed`, `repository.deleted` and `repository.storage_cap_changed`; `locks` takes the lock events. An event is
+  queued once per account, when it happens: changing a level later neither adds nor removes what was already queued. A queued
+  notification is kept as long as its event in the outbox (30 days) and goes with its repository and its account.
+  Pushes and access changes are not events yet, so nothing is queued for them until they are.
+- **Revoked access.** Reading what is queued, and the list of watched repositories, skip every repository the account can no
+  longer read, so losing access (a removed member, a repository made private) stops notifications at once. The level is kept,
+  so access that returns resumes it.
+- **Your watches.** `GET /v1/me/watching` lists the repositories the caller watches (an ignored one too) that they can still
+  read, most recently changed first.
+- A watch goes with its repository when it is deleted and with its account when that is deleted, and follows the account
+  through a rename. A repository rename keeps its watches.
+
+On the command line: `pyn watch owner/name [--level all|locks|ignore]` (`all` by default), `pyn unwatch owner/name` and
+`pyn watching` (`LEVEL`, `SINCE`, `WATCHERS` and `REPOSITORY`, most recently changed first).
 
 ## API summary
 
@@ -351,6 +383,8 @@ On the command line: `pyn repo star owner/name`, `pyn repo unstar owner/name` an
 | `DELETE /v1/repos/{owner}/{name}` | delete |
 | `GET`, `PUT`, `DELETE /v1/repos/{owner}/{name}/star` | whether you starred it, star it, remove your star: each answers `{starred, count}` (full-scope credentials; see [Stars](#stars)) |
 | `GET /v1/users/{user}/starred` | the repositories an account starred that you may see `[{starred_at, repo}]`, newest first |
+| `GET`, `PUT`, `DELETE /v1/repos/{owner}/{name}/watch` | your watch level, set it `{level: all\|locks\|ignore}`, remove it: each answers `{level, watchers}` (full-scope credentials; see [Watching](#watching)) |
+| `GET /v1/me/watching` | the repositories you watch that you can read `[{level, updated_at, repo}]`, most recently changed first |
 | `POST /v1/orgs` | create an organization `{name}`; you become its owner |
 | `GET /v1/orgs` | organizations you belong to, each `{id, name, created_at, role}` |
 | `GET /v1/orgs/{org}` | one organization; `role` is null when you have none (`404 org_not_found` for a user name too) |

@@ -26,6 +26,7 @@ use crate::webhook::OutboxEvent;
 mod stars;
 pub use stars::StarState;
 mod visible;
+mod watching;
 
 fn limit_detail(settings: &RepoSettings) -> String {
     settings
@@ -564,6 +565,7 @@ impl Repositories {
             record.settings.lease_hours,
             limit_detail(&record.settings)
         );
+        self.access.watch_by_default(&record.id, &actor.user).await;
         self.record(&record, actor.into(), AuditAction::RepoCreated, detail)
             .await?;
         if let Some(default) = starter

@@ -9,7 +9,7 @@ use crate::memory::{MemoryAuditStore, MemoryObjectStore};
 use crate::{
     AccessConfig, AccessService, Credential, DeliveryQuery, EventDraft, Identity, LimitsChange,
     ManualClock, MemoryLimitEvents, NewSubscription, PynError, Registration, RegistrationMode,
-    RepoUpdate, Repositories, Rules, UserId, WebhookSettings,
+    RepoUpdate, Repositories, Role, Rules, UserId, WatchLevel, WebhookSettings,
 };
 
 fn t0() -> DateTime<Utc> {
@@ -484,4 +484,150 @@ async fn count(hooks: &Webhooks) -> usize {
         .await
         .unwrap()
         .len()
+}
+
+async fn queued_for(access: &Access, name: &str) -> Vec<String> {
+    let found = access
+        .notifications_of(&UserId::new(name), 0, 1000)
+        .await
+        .unwrap();
+    found.into_iter().map(|n| n.event.event_type).collect()
+}
+
+pub async fn watchers_are_queued_the_events_their_level_asks_for(
+    meta: Store,
+    access_store: Access,
+    hooks: Webhooks,
+) {
+    let w = world(meta, access_store.clone(), hooks).await;
+    let (alice, bob, carol, dave) = (who("alice"), who("bob"), who("carol"), who("dave"));
+    for user in ["alice", "bob", "carol", "dave"] {
+        access_store
+            .ensure_user(&UserId::new(user), t0())
+            .await
+            .unwrap();
+    }
+    let record = w
+        .repos
+        .create(&alice, &alice.user, "game", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        access_store
+            .watch_of(&record.id, &alice.user)
+            .await
+            .unwrap(),
+        Some(WatchLevel::All),
+        "the creator watches by default"
+    );
+    for (u, level) in [
+        (&bob, WatchLevel::Locks),
+        (&carol, WatchLevel::Ignore),
+        (&dave, WatchLevel::All),
+    ] {
+        access_store
+            .set_role(&record.id, &u.user, Role::Writer)
+            .await
+            .unwrap();
+        access_store
+            .set_watch(&record.id, &u.user, level, t0())
+            .await
+            .unwrap();
+    }
+
+    let svc = w.repos.open("alice", "game").await.unwrap().service;
+    let path = crate::RepoPath::try_from("Content/a.umap".to_string()).unwrap();
+    svc.checkout(&path, &alice.user, None).await.unwrap();
+    svc.release(&path, &alice.user).await.unwrap();
+    w.repos
+        .update(
+            &alice,
+            &record,
+            RepoUpdate {
+                name: Some("game2".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let all = ["lock.acquired", "lock.released", "repository.renamed"];
+    assert_eq!(queued_for(&access_store, "alice").await, all);
+    assert_eq!(queued_for(&access_store, "dave").await, all);
+    assert_eq!(
+        queued_for(&access_store, "bob").await,
+        ["lock.acquired", "lock.released"]
+    );
+    assert!(queued_for(&access_store, "carol").await.is_empty());
+
+    let first = access_store
+        .notifications_of(&dave.user, 0, 1)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    let rest = access_store
+        .notifications_of(&dave.user, first[0].id, 10)
+        .await
+        .unwrap();
+    assert_eq!(rest.len(), 2, "a cursor resumes after the last id seen");
+    assert!(rest.iter().all(|n| n.repo == record.id));
+
+    let seen = w.repos.notifications(&dave, 0, 10).await.unwrap();
+    assert_eq!(seen.len(), 3);
+    access_store.delete_repo_access(&record.id).await.unwrap();
+    assert!(queued_for(&access_store, "dave").await.is_empty());
+}
+
+pub async fn revoked_access_stops_notifications(
+    meta: Store,
+    access_store: Access,
+    hooks: Webhooks,
+) {
+    let w = world(meta, access_store.clone(), hooks).await;
+    let (alice, bob) = (who("alice"), who("bob"));
+    for user in ["alice", "bob"] {
+        access_store
+            .ensure_user(&UserId::new(user), t0())
+            .await
+            .unwrap();
+    }
+    let record = w
+        .repos
+        .create(
+            &alice,
+            &alice.user,
+            "vault",
+            Some(crate::Visibility::Public),
+            None,
+        )
+        .await
+        .unwrap();
+    access_store
+        .set_watch(&record.id, &bob.user, WatchLevel::All, t0())
+        .await
+        .unwrap();
+    let svc = w.repos.open("alice", "vault").await.unwrap().service;
+    let path = crate::RepoPath::try_from("a.bin".to_string()).unwrap();
+    svc.checkout(&path, &alice.user, None).await.unwrap();
+
+    assert_eq!(w.repos.notifications(&bob, 0, 10).await.unwrap().len(), 1);
+    assert_eq!(w.repos.watched_by(&bob).await.unwrap().len(), 1);
+    w.repos
+        .update(
+            &alice,
+            &record,
+            RepoUpdate {
+                visibility: Some(crate::Visibility::Private),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(w.repos.notifications(&bob, 0, 10).await.unwrap().is_empty());
+    assert!(w.repos.watched_by(&bob).await.unwrap().is_empty());
+    assert_eq!(
+        access_store.watch_of(&record.id, &bob.user).await.unwrap(),
+        Some(WatchLevel::All),
+        "the level is kept, so regained access resumes it"
+    );
 }
