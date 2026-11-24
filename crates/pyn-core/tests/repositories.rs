@@ -313,7 +313,7 @@ async fn only_the_owner_renames_or_deletes_and_data_goes_with_the_repository() {
             lease_hours: 2,
             ..RepoSettings::default()
         }),
-        storage_cap: None,
+        ..Default::default()
     };
     let err = w
         .repos
@@ -613,6 +613,7 @@ async fn my_locks_follow_visibility_for_someone_without_a_role() {
         visibility: Some(visibility),
         settings: None,
         storage_cap: None,
+        ..Default::default()
     };
     w.repos
         .update(&alice, &rec, update(Visibility::Public))
@@ -640,6 +641,7 @@ async fn changing_visibility_is_recorded_with_before_and_after() {
                 visibility: Some(Visibility::Public),
                 settings: None,
                 storage_cap: None,
+                ..Default::default()
             },
         )
         .await
@@ -662,6 +664,7 @@ async fn changing_visibility_is_recorded_with_before_and_after() {
                 visibility: None,
                 settings: None,
                 storage_cap: None,
+                ..Default::default()
             },
         )
         .await

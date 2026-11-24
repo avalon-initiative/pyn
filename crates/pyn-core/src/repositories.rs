@@ -15,7 +15,7 @@ use crate::limit_events::DomainEvent;
 use crate::limits::{MAX_LIMIT_VALUE, RepoBreakdown, RepoUsage, Usage};
 use crate::object::ObjectStore;
 use crate::repo::{
-    self, DEFAULT_MAX_LOCKS_PER_USER, RepoRecord, RepoSettings, RepoUpdate, Visibility,
+    self, DEFAULT_MAX_LOCKS_PER_USER, RepoAbout, RepoRecord, RepoSettings, RepoUpdate, Visibility,
 };
 use crate::rules::{Mode, POLICY_PATH, Rules, starter_policy};
 use crate::service::{DEFAULT_UNREFERENCED_UPLOAD_BYTES, LockLimit, RepoService, ServiceConfig};
@@ -86,6 +86,7 @@ fn absent_record(owner: &str, name: &str) -> RepoRecord {
         storage_cap: None,
         initial_policy: None,
         created_at: chrono::DateTime::<chrono::Utc>::default(),
+        about: Default::default(),
     }
 }
 
@@ -503,12 +504,21 @@ impl Repositories {
         visibility: Option<Visibility>,
         settings: Option<RepoSettings>,
     ) -> Result<RepoRecord> {
-        self.create_with_starter(actor, owner, name, visibility, settings, None)
-            .await
+        self.create_with_starter(
+            actor,
+            owner,
+            name,
+            visibility,
+            settings,
+            None,
+            RepoAbout::default(),
+        )
+        .await
     }
 
     /// Like `create`; with `starter` the first commit holds `.pyn/pyn.toml` with the starter policy whose `default` is
     /// that mode. Nothing is left behind when the commit fails.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_with_starter(
         &self,
         actor: &Identity,
@@ -517,6 +527,7 @@ impl Repositories {
         visibility: Option<Visibility>,
         settings: Option<RepoSettings>,
         starter: Option<Mode>,
+        about: RepoAbout,
     ) -> Result<RepoRecord> {
         actor.require_namespace_management()?;
         let visibility = visibility.unwrap_or(Visibility::Private);
@@ -542,6 +553,7 @@ impl Repositories {
             storage_cap: None,
             initial_policy: self.initial_policy.clone(),
             created_at: self.clock.now(),
+            about: about.validated()?,
         };
         let max_repos = self.access.effective_limits(owner).await?.repositories;
         let owner_id = self.access.account_id(owner).await?;
@@ -823,6 +835,12 @@ impl Repositories {
             }
             update.settings = Some(settings);
         }
+        if let Some(description) = update.description.take() {
+            update.description = Some(repo::validate_description(description)?);
+        }
+        if let Some(website) = update.website.take() {
+            update.website = Some(repo::validate_website(website)?);
+        }
         let mut events = Vec::new();
         if let Some(name) = update.name.as_ref().filter(|n| **n != record.name) {
             let owner_id = self.access.account_id(&record.owner).await?;
@@ -844,13 +862,24 @@ impl Repositories {
         } else {
             format!("visibility {} -> {}", record.visibility, updated.visibility)
         };
-        let detail = format!(
+        let mut detail = format!(
             "{} -> {} ({visibility}, lease {}h{})",
             record.address(),
             updated.address(),
             updated.settings.lease_hours,
             limit_detail(&updated.settings)
         );
+        let about = [
+            (
+                "description",
+                record.about.description != updated.about.description,
+            ),
+            ("website", record.about.website != updated.about.website),
+        ];
+        let changed: Vec<_> = about.iter().filter(|(_, c)| *c).map(|(f, _)| *f).collect();
+        if !changed.is_empty() {
+            detail.push_str(&format!(", changed {}", changed.join(", ")));
+        }
         self.record(&updated, actor.into(), AuditAction::RepoUpdated, detail)
             .await?;
         Ok(updated)

@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use chrono::Duration;
 use pyn_core::{
     AccountStatus, InviteId, InviteRecord, LockLimit, MAX_INVITE_HOURS, Permission, PynError,
-    ReadOnlySource, RepoRecord, RepoSettings, RepoUpdate, Role, UserId, WatchLevel,
+    ReadOnlySource, RepoAbout, RepoRecord, RepoSettings, RepoUpdate, Role, UserId, WatchLevel,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -59,6 +59,8 @@ pub(crate) async fn repo_info(
         owner: r.owner.to_string(),
         owner_identity,
         name: r.name,
+        description: r.about.description,
+        website: r.about.website,
         visibility: visibility_dto(r.visibility),
         lease_hours: r.settings.lease_hours,
         max_locks_per_user: limit.max,
@@ -175,7 +177,7 @@ pub(crate) async fn my_locks(
 
 #[utoipa::path(post, path = "/v1/repos", request_body = api::CreateRepoRequest, responses(
     (status = 201, body = api::RepoInfo, description = "the caller becomes its admin"),
-    (status = 400, body = api::ErrorBody, description = "invalid_repo_name or invalid_request (a lease or lock limit out of range)"),
+    (status = 400, body = api::ErrorBody, description = "invalid_repo_name or invalid_request (a lease or lock limit out of range, a description or website that does not validate)"),
     (status = 403, body = api::ErrorBody, description = "not_namespace_owner; in an organization not_org_member or repo_create_forbidden (the policy refuses that visibility); or a token without manage_roles or limited to repositories"),
     (status = 409, body = api::ErrorBody, description = "repo_exists, or org_deleting: the organization is being deleted"),
 ))]
@@ -210,6 +212,10 @@ pub(crate) async fn create_repo(
             req.visibility.map(visibility_from),
             settings,
             starter,
+            RepoAbout {
+                description: req.description,
+                website: req.website,
+            },
         )
         .await?;
     let limit = s.repos.lock_limit(&record).await?;
@@ -240,7 +246,7 @@ pub(crate) async fn get_repo(
 
 #[utoipa::path(patch, path = "/v1/repos/{owner}/{name}", params(RepoAddress), request_body = api::UpdateRepoRequest, responses(
     (status = 200, body = api::RepoInfo),
-    (status = 400, body = api::ErrorBody, description = "invalid_request, including a lock limit change while the policy file sets one"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request, including a lock limit change while the policy file sets one and a description or website that does not validate"),
     (status = 403, body = api::ErrorBody, description = "only the owner, with admin rights in the repository"),
     (status = 404, body = api::ErrorBody, description = "repo_not_found"),
     (status = 409, body = api::ErrorBody, description = "repo_exists"),
@@ -264,6 +270,8 @@ pub(crate) async fn update_repo(
                 max_locks: req.max_locks_per_user.unwrap_or(current.max_locks),
             }
         }),
+        description: req.description,
+        website: req.website,
         ..RepoUpdate::default()
     };
     let record = s.repos.update(&who, &open.record, update).await?;

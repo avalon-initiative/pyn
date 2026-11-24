@@ -1265,6 +1265,14 @@ pub struct RepoInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_identity: Option<PublicIdentity>,
     pub name: String,
+    /// One line of plain text for the About block; null when unset.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub description: Option<String>,
+    /// An http or https link for the About block; null when unset.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub website: Option<String>,
     pub visibility: Visibility,
     /// How long a lock lasts before it expires unless renewed.
     pub lease_hours: u32,
@@ -1418,6 +1426,12 @@ pub struct CreateRepoRequest {
     /// The starter policy's `[meta] default`: whether paths no entry covers are `shared` or `exclusive`. Defaults to
     /// `shared`; ignored when `starter_policy` is `false`.
     pub starter_default: Option<Mode>,
+    /// One line, at most 350 characters; blank means none.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// An http or https link; blank means none.
+    #[serde(default)]
+    pub website: Option<String>,
 }
 
 /// Fields left out stay as they are.
@@ -1436,6 +1450,22 @@ pub struct UpdateRepoRequest {
     )]
     #[schema(value_type = Option<u32>)]
     pub max_locks_per_user: Option<Option<u32>>,
+    /// One line, at most 350 characters; `null` or blank clears it.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub description: Option<Option<String>>,
+    /// An http or https link; `null` or blank clears it.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub website: Option<Option<String>>,
 }
 
 /// Tells an explicit `null` (`Some(None)`) from an absent field (`None`).

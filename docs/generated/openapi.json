@@ -7230,7 +7230,7 @@
             }
           },
           "400": {
-            "description": "invalid_repo_name or invalid_request (a lease or lock limit out of range)",
+            "description": "invalid_repo_name or invalid_request (a lease or lock limit out of range, a description or website that does not validate)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7411,7 +7411,7 @@
             }
           },
           "400": {
-            "description": "invalid_request, including a lock limit change while the policy file sets one",
+            "description": "invalid_request, including a lock limit change while the policy file sets one and a description or website that does not validate",
             "content": {
               "application/json": {
                 "schema": {
@@ -15578,6 +15578,13 @@
           "name"
         ],
         "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One line, at most 350 characters; blank means none."
+          },
           "lease_hours": {
             "type": [
               "integer",
@@ -15635,6 +15642,13 @@
                 "type": "null"
               }
             ]
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An http or https link; blank means none."
           }
         }
       },
@@ -19774,6 +19788,8 @@
           "owner_id",
           "owner",
           "name",
+          "description",
+          "website",
           "visibility",
           "lease_hours",
           "max_locks_per_user",
@@ -19788,6 +19804,13 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One line of plain text for the About block; null when unset."
           },
           "exclusive_read_only": {
             "type": "boolean",
@@ -19887,6 +19910,13 @@
                 "type": "null"
               }
             ]
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An http or https link for the About block; null when unset."
           }
         }
       },
@@ -21968,6 +21998,13 @@
         "type": "object",
         "description": "Fields left out stay as they are.",
         "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One line, at most 350 characters; `null` or blank clears it."
+          },
           "lease_hours": {
             "type": [
               "integer",
@@ -22002,6 +22039,13 @@
                 "type": "null"
               }
             ]
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An http or https link; `null` or blank clears it."
           }
         }
       },

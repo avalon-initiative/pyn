@@ -135,6 +135,7 @@ fn build_full(
                 storage_cap: None,
                 initial_policy: None,
                 created_at: chrono::Utc::now(),
+                about: Default::default(),
             }))
             .unwrap();
     }

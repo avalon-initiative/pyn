@@ -194,7 +194,12 @@ fn bad(field: &str, why: &str) -> PynError {
 
 /// Trims `value`; blank becomes `None`. Longer than `max` characters, or holding a control character
 /// (a newline too unless `multiline`), is refused.
-fn text(field: &str, value: Option<String>, max: usize, multiline: bool) -> Result<Option<String>> {
+pub(crate) fn text(
+    field: &str,
+    value: Option<String>,
+    max: usize,
+    multiline: bool,
+) -> Result<Option<String>> {
     let Some(value) = value else { return Ok(None) };
     let value = value.trim();
     if value.is_empty() {
@@ -212,7 +217,7 @@ fn text(field: &str, value: Option<String>, max: usize, multiline: bool) -> Resu
     Ok(Some(value.to_string()))
 }
 
-fn link(field: &str, raw: &str) -> Result<String> {
+pub(crate) fn link(field: &str, raw: &str) -> Result<String> {
     let url = raw.trim();
     if url.len() > MAX_LINK_BYTES {
         return Err(bad(field, &format!("at most {MAX_LINK_BYTES} bytes")));

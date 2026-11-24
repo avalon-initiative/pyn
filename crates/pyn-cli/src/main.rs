@@ -775,6 +775,26 @@ enum RepoCommand {
         /// when omitted; `shared` otherwise. Not with `--policy` or `--no-policy`.
         #[arg(long, value_enum, conflicts_with_all = ["policy", "no_policy"])]
         default: Option<init_pyn::DefaultMode>,
+        /// One line describing the repository.
+        #[arg(long)]
+        description: Option<String>,
+        /// An http or https link shown with the description.
+        #[arg(long)]
+        website: Option<String>,
+    },
+    /// Show a repository: its description, website, visibility, counts and your role.
+    Show {
+        /// `owner/name`.
+        name: String,
+    },
+    /// Change a repository's description or website; an empty value clears it. Owner and admin only.
+    Edit {
+        /// `owner/name`.
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        website: Option<String>,
     },
     /// List the repositories you belong to.
     List {
@@ -3720,6 +3740,21 @@ fn set_star(api: &Api, name: &str, on: bool) -> Result<()> {
     Ok(())
 }
 
+fn show_repo(r: &api::RepoInfo) {
+    let visibility = match r.visibility {
+        api::Visibility::Public => "public",
+        api::Visibility::Private => "private",
+    };
+    println!("repository   {}/{}", r.owner, r.name);
+    println!("description  {}", r.description.as_deref().unwrap_or("-"));
+    println!("website      {}", r.website.as_deref().unwrap_or("-"));
+    println!("visibility   {visibility}");
+    println!("created      {}", time::local(r.created_at));
+    println!("stars        {}", r.star_count);
+    println!("watchers     {}", r.watcher_count);
+    println!("your role    {}", r.role.as_deref().unwrap_or("-"));
+}
+
 fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
     match cmd {
         RepoCommand::Create {
@@ -3730,6 +3765,8 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             policy,
             no_policy,
             default,
+            description,
+            website,
         } => {
             let file = match &policy {
                 Some(file) => Some(
@@ -3764,6 +3801,8 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                     init_pyn::DefaultMode::Shared => api::Mode::Shared,
                     init_pyn::DefaultMode::Exclusive => api::Mode::Exclusive,
                 }),
+                description,
+                website,
             };
             let org = body.owner.clone().unwrap_or_default();
             let made: api::RepoInfo = api
@@ -3780,6 +3819,35 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                     .context("the repository was created, but its policy was not accepted")?;
                 println!("added {POLICY_PATH}");
             }
+        }
+        RepoCommand::Show { name } => {
+            let (owner, short) = address::split_repo(&name)?;
+            let r: api::RepoInfo = api
+                .send(api.get(&format!("/v1/repos/{owner}/{short}")))?
+                .json()?;
+            show_repo(&r);
+        }
+        RepoCommand::Edit {
+            name,
+            description,
+            website,
+        } => {
+            if description.is_none() && website.is_none() {
+                bail!("nothing to change: give --description or --website");
+            }
+            let (owner, short) = address::split_repo(&name)?;
+            let body = api::UpdateRepoRequest {
+                description: description.map(Some),
+                website: website.map(Some),
+                ..Default::default()
+            };
+            let r: api::RepoInfo = api
+                .send(
+                    api.request(Method::PATCH, &format!("/v1/repos/{owner}/{short}"))
+                        .json(&body),
+                )?
+                .json()?;
+            show_repo(&r);
         }
         RepoCommand::List { owner } => {
             let mut req = api.get("/v1/repos");

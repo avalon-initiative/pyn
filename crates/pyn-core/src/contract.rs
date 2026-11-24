@@ -1369,6 +1369,7 @@ fn repo_record(id: &str, owner: &str, name: &str) -> RepoRecord {
         storage_cap: None,
         initial_policy: None,
         created_at: at(0),
+        about: Default::default(),
     }
 }
 
@@ -1616,7 +1617,7 @@ pub async fn updating_a_repository_keeps_its_id(store: Store) {
                     lease_hours: 4,
                     ..RepoSettings::default()
                 }),
-                storage_cap: None,
+                ..Default::default()
             },
         )
         .await
@@ -1698,6 +1699,53 @@ pub async fn a_repository_stores_its_lock_limit_and_can_clear_it(store: Store) {
     assert_eq!(cleared.settings.max_locks, None);
     let listed = store.list_repos(None).await.unwrap();
     assert_eq!(listed[0].settings.max_locks, None);
+}
+
+pub async fn a_repository_stores_its_about_block_and_can_clear_it(store: Store) {
+    let mut record = repo_record("r1", "alice", "game");
+    record.about.description = Some("A small game".into());
+    let created = store.create_repo(record).await.unwrap();
+    let found = store.get_repo(&created.id).await.unwrap().unwrap();
+    assert_eq!(found.about.description.as_deref(), Some("A small game"));
+    assert_eq!(found.about.website, None);
+
+    let set = store
+        .update_repo(
+            &created.id,
+            RepoUpdate {
+                website: Some(Some("https://example.com".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        set.about.description.as_deref(),
+        Some("A small game"),
+        "other fields stay"
+    );
+    assert_eq!(set.about.website.as_deref(), Some("https://example.com"));
+
+    let cleared = store
+        .update_repo(
+            &created.id,
+            RepoUpdate {
+                description: Some(None),
+                name: Some("engine".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(cleared.about.description, None);
+    assert_eq!(
+        cleared.about.website.as_deref(),
+        Some("https://example.com")
+    );
+    assert_eq!(
+        store.list_repos(None).await.unwrap()[0].about,
+        cleared.about
+    );
 }
 
 fn service_in(store: &Store, h: &Harness, id: &str) -> RepoService {
@@ -3434,6 +3482,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repository_names_are_case_insensitive);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_repository_keeps_its_id);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_lock_limit_and_can_clear_it);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_about_block_and_can_clear_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_do_not_share_locks_or_revisions);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_users_live_locks_are_listed_across_repositories);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_repository_removes_only_its_own_data);

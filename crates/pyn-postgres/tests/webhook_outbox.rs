@@ -61,6 +61,7 @@ fn repo(id: &str, name: &str) -> RepoRecord {
         storage_cap: None,
         initial_policy: None,
         created_at: t0(),
+        about: Default::default(),
     }
 }
 
