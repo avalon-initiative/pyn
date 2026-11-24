@@ -3,8 +3,13 @@
 Concepts, architecture and specs for pyn: version control that merges what can be merged and locks what shouldn't be.
 Markdown, plus the generated OpenAPI document; `make docs-check` verifies relative links and anchors.
 
+- [Quickstart: a server, a lock and a conflict in a few minutes](quickstart.md)
 - [Getting started: the installer script, or run a release by hand, set it up in the browser, connect the CLI](getting-started.md)
 - [Concepts](concepts/README.md): the model, in the order to read it
+- [Shared and exclusive paths: the idea on one page](concepts/shared-and-exclusive.md)
+- [Coming from git, Perforce or Unity Version Control](coming-from.md)
+- [Using pyn for a game project: policy starters for Godot, Unity and Unreal](engines.md)
+- [Troubleshooting: errors and what to do](troubleshooting.md)
 - [pyn.toml specification](concepts/pyn-toml.md)
 - [Repositories: owners, names, visibility and the API shape](concepts/repositories.md)
 - [Browsing a repository: folder listing and summary](concepts/browsing.md)
