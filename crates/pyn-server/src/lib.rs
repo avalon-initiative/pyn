@@ -110,7 +110,7 @@ pub struct AppState {
 struct RepoAddress {
     /// The namespace that owns the repository.
     owner: String,
-    /// The repository's name within its owner; matched ignoring case.
+    /// The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.
     name: String,
 }
 
