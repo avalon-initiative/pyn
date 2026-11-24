@@ -10,8 +10,8 @@ use pyn_core::memory::MemoryAccessStore;
 use pyn_core::merge::default_concurrent_merges;
 use pyn_core::{
     AccessConfig, AccessService, DEFAULT_BRANCH_STALE_DAYS, DEFAULT_MAX_FORKS_PER_OWNER,
-    DEFAULT_MAX_FORKS_PER_REPOSITORY, EmailSender, ExternalPolicy, Limits,
-    MemoryLimitEvents, NullEmailSender, RateLimits, Rules, SecretKey, SystemClock, WebhookSettings,
+    DEFAULT_MAX_FORKS_PER_REPOSITORY, EmailSender, ExternalPolicy, Limits, MemoryLimitEvents,
+    NullEmailSender, RateLimits, Rules, SecretKey, SystemClock, WebhookSettings,
 };
 use pyn_oidc::{HttpOidcProvider, OidcConfig};
 

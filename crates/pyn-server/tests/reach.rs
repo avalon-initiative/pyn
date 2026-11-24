@@ -1143,6 +1143,7 @@ const REPOSITORY_ROUTES: &[(&str, &str, &str)] = &[
         "/pulls/{number}/merge",
         "repo_scoped:contents:write",
     ),
+    ("GET", "/forks", "public_repo_read:metadata:read"),
     ("GET", "/tags", "public_repo_read:contents:read"),
     ("POST", "/tags", "repo_scoped:contents:write"),
     ("GET", "/tags/{*tag}", "public_repo_read:contents:read"),

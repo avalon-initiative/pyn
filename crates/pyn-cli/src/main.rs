@@ -3932,8 +3932,11 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             };
             let made: api::RepoInfo = api
                 .send(
-                    api.request(Method::POST, &format!("/v1/repos/{src_owner}/{src_name}/forks"))
-                        .json(&body),
+                    api.request(
+                        Method::POST,
+                        &format!("/v1/repos/{src_owner}/{src_name}/forks"),
+                    )
+                    .json(&body),
                 )
                 .map_err(|e| explain_create_refusal(e, &org))?
                 .json()?;

@@ -1905,7 +1905,11 @@ impl MetadataStore for MemoryMetadataStore {
             });
         }
         if let Some(limit) = limits.per_repository
-            && st.repos.values().filter(|r| r.fork_of.as_ref() == Some(&source)).count() as u64
+            && st
+                .repos
+                .values()
+                .filter(|r| r.fork_of.as_ref() == Some(&source))
+                .count() as u64
                 >= limit
         {
             let what = st.repos[&source].address();

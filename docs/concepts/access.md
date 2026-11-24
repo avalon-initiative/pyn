@@ -838,7 +838,7 @@ a reach the session is not listed for refuses it, so a new route is closed to se
 | `any_credential` | reaches them, as the account: `GET /v1/me`, the repository list, `/v1/me/locks`, an organization lookup |
 | `repo_scoped`, `public_repo_read`, `public_lfs_read` | reach them as the account's role allows: files, history, locks, check-in and restore, branches, policy and audit where the role holds the permission. Refused: `members:write` and `administration:write` (adding or changing members, invitations, teams and roles, renaming or deleting the repository, the usage breakdown), because they decide who can reach a repository afterwards or whether it exists; creating accounts and invitations in a repository is also refused (full scope) |
 | `optional_full_scope` | refused: the people directory is not for a narrower credential |
-| `full_scope`, `full_scope_pending`, `full_scope_enrolment`, `namespace`, `session` | refused. These are the account's own credentials and standing: tokens, SSH keys, [passwords](#accounts-and-signing-in), [two-factor](#two-factor-authentication) and passkeys, emails and username, [deleting the account](#deleting-an-account), creating repositories and organizations, accepting invitations, signing out |
+| `full_scope`, `full_scope_pending`, `full_scope_enrolment`, `namespace`, `session` | refused. These are the account's own credentials and standing: tokens, SSH keys, [passwords](#accounts-and-signing-in), [two-factor](#two-factor-authentication) and passkeys, emails and username, [deleting the account](#deleting-an-account), creating and forking repositories and creating organizations, accepting invitations, signing out |
 | `org_scoped`, `account_scoped` | refused: organization administration (members, teams, settings, repository policy, audit) and the account's own profile, avatar and SSH keys. The account's role in an organization still applies to the organization's repositories through the repository routes |
 | `admin_only`, `service:*`, `full_scope_or_service:*` | refused, whether or not the account is an administrator: a session never administers the server, starts another session, changes the freeze or limits of an owner, or reads the server audit log |
 
@@ -1043,7 +1043,7 @@ A read of a public repository skips the grant check: any caller, signed out or w
 
 | Resource and level | Routes |
 | --- | --- |
-| `metadata:read` | `GET /v1/repos/{owner}/{name}`, `.../me` |
+| `metadata:read` | `GET /v1/repos/{owner}/{name}`, `.../me`, `.../forks` (forking itself is `POST .../forks`, a `namespace` route like creating a repository) |
 | `contents:read` | usage, files, tree, summary, content, the active policy (`GET policy`), history, verify, commits, snapshot, branches, compare, fetch, objects, merge preview, and the LFS batch and object download (an upload batch needs `contents:write`, checked in the handler) |
 | `contents:write` | checkin, changesets, restore, branch create, rename and delete, push, merge, object upload, chunk, missing and assemble, LFS object upload, verify and tus |
 | `locks:read` | the lock lists: `.../locks`, the lock change stream `.../locks/events`, LFS lock list and verify |

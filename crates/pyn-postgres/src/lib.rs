@@ -13,11 +13,11 @@ use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
     BREAKDOWN_PATHS, Branch, ChangesetItem, Commit, CommitFilter, EventDraft, FileMode,
-    FolderUsage, HeadCounts, HistoryBy, HistoryCursor, HistoryScan, LfsObject, Lock, LockChange,
-    LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person, PushedCommit,
-    ForkLimits, PynError, REPO_ALGORITHM, RepoAbout, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings,
-    RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, Tag, TusCancel,
-    TusClaim, TusSession, UploadReservation, Usage, UserId, Visibility,
+    FolderUsage, ForkLimits, HeadCounts, HistoryBy, HistoryCursor, HistoryScan, LfsObject, Lock,
+    LockChange, LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person,
+    PushedCommit, PynError, REPO_ALGORITHM, RepoAbout, RepoBreakdown, RepoId, RepoPath, RepoRecord,
+    RepoSettings, RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap,
+    Tag, TusCancel, TusClaim, TusSession, UploadReservation, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -2898,7 +2898,13 @@ impl MetadataStore for PgMetadataStore {
                 .join(", ");
             let values = columns
                 .iter()
-                .map(|c| if c == "repo" { "$2::text".to_string() } else { format!("\"{c}\"") })
+                .map(|c| {
+                    if c == "repo" {
+                        "$2::text".to_string()
+                    } else {
+                        format!("\"{c}\"")
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             sqlx::query(AssertSqlSafe(format!(

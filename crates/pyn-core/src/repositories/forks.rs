@@ -120,11 +120,7 @@ impl Repositories {
             return Ok(Some(source));
         }
         let Some(user) = viewer else { return Ok(None) };
-        Ok(self
-            .access
-            .role_in(&source.id, user)
-            .await?
-            .map(|_| source))
+        Ok(self.access.role_in(&source.id, user).await?.map(|_| source))
     }
 
     /// A fork of a private repository may not be made public while its source is still private.

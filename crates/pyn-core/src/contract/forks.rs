@@ -30,23 +30,64 @@ pub async fn a_fork_copies_history_but_not_locks_and_checks_its_limits(store: St
                 .fork_repo_with_events(fork_record("refused", owner, "game"), limits, &[])
                 .await
                 .unwrap_err();
-            assert!(store.get_repo(&RepoId::new("refused")).await.unwrap().is_none());
+            assert!(
+                store
+                    .get_repo(&RepoId::new("refused"))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
             err
         }
     };
-    let err = refused(ForkLimits { repositories: Some(0), ..ForkLimits::default() }, "bob").await;
-    assert!(matches!(err, PynError::RepoLimitReached { limit: 0, .. }), "{err}");
-    let err = refused(ForkLimits { per_owner: Some(0), ..ForkLimits::default() }, "bob").await;
-    assert!(matches!(err, PynError::ForkLimitReached { limit: 0, .. }), "{err}");
-    let err = refused(ForkLimits { storage_bytes: Some(12), ..ForkLimits::default() }, "bob").await;
+    let err = refused(
+        ForkLimits {
+            repositories: Some(0),
+            ..ForkLimits::default()
+        },
+        "bob",
+    )
+    .await;
+    assert!(
+        matches!(err, PynError::RepoLimitReached { limit: 0, .. }),
+        "{err}"
+    );
+    let err = refused(
+        ForkLimits {
+            per_owner: Some(0),
+            ..ForkLimits::default()
+        },
+        "bob",
+    )
+    .await;
+    assert!(
+        matches!(err, PynError::ForkLimitReached { limit: 0, .. }),
+        "{err}"
+    );
+    let err = refused(
+        ForkLimits {
+            storage_bytes: Some(12),
+            ..ForkLimits::default()
+        },
+        "bob",
+    )
+    .await;
     match err {
-        PynError::ForkStorageLimitReached { used, needed, limit, .. } => {
+        PynError::ForkStorageLimitReached {
+            used,
+            needed,
+            limit,
+            ..
+        } => {
             assert_eq!((used, needed, limit), (0, 13, 12));
         }
         other => panic!("{other}"),
     }
     let err = refused(ForkLimits::default(), "alice").await;
-    assert!(matches!(err, PynError::RepoExists(_)), "the name is taken: {err}");
+    assert!(
+        matches!(err, PynError::RepoExists(_)),
+        "the name is taken: {err}"
+    );
 
     let fits = ForkLimits {
         repositories: Some(1),
@@ -71,17 +112,37 @@ pub async fn a_fork_copies_history_but_not_locks_and_checks_its_limits(store: St
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, a);
     let (_, bytes) = f.svc.read(&a, None).await.unwrap();
-    assert_eq!(bytes, b"int main() {}", "the content is reachable and verifies");
-    assert!(store.list_locks(&fork.id, h.clock.now()).await.unwrap().is_empty(), "no locks");
-    assert_eq!(store.list_locks(&RepoId::new("game"), h.clock.now()).await.unwrap().len(), 1);
+    assert_eq!(
+        bytes, b"int main() {}",
+        "the content is reachable and verifies"
+    );
+    assert!(
+        store
+            .list_locks(&fork.id, h.clock.now())
+            .await
+            .unwrap()
+            .is_empty(),
+        "no locks"
+    );
+    assert_eq!(
+        store
+            .list_locks(&RepoId::new("game"), h.clock.now())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(store.count_forks(&RepoId::new("game")).await.unwrap(), 1);
-    assert_eq!(store.list_forks(&RepoId::new("game")).await.unwrap(), [fork.clone()]);
+    assert_eq!(
+        store.list_forks(&RepoId::new("game")).await.unwrap(),
+        std::slice::from_ref(&fork)
+    );
     let usage = store.owner_usage(&user("bob")).await.unwrap();
     assert_eq!(usage.stored_bytes, 13, "counted in full for the forker");
 
     let c = blob(&h, "int main() { return 1; }").await;
     h.svc
-        .checkin(&who("alice"), &a, c, None, "later".into())
+        .checkin(&who("alice"), &a, c, Some(RevisionId(1)), "later".into())
         .await
         .unwrap();
     assert_eq!(f.svc.files(None, 100).await.unwrap().len(), 1);
@@ -94,5 +155,9 @@ pub async fn a_fork_copies_history_but_not_locks_and_checks_its_limits(store: St
     assert!(store.delete_repo(&RepoId::new("game")).await.unwrap());
     let orphan = store.get_repo(&fork.id).await.unwrap().unwrap();
     assert_eq!(orphan.fork_of, None, "the link goes with the source");
-    assert_eq!(f.svc.files(None, 100).await.unwrap().len(), 1, "the copy stays");
+    assert_eq!(
+        f.svc.files(None, 100).await.unwrap().len(),
+        1,
+        "the copy stays"
+    );
 }
