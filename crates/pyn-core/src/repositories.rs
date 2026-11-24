@@ -17,12 +17,14 @@ use crate::object::ObjectStore;
 use crate::repo::{
     self, DEFAULT_MAX_LOCKS_PER_USER, RepoRecord, RepoSettings, RepoUpdate, Visibility,
 };
-use crate::rules::Rules;
+use crate::rules::{Mode, POLICY_PATH, Rules, starter_policy};
 use crate::service::{DEFAULT_UNREFERENCED_UPLOAD_BYTES, LockLimit, RepoService, ServiceConfig};
 use crate::store::MetadataStore;
-use crate::types::{Lock, UserId};
+use crate::types::{Lock, RepoPath, UserId};
 use crate::webhook::OutboxEvent;
 
+mod stars;
+pub use stars::StarState;
 mod visible;
 
 fn limit_detail(settings: &RepoSettings) -> String {
@@ -481,6 +483,21 @@ impl Repositories {
         visibility: Option<Visibility>,
         settings: Option<RepoSettings>,
     ) -> Result<RepoRecord> {
+        self.create_with_starter(actor, owner, name, visibility, settings, None)
+            .await
+    }
+
+    /// Like `create`; with `starter` the first commit holds `.pyn/pyn.toml` with the starter policy whose `default` is
+    /// that mode. Nothing is left behind when the commit fails.
+    pub async fn create_with_starter(
+        &self,
+        actor: &Identity,
+        owner: &UserId,
+        name: &str,
+        visibility: Option<Visibility>,
+        settings: Option<RepoSettings>,
+        starter: Option<Mode>,
+    ) -> Result<RepoRecord> {
         actor.require_namespace_management()?;
         let visibility = visibility.unwrap_or(Visibility::Private);
         let in_org = owner != &actor.user && self.access.is_org(owner).await?;
@@ -549,7 +566,32 @@ impl Repositories {
         );
         self.record(&record, actor.into(), AuditAction::RepoCreated, detail)
             .await?;
+        if let Some(default) = starter
+            && let Err(e) = self.commit_starter(&record, &actor.user, default).await
+        {
+            self.undo_create(&record, &actor.user).await;
+            let _ = self.access.forget_repo(&record.id).await;
+            return Err(e);
+        }
         Ok(record)
+    }
+
+    async fn commit_starter(&self, record: &RepoRecord, who: &UserId, default: Mode) -> Result<()> {
+        let principal = self.access.principal(&record.id, who).await?;
+        let service = self.service_for(record).await?;
+        let content = service
+            .upload_blob(starter_policy(default).into_bytes())
+            .await?;
+        service
+            .checkin(
+                &principal,
+                &RepoPath::new(POLICY_PATH)?,
+                content,
+                None,
+                "Initial policy".into(),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Removes a repository whose creation did not complete, queueing its deletion after the creation event.

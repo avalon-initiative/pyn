@@ -29,8 +29,9 @@ exclusive.
 
 ## The starter policy
 
-A new repository starts `shared` with a policy that locks the file kinds that cannot be merged. `pyn repo create` checks the
-text in as `.pyn/pyn.toml` and `pyn init` writes it into the work tree, so it is a visible file to edit; the server uses the
+A new repository starts `shared` with a policy that locks the file kinds that cannot be merged. The server checks the
+text in as `.pyn/pyn.toml`, the repository's first commit, when the repository is created (the option is on by default), and
+`pyn init` writes it into the work tree, so it is a visible file to edit; the server uses the
 same text (`DEFAULT_INITIAL_POLICY`) as the initial policy of a repository that has no policy file and no `PYN_CONFIG`. In short:
 
 ```toml
@@ -222,8 +223,8 @@ need no lock until the owner commits a policy. It is stored with the repository 
 may be a parentless root) and applies to every branch that has no policy commit in its ancestry. A repository created before
 this existed has no stored initial policy and keeps using the server's `PYN_CONFIG` file, or everything exclusive. An
 initial policy stops applying once the repository has its own file; the two are never merged. So the operator's `PYN_CONFIG` policy
-is the fallback for a repository with no policy file (`pyn repo create --no-policy`, or one created through the API); a repository
-made with plain `pyn repo create` carries the starter file instead.
+is the fallback for a repository with no policy file (one created with the starter policy turned off); a repository
+created with the default options carries the starter file instead.
 
 ## `pyn.toml` is a tracked file
 
@@ -244,12 +245,15 @@ shared `pyn.toml`. Until it exists, the initial policy applies. The first revisi
 it declares for itself, like any other revision records the mode in force. Only the first revision skips the lock: once any
 revision exists, a submission that claims to be the first is rejected as a stale base.
 
-`pyn repo create` without `--policy` checks in the starter text as the repository's first `.pyn/pyn.toml`, a visible file the owner
-edits (`pyn init` writes the same text into the work tree). `--policy <file>` checks in that file instead. `--no-policy` creates the
-repository with no policy file, so its initial policy applies.
+Creating a repository makes the server commit the starter text as its first `.pyn/pyn.toml`, a visible file the owner edits
+(`pyn init` writes the same text into the work tree). The server does this alone; clients only pass the option. In the API
+(`POST /v1/repos`) `starter_policy` is a boolean that defaults to `true`; `false` leaves the repository empty, so its
+initial policy applies and the first push may be a parentless root. `pyn repo create --no-policy` sends `false`.
+`pyn repo create --policy <file>` creates the repository without the starter and checks in that file as its first policy.
 
-The starter's `default` is chosen at creation: `pyn repo create` in a terminal asks whether paths no entry covers are `shared`
-(edits are merged) or `exclusive` (a lock is needed), taking `shared`, `exclusive`, their first letters, or Enter for `shared`.
-`--default shared|exclusive` answers up front. With no terminal on standard input or output the answer is `shared` and
-nothing is asked. Only that one line changes; the exclusive list and the `[shared]` example stay. `--default` conflicts with
-`--policy` (the file decides) and with `--no-policy` (there is no file).
+The starter's `default` is chosen at creation: `starter_default` in the API (`shared` or `exclusive`, `shared` if omitted).
+`pyn repo create` in a terminal asks whether paths no entry covers are `shared` (edits are merged) or `exclusive` (a lock is
+needed), taking `shared`, `exclusive`, their first letters, or Enter for `shared`. `--default shared|exclusive` answers up
+front. With no terminal on standard input or output the answer is `shared` and nothing is asked. Only that one line changes;
+the exclusive list and the `[shared]` example stay. `--default` conflicts with `--policy` (the file decides) and with
+`--no-policy` (there is no file). If the first commit cannot be made, the creation fails and leaves no repository.

@@ -632,6 +632,11 @@ fn table() -> Vec<Entry> {
             profile_api::get_profile,
         ),
         get(
+            "/v1/users/{user}/starred",
+            Reach::OptionalSignIn,
+            profile_api::list_starred,
+        ),
+        get(
             "/v1/users/{user}/avatar",
             Reach::OptionalSignIn,
             profile_api::get_avatar,
@@ -814,6 +819,21 @@ fn table() -> Vec<Entry> {
             "/v1/repos/{owner}/{name}",
             Reach::RepoScoped(need(Administration, Write)),
             repo_api::delete_repo,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/star",
+            Reach::FullScope,
+            repo_api::get_star,
+        ),
+        put(
+            "/v1/repos/{owner}/{name}/star",
+            Reach::FullScope,
+            repo_api::put_star,
+        ),
+        delete(
+            "/v1/repos/{owner}/{name}/star",
+            Reach::FullScope,
+            repo_api::delete_star,
         ),
         get(
             "/v1/repos/{owner}/{name}/me",

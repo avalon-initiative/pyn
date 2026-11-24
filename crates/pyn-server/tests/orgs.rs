@@ -297,7 +297,7 @@ async fn repositories_in_an_organization_are_created_and_run_by_its_owners_and_r
         &bob,
         "POST",
         "/v1/repos",
-        Some(json!({"owner": "acme", "name": "game"})),
+        Some(json!({"starter_policy": false, "owner": "acme", "name": "game"})),
     )
     .await;
     assert_eq!(
@@ -310,7 +310,7 @@ async fn repositories_in_an_organization_are_created_and_run_by_its_owners_and_r
         &alice,
         "POST",
         "/v1/repos",
-        Some(json!({"owner": "acme", "name": "game"})),
+        Some(json!({"starter_policy": false, "owner": "acme", "name": "game"})),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);
@@ -643,7 +643,7 @@ async fn an_organization_lookup_shows_the_role_to_a_full_scope_caller_only() {
         &alice,
         "POST",
         "/v1/repos",
-        Some(json!({"name": "own"})),
+        Some(json!({"starter_policy": false, "name": "own"})),
     )
     .await;
     let limited = call(
@@ -685,7 +685,7 @@ async fn removal_drops_direct_grants_and_direct_grants_need_membership() {
         &alice,
         "POST",
         "/v1/repos",
-        Some(json!({"owner": "acme", "name": "game"})),
+        Some(json!({"starter_policy": false, "owner": "acme", "name": "game"})),
     )
     .await;
     join(&app, &alice, "acme", "bob", &bob, "member").await;
@@ -763,7 +763,7 @@ async fn an_organization_being_deleted_refuses_new_repositories_and_a_second_del
         "alice",
         "POST",
         "/v1/repos",
-        Some(json!({"owner": "acme", "name": "game"})),
+        Some(json!({"starter_policy": false, "owner": "acme", "name": "game"})),
     )
     .await;
     assert_eq!(
@@ -785,7 +785,7 @@ async fn an_organization_being_deleted_refuses_new_repositories_and_a_second_del
         "alice",
         "POST",
         "/v1/repos",
-        Some(json!({"owner": "acme", "name": "game"})),
+        Some(json!({"starter_policy": false, "owner": "acme", "name": "game"})),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);

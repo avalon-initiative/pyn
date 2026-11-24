@@ -119,7 +119,7 @@ async fn world_with(trust_forwarded: bool, visibility: &str) -> World {
         "POST",
         "/v1/repos",
         &alice,
-        Some(json!({"name": "game", "visibility": visibility})),
+        Some(json!({"starter_policy": false, "name": "game", "visibility": visibility})),
     )
     .await;
     assert_eq!(created.0, StatusCode::CREATED);
@@ -770,7 +770,7 @@ async fn lfs_objects_are_not_visible_to_other_repositories() {
         "POST",
         "/v1/repos",
         &w.alice,
-        Some(json!({"name": "other"})),
+        Some(json!({"starter_policy": false, "name": "other"})),
     )
     .await;
     assert_eq!(r.0, StatusCode::CREATED);

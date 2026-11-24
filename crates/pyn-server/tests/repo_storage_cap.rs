@@ -145,7 +145,14 @@ async fn service(app: &Router, name: &str, scopes: &[&str]) -> String {
 }
 
 async fn make_repo(app: &Router, who: &str, name: &str) -> Reply {
-    send(app, who, "POST", "/v1/repos", Some(json!({"name": name}))).await
+    send(
+        app,
+        who,
+        "POST",
+        "/v1/repos",
+        Some(json!({"starter_policy": false, "name": name})),
+    )
+    .await
 }
 
 fn checkin(path: &str, content: &str, base: Option<u64>) -> serde_json::Value {

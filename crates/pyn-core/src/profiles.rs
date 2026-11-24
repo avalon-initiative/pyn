@@ -68,6 +68,27 @@ impl Profiles<'_> {
         })
     }
 
+    /// The repositories `user` starred that `viewer` may see, newest first, with when. A profile that hides its stars
+    /// from the viewer lists none, like an account with none.
+    pub async fn starred(
+        &self,
+        user: &str,
+        viewer: Option<&Identity>,
+    ) -> Result<Vec<(RepoRecord, Option<Role>, DateTime<Utc>)>> {
+        let account = self.access.active_user(&UserId::new(user)).await?;
+        let shown = is_owner(viewer, &account.user)
+            || self
+                .access
+                .profile_of(&account.user)
+                .await?
+                .visibility
+                .starred;
+        if !shown {
+            return Ok(Vec::new());
+        }
+        self.repos.starred_visible_to(&account.user, viewer).await
+    }
+
     /// Stores the avatar bytes under their SHA-256 and makes them the actor's avatar. Replaced bytes stay in the
     /// store: it is shared and content-addressed, so another record may use the same object.
     pub async fn set_avatar(&self, actor: &Identity, bytes: Vec<u8>) -> Result<Profile> {

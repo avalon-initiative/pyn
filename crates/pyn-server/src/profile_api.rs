@@ -37,6 +37,7 @@ fn visibility_dto(v: ProfileVisibility) -> api::ProfileVisibility {
         company: v.company,
         links: v.links,
         avatar: v.avatar,
+        starred: v.starred,
     }
 }
 
@@ -69,10 +70,11 @@ pub(crate) async fn get_profile(
     Path(user): Path<String>,
 ) -> ApiResult<Json<api::PublicProfile>> {
     let found = profiles(&s).public(&user, who.as_ref()).await?;
+    let viewer = who.as_ref().map(|w| &w.user);
     let mut repositories = Vec::with_capacity(found.repositories.len());
     for (record, role) in found.repositories {
         let limit = s.repos.lock_limit(&record).await?;
-        repositories.push(crate::repo_api::repo_info(&s, record, role, limit).await?);
+        repositories.push(crate::repo_api::repo_info(&s, record, role, limit, viewer).await?);
     }
     let organizations = found
         .organizations
@@ -88,6 +90,29 @@ pub(crate) async fn get_profile(
         repositories,
         organizations,
     }))
+}
+
+#[utoipa::path(get, path = "/v1/users/{user}/starred",
+    params(("user" = String, Path, description = "the account's name")),
+    responses((status = 200, body = Vec<api::StarredRepo>, description = "the repositories the user starred that the caller may see, newest star first, with the caller's role in each; a private repository never appears to someone with no role in it, and a profile that hides its stars (`visibility.starred`) lists none to everyone but its owner, indistinguishable from no stars"),
+              (status = 401, body = api::ErrorBody, description = "credentials were sent but are not valid"),
+              (status = 404, body = api::ErrorBody, description = "user_not_found: no such user, or an organization, or an account that is disabled or not yet approved")))]
+pub(crate) async fn list_starred(
+    State(s): State<AppState>,
+    OptionalCaller(who): OptionalCaller,
+    Path(user): Path<String>,
+) -> ApiResult<Json<Vec<api::StarredRepo>>> {
+    let found = profiles(&s).starred(&user, who.as_ref()).await?;
+    let viewer = who.as_ref().map(|w| &w.user);
+    let mut out = Vec::with_capacity(found.len());
+    for (record, role, starred_at) in found {
+        let limit = s.repos.lock_limit(&record).await?;
+        out.push(api::StarredRepo {
+            starred_at,
+            repo: crate::repo_api::repo_info(&s, record, role, limit, viewer).await?,
+        });
+    }
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]
@@ -165,6 +190,7 @@ pub(crate) async fn update_profile(
         company: v.company,
         links: v.links,
         avatar: v.avatar,
+        starred: v.starred,
     });
     let saved = s.access.update_profile(&who, fields, visibility).await?;
     Ok(Json(profile_dto(&who.user, saved, true)))

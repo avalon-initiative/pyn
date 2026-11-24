@@ -274,8 +274,8 @@ the server and is not garbage-collected yet. Tokens that were limited to the rep
 ## The policy
 
 Each repository enforces the `.pyn/pyn.toml` at its own head, read when the server first opens the repository and replaced
-the moment a new revision of the file lands; see [Changing policy](pyn-toml.md#changing-policy). `pyn repo create` checks in
-a first policy file for the new repository (the [starter policy](pyn-toml.md#the-starter-policy), or the file given with `--policy`; `--no-policy` skips it).
+the moment a new revision of the file lands; see [Changing policy](pyn-toml.md#changing-policy). Creating a repository
+commits a first policy file for it, on by default (the [starter policy](pyn-toml.md#the-starter-policy), the `starter_policy` field of `POST /v1/repos`; `pyn repo create --no-policy` turns it off, `--policy` uses a given file).
 Until a repository has a policy file, its initial policy applies: the server's `PYN_CONFIG` file as of its creation, or
 the [starter policy](pyn-toml.md#the-starter-policy) (shared, with unmergeable kinds exclusive) if that is unset (see [`pyn.toml`](pyn-toml.md)). A repository created before initial policies existed uses the
 `PYN_CONFIG` file, or everything exclusive.
@@ -312,6 +312,33 @@ tokens, password), create repositories in its own namespace and read public repo
   public|private`). It takes effect at once and is recorded as a `repo_updated` audit event whose detail reads
   `visibility private -> public`.
 
+## Stars
+
+An account can star a repository: a per-account mark with a public count, as on GitHub (decision #1282, settled in #1300).
+
+- **Who can star.** A signed-in, full-scope credential (a session or a sign-in token; a fine-grained token or a service
+  credential never) on a repository it can read, public or private. A repository the caller cannot see answers
+  `404 repo_not_found`, as everywhere else. Starring twice, or removing a star that is not there, is not an error. An
+  account's stars and unstars are limited to 120 an hour (`429 too_many_attempts`); reading is not limited. Stars are not
+  audited.
+- **The count.** `star_count` and the caller's own `starred` ride on every repository payload (`GET /v1/repos`,
+  `GET /v1/repos/{owner}/{name}`, `GET /v1/explore/repos`, a profile's `repositories`). Whoever can read a repository sees
+  its count, a private repository's included, and nobody else can see the repository at all. A person who loses access to
+  a private repository keeps their star in the count (and in their own list) until they remove it.
+- **Who starred.** pyn exposes counts, not stargazers: there is no list of the accounts that starred a repository. The
+  only list is per account (below).
+- **Explore.** Stars do not feed any ranking: `GET /v1/explore/repos` keeps its `owner/name` order. Sorting or filtering
+  by stars is left to a later issue.
+- **An account's stars.** `GET /v1/users/{user}/starred` lists the repositories the account starred that the caller may
+  see (a private repository only to someone with a role in it), newest star first, each `{starred_at, repo}` with the
+  usual repository info. It works signed out on a `public` server. The account hides the whole list from everyone but
+  itself with the `starred` key of its [profile visibility](profiles.md#privacy); a hidden list reads as an empty one.
+- A star goes with its repository when it is deleted and with its account when that is deleted, and follows the account
+  through a rename. A repository rename keeps its stars.
+
+On the command line: `pyn repo star owner/name`, `pyn repo unstar owner/name` and `pyn repo starred [user]` (`STARRED`,
+`STARS` and `REPOSITORY`, newest first).
+
 ## API summary
 
 | Route | Purpose |
@@ -322,6 +349,8 @@ tokens, password), create repositories in its own namespace and read public repo
 | `GET /v1/repos/{owner}/{name}` | one repository (`role` is null for a reader of a public repository) |
 | `PATCH /v1/repos/{owner}/{name}` | rename or change settings `{name?, visibility?, lease_hours?, max_locks_per_user?}` (`null` clears the lock limit) |
 | `DELETE /v1/repos/{owner}/{name}` | delete |
+| `GET`, `PUT`, `DELETE /v1/repos/{owner}/{name}/star` | whether you starred it, star it, remove your star: each answers `{starred, count}` (full-scope credentials; see [Stars](#stars)) |
+| `GET /v1/users/{user}/starred` | the repositories an account starred that you may see `[{starred_at, repo}]`, newest first |
 | `POST /v1/orgs` | create an organization `{name}`; you become its owner |
 | `GET /v1/orgs` | organizations you belong to, each `{id, name, created_at, role}` |
 | `GET /v1/orgs/{org}` | one organization; `role` is null when you have none (`404 org_not_found` for a user name too) |

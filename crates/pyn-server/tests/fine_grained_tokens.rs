@@ -114,7 +114,7 @@ async fn repo(app: &Router, who: &str, owner: &str, name: &str, visibility: &str
 }
 
 fn body(owner: &str, mode: &str, repos: &[&str], permissions: &[(&str, &str)]) -> Value {
-    json!({
+    json!({"starter_policy": false,
         "name": "ci",
         "owner": owner,
         "repository_access": {"mode": mode, "repos": repos},

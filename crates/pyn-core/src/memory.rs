@@ -2121,6 +2121,7 @@ struct AccessState {
     password_change: HashSet<UserId>,
     ssh_keys: Vec<SshKeyRecord>,
     roles: HashMap<(RepoId, UserId), Role>,
+    stars: BTreeMap<(RepoId, UserId), DateTime<Utc>>,
     org_roles: HashMap<(UserId, UserId), OrgRole>,
     org_invitations: BTreeMap<(UserId, UserId), OrgInvitation>,
     teams: BTreeMap<(UserId, String), TeamRecord>,
@@ -2341,8 +2342,41 @@ impl AccessStore for MemoryAccessStore {
         Ok(out)
     }
 
+    async fn add_star(&self, repo: &RepoId, user: &UserId, now: DateTime<Utc>) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st.stars.insert((repo.clone(), user.clone()), now).is_none())
+    }
+
+    async fn remove_star(&self, repo: &RepoId, user: &UserId) -> Result<bool> {
+        let mut st = self.state.lock().unwrap();
+        Ok(st.stars.remove(&(repo.clone(), user.clone())).is_some())
+    }
+
+    async fn has_star(&self, repo: &RepoId, user: &UserId) -> Result<bool> {
+        let st = self.state.lock().unwrap();
+        Ok(st.stars.contains_key(&(repo.clone(), user.clone())))
+    }
+
+    async fn star_count(&self, repo: &RepoId) -> Result<u64> {
+        let st = self.state.lock().unwrap();
+        Ok(st.stars.keys().filter(|(r, _)| r == repo).count() as u64)
+    }
+
+    async fn stars_of(&self, user: &UserId) -> Result<Vec<(RepoId, DateTime<Utc>)>> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<_> = st
+            .stars
+            .iter()
+            .filter(|((_, u), _)| u == user)
+            .map(|((r, _), at)| (r.clone(), *at))
+            .collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(out)
+    }
+
     async fn delete_repo_access(&self, repo: &RepoId) -> Result<()> {
         let mut st = self.state.lock().unwrap();
+        st.stars.retain(|(r, _), _| r != repo);
         st.roles.retain(|(r, _), _| r != repo);
         st.team_roles.retain(|(r, _, _), _| r != repo);
         st.definitions.remove(repo);
@@ -3747,6 +3781,7 @@ impl AccessStore for MemoryAccessStore {
         st.invites.retain(|_, i| &i.created_by != user);
         st.ssh_keys.retain(|k| &k.user != user);
         st.roles.retain(|(_, u), _| u != user);
+        st.stars.retain(|(_, u), _| u != user);
         st.org_roles.retain(|(_, u), _| u != user);
         st.org_invitations.retain(|(_, u), _| u != user);
         st.team_members.retain(|(_, _, u)| u != user);

@@ -193,7 +193,7 @@ async fn world() -> World {
         &full,
         "POST",
         "/v1/repos",
-        Some(json!({"owner": "alice", "name": "vault", "visibility": "private"})),
+        Some(json!({"starter_policy": false, "owner": "alice", "name": "vault", "visibility": "private"})),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);

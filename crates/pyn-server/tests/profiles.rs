@@ -933,7 +933,7 @@ async fn org_owned_repositories_carry_the_organizations_identity() {
         r.json::<api::RepoInfo>().owner_identity.unwrap().avatar_url,
         None
     );
-    let own = json!({"name": "mine"});
+    let own = json!({"starter_policy": false, "name": "mine"});
     let r = call(&app, &alice, "POST", "/v1/repos", Some(own)).await;
     assert_eq!(
         r.json::<api::RepoInfo>().owner_identity,
