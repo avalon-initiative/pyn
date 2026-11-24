@@ -165,6 +165,7 @@ schemas only.
 | --- | --- |
 | `GET /v1/repos/{owner}/{name}/branches` | the branches, the default one first, then by name; each has `name`, `commit`, `default`, `created_at`, `created_by` and `updated_at` (the committed time of its head commit, absent for a branch with no commits) |
 | `GET .../compare?base=&head=` | how far `head` is from `base` ([below](#comparing-branches)) |
+| `GET .../diff?base=&head=` | the line hunks of those changes, with each path's mode and lock ([diffs](diff.md)) |
 | `POST .../branches` `{name, start?}` | the new branch; `start` is a branch name, or a commit id or abbreviation, the default branch's head if omitted |
 | `GET .../branches/{branch}` | one branch, with `updated_at` (`404 branch_not_found`); a slash in the name may be sent as is or as `%2F` |
 | `PATCH .../branches/{branch}` `{name}` | the renamed branch |

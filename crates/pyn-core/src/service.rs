@@ -1,6 +1,7 @@
 const TREE_PAGE: usize = 5_000;
 
 mod compare;
+mod diff;
 mod fetch;
 mod lfs;
 mod lfs_tus;
@@ -17,6 +18,10 @@ pub use lfs_tus::{
 pub use uploads::DEFAULT_UNREFERENCED_UPLOAD_BYTES;
 
 pub use compare::{COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeKind, Comparison, PathChange};
+pub use diff::{
+    DIFF_DEFAULT_CONTEXT, DIFF_MAX_CONTEXT, DIFF_MAX_FILE_BYTES, DIFF_MAX_TOTAL_BYTES, Diff,
+    DiffHunk, DiffLine, DiffLineKind, DiffOptions, DiffStatus, FileDiff, FileLines, LINES_MAX,
+};
 pub use fetch::{
     FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES, FETCH_MAX_LIMIT, FetchPage,
     FetchQuery, FetchedCommit,

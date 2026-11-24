@@ -1111,6 +1111,16 @@ fn table() -> Vec<Entry> {
             Reach::PublicRepoRead(need(Contents, Read)),
             branch_api::compare,
         ),
+        get(
+            "/v1/repos/{owner}/{name}/diff",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            diff_api::diff,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/lines",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            diff_api::file_lines,
+        ),
         post(
             "/v1/repos/{owner}/{name}/branches",
             Reach::RepoScoped(need(Contents, Write)),

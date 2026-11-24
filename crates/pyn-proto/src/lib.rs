@@ -8,6 +8,8 @@ mod access_session;
 pub use access_session::*;
 mod account_deletion;
 pub use account_deletion::*;
+mod diff;
+pub use diff::*;
 mod events;
 pub use events::*;
 mod readiness;
