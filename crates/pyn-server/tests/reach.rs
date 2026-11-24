@@ -1089,6 +1089,8 @@ const REPOSITORY_ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/snapshot", "public_repo_read:contents:read"),
     ("GET", "/branches", "public_repo_read:contents:read"),
     ("GET", "/compare", "public_repo_read:contents:read"),
+    ("GET", "/diff", "public_repo_read:contents:read"),
+    ("GET", "/lines", "public_repo_read:contents:read"),
     ("POST", "/branches", "repo_scoped:contents:write"),
     ("POST", "/push", "repo_scoped:contents:write"),
     ("POST", "/fetch", "public_repo_read:contents:read"),

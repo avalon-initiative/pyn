@@ -20,6 +20,7 @@ globset = "0.4.20"
 hex = "0.4.3"
 hmac = "0.13.0"
 pyn-chunk = { version = "0.2.2", path = "../pyn-chunk" }
+pyn-diff = { version = "0.2.2", path = "../pyn-diff" }
 pyn-gitattr = { version = "0.2.2", path = "../pyn-gitattr" }
 pyn-hash = { version = "0.2.2", path = "../pyn-hash" }
 pyn-merge = { version = "0.2.2", path = "../pyn-merge" }

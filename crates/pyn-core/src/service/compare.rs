@@ -44,6 +44,14 @@ pub struct Comparison {
     pub changes_truncated: bool,
 }
 
+/// A changed path with its live revision on each side.
+pub(super) struct Changed {
+    pub path: RepoPath,
+    pub kind: ChangeKind,
+    pub before: Option<Revision>,
+    pub now: Option<Revision>,
+}
+
 fn live(rev: Option<&Revision>) -> Option<&Revision> {
     rev.filter(|r| !r.deleted)
 }
@@ -63,24 +71,19 @@ impl RepoService {
             .await?
             .into_iter()
             .next();
-        let walk = |tip: ObjectId, have: ObjectId| async move {
-            self.meta
-                .missing_commits(
-                    &self.repo,
-                    &[tip],
-                    &[have],
-                    None,
-                    COMPARE_MAX_COMMITS + 1,
-                    FETCH_MAX_EXAMINED,
-                )
-                .await
-        };
-        let ahead = walk(head_commit, base_commit).await?;
-        let behind = walk(base_commit, head_commit).await?;
+        let ahead = self.commits_between(head_commit, base_commit).await?;
+        let behind = self.commits_between(base_commit, head_commit).await?;
         let counts_capped = ahead.len() > COMPARE_MAX_COMMITS || behind.len() > COMPARE_MAX_COMMITS;
-        let (changes, changes_truncated) = self
+        let (changed, changes_truncated) = self
             .changed_paths(&ahead, &head_commit, merge_base.as_ref())
             .await?;
+        let changes = changed
+            .into_iter()
+            .map(|c| PathChange {
+                path: c.path,
+                kind: c.kind,
+            })
+            .collect();
         Ok(Comparison {
             base: base_name,
             base_commit,
@@ -95,13 +98,31 @@ impl RepoService {
         })
     }
 
+    /// The commits reachable from `tip` and not from `have`, at most `COMPARE_MAX_COMMITS` and one more.
+    pub(super) async fn commits_between(
+        &self,
+        tip: ObjectId,
+        have: ObjectId,
+    ) -> Result<Vec<crate::types::Commit>> {
+        self.meta
+            .missing_commits(
+                &self.repo,
+                &[tip],
+                &[have],
+                None,
+                COMPARE_MAX_COMMITS + 1,
+                FETCH_MAX_EXAMINED,
+            )
+            .await
+    }
+
     /// The paths the commits touched whose live state at `head` differs from the one at `merge_base`, by path.
-    async fn changed_paths(
+    pub(super) async fn changed_paths(
         &self,
         commits: &[crate::types::Commit],
         head: &ObjectId,
         merge_base: Option<&ObjectId>,
-    ) -> Result<(Vec<PathChange>, bool)> {
+    ) -> Result<(Vec<Changed>, bool)> {
         let mut truncated = commits.len() > COMPARE_MAX_COMMITS;
         let mut candidates = BTreeSet::new();
         for commit in commits.iter().take(COMPARE_MAX_COMMITS) {
@@ -128,7 +149,12 @@ impl RepoService {
                 }
                 _ => continue,
             };
-            changes.push(PathChange { path, kind });
+            changes.push(Changed {
+                path,
+                kind,
+                before: live(before.as_ref()).cloned(),
+                now: live(now.as_ref()).cloned(),
+            });
         }
         Ok((changes, truncated))
     }

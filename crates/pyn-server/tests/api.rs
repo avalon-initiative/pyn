@@ -2976,9 +2976,11 @@ async fn checkin_text(app: &axum::Router, repo: &str, token: &str, path: &str) {
     assert_eq!(r.status(), StatusCode::OK);
 }
 
-const READ_ROUTES: [&str; 8] = [
+const READ_ROUTES: [&str; 10] = [
     "policy",
     "compare?head=main",
+    "diff?head=main",
+    "lines?path=readme.txt",
     "tree",
     "files",
     "summary",
@@ -4251,6 +4253,105 @@ async fn branches_are_created_committed_on_read_and_deleted() {
     )
     .await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_diff_returns_hunks_with_mode_lock_and_expandable_lines() {
+    let app = router(state_with(false, RegistrationMode::Open).await);
+    let alice = register_and_sign_in(&app, "alice").await;
+    create_repo(&app, &alice, "game").await;
+    let base = "/v1/repos/alice/game";
+    let numbered = |n: usize, edit: bool| -> String {
+        (1..=n)
+            .map(|i| {
+                if edit && i == 10 {
+                    "ten\n".to_string()
+                } else {
+                    format!("l{i}\n")
+                }
+            })
+            .collect()
+    };
+    let (old, new) = (
+        put_blob(&app, "game", &alice, &numbered(20, false)).await,
+        put_blob(&app, "game", &alice, &numbered(20, true)).await,
+    );
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/checkin"),
+        &alice,
+        Some(serde_json::json!({"path": "a.txt", "content": old, "base_revision": null, "message": "m"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/branches"),
+        &alice,
+        Some(serde_json::json!({"name": "topic"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = send(
+        &app,
+        "POST",
+        &format!("{base}/checkin"),
+        &alice,
+        Some(serde_json::json!({"path": "a.txt", "content": new, "base_revision": 1, "message": "m", "branch": "topic"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/diff?head=topic&context=2"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let d: api::RepoDiff = body_json(r).await;
+    assert_eq!((d.base.as_str(), d.head.as_str()), ("main", "topic"));
+    assert_eq!(d.files.len(), 1);
+    let f = &d.files[0];
+    assert_eq!(
+        (f.path.as_str(), f.status, f.additions, f.deletions),
+        ("a.txt", api::DiffFileStatus::Modified, 1, 1)
+    );
+    assert!(f.lock.is_none() && !f.binary && !f.too_large);
+    let h = &f.hunks[0];
+    assert_eq!(
+        (h.header.as_str(), h.hidden_before, h.hidden_after),
+        ("@@ -8,5 +8,5 @@ l7", 7, 8)
+    );
+    assert_eq!(h.lines[2].kind, api::DiffLineKind::Delete);
+    assert_eq!((h.lines[2].old_no, h.lines[2].new_no), (Some(10), None));
+
+    let r = send(
+        &app,
+        "GET",
+        &format!("{base}/lines?path=a.txt&rev=topic&start=3&end=4"),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let l: api::FileLines = body_json(r).await;
+    assert_eq!(
+        (l.total, l.start, l.lines),
+        (20, 3, vec!["l3".to_string(), "l4".to_string()])
+    );
+    for url in [
+        "lines?path=a.txt&start=0",
+        "diff?head=topic&context=500",
+        "lines?path=missing.txt",
+    ] {
+        let r = send(&app, "GET", &format!("{base}/{url}"), &alice, None).await;
+        assert!(r.status().is_client_error(), "{url}");
+    }
 }
 
 #[tokio::test]

@@ -2345,6 +2345,7 @@ dependencies = [
  "hmac 0.13.0",
  "pyn-chunk",
  "pyn-core",
+ "pyn-diff",
  "pyn-gitattr",
  "pyn-hash",
  "pyn-merge",

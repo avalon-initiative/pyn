@@ -32,6 +32,7 @@ mod caller;
 pub mod certificate;
 mod client;
 mod deletion_api;
+mod diff_api;
 pub mod email;
 pub mod events;
 mod freeze_api;
@@ -312,6 +313,8 @@ struct RepoAddress {
         snapshot,
         branch_api::list_branches,
         branch_api::compare,
+        diff_api::diff,
+        diff_api::file_lines,
         branch_api::get_branch,
         branch_api::create_branch,
         branch_api::delete_branch,
@@ -334,6 +337,13 @@ struct RepoAddress {
         api::Branch,
         api::BranchComparison,
         api::CompareChange,
+        api::RepoDiff,
+        api::DiffFile,
+        api::DiffHunk,
+        api::DiffLine,
+        api::DiffLineKind,
+        api::DiffFileStatus,
+        api::FileLines,
         api::CompareChangeKind,
         api::CompareStatus,
         api::CreateBranchRequest,

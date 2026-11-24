@@ -79,7 +79,7 @@ fn classify(method: &Method, path: &str) -> Class {
         (Some("push"), None) if post => Class::Streaming,
         (Some("fetch"), None) if post => Class::Expensive,
         (Some("merge"), Some("preview")) if post => Class::Expensive,
-        (Some("history" | "verify" | "snapshot" | "summary" | "compare"), None) if get => {
+        (Some("history" | "verify" | "snapshot" | "summary" | "compare" | "diff"), None) if get => {
             Class::Expensive
         }
         (Some("policy"), Some("preview")) if post => Class::Timed,
@@ -224,6 +224,7 @@ mod tests {
         assert!(at(Method::POST, "merge/preview") == Class::Expensive);
         assert!(at(Method::GET, "history") == Class::Expensive);
         assert!(at(Method::GET, "compare") == Class::Expensive);
+        assert!(at(Method::GET, "diff") == Class::Expensive);
         assert!(at(Method::GET, "verify") == Class::Expensive);
         assert!(at(Method::GET, "snapshot") == Class::Expensive);
         assert!(at(Method::GET, "summary") == Class::Expensive);
