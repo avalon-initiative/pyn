@@ -143,7 +143,27 @@ pub(crate) async fn admin_settings(
                     error: f.error,
                 }),
                 last_sent_at: status.last_sent_at,
+                last_check: status.last_check.map(|c| api::EmailCheck {
+                    at: c.at,
+                    error: c.error,
+                }),
             }
         },
+    }))
+}
+
+#[utoipa::path(post, path = "/v1/admin/email/test", responses(
+    (status = 200, body = api::TestEmailResult, description = "a test message went to the administrator's primary verified address; `delivered` says whether the mailer accepted it, and the outcome also shows in the email status of the settings"),
+    (status = 400, body = api::ErrorBody, description = "invalid_request: the mailer sends nothing (none or log), or the account has no verified address"),
+    (status = 403, body = api::ErrorBody, description = "server_admin_required, or service_scope_required for a service credential without manage_accounts"),
+))]
+pub(crate) async fn send_test_email(
+    State(s): State<AppState>,
+    ServiceCaller(who): ServiceCaller,
+) -> ApiResult<Json<api::TestEmailResult>> {
+    let sent = s.access.send_test_email(&who).await?;
+    Ok(Json(api::TestEmailResult {
+        delivered: sent.delivered,
+        error: sent.error,
     }))
 }

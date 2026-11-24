@@ -412,6 +412,7 @@ async fn admin_settings_say_whether_email_is_sent_without_naming_a_host() {
             verification: true,
             last_failure: None,
             last_sent_at: None,
+            last_check: None,
         }
     );
     let none = server(
@@ -427,12 +428,13 @@ async fn admin_settings_say_whether_email_is_sent_without_naming_a_host() {
             verification: false,
             last_failure: None,
             last_sent_at: None,
+            last_check: None,
         }
     );
     let raw: Value = serde_json::from_slice(&r.body).unwrap();
     assert_eq!(
         raw["email"],
-        json!({"mailer": "none", "verification": false, "last_failure": null, "last_sent_at": null})
+        json!({"mailer": "none", "verification": false, "last_failure": null, "last_sent_at": null, "last_check": null})
     );
 }
 
@@ -464,4 +466,30 @@ async fn admin_settings_report_a_failed_send_and_a_working_one() {
     let r = send(&ok.app, "root", "GET", "/v1/admin/settings", None).await;
     let email = r.json::<api::AdminSettings>().email;
     assert!(email.last_failure.is_none() && email.last_sent_at.is_some());
+}
+
+#[tokio::test]
+async fn a_test_email_needs_a_mailer_that_sends_and_an_address_to_send_to() {
+    let log = server(RegistrationMode::Open, true, None);
+    let r = send(&log.app, "root", "POST", "/v1/admin/email/test", None).await;
+    assert!(
+        r.is(StatusCode::BAD_REQUEST, "invalid_request"),
+        "the account has no address: {}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let none = server(
+        RegistrationMode::Open,
+        false,
+        Some(Arc::new(NullEmailSender)),
+    );
+    let r = send(&none.app, "root", "POST", "/v1/admin/email/test", None).await;
+    assert!(r.is(StatusCode::BAD_REQUEST, "invalid_request"));
+    let r = send(&log.app, "nobody", "POST", "/v1/admin/email/test", None).await;
+    assert!(
+        r.status.is_client_error(),
+        "{}: {}",
+        r.status,
+        String::from_utf8_lossy(&r.body)
+    );
+    assert!(log.mail.sent().is_empty());
 }

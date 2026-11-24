@@ -17,6 +17,7 @@ struct Seen {
 enum Behaviour {
     Accept,
     RejectRecipient,
+    RejectAuth,
 }
 
 /// Serves one connection per message; offers AUTH PLAIN, and STARTTLS (which it then refuses) when asked.
@@ -45,12 +46,17 @@ async fn fake_server(offer_starttls: bool, behaviour: Behaviour) -> (u16, Seen) 
                     } else if upper.starts_with("STARTTLS") {
                         b"454 TLS not available\r\n"
                     } else if upper.starts_with("AUTH PLAIN") {
-                        b"235 ok\r\n"
+                        match behaviour {
+                            Behaviour::RejectAuth => {
+                                b"535 5.7.8 Authentication credentials invalid\r\n"
+                            }
+                            _ => b"235 ok\r\n",
+                        }
                     } else if upper.starts_with("MAIL FROM") {
                         b"250 ok\r\n"
                     } else if upper.starts_with("RCPT TO") {
                         match behaviour {
-                            Behaviour::Accept => b"250 ok\r\n",
+                            Behaviour::Accept | Behaviour::RejectAuth => b"250 ok\r\n",
                             Behaviour::RejectRecipient => b"550 no such user\r\n",
                         }
                     } else if upper.starts_with("DATA") {
@@ -199,4 +205,47 @@ fn tls_modes_parse() {
     assert_eq!("tls".parse::<SmtpTls>(), Ok(SmtpTls::Tls));
     assert_eq!("none".parse::<SmtpTls>(), Ok(SmtpTls::None));
     assert!("maybe".parse::<SmtpTls>().is_err());
+}
+
+#[tokio::test]
+async fn a_check_signs_in_without_sending() {
+    let (port, seen) = fake_server(false, Behaviour::Accept).await;
+    let sender = SmtpSender::new(&settings(port, SmtpTls::None)).unwrap();
+    sender.check().await.unwrap();
+    let commands = seen.commands.lock().unwrap().clone();
+    let has = |prefix: &str| {
+        commands
+            .iter()
+            .any(|c| c.to_ascii_uppercase().starts_with(prefix))
+    };
+    assert!(has("AUTH PLAIN"), "{commands:?}");
+    assert!(!has("MAIL FROM") && !has("DATA"), "{commands:?}");
+}
+
+#[tokio::test]
+async fn a_check_names_refused_credentials_and_a_mismatched_host() {
+    let (port, _) = fake_server(false, Behaviour::RejectAuth).await;
+    let mut s = settings(port, SmtpTls::None);
+    s.user = Some("someone@gmail.com".into());
+    let err = SmtpSender::new(&s).unwrap().check().await.unwrap_err();
+    assert!(err.contains("user name or password"), "{err}");
+    assert!(
+        err.contains("smtp.gmail.com"),
+        "the host is 127.0.0.1: {err}"
+    );
+    assert!(!err.contains("hunter2-secret"), "{err}");
+}
+
+#[tokio::test]
+async fn a_check_says_when_nothing_answers() {
+    let port = {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let err = SmtpSender::new(&settings(port, SmtpTls::None))
+        .unwrap()
+        .check()
+        .await
+        .unwrap_err();
+    assert!(err.contains("could not connect to 127.0.0.1"), "{err}");
 }
