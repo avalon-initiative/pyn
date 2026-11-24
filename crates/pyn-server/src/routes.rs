@@ -233,6 +233,11 @@ fn table() -> Vec<Entry> {
             Reach::Service(ServiceScope::ManageAccounts),
             deletion_api::admin_settings,
         ),
+        post(
+            "/v1/admin/email/test",
+            Reach::Service(ServiceScope::ManageAccounts),
+            deletion_api::send_test_email,
+        ),
         get(
             "/v1/account/deletion",
             Reach::FullScopePending,

@@ -492,6 +492,7 @@ const EXEMPT: &[(&str, &str)] = &[
     ("approve", "an operator action"),
     ("add_account", "an operator action"),
     ("resend_confirmation", "an operator action"),
+    ("send_test_email", "an operator action that writes nothing"),
     (
         "create_server_invitation",
         "an operator action; a grant into a frozen owner is refused (tests/server_invitations.rs)",
