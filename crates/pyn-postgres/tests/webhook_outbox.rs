@@ -257,3 +257,22 @@ async fn a_failed_event_append_rolls_the_change_back() {
         .unwrap();
     assert!(queued.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs PYN_DATABASE_URL"]
+async fn watchers_are_queued_the_events_their_level_asks_for() {
+    let store = pg().await;
+    let (meta, access, hooks): (Store, Access, Webhooks) =
+        (store.clone(), store.clone(), store.clone());
+    pyn_core::contract::watchers_are_queued_the_events_their_level_asks_for(meta, access, hooks)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs PYN_DATABASE_URL"]
+async fn revoked_access_stops_notifications() {
+    let store = pg().await;
+    let (meta, access, hooks): (Store, Access, Webhooks) =
+        (store.clone(), store.clone(), store.clone());
+    pyn_core::contract::revoked_access_stops_notifications(meta, access, hooks).await;
+}

@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use chrono::Duration;
 use pyn_core::{
     AccountStatus, InviteId, InviteRecord, LockLimit, MAX_INVITE_HOURS, Permission, PynError,
-    ReadOnlySource, RepoRecord, RepoSettings, RepoUpdate, Role, UserId,
+    ReadOnlySource, RepoRecord, RepoSettings, RepoUpdate, Role, UserId, WatchLevel,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -41,6 +41,7 @@ pub(crate) async fn repo_info(
     viewer: Option<&UserId>,
 ) -> ApiResult<api::RepoInfo> {
     let stars = s.repos.star_state(&r, viewer).await?;
+    let watch = s.repos.watch_state(&r, viewer).await?;
     let read_only = s.repos.read_only_default(&r).await?;
     let owner_id = s.access.account_id(&r.owner).await?.to_string();
     let owner_identity =
@@ -73,7 +74,25 @@ pub(crate) async fn repo_info(
         star_count: stars.count,
         starred: stars.starred,
         role: role.map(|r| r.to_string()),
+        watching: watch.level.map(watch_level_dto),
+        watcher_count: watch.watchers,
     })
+}
+
+fn watch_level_dto(l: WatchLevel) -> api::WatchLevel {
+    match l {
+        WatchLevel::All => api::WatchLevel::All,
+        WatchLevel::Locks => api::WatchLevel::Locks,
+        WatchLevel::Ignore => api::WatchLevel::Ignore,
+    }
+}
+
+fn watch_level_from(l: api::WatchLevel) -> WatchLevel {
+    match l {
+        api::WatchLevel::All => WatchLevel::All,
+        api::WatchLevel::Locks => WatchLevel::Locks,
+        api::WatchLevel::Ignore => WatchLevel::Ignore,
+    }
 }
 
 #[derive(Deserialize)]
@@ -319,6 +338,76 @@ pub(crate) async fn delete_star(
 ) -> ApiResult<Json<api::StarState>> {
     let (_, state) = s.repos.set_star(&who, &owner, &name, false).await?;
     Ok(Json(star_dto(state)))
+}
+
+fn watch_dto(s: pyn_core::WatchState) -> api::WatchState {
+    api::WatchState {
+        level: s.level.map(watch_level_dto),
+        watchers: s.watchers,
+    }
+}
+
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/watch", params(RepoAddress), responses(
+    (status = 200, body = api::WatchState, description = "the caller's watch level (null when they chose none) and how many accounts watch the repository"),
+    (status = 404, body = api::ErrorBody, description = "repo_not_found: no such repository, or one the caller cannot read"),
+))]
+pub(crate) async fn get_watch(
+    State(s): State<AppState>,
+    FullScopeCaller(who): FullScopeCaller,
+    Path((owner, name)): Path<(String, String)>,
+) -> ApiResult<Json<api::WatchState>> {
+    let (open, _) = s.repos.open_visible(&owner, &name, Some(&who)).await?;
+    let state = s.repos.watch_state(&open.record, Some(&who.user)).await?;
+    Ok(Json(watch_dto(state)))
+}
+
+#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/watch", params(RepoAddress), request_body = api::SetWatchRequest, responses(
+    (status = 200, body = api::WatchState, description = "the level is set, replacing an earlier one; setting the same level again changes nothing"),
+    (status = 404, body = api::ErrorBody, description = "repo_not_found: no such repository, or one the caller cannot read"),
+    (status = 429, body = api::ErrorBody, description = "too_many_attempts: too many watch changes in an hour"),
+))]
+pub(crate) async fn put_watch(
+    State(s): State<AppState>,
+    FullScopeCaller(who): FullScopeCaller,
+    Path((owner, name)): Path<(String, String)>,
+    Json(req): Json<api::SetWatchRequest>,
+) -> ApiResult<Json<api::WatchState>> {
+    let level = Some(watch_level_from(req.level));
+    let (_, state) = s.repos.set_watch(&who, &owner, &name, level).await?;
+    Ok(Json(watch_dto(state)))
+}
+
+#[utoipa::path(delete, path = "/v1/repos/{owner}/{name}/watch", params(RepoAddress), responses(
+    (status = 200, body = api::WatchState, description = "the caller's level is removed (they watch nothing, the default); removing a level that is not there changes nothing"),
+    (status = 404, body = api::ErrorBody, description = "repo_not_found: no such repository, or one the caller cannot read"),
+    (status = 429, body = api::ErrorBody, description = "too_many_attempts: too many watch changes in an hour"),
+))]
+pub(crate) async fn delete_watch(
+    State(s): State<AppState>,
+    FullScopeCaller(who): FullScopeCaller,
+    Path((owner, name)): Path<(String, String)>,
+) -> ApiResult<Json<api::WatchState>> {
+    let (_, state) = s.repos.set_watch(&who, &owner, &name, None).await?;
+    Ok(Json(watch_dto(state)))
+}
+
+#[utoipa::path(get, path = "/v1/me/watching",
+    responses((status = 200, body = Vec<api::WatchedRepo>, description = "the repositories the caller watches (an ignored one included) that they can still read, most recently changed first; one they lost access to is left out until access returns"),
+              (status = 401, body = api::ErrorBody)))]
+pub(crate) async fn list_watching(
+    State(s): State<AppState>,
+    FullScopeCaller(who): FullScopeCaller,
+) -> ApiResult<Json<Vec<api::WatchedRepo>>> {
+    let mut out = Vec::new();
+    for (record, role, level, updated_at) in s.repos.watched_by(&who).await? {
+        let limit = s.repos.lock_limit(&record).await?;
+        out.push(api::WatchedRepo {
+            level: watch_level_dto(level),
+            updated_at,
+            repo: repo_info(&s, record, role, limit, Some(&who.user)).await?,
+        });
+    }
+    Ok(Json(out))
 }
 
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/me", params(RepoAddress), responses(

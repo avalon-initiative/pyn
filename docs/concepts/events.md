@@ -26,6 +26,8 @@ once per subscription whose filter matches. `owner.limit_reached` is the excepti
 throttled (see below). Events are queued only when the change really happens: a duplicate name, a missing target or a
 refused request raises nothing.
 
+Lock events and the events of one repository (`repository.created`, `repository.renamed`, `repository.deleted`, `repository.storage_cap_changed`) are also queued for the accounts [watching](repositories.md#watching) it, in the same transaction.
+
 Organization membership changes (adds, invitations and their answers) are audit-log entries in the organization's log, not
 webhook events; see [organizations](repositories.md#organizations).
 
