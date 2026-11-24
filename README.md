@@ -43,7 +43,7 @@ dependency on git.
 
 ## Status
 
-An early, local proof of concept. What works today: a server hosting many repositories, the `pyn` CLI, the web UI
+Alpha (the `v0.2.x-alpha` releases): usable and self-hostable, with the interfaces still allowed to change. What works today: a server hosting many repositories, the `pyn` CLI, the web UI
 ([`pyn-web`](https://github.com/avalon-initiative/pyn-web)), shared and exclusive paths, leased locks, atomic
 multi-path commits, per-path and per-commit history, branches and merge (three-way text merge, whole-file conflicts for
 binaries, `pyn merge --abort`), diff and show, restore, chunked content storage, accounts,
@@ -106,6 +106,9 @@ And in the browser, with the web app from the `pyn-web` repo (it proxies `/v1` t
 ```bash
 cd ../pyn-web && npm ci && npm run dev    # http://localhost:5173, sign in as alice or bob
 ```
+
+The web app's component library is published on GitHub Packages, so `npm ci` needs a token with `read:packages`:
+`export NODE_AUTH_TOKEN=$(gh auth token)` first (see the `pyn-web` README).
 
 To run a release on your own machine, run the installer (`scripts/install.sh`) or follow [Getting started](docs/getting-started.md). For your own server from a checkout instead of the demo: `cp .env.example .env`, then `make run` (foreground, reads `.env`). A new
 server is uninitialised and prints a one-time setup token on stderr; `pyn setup <name> --setup-token <token>` (or

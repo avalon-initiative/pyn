@@ -2,7 +2,7 @@
 
 Run a pyn server from a release, set it up in the browser and connect the `pyn` command to it. The quickest way is the
 installer script, which asks what you want, checks the host and does the rest. The numbered steps further down are what
-it does, so you can also follow them by hand. Provisional: written against the first releases (`v0.1.x-alpha`).
+it does, so you can also follow them by hand. Provisional: written against the `v0.2.x-alpha` releases.
 
 ## The installer script
 
@@ -130,9 +130,9 @@ Step 3 uses the first row; the other rows change only the two downloads, see [Ot
 
 Open the [releases page](https://github.com/avalon-initiative/pyn/releases) and pick a release. Two names matter:
 
-- the **version**, the first part of the tag: for the tag `v0.0.2-alpha` it is `v0.0.2` (the images are tagged with the
+- the **version**, the first part of the tag: for the tag `v0.2.2-alpha` it is `v0.2.2` (the images are tagged with the
   version only);
-- the **tag**, the whole name (`v0.0.2-alpha`), which you use to download the Compose file.
+- the **tag**, the whole name (`v0.2.2-alpha`), which you use to download the Compose file.
 
 ## 2. Let Docker pull the images
 
@@ -140,7 +140,7 @@ The images are `ghcr.io/avalon-initiative/pyn-core` (server) and `ghcr.io/avalon
 pull first (use your version):
 
 ```bash
-docker pull ghcr.io/avalon-initiative/pyn-core:v0.0.2
+docker pull ghcr.io/avalon-initiative/pyn-core:v0.2.2
 ```
 
 If it downloads, skip to step 3. If you get `denied` or `unauthorized`, the packages are not public yet. Sign in to the
@@ -157,7 +157,7 @@ This GitHub token is only for pulling images. It has nothing to do with the *set
 
 ```bash
 mkdir pyn && cd pyn
-TAG=v0.0.2-alpha        # the tag from step 1
+TAG=v0.2.2-alpha        # the tag from step 1
 curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/docker-compose.yml -o docker-compose.yml
 curl -fsSL https://raw.githubusercontent.com/avalon-initiative/pyn/$TAG/deploy/.env.example -o .env
 ```
@@ -167,8 +167,8 @@ web app are versioned separately, so `PYN_WEB_VERSION` is a release of [pyn-web]
 which need not equal the server's (see [compatibility](deployment.md#compatibility)):
 
 ```bash
-sed -i "s/^PYN_SERVER_VERSION=.*/PYN_SERVER_VERSION=v0.0.2/" .env
-sed -i "s/^PYN_WEB_VERSION=.*/PYN_WEB_VERSION=v0.0.3/" .env
+sed -i "s/^PYN_SERVER_VERSION=.*/PYN_SERVER_VERSION=v0.2.2/" .env
+sed -i "s/^PYN_WEB_VERSION=.*/PYN_WEB_VERSION=v0.2.2/" .env
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" .env
 sed -i "s/^PYN_SECRET_KEY=.*/PYN_SECRET_KEY=$(openssl rand -hex 32)/" .env
 ```
