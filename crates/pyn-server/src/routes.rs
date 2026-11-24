@@ -19,9 +19,10 @@ use utoipa::openapi::extensions::Extensions;
 
 use crate::{
     AppState, access_api, access_session_api, admin_api, branch_api, caller, deletion_api,
-    freeze_api, lfs_api, limits_api, merge_api, oidc_api, org_api, org_settings_api, passkeys_api,
-    profile_api, push_api, repo_api, repo_policy_api, requirements_api, self_service_api,
-    server_invitation_api, session_api, setup_api, tag_api, team_api, two_factor_api, webhook_api,
+    diff_api, freeze_api, lfs_api, limits_api, merge_api, oidc_api, org_api, org_settings_api,
+    passkeys_api, profile_api, push_api, repo_api, repo_policy_api, requirements_api,
+    self_service_api, server_invitation_api, session_api, setup_api, tag_api, team_api,
+    two_factor_api, webhook_api,
 };
 
 const fn need(resource: TokenResource, level: GrantLevel) -> GrantNeed {
