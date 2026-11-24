@@ -2546,8 +2546,10 @@ impl MetadataStore for PgMetadataStore {
     ) -> Result<Vec<String>> {
         sqlx::query_scalar(AssertSqlSafe(format!(
             "{ANCESTORS}
-             SELECT DISTINCT author FROM revisions
-             WHERE repo = $2 AND ($1::text IS NULL OR commit_id IN (SELECT id FROM anc))
+             SELECT author FROM (
+                 SELECT DISTINCT author FROM revisions
+                 WHERE repo = $2 AND ($1::text IS NULL OR commit_id IN (SELECT id FROM anc))
+             ) found
              ORDER BY author COLLATE \"C\""
         )))
         .bind(within.map(ObjectId::to_hex))
