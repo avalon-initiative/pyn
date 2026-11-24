@@ -840,6 +840,9 @@ pub struct ProfileVisibility {
     pub links: bool,
     #[serde(default = "visible")]
     pub avatar: bool,
+    /// The list of repositories the account starred.
+    #[serde(default = "visible")]
+    pub starred: bool,
 }
 
 impl Default for ProfileVisibility {
@@ -851,6 +854,7 @@ impl Default for ProfileVisibility {
             company: true,
             links: true,
             avatar: true,
+            starred: true,
         }
     }
 }
@@ -1228,9 +1232,31 @@ pub struct RepoInfo {
     #[serde(default)]
     pub exclusive_read_only_source: ReadOnlySource,
     pub created_at: DateTime<Utc>,
+    /// How many accounts starred the repository. Anyone who can read the repository sees it, private ones included.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub star_count: u64,
+    /// Whether the caller starred it; false for a signed-out caller.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub starred: bool,
     /// The caller's role in the repository; absent when they have none.
     #[schema(value_type = Option<Role>)]
     pub role: Option<String>,
+}
+
+/// A repository's star count and whether the caller starred it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StarState {
+    pub starred: bool,
+    pub count: u64,
+}
+
+/// One repository in an account's list of stars.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StarredRepo {
+    pub starred_at: DateTime<Utc>,
+    pub repo: RepoInfo,
 }
 
 /// A repository in the administrator's listing.

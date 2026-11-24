@@ -14,7 +14,9 @@ use pyn_proto as api;
 use serde::Deserialize;
 
 use crate::access_api::names;
-use crate::caller::{AnyCaller, NamespaceCaller, OptionalCaller, RepoCaller, RepoReader};
+use crate::caller::{
+    AnyCaller, FullScopeCaller, NamespaceCaller, OptionalCaller, RepoCaller, RepoReader,
+};
 use crate::{ApiResult, AppState, RepoAddress};
 
 pub(crate) fn visibility_dto(v: pyn_core::Visibility) -> api::Visibility {
@@ -36,7 +38,9 @@ pub(crate) async fn repo_info(
     r: RepoRecord,
     role: Option<Role>,
     limit: LockLimit,
+    viewer: Option<&UserId>,
 ) -> ApiResult<api::RepoInfo> {
+    let stars = s.repos.star_state(&r, viewer).await?;
     let read_only = s.repos.read_only_default(&r).await?;
     let owner_id = s.access.account_id(&r.owner).await?.to_string();
     let owner_identity =
@@ -66,6 +70,8 @@ pub(crate) async fn repo_info(
             ReadOnlySource::Default => api::ReadOnlySource::Default,
         },
         created_at: r.created_at,
+        star_count: stars.count,
+        starred: stars.starred,
         role: role.map(|r| r.to_string()),
     })
 }
@@ -89,7 +95,7 @@ pub(crate) async fn list_repos(
     let mut infos = Vec::with_capacity(repos.len());
     for (record, role) in repos {
         let limit = s.repos.lock_limit(&record).await?;
-        infos.push(repo_info(&s, record, role, limit).await?);
+        infos.push(repo_info(&s, record, role, limit, Some(&who.user)).await?);
     }
     Ok(Json(infos))
 }
@@ -117,10 +123,11 @@ pub(crate) async fn explore_repos(
         .repos
         .list_public(who.as_ref(), q.after.as_deref(), limit)
         .await?;
+    let viewer = who.as_ref().map(|w| &w.user);
     let mut repos = Vec::with_capacity(found.len());
     for (record, role) in found {
         let limit = s.repos.lock_limit(&record).await?;
-        repos.push(repo_info(&s, record, role, limit).await?);
+        repos.push(repo_info(&s, record, role, limit, viewer).await?);
     }
     Ok(Json(api::RepoPage { repos, next_after }))
 }
@@ -189,7 +196,7 @@ pub(crate) async fn create_repo(
     let limit = s.repos.lock_limit(&record).await?;
     Ok((
         StatusCode::CREATED,
-        Json(repo_info(&s, record, Some(Role::Admin), limit).await?),
+        Json(repo_info(&s, record, Some(Role::Admin), limit, Some(&who.user)).await?),
     ))
 }
 
@@ -208,7 +215,8 @@ pub(crate) async fn get_repo(
 ) -> ApiResult<Json<api::RepoInfo>> {
     let role = s.access.role_for(&open.record.id, who.as_ref()).await?;
     let limit = open.service.lock_limit();
-    Ok(Json(repo_info(&s, open.record, role, limit).await?))
+    let viewer = who.as_ref().map(|w| &w.user);
+    Ok(Json(repo_info(&s, open.record, role, limit, viewer).await?))
 }
 
 #[utoipa::path(patch, path = "/v1/repos/{owner}/{name}", params(RepoAddress), request_body = api::UpdateRepoRequest, responses(
@@ -242,7 +250,9 @@ pub(crate) async fn update_repo(
     let record = s.repos.update(&who, &open.record, update).await?;
     let role = s.access.role_in(&record.id, &who.user).await?;
     let limit = s.repos.lock_limit(&record).await?;
-    Ok(Json(repo_info(&s, record, role, limit).await?))
+    Ok(Json(
+        repo_info(&s, record, role, limit, Some(&who.user)).await?,
+    ))
 }
 
 #[utoipa::path(delete, path = "/v1/repos/{owner}/{name}", params(RepoAddress), responses(
@@ -260,6 +270,55 @@ pub(crate) async fn delete_repo(
 ) -> ApiResult<StatusCode> {
     s.repos.delete(&who, &open.record).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn star_dto(s: pyn_core::StarState) -> api::StarState {
+    api::StarState {
+        starred: s.starred,
+        count: s.count,
+    }
+}
+
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/star", params(RepoAddress), responses(
+    (status = 200, body = api::StarState, description = "whether the caller starred the repository, and how many accounts did"),
+    (status = 404, body = api::ErrorBody, description = "repo_not_found: no such repository, or one the caller cannot read"),
+))]
+pub(crate) async fn get_star(
+    State(s): State<AppState>,
+    FullScopeCaller(who): FullScopeCaller,
+    Path((owner, name)): Path<(String, String)>,
+) -> ApiResult<Json<api::StarState>> {
+    let (open, _) = s.repos.open_visible(&owner, &name, Some(&who)).await?;
+    let state = s.repos.star_state(&open.record, Some(&who.user)).await?;
+    Ok(Json(star_dto(state)))
+}
+
+#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/star", params(RepoAddress), responses(
+    (status = 200, body = api::StarState, description = "starred; starring again changes nothing"),
+    (status = 404, body = api::ErrorBody, description = "repo_not_found: no such repository, or one the caller cannot read"),
+    (status = 429, body = api::ErrorBody, description = "too_many_attempts: too many stars and unstars in an hour"),
+))]
+pub(crate) async fn put_star(
+    State(s): State<AppState>,
+    FullScopeCaller(who): FullScopeCaller,
+    Path((owner, name)): Path<(String, String)>,
+) -> ApiResult<Json<api::StarState>> {
+    let (_, state) = s.repos.set_star(&who, &owner, &name, true).await?;
+    Ok(Json(star_dto(state)))
+}
+
+#[utoipa::path(delete, path = "/v1/repos/{owner}/{name}/star", params(RepoAddress), responses(
+    (status = 200, body = api::StarState, description = "unstarred; removing a star that is not there changes nothing"),
+    (status = 404, body = api::ErrorBody, description = "repo_not_found: no such repository, or one the caller cannot read"),
+    (status = 429, body = api::ErrorBody, description = "too_many_attempts: too many stars and unstars in an hour"),
+))]
+pub(crate) async fn delete_star(
+    State(s): State<AppState>,
+    FullScopeCaller(who): FullScopeCaller,
+    Path((owner, name)): Path<(String, String)>,
+) -> ApiResult<Json<api::StarState>> {
+    let (_, state) = s.repos.set_star(&who, &owner, &name, false).await?;
+    Ok(Json(star_dto(state)))
 }
 
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/me", params(RepoAddress), responses(

@@ -510,6 +510,14 @@ const EXEMPT: &[(&str, &str)] = &[
         "delete_avatar",
         "the account's own settings, not content under an owner",
     ),
+    (
+        "put_star",
+        "the account's own mark, not content under an owner",
+    ),
+    (
+        "delete_star",
+        "the account's own mark, not content under an owner",
+    ),
     ("login", "sign-in is unchanged"),
     ("sign_in", "sign-in is unchanged"),
     ("begin_sign_in", "sign-in is unchanged"),
