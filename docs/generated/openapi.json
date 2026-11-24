@@ -442,6 +442,47 @@
         "x-pyn-reach": "admin_only"
       }
     },
+    "/v1/admin/email/test": {
+      "post": {
+        "tags": [
+          "deletion_api"
+        ],
+        "operationId": "send_test_email",
+        "responses": {
+          "200": {
+            "description": "a test message went to the administrator's primary verified address; `delivered` says whether the mailer accepted it, and the outcome also shows in the email status of the settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestEmailResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the mailer sends nothing (none or log), or the account has no verified address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "server_admin_required, or service_scope_required for a service credential without manage_accounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "service:manage_accounts"
+      }
+    },
     "/v1/admin/invitations": {
       "get": {
         "tags": [
@@ -16191,6 +16232,27 @@
           }
         }
       },
+      "EmailCheck": {
+        "type": "object",
+        "description": "A check of the mailer's connection and sign-in.",
+        "required": [
+          "at",
+          "error"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What is wrong, in plain words; null when the check passed. Never carries a credential."
+          }
+        }
+      },
       "EmailFailure": {
         "type": "object",
         "description": "A refused send. The error never carries a recipient address or a credential.",
@@ -16216,6 +16278,17 @@
           "verification"
         ],
         "properties": {
+          "last_check": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EmailCheck",
+                "description": "The connection check this server ran at start: connect and sign in to the mail server without sending. Null before it finishes, or when the mailer is not SMTP."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "last_failure": {
             "oneOf": [
               {
@@ -21414,6 +21487,27 @@
           },
           "role": {
             "$ref": "#/components/schemas/Role"
+          }
+        }
+      },
+      "TestEmailResult": {
+        "type": "object",
+        "description": "How the test message went.",
+        "required": [
+          "delivered",
+          "error"
+        ],
+        "properties": {
+          "delivered": {
+            "type": "boolean",
+            "description": "The mailer accepted the message for delivery."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it was refused; null when delivered. Never carries the address or a credential."
           }
         }
       },

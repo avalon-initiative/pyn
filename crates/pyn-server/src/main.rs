@@ -194,16 +194,37 @@ fn first_problem(problems: Vec<Problem>) -> anyhow::Error {
     }
 }
 
+/// Tries the SMTP connection and sign-in the settings describe, without sending; `None` when no mail server is set.
+async fn mailer_line(settings: &Settings) -> Option<Result<String, String>> {
+    if !matches!(settings.mailer, pyn_server::email::MailerSetting::Smtp(_)) {
+        return None;
+    }
+    Some(match settings.email.check().await {
+        Ok(()) => Ok("mailer ok: the SMTP server answered and accepted the sign-in".to_string()),
+        Err(why) => Err(format!("mailer problem: {why}")),
+    })
+}
+
 /// Runs every start-up parse without starting anything and prints what it found.
-fn check_config() -> anyhow::Result<()> {
+async fn check_config() -> anyhow::Result<()> {
     let result = Settings::load();
     for line in unknown_in_environment() {
         println!("warning: {line}");
     }
     let failed = match &result {
-        Ok(_) => {
+        Ok(settings) => {
             println!("configuration ok");
-            false
+            match mailer_line(settings).await {
+                Some(Ok(line)) => {
+                    println!("{line}");
+                    false
+                }
+                Some(Err(line)) => {
+                    println!("{line}");
+                    true
+                }
+                None => false,
+            }
         }
         Err(problems) => {
             for problem in problems {
@@ -238,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
                 "--check-config takes no arguments\n{}",
                 pyn_server::host_admin::HELP
             );
-            return check_config();
+            return check_config().await;
         }
         _ => {}
     }
@@ -399,6 +420,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let mailer_configured = matches!(mailer, pyn_server::email::MailerSetting::Smtp(_));
     if mailer.is_log() {
         tracing::warn!(
             "PYN_MAILER=log is on: every email, verification links included, is written to the log instead of sent; for testing only"
@@ -440,6 +462,19 @@ async fn main() -> anyhow::Result<()> {
             .with_passwords(Arc::new(PooledPasswords::new(hashes)))
             .with_setup_token(&setup_token)?,
     );
+    if mailer_configured {
+        let access = access.clone();
+        tokio::spawn(async move {
+            match access.check_mailer().await {
+                Ok(()) => {
+                    tracing::info!("mailer check passed: the SMTP server accepted the sign-in")
+                }
+                Err(why) => {
+                    tracing::warn!(%why, "mailer check failed; emails will not be delivered until this is fixed")
+                }
+            }
+        });
+    }
     if access.load_setup().await? {
         if supplied_token.is_some() {
             tracing::warn!("PYN_SETUP_TOKEN is set but this server is already set up; remove it");

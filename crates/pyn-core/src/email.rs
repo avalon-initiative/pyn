@@ -32,6 +32,11 @@ pub trait EmailSender: Send + Sync {
     fn delivers(&self) -> bool {
         true
     }
+
+    /// Reaches the mail service and signs in without sending anything; the error says what is wrong in plain words.
+    async fn check(&self) -> std::result::Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Drops every message.
