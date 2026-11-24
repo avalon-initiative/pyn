@@ -45,6 +45,8 @@ mod compare;
 pub use compare::*;
 mod commit_filters;
 pub use commit_filters::*;
+mod tags;
+pub use tags::*;
 mod branch_policy;
 pub use branch_policy::*;
 mod push;
@@ -3469,6 +3471,11 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_branch_reports_the_committed_time_of_its_head);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; the_summary_of_a_branch_counts_that_branchs_files);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; commit_filters_match_author_time_message_and_path);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_tag_points_at_a_commit_and_never_moves);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; tag_names_follow_ref_rules_and_a_tag_must_start_at_a_commit);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_deleted_tag_frees_its_name_and_leaves_the_commit);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; tags_and_branches_keep_separate_names_and_a_tag_can_start_a_branch);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_repository_removes_its_tags);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; filtered_commit_pages_are_full_while_more_matches_exist);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_revision_range_lists_what_one_commit_has_and_the_other_lacks);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_revision_after_a_merge_is_based_on_the_pointer_the_merge_left);
@@ -4517,6 +4524,32 @@ impl MetadataStore for HookedMeta {
         to: &str,
     ) -> crate::Result<crate::Branch> {
         self.inner.rename_branch(repo, from, to).await
+    }
+
+    async fn list_tags(&self, repo: &RepoId) -> crate::Result<Vec<crate::Tag>> {
+        self.inner.list_tags(repo).await
+    }
+
+    async fn get_tag(&self, repo: &RepoId, name: &str) -> crate::Result<Option<crate::Tag>> {
+        self.inner.get_tag(repo, name).await
+    }
+
+    async fn create_tag(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        at: &ObjectId,
+        message: Option<&str>,
+        by: &UserId,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::Result<crate::Tag> {
+        self.inner
+            .create_tag(repo, name, at, message, by, now)
+            .await
+    }
+
+    async fn delete_tag(&self, repo: &RepoId, name: &str) -> crate::Result<()> {
+        self.inner.delete_tag(repo, name).await
     }
 
     async fn get_commit(

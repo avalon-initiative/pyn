@@ -8,6 +8,7 @@ use crate::limit_events::LockEventBuilder;
 use crate::limits::{RepoBreakdown, RepoUsage, StorageCap, Usage};
 use crate::merge::{MergeWrite, MergeWritten};
 use crate::repo::{RepoRecord, RepoUpdate};
+use crate::tag::Tag;
 use crate::tree::HeadCounts;
 use crate::webhook::EventDraft;
 use pyn_object::ObjectId;
@@ -293,6 +294,26 @@ pub trait MetadataStore: Send + Sync {
 
     /// `BranchNotFound`, `BranchExists`, or `InvalidRequest` for the default branch.
     async fn rename_branch(&self, repo: &RepoId, from: &str, to: &str) -> Result<Branch>;
+
+    /// The repository's tags by name.
+    async fn list_tags(&self, repo: &RepoId) -> Result<Vec<Tag>>;
+
+    async fn get_tag(&self, repo: &RepoId, name: &str) -> Result<Option<Tag>>;
+
+    /// A tag at commit `at`; `TagExists` if the name is taken, `CommitNotFound` if `at` is not a commit. A tag is never
+    /// moved or overwritten.
+    async fn create_tag(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        at: &ObjectId,
+        message: Option<&str>,
+        by: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<Tag>;
+
+    /// Removes the name only. `TagNotFound` if there is none.
+    async fn delete_tag(&self, repo: &RepoId, name: &str) -> Result<()>;
 
     async fn get_revision(
         &self,

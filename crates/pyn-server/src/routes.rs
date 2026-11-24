@@ -21,7 +21,7 @@ use crate::{
     AppState, access_api, access_session_api, admin_api, branch_api, caller, deletion_api,
     freeze_api, lfs_api, limits_api, merge_api, oidc_api, org_api, org_settings_api, passkeys_api,
     profile_api, push_api, repo_api, repo_policy_api, requirements_api, self_service_api,
-    server_invitation_api, session_api, setup_api, team_api, two_factor_api, webhook_api,
+    server_invitation_api, session_api, setup_api, tag_api, team_api, two_factor_api, webhook_api,
 };
 
 const fn need(resource: TokenResource, level: GrantLevel) -> GrantNeed {
@@ -1155,6 +1155,26 @@ fn table() -> Vec<Entry> {
             "/v1/repos/{owner}/{name}/branches/{*branch}",
             Reach::RepoScoped(need(Contents, Write)),
             branch_api::rename_branch,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/tags",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            tag_api::list_tags,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/tags",
+            Reach::RepoScoped(need(Contents, Write)),
+            tag_api::create_tag,
+        ),
+        get(
+            "/v1/repos/{owner}/{name}/tags/{*tag}",
+            Reach::PublicRepoRead(need(Contents, Read)),
+            tag_api::get_tag,
+        ),
+        delete(
+            "/v1/repos/{owner}/{name}/tags/{*tag}",
+            Reach::RepoScoped(need(Contents, Write)),
+            tag_api::delete_tag,
         ),
     ]
 }

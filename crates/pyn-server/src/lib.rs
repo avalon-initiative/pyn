@@ -65,6 +65,7 @@ pub mod settings;
 mod setup_api;
 pub mod shutdown;
 pub mod storage;
+mod tag_api;
 mod team_api;
 pub mod tus_sweep;
 mod two_factor_api;
@@ -316,6 +317,10 @@ struct RepoAddress {
         branch_api::create_branch,
         branch_api::delete_branch,
         branch_api::rename_branch,
+        tag_api::list_tags,
+        tag_api::get_tag,
+        tag_api::create_tag,
+        tag_api::delete_tag,
         merge_api::preview_merge,
         merge_api::merge,
         push_api::push,
@@ -337,6 +342,8 @@ struct RepoAddress {
         api::CompareChangeKind,
         api::CompareStatus,
         api::CreateBranchRequest,
+        api::Tag,
+        api::CreateTagRequest,
         api::RenameBranchRequest,
         api::MergeFastForward,
         api::PushObject,
@@ -706,6 +713,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::WebhookSecretLimit(_)
         | PynError::WebhookLastSecret
         | PynError::BranchExists(_)
+        | PynError::TagExists(_)
         | PynError::BranchNotMerged(_)
         | PynError::MergeConflict(_)
         | PynError::MergeStale(_)
@@ -781,7 +789,8 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::PathNotFound(_) => StatusCode::NOT_FOUND,
         PynError::RevisionNotFound { .. }
         | PynError::CommitNotFound(_)
-        | PynError::BranchNotFound(_) => StatusCode::NOT_FOUND,
+        | PynError::BranchNotFound(_)
+        | PynError::TagNotFound(_) => StatusCode::NOT_FOUND,
         PynError::InvalidPath(_)
         | PynError::ReservedPathComponent { .. }
         | PynError::InvalidRules(_)
@@ -789,6 +798,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::PushInvalid(_)
         | PynError::AmbiguousCommit(_)
         | PynError::InvalidBranchName(_)
+        | PynError::InvalidTagName(_)
         | PynError::InvalidInvite(_)
         | PynError::InvalidVerification(_)
         | PynError::InvalidRepoName(_)

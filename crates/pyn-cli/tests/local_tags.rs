@@ -145,15 +145,6 @@ fn tags_are_not_pushed_and_survive_a_push() {
     assert_eq!(env.ok(&ws, "alice", &["tag"]), "keep\n");
 }
 
-#[test]
-fn without_a_local_store_tag_says_how_to_get_one() {
-    let env = start();
-    env.seed("alice", "Source/a.cpp", "one", None);
-    let ws = clone_with(&env, "plain", &["--no-local-store"]);
-    let err = env.fails(&ws, "alice", &["tag", "v1"]);
-    assert!(err.contains("local store"), "{err}");
-}
-
 fn published(env: &Env, path: &str, text: &str, message: &str) {
     let dir = env.dir("seed");
     let file = dir.join("upload");

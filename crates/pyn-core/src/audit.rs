@@ -108,6 +108,8 @@ pub enum AuditAction {
     BranchDeleted,
     BranchRenamed,
     BranchMerged,
+    TagCreated,
+    TagDeleted,
     VersionStranded,
     WebhookCreated,
     WebhookUpdated,
@@ -127,7 +129,7 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 96] = [
+    pub const ALL: [AuditAction; 98] = [
         AuditAction::Checkout,
         AuditAction::Release,
         AuditAction::Checkin,
@@ -208,6 +210,8 @@ impl AuditAction {
         AuditAction::BranchDeleted,
         AuditAction::BranchRenamed,
         AuditAction::BranchMerged,
+        AuditAction::TagCreated,
+        AuditAction::TagDeleted,
         AuditAction::VersionStranded,
         AuditAction::WebhookCreated,
         AuditAction::WebhookUpdated,
@@ -308,6 +312,8 @@ impl AuditAction {
             Self::BranchDeleted => "branch_deleted",
             Self::BranchRenamed => "branch_renamed",
             Self::BranchMerged => "branch_merged",
+            Self::TagCreated => "tag_created",
+            Self::TagDeleted => "tag_deleted",
             Self::VersionStranded => "version_stranded",
             Self::WebhookCreated => "webhook_created",
             Self::WebhookUpdated => "webhook_updated",

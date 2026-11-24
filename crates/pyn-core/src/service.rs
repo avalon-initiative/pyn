@@ -49,9 +49,11 @@ use crate::repo::DEFAULT_MAX_LOCKS_PER_USER;
 use crate::rules::{MAX_POLICY_BYTES, Mode, POLICY_PATH, PathFilter, Rules, policy_too_large};
 use crate::store::MetadataStore;
 use crate::stranded::StrandedVersion;
+use crate::tag::{Tag, validate_tag_name};
 use crate::tree::{
     ACTIVITY_ACTIONS, EntryKind, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry,
 };
+use crate::types::MAX_MESSAGE_BYTES;
 use crate::types::{
     AccountId, ChangesetItem, Commit, CommitFilter, Lock, MAX_CHANGESET_ITEMS, NewRevision, RepoId,
     RepoPath, Revision, RevisionId, UserId, validate_message,
@@ -2068,6 +2070,15 @@ impl RepoService {
         Ok(commit.map(|c| c.created_at))
     }
 
+    /// The committed time of a commit; `None` when the commit is not known.
+    pub async fn commit_time(&self, id: &ObjectId) -> Result<Option<DateTime<Utc>>> {
+        Ok(self
+            .meta
+            .get_commit(&self.repo, id)
+            .await?
+            .map(|c| c.created_at))
+    }
+
     /// A branch by name. The default branch always exists, empty until its first commit.
     pub async fn branch(&self, name: &str) -> Result<Branch> {
         match self.meta.get_branch(&self.repo, name).await? {
@@ -2114,14 +2125,7 @@ impl RepoService {
         {
             return Err(PynError::BranchExists(name.to_string()));
         }
-        let at = match start {
-            None => self.default_head().await?,
-            Some(spec) => match self.meta.get_branch(&self.repo, spec).await? {
-                Some(b) => b.head,
-                None => Some(self.resolve_commit(spec).await?),
-            },
-        }
-        .ok_or_else(|| {
+        let at = self.start_point(start).await?.ok_or_else(|| {
             PynError::InvalidRequest("there is no commit to start the branch from yet".into())
         })?;
         let now = self.clock.now();
@@ -2136,6 +2140,85 @@ impl RepoService {
         )
         .await?;
         Ok(branch)
+    }
+
+    /// The commit a new branch or tag starts at: `spec` is a branch name, a tag name, a commit id or abbreviation, or the
+    /// default branch's head if `None`. `None` is returned for a branch with no commit yet.
+    async fn start_point(&self, spec: Option<&str>) -> Result<Option<ObjectId>> {
+        let Some(spec) = spec else {
+            return self.default_head().await;
+        };
+        if let Some(b) = self.meta.get_branch(&self.repo, spec).await? {
+            return Ok(b.head);
+        }
+        if let Some(t) = self.meta.get_tag(&self.repo, spec).await? {
+            return Ok(Some(t.commit));
+        }
+        Ok(Some(self.resolve_commit(spec).await?))
+    }
+
+    /// The tags, by name.
+    pub async fn tags(&self) -> Result<Vec<Tag>> {
+        self.meta.list_tags(&self.repo).await
+    }
+
+    /// A tag by name.
+    pub async fn tag(&self, name: &str) -> Result<Tag> {
+        self.meta
+            .get_tag(&self.repo, name)
+            .await?
+            .ok_or_else(|| PynError::TagNotFound(name.to_string()))
+    }
+
+    /// Makes the immutable tag `name` at `target` (a branch, tag, commit id or abbreviation; the default branch's head if
+    /// `None`). A name never moves: it must be unused and not a folder of another tag's name.
+    pub async fn create_tag(
+        &self,
+        who: &Principal,
+        name: &str,
+        target: Option<&str>,
+        message: Option<&str>,
+    ) -> Result<Tag> {
+        who.require(Permission::Checkin)?;
+        self.ensure_writable().await?;
+        validate_tag_name(name)?;
+        if message.is_some_and(|m| m.len() > MAX_MESSAGE_BYTES) {
+            return Err(PynError::InvalidRequest(format!(
+                "a tag message is at most {MAX_MESSAGE_BYTES} bytes"
+            )));
+        }
+        if self.tags().await?.iter().any(|t| conflicts(&t.name, name)) {
+            return Err(PynError::TagExists(name.to_string()));
+        }
+        let at = self
+            .start_point(target)
+            .await?
+            .ok_or_else(|| PynError::InvalidRequest("there is no commit to tag yet".into()))?;
+        let tag = self
+            .meta
+            .create_tag(&self.repo, name, &at, message, &who.user, self.clock.now())
+            .await?;
+        self.record_repo(
+            who.into(),
+            AuditAction::TagCreated,
+            format!("{name} at {at}"),
+        )
+        .await?;
+        Ok(tag)
+    }
+
+    /// Removes the name; the commit stays.
+    pub async fn delete_tag(&self, who: &Principal, name: &str) -> Result<()> {
+        who.require(Permission::Checkin)?;
+        self.ensure_writable().await?;
+        let tag = self.tag(name).await?;
+        self.meta.delete_tag(&self.repo, name).await?;
+        self.record_repo(
+            who.into(),
+            AuditAction::TagDeleted,
+            format!("{name} at {}", tag.commit),
+        )
+        .await
     }
 
     /// Removes the name. Without `force` the branch must be contained in the default branch, so no commit is lost

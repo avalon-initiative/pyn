@@ -45,6 +45,7 @@ use crate::repo_policy::{
 };
 use crate::rules::{Mode, PathFilter};
 use crate::store::{MetadataStore, UploadReservation};
+use crate::tag::Tag;
 use crate::tree::HeadCounts;
 use crate::two_factor::{
     ChallengeRecord, FactorRecord, FactorRemoval, NoticeRecord, PasskeyRecord, TwoFactorPolicy,
@@ -78,6 +79,7 @@ struct State {
     commits: HashMap<RepoId, Vec<Commit>>,
     trees: HashMap<(RepoId, ObjectId), Vec<u8>>,
     branches: HashMap<RepoId, Vec<Branch>>,
+    tags: HashMap<RepoId, Vec<Tag>>,
     /// Per commit, the paths whose revision differs from its first parent's: the revisions the commit made.
     pointers: HashMap<(RepoId, ObjectId), Vec<(RepoPath, RevisionId)>>,
     /// Uploads each repository may reference: size, and whether an assembled object already holds the chunk.
@@ -1131,6 +1133,61 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(branch.clone())
     }
 
+    async fn list_tags(&self, repo: &RepoId) -> Result<Vec<Tag>> {
+        let st = self.state.lock().unwrap();
+        let mut all = st.tags.get(repo).cloned().unwrap_or_default();
+        all.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(all)
+    }
+
+    async fn get_tag(&self, repo: &RepoId, name: &str) -> Result<Option<Tag>> {
+        let st = self.state.lock().unwrap();
+        Ok(st
+            .tags
+            .get(repo)
+            .and_then(|all| all.iter().find(|t| t.name == name))
+            .cloned())
+    }
+
+    async fn create_tag(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        at: &ObjectId,
+        message: Option<&str>,
+        by: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<Tag> {
+        let mut st = self.state.lock().unwrap();
+        if st.commit_record(repo, at).is_none() {
+            return Err(PynError::CommitNotFound(at.to_string()));
+        }
+        let all = st.tags.entry(repo.clone()).or_default();
+        if all.iter().any(|t| t.name == name) {
+            return Err(PynError::TagExists(name.to_string()));
+        }
+        let tag = Tag {
+            name: name.to_string(),
+            commit: *at,
+            message: message.map(str::to_string),
+            created_at: now,
+            created_by: by.clone(),
+        };
+        all.push(tag.clone());
+        Ok(tag)
+    }
+
+    async fn delete_tag(&self, repo: &RepoId, name: &str) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        let all = st.tags.entry(repo.clone()).or_default();
+        let before = all.len();
+        all.retain(|t| t.name != name);
+        if all.len() == before {
+            return Err(PynError::TagNotFound(name.to_string()));
+        }
+        Ok(())
+    }
+
     async fn get_commit(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Commit>> {
         let st = self.state.lock().unwrap();
         Ok(st.full_commit(repo, id))
@@ -1934,6 +1991,7 @@ impl MetadataStore for MemoryMetadataStore {
         st.commits.remove(id);
         st.trees.retain(|(r, _), _| r != id);
         st.branches.remove(id);
+        st.tags.remove(id);
         st.pointers.retain(|(r, _), _| r != id);
         st.uploads.retain(|(r, _), _| r != id);
         st.lfs.retain(|(r, _), _| r != id);

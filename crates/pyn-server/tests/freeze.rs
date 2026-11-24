@@ -252,6 +252,13 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
             None,
         ),
         case(
+            "create_tag",
+            "POST",
+            format!("{repo}/tags"),
+            Some(json!({"name": "v1"})),
+        ),
+        case("delete_tag", "DELETE", format!("{repo}/tags/v1"), None),
+        case(
             "merge",
             "POST",
             format!("{repo}/merge"),

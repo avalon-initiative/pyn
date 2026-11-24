@@ -16,7 +16,7 @@ use pyn_core::{
     FolderUsage, HeadCounts, HistoryBy, HistoryCursor, HistoryScan, LfsObject, Lock, LockChange,
     LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person, PushedCommit,
     PynError, REPO_ALGORITHM, RepoBreakdown, RepoId, RepoPath, RepoRecord, RepoSettings,
-    RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, TusCancel,
+    RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap, Tag, TusCancel,
     TusClaim, TusSession, UploadReservation, Usage, UserId, Visibility,
 };
 use sqlx::migrate::MigrateDatabase;
@@ -681,6 +681,16 @@ fn branch_from(row: &PgRow) -> Result<Branch> {
             .map(|h| object_id(&h, "branch head"))
             .transpose()?,
         default: row.get("is_default"),
+        created_at: row.get("created_at"),
+        created_by: UserId::new(row.get::<String, _>("created_by")),
+    })
+}
+
+fn tag_from(row: &PgRow) -> Result<Tag> {
+    Ok(Tag {
+        name: row.get("name"),
+        commit: object_id(&row.get::<String, _>("commit_id"), "tag commit")?,
+        message: row.get("message"),
         created_at: row.get("created_at"),
         created_by: UserId::new(row.get::<String, _>("created_by")),
     })
@@ -1766,6 +1776,88 @@ impl MetadataStore for PgMetadataStore {
             .await
             .map_err(db)?;
         tx.commit().await.map_err(db)
+    }
+
+    async fn list_tags(&self, repo: &RepoId) -> Result<Vec<Tag>> {
+        let rows = sqlx::query(
+            "SELECT name, commit_id, message, created_at, created_by FROM repo_tags
+             WHERE repo = $1 ORDER BY name COLLATE \"C\"",
+        )
+        .bind(repo.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(tag_from).collect()
+    }
+
+    async fn get_tag(&self, repo: &RepoId, name: &str) -> Result<Option<Tag>> {
+        let row = sqlx::query(
+            "SELECT name, commit_id, message, created_at, created_by FROM repo_tags
+             WHERE repo = $1 AND name = $2",
+        )
+        .bind(repo.as_str())
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(tag_from).transpose()
+    }
+
+    async fn create_tag(
+        &self,
+        repo: &RepoId,
+        name: &str,
+        at: &ObjectId,
+        message: Option<&str>,
+        by: &UserId,
+        now: DateTime<Utc>,
+    ) -> Result<Tag> {
+        let known: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commits WHERE repo = $1 AND id = $2)")
+                .bind(repo.as_str())
+                .bind(at.to_hex())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(db)?;
+        if !known {
+            return Err(PynError::CommitNotFound(at.to_string()));
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO repo_tags (repo, name, commit_id, message, created_at, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(repo.as_str())
+        .bind(name)
+        .bind(at.to_hex())
+        .bind(message)
+        .bind(now)
+        .bind(by.as_str())
+        .execute(&self.pool)
+        .await;
+        match inserted {
+            Ok(_) => Ok(Tag {
+                name: name.to_string(),
+                commit: *at,
+                message: message.map(str::to_string),
+                created_at: now,
+                created_by: by.clone(),
+            }),
+            Err(e) if is_unique_violation(&e) => Err(PynError::TagExists(name.to_string())),
+            Err(e) => Err(db(e)),
+        }
+    }
+
+    async fn delete_tag(&self, repo: &RepoId, name: &str) -> Result<()> {
+        let done = sqlx::query("DELETE FROM repo_tags WHERE repo = $1 AND name = $2")
+            .bind(repo.as_str())
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        if done.rows_affected() == 0 {
+            return Err(PynError::TagNotFound(name.to_string()));
+        }
+        Ok(())
     }
 
     async fn rename_branch(&self, repo: &RepoId, from: &str, to: &str) -> Result<Branch> {
@@ -2895,6 +2987,7 @@ impl MetadataStore for PgMetadataStore {
             "DELETE FROM commits WHERE repo = $1",
             "DELETE FROM commit_pointers WHERE repo = $1",
             "DELETE FROM branches WHERE repo = $1",
+            "DELETE FROM repo_tags WHERE repo = $1",
             "DELETE FROM trees WHERE repo = $1",
             "DELETE FROM repo_objects WHERE repo = $1",
             "DELETE FROM lfs_objects WHERE repo = $1",

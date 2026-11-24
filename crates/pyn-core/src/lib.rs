@@ -39,6 +39,7 @@ pub mod service;
 pub mod source_range;
 pub mod store;
 pub mod stranded;
+pub mod tag;
 pub mod totp;
 pub mod tree;
 pub mod two_factor;
@@ -154,6 +155,7 @@ pub use service::{
 };
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};
+pub use tag::{Tag, validate_tag_name};
 pub use tree::{EntryKind, EntryMode, HeadCounts, RepoSummary, TREE_MAX_PATHS, TreeEntry};
 pub use two_factor::{
     ChallengePurpose, ChallengeRecord, FactorKind, FactorRecord, FactorRemoval, MAX_GRACE_DAYS,
