@@ -116,6 +116,23 @@ impl RepoService {
             .await
     }
 
+    /// Every commit reachable from `tip`, at most `COMPARE_MAX_COMMITS` and one more.
+    pub(super) async fn commits_between_none(
+        &self,
+        tip: ObjectId,
+    ) -> Result<Vec<crate::types::Commit>> {
+        self.meta
+            .missing_commits(
+                &self.repo,
+                &[tip],
+                &[],
+                None,
+                COMPARE_MAX_COMMITS + 1,
+                FETCH_MAX_EXAMINED,
+            )
+            .await
+    }
+
     /// The paths the commits touched whose live state at `head` differs from the one at `merge_base`, by path.
     pub(super) async fn changed_paths(
         &self,

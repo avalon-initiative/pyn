@@ -719,6 +719,10 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::BranchNotMerged(_)
         | PynError::MergeConflict(_)
         | PynError::MergeStale(_)
+        | PynError::PullRequestExists(_)
+        | PynError::PullRequestNotOpen { .. }
+        | PynError::PullRequestDraft(_)
+        | PynError::PullLocksHeld(_)
         | PynError::NotFastForward(_)
         | PynError::ConfirmationRequired { .. } => StatusCode::CONFLICT,
         PynError::NotLockHolder(_)
@@ -768,6 +772,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::ServiceCredentialNotFound(_)
         | PynError::AccessSessionNotFound(_)
         | PynError::WebhookNotFound(_)
+        | PynError::PullRequestNotFound(_)
         | PynError::ServerInvitationNotFound(_)
         | PynError::WebhookSecretNotFound { .. }
         | PynError::WebhookDeliveryNotFound { .. }

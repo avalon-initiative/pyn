@@ -60,6 +60,7 @@ use crate::webhook::{
     WebhookStore, retry_delay,
 };
 
+mod pulls;
 mod self_service;
 mod two_factor;
 mod watches;
@@ -89,6 +90,7 @@ struct State {
     next_reservation: i64,
     /// Old `owner/name` addresses left by a rename of the owner, by lowercase name, to the repository's id.
     redirects: HashMap<(UserId, String), RepoId>,
+    pulls: HashMap<RepoId, pulls::PullData>,
 }
 
 impl State {
@@ -1922,6 +1924,10 @@ impl MetadataStore for MemoryMetadataStore {
         Ok(repo)
     }
 
+    fn pulls(&self) -> &dyn crate::pull::PullStore {
+        self
+    }
+
     async fn delete_repo_with_events(&self, id: &RepoId, events: &[EventDraft]) -> Result<bool> {
         let mut st = self.state.lock().unwrap();
         if !st.repos.contains_key(id) {
@@ -1940,6 +1946,7 @@ impl MetadataStore for MemoryMetadataStore {
         st.tus.retain(|(r, _), _| r != id);
         st.reservations.retain(|_, (r, _, _)| r != id);
         st.redirects.retain(|_, r| r != id);
+        st.pulls.remove(id);
         Ok(st.repos.remove(id).is_some())
     }
 
