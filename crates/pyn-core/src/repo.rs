@@ -185,9 +185,16 @@ pub fn validate_website(value: Option<String>) -> Result<Option<String>> {
 
 pub const MAX_NAME_LEN: usize = 100;
 
-/// ASCII letters of any case, digits, `-`, `_` and `.`, 1 to 100 characters, starting with a letter or digit and
-/// not ending in `.`.
-pub fn validate_name(name: &str) -> Result<String> {
+/// The canonical form of a typed repository name: trimmed, each run of whitespace one `-`, ASCII lowercase.
+pub fn normalize_name(name: &str) -> String {
+    crate::access::account::normalize_name(name)
+}
+
+/// The canonical form of a typed name, which is then lowercase letters, digits, `-`, `_` and `.`, 1 to 100
+/// characters, starting with a letter or digit and not ending in `.`.
+pub fn validate_name(typed: &str) -> Result<String> {
+    let name = normalize_name(typed);
+    let name = name.as_str();
     let ok_chars = name
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
@@ -198,7 +205,7 @@ pub fn validate_name(name: &str) -> Result<String> {
     if (1..=MAX_NAME_LEN).contains(&name.len()) && ok_chars && starts_ok && !name.ends_with('.') {
         Ok(name.to_string())
     } else {
-        Err(PynError::InvalidRepoName(name.to_string()))
+        Err(PynError::InvalidRepoName(typed.to_string()))
     }
 }
 
@@ -215,21 +222,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names_allow_any_case_and_are_path_safe() {
-        for ok in [
-            "game",
-            "a",
-            "my-repo_2.0",
-            "0day",
-            "MyGame",
-            "UPPER",
-            "camelCase",
+    fn typed_names_normalise_to_one_canonical_form() {
+        for (typed, canonical) in [
+            ("game", "game"),
+            ("a", "a"),
+            ("my-repo_2.0", "my-repo_2.0"),
+            ("0day", "0day"),
+            ("MyGame", "mygame"),
+            ("UPPER", "upper"),
+            ("Test Repo", "test-repo"),
+            ("test repo", "test-repo"),
+            ("test-repo", "test-repo"),
+            ("  TeSt\t  rEpO ", "test-repo"),
+            ("a - b", "a---b"),
         ] {
-            assert!(validate_name(ok).is_ok(), "{ok}");
+            assert_eq!(normalize_name(typed), canonical, "{typed:?}");
+            assert_eq!(validate_name(typed).unwrap(), canonical, "{typed:?}");
         }
-        for bad in ["", "-x", "_x", ".x", "x.", "a/b", "a b", &"x".repeat(101)] {
+    }
+
+    #[test]
+    fn names_outside_the_alphabet_are_refused() {
+        for bad in [
+            "",
+            " ",
+            "-x",
+            "_x",
+            ".x",
+            "x.",
+            "a/b",
+            "a!b",
+            "é",
+            "ünï",
+            "x y.",
+            &"x".repeat(101),
+        ] {
             assert!(validate_name(bad).is_err(), "{bad:?}");
         }
+        assert!(validate_name(&"X".repeat(100)).is_ok());
     }
 
     #[test]

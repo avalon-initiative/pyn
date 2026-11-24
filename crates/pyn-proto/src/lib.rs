@@ -12,6 +12,8 @@ mod diff;
 pub use diff::*;
 mod events;
 pub use events::*;
+mod pulls;
+pub use pulls::*;
 mod readiness;
 pub use readiness::*;
 mod update;
@@ -1467,6 +1469,7 @@ pub struct CreateRepoRequest {
     /// The namespace to create it in: the caller's own account name, or an organization whose repository-creation
     /// policy lets them. Defaults to the caller.
     pub owner: Option<String>,
+    /// Normalised to a canonical name (trimmed, spaces become `-`, lowercased): 1 to 100 letters, digits, `-`, `_` or `.`, starting with a letter or digit and not ending in `.`.
     pub name: String,
     /// Defaults to `private`.
     pub visibility: Option<Visibility>,
@@ -1497,6 +1500,7 @@ pub struct CreateRepoRequest {
 /// Fields left out stay as they are.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct UpdateRepoRequest {
+    /// The new name, normalised like a new repository's.
     pub name: Option<String>,
     /// Changing it needs the owner with admin rights and is recorded in the audit log.
     pub visibility: Option<Visibility>,

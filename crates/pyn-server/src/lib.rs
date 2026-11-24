@@ -52,6 +52,7 @@ mod owner_path;
 mod passkeys_api;
 pub mod passwords;
 mod profile_api;
+mod pulls_api;
 mod push_api;
 pub mod ready;
 mod repo_api;
@@ -109,7 +110,7 @@ pub struct AppState {
 struct RepoAddress {
     /// The namespace that owns the repository.
     owner: String,
-    /// The repository's name within its owner; matched ignoring case.
+    /// The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.
     name: String,
 }
 
@@ -328,6 +329,17 @@ struct RepoAddress {
         tag_api::delete_tag,
         merge_api::preview_merge,
         merge_api::merge,
+        pulls_api::list_pulls,
+        pulls_api::create_pull,
+        pulls_api::get_pull,
+        pulls_api::update_pull,
+        pulls_api::pull_commits,
+        pulls_api::pull_diff,
+        pulls_api::pull_events,
+        pulls_api::comment_pull,
+        pulls_api::close_pull,
+        pulls_api::reopen_pull,
+        pulls_api::merge_pull,
         push_api::push,
         push_api::fetch,
         push_api::get_object
@@ -344,6 +356,18 @@ struct RepoAddress {
         api::Branch,
         api::BranchComparison,
         api::CompareChange,
+        api::PullRequestState,
+        api::PullRequestSummary,
+        api::PullRequestPage,
+        api::PullConflict,
+        api::PullRequest,
+        api::PullCommit,
+        api::PullEventKind,
+        api::PullEvent,
+        api::CreatePullRequest,
+        api::UpdatePullRequest,
+        api::MergePullRequest,
+        api::CommentPullRequest,
         api::RepoDiff,
         api::DiffFile,
         api::DiffHunk,

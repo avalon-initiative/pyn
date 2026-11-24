@@ -1,13 +1,14 @@
-//! Owner names in request paths are URL forms: any casing and `%20` for a space reach the canonical name.
+//! Owner and repository names in request paths are URL forms: any casing and `%20` for a space reach the canonical name.
 
 use axum::extract::Request;
 use axum::http::Uri;
 use pyn_core::UserId;
 use pyn_core::account::normalize_name;
 
-/// Name positions as path segments after `/v1/`: `*` is any segment, `@` a name.
-const SHAPES: [&str; 12] = [
+/// Name positions as path segments after `/v1/`: `*` is any segment, `@` an owner name, `#` a repository name.
+const SHAPES: [&str; 13] = [
     "repos/@",
+    "repos/@/#",
     "repos/*/*/members/@",
     "orgs/@",
     "orgs/*/members/@",
@@ -27,13 +28,17 @@ pub(crate) fn typed_owner(name: impl AsRef<str>) -> UserId {
 }
 
 /// The canonical name for one raw path segment, or `None` when it is already canonical or not a name form.
-fn canonical_segment(raw: &str) -> Option<String> {
+fn canonical_segment(raw: &str, dots: bool) -> Option<String> {
     let spaced = raw.replace("%20", " ");
     let name = normalize_name(&spaced);
     let plain = !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+        && name.bytes().all(|b| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || b == b'-'
+                || b == b'_'
+                || (dots && b == b'.')
+        });
     (plain && name != raw).then_some(name)
 }
 
@@ -52,19 +57,19 @@ pub(crate) fn canonical_path(path: &str) -> Option<String> {
         let fits = want
             .iter()
             .zip(rest)
-            .all(|(w, got)| matches!(*w, "@" | "*") || w == got);
+            .all(|(w, got)| matches!(*w, "@" | "#" | "*") || w == got);
         if fits {
             names.extend(
                 want.iter()
                     .enumerate()
-                    .filter(|(_, w)| **w == "@")
-                    .map(|(i, _)| 2 + i),
+                    .filter(|(_, w)| matches!(**w, "@" | "#"))
+                    .map(|(i, w)| (2 + i, *w == "#")),
             );
         }
     }
     let renamed: Vec<(usize, String)> = names
         .into_iter()
-        .filter_map(|i| canonical_segment(parts[i]).map(|n| (i, n)))
+        .filter_map(|(i, dots)| canonical_segment(parts[i], dots).map(|n| (i, n)))
         .collect();
     if renamed.is_empty() {
         return None;
@@ -99,7 +104,7 @@ mod tests {
         let c = |p| canonical_path(p);
         assert_eq!(
             c("/v1/repos/Test%20Studio/Game/files").as_deref(),
-            Some("/v1/repos/test-studio/Game/files")
+            Some("/v1/repos/test-studio/game/files")
         );
         assert_eq!(
             c("/v1/orgs/TeSt-StuDiO").as_deref(),
@@ -115,13 +120,22 @@ mod tests {
         );
         assert_eq!(
             c("/v1/repos/Alice/Game/members/BOB").as_deref(),
-            Some("/v1/repos/alice/Game/members/bob")
+            Some("/v1/repos/alice/game/members/bob")
         );
         assert_eq!(
             c("/v1/orgs/Acme/teams/Core/members/BOB").as_deref(),
             Some("/v1/orgs/acme/teams/Core/members/bob")
         );
-        assert_eq!(c("/v1/repos/alice/Game"), None);
+        assert_eq!(
+            c("/v1/repos/Alice/My%20Game/files").as_deref(),
+            Some("/v1/repos/alice/my-game/files")
+        );
+        assert_eq!(
+            c("/v1/repos/alice/Game.V2").as_deref(),
+            Some("/v1/repos/alice/game.v2")
+        );
+        assert_eq!(c("/v1/repos/alice/game"), None);
+        assert_eq!(c("/v1/repos/alice/g%C3%A9"), None);
         assert_eq!(c("/v1/repos"), None);
         assert_eq!(c("/v1/admin/users"), None);
         assert_eq!(c("/v1/repos/a%2Fb/x"), None);

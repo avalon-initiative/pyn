@@ -203,9 +203,18 @@ mod tests {
         assert_eq!(
             breakdown(files),
             [
-                LanguageShare { name: "Rust".into(), bytes: 400 },
-                LanguageShare { name: "TypeScript".into(), bytes: 250 },
-                LanguageShare { name: "Makefile".into(), bytes: 50 },
+                LanguageShare {
+                    name: "Rust".into(),
+                    bytes: 400
+                },
+                LanguageShare {
+                    name: "TypeScript".into(),
+                    bytes: 250
+                },
+                LanguageShare {
+                    name: "Makefile".into(),
+                    bytes: 50
+                },
             ]
         );
     }
