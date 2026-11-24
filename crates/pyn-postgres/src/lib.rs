@@ -185,6 +185,7 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
         about: RepoAbout {
             description: row.get("description"),
             website: row.get("website"),
+            topics: row.get("topics"),
         },
     })
 }
@@ -2136,6 +2137,29 @@ impl MetadataStore for PgMetadataStore {
         rows.iter().map(revision_from).collect()
     }
 
+    async fn content_sizes(
+        &self,
+        repo: &RepoId,
+        contents: &[ObjectId],
+    ) -> Result<std::collections::HashMap<ObjectId, u64>> {
+        let hex: Vec<String> = contents.iter().map(ObjectId::to_hex).collect();
+        let rows = sqlx::query(
+            "SELECT DISTINCT ON (content) content, size FROM revisions
+             WHERE repo = $1 AND content = ANY($2::text[]) AND NOT deleted",
+        )
+        .bind(repo.as_str())
+        .bind(&hex)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter()
+            .map(|r| {
+                let id = object_id(&r.get::<String, _>("content"), "revision content")?;
+                Ok((id, r.get::<i64, _>("size") as u64))
+            })
+            .collect()
+    }
+
     async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> Result<bool> {
         sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM revisions WHERE repo = $1 AND content = $2)",
@@ -2693,8 +2717,8 @@ impl MetadataStore for PgMetadataStore {
         }
         let inserted = sqlx::query(
             "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy,
-                 created_at, description, website)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                 created_at, description, website, topics)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(repo.id.as_str())
         .bind(repo.owner.as_str())
@@ -2707,6 +2731,7 @@ impl MetadataStore for PgMetadataStore {
         .bind(repo.created_at)
         .bind(&repo.about.description)
         .bind(&repo.about.website)
+        .bind(&repo.about.topics)
         .execute(&mut *tx)
         .await;
         match inserted {
@@ -2855,7 +2880,8 @@ impl MetadataStore for PgMetadataStore {
                  max_locks = CASE WHEN $5 THEN $6 ELSE max_locks END,
                  max_storage_bytes = CASE WHEN $7 THEN $8 ELSE max_storage_bytes END,
                  description = CASE WHEN $9 THEN $10 ELSE description END,
-                 website = CASE WHEN $11 THEN $12 ELSE website END
+                 website = CASE WHEN $11 THEN $12 ELSE website END,
+                 topics = CASE WHEN $13 THEN $14::text[] ELSE topics END
              WHERE id = $1
              RETURNING *",
         )
@@ -2871,6 +2897,8 @@ impl MetadataStore for PgMetadataStore {
         .bind(update.description.clone().flatten())
         .bind(update.website.is_some())
         .bind(update.website.clone().flatten())
+        .bind(update.topics.is_some())
+        .bind(update.topics.clone().unwrap_or_default())
         .fetch_optional(&mut *tx)
         .await;
         match updated {

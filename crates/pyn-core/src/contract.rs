@@ -549,6 +549,56 @@ pub async fn tree_rejects_missing_directories_and_files(store: Store) {
     assert!(matches!(file, PynError::InvalidRequest(_)), "{file}");
 }
 
+pub async fn languages_count_bytes_at_the_default_head_and_follow_new_commits(store: Store) {
+    let h = harness(store);
+    assert!(h.svc.languages().await.unwrap().is_empty(), "an empty repository");
+    for (p, text) in [
+        ("Source/a.cpp", "int main() {}"),
+        ("Source/b.rs", "fn main() {}\n"),
+        ("README.md", "words that are not code"),
+    ] {
+        let c = blob(&h, text).await;
+        h.svc
+            .checkin(&who("alice"), &path(p), c, None, p.into())
+            .await
+            .unwrap();
+    }
+    let shares: Vec<_> = h
+        .svc
+        .languages()
+        .await
+        .unwrap()
+        .iter()
+        .map(|l| (l.name.clone(), l.bytes))
+        .collect();
+    assert_eq!(shares, [("C++".to_string(), 13), ("Rust".to_string(), 13)]);
+
+    let c = blob(&h, "fn main() { let x = 1; }\n").await;
+    h.svc
+        .checkin(&who("alice"), &path("Source/b.rs"), c, None, "longer".into())
+        .await
+        .unwrap();
+    let top = h.svc.languages().await.unwrap()[0].clone();
+    assert_eq!((top.name.as_str(), top.bytes), ("Rust", 25), "a new head recomputes");
+}
+
+pub async fn content_sizes_report_the_recorded_length_of_known_contents(store: Store) {
+    let h = harness(store);
+    let c = blob(&h, "twelve bytes").await;
+    h.svc
+        .checkin(&who("alice"), &path("Source/a.txt"), c, None, "a".into())
+        .await
+        .unwrap();
+    let unknown = blob(&h, "never checked in").await;
+    let sizes = h
+        .store
+        .content_sizes(h.svc.repo(), &[c, unknown])
+        .await
+        .unwrap();
+    assert_eq!(sizes.len(), 1, "{sizes:?}");
+    assert_eq!(sizes.get(&c), Some(&12));
+}
+
 pub async fn summary_counts_files_locks_and_file_activity(store: Store) {
     let h = harness(store);
     let (a, m) = (path("Source/a.cpp"), path("Content/m.umap"));
@@ -1704,16 +1754,19 @@ pub async fn a_repository_stores_its_lock_limit_and_can_clear_it(store: Store) {
 pub async fn a_repository_stores_its_about_block_and_can_clear_it(store: Store) {
     let mut record = repo_record("r1", "alice", "game");
     record.about.description = Some("A small game".into());
+    record.about.topics = vec!["rust".into(), "game".into()];
     let created = store.create_repo(record).await.unwrap();
     let found = store.get_repo(&created.id).await.unwrap().unwrap();
     assert_eq!(found.about.description.as_deref(), Some("A small game"));
     assert_eq!(found.about.website, None);
+    assert_eq!(found.about.topics, ["rust", "game"], "kept in order");
 
     let set = store
         .update_repo(
             &created.id,
             RepoUpdate {
                 website: Some(Some("https://example.com".into())),
+                topics: Some(Vec::new()),
                 ..Default::default()
             },
         )
@@ -1725,6 +1778,7 @@ pub async fn a_repository_stores_its_about_block_and_can_clear_it(store: Store) 
         "other fields stay"
     );
     assert_eq!(set.about.website.as_deref(), Some("https://example.com"));
+    assert!(set.about.topics.is_empty());
 
     let cleared = store
         .update_repo(
@@ -3456,6 +3510,8 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; tree_lists_a_directory_with_last_change_mode_and_lock);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; tree_rejects_missing_directories_and_files);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; summary_counts_files_locks_and_file_activity);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; languages_count_bytes_at_the_default_head_and_follow_new_commits);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; content_sizes_report_the_recorded_length_of_known_contents);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; old_revisions_can_be_read_back);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_is_newest_first_across_paths);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repo_history_filters_by_glob);
@@ -4710,6 +4766,14 @@ impl MetadataStore for HookedMeta {
 
     async fn has_content(&self, repo: &RepoId, content: &ObjectId) -> crate::Result<bool> {
         self.inner.has_content(repo, content).await
+    }
+
+    async fn content_sizes(
+        &self,
+        repo: &RepoId,
+        contents: &[ObjectId],
+    ) -> crate::Result<std::collections::HashMap<ObjectId, u64>> {
+        self.inner.content_sizes(repo, contents).await
     }
 
     async fn record_upload(

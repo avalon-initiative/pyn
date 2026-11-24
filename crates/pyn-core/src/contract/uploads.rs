@@ -948,6 +948,14 @@ impl MetadataStore for BudgetGateStore {
         self.inner.has_content(repo, content).await
     }
 
+    async fn content_sizes(
+        &self,
+        repo: &RepoId,
+        contents: &[ObjectId],
+    ) -> crate::Result<std::collections::HashMap<ObjectId, u64>> {
+        self.inner.content_sizes(repo, contents).await
+    }
+
     async fn record_upload(
         &self,
         repo: &RepoId,

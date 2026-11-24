@@ -297,3 +297,71 @@ async fn an_invalid_about_block_is_refused_and_only_the_owner_may_change_it() {
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text());
     assert_eq!(info(&app, &bob, "alice/game").await.description, None);
 }
+
+async fn check_in(app: &Router, who: &str, repo: &str, path: &str, content: &[u8]) {
+    let r = send(
+        app,
+        who,
+        "PUT",
+        &format!("/v1/repos/{repo}/objects"),
+        "application/octet-stream",
+        content.to_vec(),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let blob = r.json::<api::PutObjectResponse>().content;
+    let body = json!({"path": path, "content": blob, "message": path});
+    let r = call(app, who, "POST", &format!("/v1/repos/{repo}/checkin"), Some(body)).await;
+    assert!(r.status.is_success(), "{}", r.text());
+}
+
+#[tokio::test]
+async fn topics_are_normalised_replaced_and_cleared() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    let body = json!({"name": "game", "topics": ["Rust", "game-dev", "rust"]});
+    let r = call(&app, &alice, "POST", "/v1/repos", Some(body)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    assert_eq!(r.json::<api::RepoInfo>().topics, ["rust", "game-dev"]);
+
+    let r = patch(&app, &alice, "alice/game", json!({"topics": ["unreal"]})).await;
+    assert_eq!(r.json::<api::RepoInfo>().topics, ["unreal"]);
+    let r = patch(&app, &alice, "alice/game", json!({"description": "kept"})).await;
+    assert_eq!(r.json::<api::RepoInfo>().topics, ["unreal"], "left out, left alone");
+    for bad in [json!(["c++"]), json!([""]), json!((0..21).map(|n| format!("t{n}")).collect::<Vec<_>>())] {
+        let r = patch(&app, &alice, "alice/game", json!({"topics": bad})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {}", r.text());
+    }
+    let r = patch(&app, &alice, "alice/game", json!({"topics": []})).await;
+    assert!(r.json::<api::RepoInfo>().topics.is_empty());
+}
+
+#[tokio::test]
+async fn languages_and_the_update_time_come_from_the_default_branch() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    let body = json!({"name": "empty", "visibility": "public", "starter_policy": false});
+    let r = call(&app, &alice, "POST", "/v1/repos", Some(body)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    let empty = info(&app, "", "alice/empty").await;
+    assert!(empty.languages.is_empty());
+    assert_eq!((empty.language, empty.updated_at), (None, None));
+
+    make_repo(&app, &alice, "game", "public").await;
+    let started = info(&app, "", "alice/game").await;
+    assert!(started.languages.is_empty(), "the starter policy is not code");
+    assert!(started.updated_at.is_some());
+
+    check_in(&app, &alice, "alice/game", "src/main.rs", b"fn main() { println!(); }\n").await;
+    check_in(&app, &alice, "alice/game", "web/app.ts", b"let x = 1;\n").await;
+    check_in(&app, &alice, "alice/game", "notes.txt", b"not code at all, and longer").await;
+    let got = info(&app, "", "alice/game").await;
+    let shares: Vec<_> = got.languages.iter().map(|l| (l.name.as_str(), l.bytes)).collect();
+    assert_eq!(shares, [("Rust", 26), ("TypeScript", 11)]);
+    assert_eq!(got.language.as_deref(), Some("Rust"));
+    assert!(got.updated_at.is_some());
+    let listed: Vec<api::RepoInfo> = call(&app, &alice, "GET", "/v1/repos", None).await.json();
+    let game = listed.iter().find(|r| r.name == "game").unwrap();
+    assert_eq!(game.languages, got.languages, "lists carry it too");
+}
