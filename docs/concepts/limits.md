@@ -113,7 +113,7 @@ Each request is bounded in the work it may do, so one request cannot hold the se
 | --- | --- | --- |
 | time for a read route to answer (including fetch and the previews) | 60 s, `0` is no limit | `PYN_REQUEST_TIMEOUT_SECS` |
 | time an upload body may send nothing (object, chunk, assemble, push) | 30 s, `0` is no limit | `PYN_BODY_IDLE_TIMEOUT_SECS` |
-| fetch, history, verify, snapshot, summary, compare and merge-preview requests at once | four per CPU | `PYN_MAX_CONCURRENT_EXPENSIVE` |
+| fetch, history, verify, snapshot, summary, compare, diff and merge-preview requests at once | four per CPU | `PYN_MAX_CONCURRENT_EXPENSIVE` |
 | commits one fetch request examines | 1,000,000 | fixed |
 | commits each side of a branch comparison counts, and paths it lists | 1,000 each | fixed |
 | revisions one history request examines | 20,000 | fixed |

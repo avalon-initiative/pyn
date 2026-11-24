@@ -8481,6 +8481,104 @@
         "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
+    "/v1/repos/{owner}/{name}/diff": {
+      "get": {
+        "tags": [
+          "diff_api"
+        ],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.\nThe changes of `head` against `base` with line hunks, per path, with each path's mode and live lock.",
+        "operationId": "diff",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "base",
+            "in": "query",
+            "description": "a branch, or a commit id or abbreviation; the default branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "head",
+            "in": "query",
+            "description": "a branch, or a commit id or abbreviation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "merge_base",
+            "in": "query",
+            "description": "measure from the merge base of base and head (the default, as a pull request shows it); false diffs the two commits directly",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "context",
+            "in": "query",
+            "description": "unchanged lines around each change, 0 to 100, default 3",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoDiff"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a branch with no commits, a context over 100 or a history too long to walk, ambiguous_commit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "commit_not_found: neither a branch nor a commit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
+      }
+    },
     "/v1/repos/{owner}/{name}/fetch": {
       "post": {
         "tags": [
@@ -8952,6 +9050,107 @@
           }
         },
         "x-pyn-reach": "repo_scoped:members:write"
+      }
+    },
+    "/v1/repos/{owner}/{name}/lines": {
+      "get": {
+        "tags": [
+          "diff_api"
+        ],
+        "summary": "Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.\nA range of the lines of a text file as of a commit, for expanding the context around a diff hunk.",
+        "operationId": "file_lines",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; matched ignoring case.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "the file",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rev",
+            "in": "query",
+            "description": "a branch, or a commit id or abbreviation; the default branch if omitted",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "first line, counting from 1; default 1",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "last line, inclusive; at most 2000 lines are returned",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileLines"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request for a binary file, one over 1 MiB, or a bad range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "commit_not_found, or revision_not_found when the path does not exist at that commit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
     "/v1/repos/{owner}/{name}/locks": {
@@ -14137,6 +14336,215 @@
           }
         }
       },
+      "DiffFile": {
+        "type": "object",
+        "description": "One changed path.",
+        "required": [
+          "path",
+          "status",
+          "additions",
+          "deletions",
+          "binary",
+          "too_large",
+          "mode",
+          "file_mode",
+          "hunks"
+        ],
+        "properties": {
+          "additions": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "binary": {
+            "type": "boolean",
+            "description": "A binary file has no hunks."
+          },
+          "deletions": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "file_mode": {
+            "$ref": "#/components/schemas/FileMode",
+            "description": "The git file mode of the new side (of the old side for a deletion)."
+          },
+          "hunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffHunk"
+            }
+          },
+          "lock": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Lock",
+                "description": "The live lock on the path, whoever holds it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/Mode",
+            "description": "The path's mode under the repository's policy."
+          },
+          "new_content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "old_content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Git blob ids of the two sides; absent where the path does not exist."
+          },
+          "old_file_mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FileMode",
+                "description": "The previous git file mode, when it changed."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "old_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The previous path of a renamed file."
+          },
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DiffFileStatus"
+          },
+          "too_large": {
+            "type": "boolean",
+            "description": "The file, or the diff as a whole, is over the size limits: no hunks, and `additions` and `deletions` are 0."
+          }
+        }
+      },
+      "DiffFileStatus": {
+        "type": "string",
+        "enum": [
+          "added",
+          "modified",
+          "deleted",
+          "renamed"
+        ]
+      },
+      "DiffHunk": {
+        "type": "object",
+        "required": [
+          "header",
+          "old_start",
+          "old_lines",
+          "new_start",
+          "new_lines",
+          "lines",
+          "hidden_before",
+          "hidden_after"
+        ],
+        "properties": {
+          "header": {
+            "type": "string",
+            "description": "The `@@ -a,b +c,d @@ section` line."
+          },
+          "hidden_after": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Unchanged lines after the last hunk to the end of the file; 0 on every other hunk.",
+            "minimum": 0
+          },
+          "hidden_before": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Unchanged lines between the previous hunk (or the start of the file) and this one; `/lines` loads them.",
+            "minimum": 0
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffLine"
+            }
+          },
+          "new_lines": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "new_start": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "old_lines": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "old_start": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "DiffLine": {
+        "type": "object",
+        "required": [
+          "kind",
+          "text"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/DiffLineKind"
+          },
+          "new_no": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Line number in the new file; absent on a deleted line.",
+            "minimum": 0
+          },
+          "no_newline": {
+            "type": "boolean",
+            "description": "The file's last line on this side has no newline."
+          },
+          "old_no": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Line number in the old file; absent on an added line.",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "description": "The line without its newline."
+          }
+        }
+      },
+      "DiffLineKind": {
+        "type": "string",
+        "enum": [
+          "context",
+          "add",
+          "delete"
+        ]
+      },
       "DisableAccountRequest": {
         "type": "object",
         "properties": {
@@ -14477,6 +14885,51 @@
             ],
             "format": "int64",
             "description": "Head revision; absent if the path is locked but has no revision yet.",
+            "minimum": 0
+          }
+        }
+      },
+      "FileLines": {
+        "type": "object",
+        "description": "A range of the lines of a file at a revision.",
+        "required": [
+          "path",
+          "commit",
+          "revision",
+          "total",
+          "start",
+          "lines"
+        ],
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Lines without their newlines; empty past the end of the file."
+          },
+          "path": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The path's revision number at that commit.",
+            "minimum": 0
+          },
+          "start": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of the first line in `lines`, counting from 1.",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines in the whole file.",
             "minimum": 0
           }
         }
@@ -17206,6 +17659,52 @@
               "type": "string"
             },
             "description": "The account's repositories; their old addresses now redirect (`X-Pyn-Moved-To`)."
+          }
+        }
+      },
+      "RepoDiff": {
+        "type": "object",
+        "description": "The changes of a head against a base, with line hunks.",
+        "required": [
+          "base",
+          "base_commit",
+          "head",
+          "head_commit",
+          "from_commit",
+          "files",
+          "truncated"
+        ],
+        "properties": {
+          "base": {
+            "type": "string",
+            "description": "The base as named in the request (the default branch when none was given)."
+          },
+          "base_commit": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffFile"
+            },
+            "description": "Ordered by path."
+          },
+          "from_commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit the changes are measured from: the merge base, or the base for a direct diff."
+          },
+          "head": {
+            "type": "string"
+          },
+          "head_commit": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "More paths changed than listed."
           }
         }
       },

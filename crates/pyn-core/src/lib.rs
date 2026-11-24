@@ -144,12 +144,13 @@ pub use repositories::{Repositories, StarState};
 pub use rules::{Mode, PathFilter, PathMatch, RuleEntry, Rules};
 pub use service::{
     ActivePolicy, COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeEntry, ChangeKind, CommitPage,
-    Comparison, Deletion, FETCH_DEFAULT_LIMIT, FETCH_MAX_EXAMINED, FETCH_MAX_HAVES,
-    FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit, FileEntry, LockLimit, PathChange,
-    PolicyPreview, PushObjects, Pushed, Recorded, RepoService, RepoServiceContext, ServiceConfig,
-    Snapshot, SnapshotEntry, TUS_APPEND_LEASE_MINUTES, TUS_MAX_SESSIONS_PER_USER,
-    TUS_SESSION_TTL_HOURS, TusAppended, TusError, TusStatus, VERIFY_BUDGET, is_lfs_oid,
-    sweep_tus_sessions,
+    Comparison, DIFF_DEFAULT_CONTEXT, DIFF_MAX_CONTEXT, DIFF_MAX_FILE_BYTES, Deletion, Diff,
+    DiffHunk, DiffLine, DiffLineKind, DiffOptions, DiffStatus, FETCH_DEFAULT_LIMIT,
+    FETCH_MAX_EXAMINED, FETCH_MAX_HAVES, FETCH_MAX_LIMIT, FetchPage, FetchQuery, FetchedCommit,
+    FileDiff, FileEntry, FileLines, LINES_MAX, LockLimit, PathChange, PolicyPreview, PushObjects,
+    Pushed, Recorded, RepoService, RepoServiceContext, ServiceConfig, Snapshot, SnapshotEntry,
+    TUS_APPEND_LEASE_MINUTES, TUS_MAX_SESSIONS_PER_USER, TUS_SESSION_TTL_HOURS, TusAppended,
+    TusError, TusStatus, VERIFY_BUDGET, is_lfs_oid, sweep_tus_sessions,
 };
 pub use store::{MetadataStore, UploadReservation};
 pub use stranded::{ConversionNote, StrandedVersion};
