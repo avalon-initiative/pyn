@@ -9,8 +9,8 @@ use pyn_core::gate::{DEFAULT_UPLOADS_PER_SERVER, DEFAULT_UPLOADS_PER_USER};
 use pyn_core::memory::MemoryAccessStore;
 use pyn_core::merge::default_concurrent_merges;
 use pyn_core::{
-    AccessConfig, AccessService, EmailSender, ExternalPolicy, Limits, MemoryLimitEvents,
-    NullEmailSender, RateLimits, Rules, SecretKey, SystemClock, WebhookSettings,
+    AccessConfig, AccessService, DEFAULT_BRANCH_STALE_DAYS, EmailSender, ExternalPolicy, Limits,
+    MemoryLimitEvents, NullEmailSender, RateLimits, Rules, SecretKey, SystemClock, WebhookSettings,
 };
 use pyn_oidc::{HttpOidcProvider, OidcConfig};
 
@@ -315,6 +315,7 @@ pub struct Settings {
     pub uploads_per_user: u32,
     pub uploads_per_server: u32,
     pub merges: usize,
+    pub branch_stale_days: u32,
     pub update_check: bool,
     pub cert_interval: Option<Duration>,
 }
@@ -431,6 +432,21 @@ impl Settings {
                 "PYN_MAX_UPLOADS_PER_USER and PYN_MAX_UPLOADS must be at least 1",
             );
         }
+        let branch_stale_days = match optional_number("PYN_BRANCH_STALE_DAYS") {
+            Ok(Some(days)) if days >= 1 && days <= u64::from(u32::MAX) => days as u32,
+            Ok(None) => DEFAULT_BRANCH_STALE_DAYS,
+            Ok(Some(_)) => {
+                c.fail(
+                    "PYN_BRANCH_STALE_DAYS",
+                    "PYN_BRANCH_STALE_DAYS must be at least 1 and at most 4294967295",
+                );
+                DEFAULT_BRANCH_STALE_DAYS
+            }
+            Err(e) => {
+                c.fail("PYN_BRANCH_STALE_DAYS", e);
+                DEFAULT_BRANCH_STALE_DAYS
+            }
+        };
         let default_merges = default_concurrent_merges();
         let merges = c.or_default(
             "PYN_MAX_CONCURRENT_MERGES",
@@ -482,6 +498,7 @@ impl Settings {
             uploads_per_user,
             uploads_per_server,
             merges,
+            branch_stale_days,
             update_check,
             cert_interval,
         }

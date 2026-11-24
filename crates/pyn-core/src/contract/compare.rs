@@ -23,6 +23,73 @@ async fn changes(h: &Harness, base: Option<&str>, head: &str) -> Vec<(String, Ch
         .collect()
 }
 
+pub async fn branch_status_reports_author_distance_and_age(store: Store) {
+    use chrono::Duration;
+    let h = harness(store);
+    let (a, b, c) = (path("a.cpp"), path("b.cpp"), path("c.cpp"));
+    put_on(&h, "main", "alice", &a, "a0", None).await;
+    h.svc
+        .create_branch(&who("bob"), "old", Some("main"))
+        .await
+        .unwrap();
+    put_on(&h, "old", "bob", &b, "b0", None).await;
+    h.clock.advance(Duration::days(100));
+    put_on(&h, "main", "alice", &c, "c0", None).await;
+    h.svc
+        .create_branch(&who("carol"), "fresh", Some("main"))
+        .await
+        .unwrap();
+    put_on(&h, "fresh", "carol", &b, "b1", None).await;
+
+    let period = Duration::days(90);
+    let status = |name: &'static str| {
+        let h = &h;
+        async move {
+            let branch = h.svc.branch(name).await.unwrap();
+            h.svc.branch_status(&branch, period).await.unwrap()
+        }
+    };
+    let main = status("main").await;
+    assert_eq!(
+        (
+            main.updated_by.as_deref(),
+            main.ahead,
+            main.behind,
+            main.stale
+        ),
+        (Some("alice"), 0, 0, false)
+    );
+    let old = status("old").await;
+    assert_eq!(
+        (
+            old.updated_by.as_deref(),
+            old.ahead,
+            old.behind,
+            old.counts_capped,
+            old.stale
+        ),
+        (Some("bob"), 1, 1, false, true)
+    );
+    let fresh = status("fresh").await;
+    assert_eq!(
+        (
+            fresh.updated_by.as_deref(),
+            fresh.ahead,
+            fresh.behind,
+            fresh.stale
+        ),
+        (Some("carol"), 1, 0, false)
+    );
+    let long = h.svc.branch("old").await.unwrap();
+    assert!(
+        !h.svc
+            .branch_status(&long, Duration::days(101))
+            .await
+            .unwrap()
+            .stale
+    );
+}
+
 pub async fn a_diverged_branch_is_ahead_and_behind_its_merge_base(store: Store) {
     let h = harness(store);
     let (a, b) = (path("Source/a.cpp"), path("Source/b.cpp"));

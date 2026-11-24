@@ -163,11 +163,11 @@ schemas only.
 
 | Request | Returns |
 | --- | --- |
-| `GET /v1/repos/{owner}/{name}/branches` | the branches, the default one first, then by name; each has `name`, `commit`, `default`, `created_at`, `created_by` and `updated_at` (the committed time of its head commit, absent for a branch with no commits) |
+| `GET /v1/repos/{owner}/{name}/branches?filter=` | the branches, the default one first, then by name; each has `name`, `commit`, `default`, `created_at`, `created_by`, `updated_at` (the committed time of its head commit, absent for a branch with no commits) and the [list metadata](#the-branch-list); `filter` is `yours`, `active` or `stale` (anything else is `400 invalid_request`) |
 | `GET .../compare?base=&head=` | how far `head` is from `base` ([below](#comparing-branches)) |
 | `GET .../diff?base=&head=` | the line hunks of those changes, with each path's mode and lock ([diffs](diff.md)) |
 | `POST .../branches` `{name, start?}` | the new branch; `start` is a branch name, or a commit id or abbreviation, the default branch's head if omitted |
-| `GET .../branches/{branch}` | one branch, with `updated_at` (`404 branch_not_found`); a slash in the name may be sent as is or as `%2F` |
+| `GET .../branches/{branch}` | one branch, with `updated_at` and the same list metadata (`404 branch_not_found`); a slash in the name may be sent as is or as `%2F` |
 | `PATCH .../branches/{branch}` `{name}` | the renamed branch |
 | `DELETE .../branches/{branch}?force=` | `204`; `409 branch_not_merged` without `force` for a branch that is not on the default branch |
 
@@ -178,6 +178,23 @@ default branch's. The response to checking in or restoring `.pyn/pyn.toml` on th
 `history` and `content` take an optional `branch` query parameter; `snapshot` takes either `commit` or `branch`. Every one
 of them uses the default branch when none is named. `summary` takes it too and then describes that branch's files (`branch_count` still counts all branches; locks and activity are repository-wide, because lock and audit events do not record a branch). An
 unknown branch is `404 branch_not_found`.
+
+### The branch list
+
+Each branch in the list, and in `GET .../branches/{branch}`, `POST` and `PATCH`, carries what a branches page shows:
+
+| Field | Meaning |
+| --- | --- |
+| `updated_by` | the author of the head commit (absent for a branch with no commits) |
+| `ahead`, `behind` | commits the branch has that the default branch lacks, and the reverse; each at most 1000, with `counts_capped` set when either hit the limit. Both are 0 for the default branch |
+| `yours` | the caller created the branch or wrote its head commit; always false without a sign-in |
+| `stale` | the head commit is older than the stale period; never the default branch |
+| `active` | not `stale`: the default branch and every branch committed to within the stale period |
+
+The stale period is 90 days by default and `PYN_BRANCH_STALE_DAYS` sets it for the server ([configuration](../configuration.md)).
+Age is the head commit's committed time, so a branch moved by a merge or a push counts as updated. This is not the
+[stale branch](#what-a-stale-branch-does) of policy, a branch that has not picked up a newer policy. The `filter` query
+keeps only the `yours`, `active` or `stale` branches.
 
 ### Comparing branches
 

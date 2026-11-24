@@ -3468,6 +3468,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; verify_checks_every_branch_and_a_commit_names_its_parent);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; merge_bases_are_the_lowest_common_ancestors);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_diverged_branch_is_ahead_and_behind_its_merge_base);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; branch_status_reports_author_distance_and_age);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fast_forwardable_equal_or_merged_branch_has_a_zero_side);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_comparison_names_an_unknown_branch_with_the_usual_error);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_comparison_lists_a_bounded_number_of_paths);

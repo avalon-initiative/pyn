@@ -1,5 +1,6 @@
 const TREE_PAGE: usize = 5_000;
 
+mod branch_status;
 mod compare;
 mod diff;
 mod fetch;
@@ -18,6 +19,7 @@ pub use lfs_tus::{
 };
 pub use uploads::DEFAULT_UNREFERENCED_UPLOAD_BYTES;
 
+pub use branch_status::BranchStatus;
 pub use compare::{COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeKind, Comparison, PathChange};
 pub use diff::{
     DIFF_DEFAULT_CONTEXT, DIFF_MAX_CONTEXT, DIFF_MAX_FILE_BYTES, DIFF_MAX_TOTAL_BYTES, Diff,

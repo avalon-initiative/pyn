@@ -231,6 +231,27 @@ pub struct Branch {
     /// The committed time of the head commit; absent for a branch with no commits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
+    /// The author of the head commit; absent for a branch with no commits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+    /// Commits this branch has and the default branch lacks, at most 1000; 0 for the default branch.
+    #[serde(default)]
+    pub ahead: u32,
+    /// Commits the default branch has and this branch lacks, at most 1000; 0 for the default branch.
+    #[serde(default)]
+    pub behind: u32,
+    /// `ahead` or `behind` reached 1000, so the real number is larger.
+    #[serde(default)]
+    pub counts_capped: bool,
+    /// The caller created the branch or wrote its head commit; always false without a sign-in.
+    #[serde(default)]
+    pub yours: bool,
+    /// The head commit is older than the server's stale period (`PYN_BRANCH_STALE_DAYS`, 90 days by default). Never the default branch.
+    #[serde(default)]
+    pub stale: bool,
+    /// Not stale: the default branch and every branch committed to within the stale period.
+    #[serde(default)]
+    pub active: bool,
 }
 
 /// A tag: an immutable name pointing at a commit. It never moves; deleting it frees the name.

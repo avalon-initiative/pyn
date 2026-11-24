@@ -1,20 +1,39 @@
 //! Branches: listing, creating, renaming and deleting them.
 
 use axum::Json;
-use axum::extract::{Path, Query};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use pyn_core::repositories::OpenRepo;
-use pyn_core::{Branch, COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeKind};
+use pyn_core::{Branch, COMPARE_MAX_COMMITS, COMPARE_MAX_PATHS, ChangeKind, PynError};
 use pyn_proto as api;
 use serde::Deserialize;
 
 use crate::caller::{RepoCaller, RepoReader};
-use crate::{ApiResult, RepoAddress};
+use crate::{ApiResult, AppState, RepoAddress};
 
-/// The branch with the committed time of its head, which the store's branch does not carry.
-async fn branch_dto(repo: &OpenRepo, b: Branch) -> ApiResult<api::Branch> {
+/// The branch with what the store's branch does not carry: the head's committed time and author, the distance from the
+/// default branch and its age. `caller` is the signed-in account, if any.
+async fn branch_dto(
+    s: &AppState,
+    repo: &OpenRepo,
+    b: Branch,
+    caller: Option<&str>,
+) -> ApiResult<api::Branch> {
     let updated_at = repo.service.branch_updated_at(&b).await?;
+    let status = repo
+        .service
+        .branch_status(&b, s.repos.branch_stale_after())
+        .await?;
+    let yours = caller
+        .is_some_and(|me| b.created_by.as_str() == me || status.updated_by.as_deref() == Some(me));
     Ok(api::Branch {
+        updated_by: status.updated_by,
+        ahead: status.ahead,
+        behind: status.behind,
+        counts_capped: status.counts_capped,
+        yours,
+        stale: status.stale,
+        active: !status.stale,
         name: b.name,
         commit: b.head.map(|h| h.to_hex()),
         default: b.default,
@@ -25,16 +44,49 @@ async fn branch_dto(repo: &OpenRepo, b: Branch) -> ApiResult<api::Branch> {
 }
 
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
-#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/branches", params(RepoAddress),
-    responses((status = 200, body = Vec<api::Branch>, description = "the default branch first, then by name")))]
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/branches",
+    params(RepoAddress,
+           ("filter" = Option<String>, Query, description = "`yours`, `active` or `stale`: keep only those branches; every branch if omitted")),
+    responses((status = 200, body = Vec<api::Branch>, description = "the default branch first, then by name"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request for an unknown filter")))]
 pub(crate) async fn list_branches(
-    RepoReader { repo, .. }: RepoReader,
+    State(s): State<AppState>,
+    RepoReader {
+        repo,
+        principal,
+        identity,
+        ..
+    }: RepoReader,
+    Query(q): Query<ListQuery>,
 ) -> ApiResult<Json<Vec<api::Branch>>> {
+    let keep: fn(&api::Branch) -> bool = match q.filter.as_deref() {
+        None => |_| true,
+        Some("yours") => |b| b.yours,
+        Some("active") => |b| b.active,
+        Some("stale") => |b| b.stale,
+        Some(other) => {
+            return Err(PynError::InvalidRequest(format!(
+                "filter is not yours, active or stale: {other:?}"
+            ))
+            .into());
+        }
+    };
+    let caller = identity
+        .is_some()
+        .then(|| principal.user.as_str().to_string());
     let mut out = Vec::new();
     for b in repo.service.branches().await? {
-        out.push(branch_dto(&repo, b).await?);
+        let dto = branch_dto(&s, &repo, b, caller.as_deref()).await?;
+        if keep(&dto) {
+            out.push(dto);
+        }
     }
     Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ListQuery {
+    filter: Option<String>,
 }
 
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/branches/{branch}",
@@ -42,11 +94,17 @@ pub(crate) async fn list_branches(
     responses((status = 200, body = api::Branch),
               (status = 404, body = api::ErrorBody, description = "branch_not_found")))]
 pub(crate) async fn get_branch(
-    RepoReader { repo, .. }: RepoReader,
+    State(s): State<AppState>,
+    RepoReader {
+        repo,
+        principal,
+        identity,
+    }: RepoReader,
     Path((_, _, branch)): Path<(String, String, String)>,
 ) -> ApiResult<Json<api::Branch>> {
+    let caller = identity.is_some().then(|| principal.user.as_str());
     Ok(Json(
-        branch_dto(&repo, repo.service.branch(&branch).await?).await?,
+        branch_dto(&s, &repo, repo.service.branch(&branch).await?, caller).await?,
     ))
 }
 
@@ -58,6 +116,7 @@ pub(crate) async fn get_branch(
               (status = 409, body = api::ErrorBody, description = "branch_exists: the name is taken, or is a folder of another branch's name")))]
 /// Create a branch at a commit.
 pub(crate) async fn create_branch(
+    State(s): State<AppState>,
     RepoCaller {
         repo,
         principal: who,
@@ -69,7 +128,9 @@ pub(crate) async fn create_branch(
         .service
         .create_branch(&who, &req.name, req.start.as_deref())
         .await?;
-    Ok(Json(branch_dto(&repo, made).await?))
+    Ok(Json(
+        branch_dto(&s, &repo, made, Some(who.user.as_str())).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -112,6 +173,7 @@ pub(crate) async fn delete_branch(
               (status = 409, body = api::ErrorBody, description = "branch_exists")))]
 /// Rename a branch other than the default one.
 pub(crate) async fn rename_branch(
+    State(s): State<AppState>,
     RepoCaller {
         repo,
         principal: who,
@@ -121,7 +183,9 @@ pub(crate) async fn rename_branch(
     Json(req): Json<api::RenameBranchRequest>,
 ) -> ApiResult<Json<api::Branch>> {
     let renamed = repo.service.rename_branch(&who, &branch, &req.name).await?;
-    Ok(Json(branch_dto(&repo, renamed).await?))
+    Ok(Json(
+        branch_dto(&s, &repo, renamed, Some(who.user.as_str())).await?,
+    ))
 }
 
 #[derive(Deserialize)]
