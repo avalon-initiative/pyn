@@ -2021,30 +2021,50 @@ async fn creation_commits_the_starter_policy_unless_turned_off() {
 }
 
 #[tokio::test]
-async fn repository_names_keep_their_case_and_resolve_ignoring_it() {
+async fn repository_names_are_url_forms_in_bodies_and_paths() {
     let app = router(state_with(false, RegistrationMode::Open).await);
     let alice = register_and_sign_in(&app, "alice").await;
-    let made = create_repo(&app, &alice, "MyGame").await;
-    assert_eq!(made.name, "MyGame");
+    let made = create_repo(&app, &alice, "My Game").await;
+    assert_eq!(made.name, "my-game");
 
-    for path in ["/v1/repos/alice/mygame", "/v1/repos/alice/MYGAME"] {
+    for path in [
+        "/v1/repos/alice/my-game",
+        "/v1/repos/alice/MY-GAME",
+        "/v1/repos/Alice/My%20Game",
+        "/v1/repos/alice/my%20game",
+    ] {
         let r = send(&app, "GET", path, &alice, None).await;
         assert_eq!(r.status(), StatusCode::OK, "{path}");
-        assert_eq!(body_json::<api::RepoInfo>(r).await.name, "MyGame");
+        assert_eq!(body_json::<api::RepoInfo>(r).await.name, "my-game");
     }
-    let r = send(&app, "GET", "/v1/repos/alice/MYGAME/me", &alice, None).await;
+    let r = send(&app, "GET", "/v1/repos/alice/MY%20GAME/me", &alice, None).await;
     assert_eq!(r.status(), StatusCode::OK);
 
-    let dup = send(
+    for typed in ["my game", "MY-GAME", " my  game "] {
+        let dup = send(
+            &app,
+            "POST",
+            "/v1/repos",
+            &alice,
+            Some(serde_json::json!({"starter_policy": false, "name": typed})),
+        )
+        .await;
+        assert_eq!(dup.status(), StatusCode::CONFLICT, "{typed:?}");
+        assert_eq!(body_json::<api::ErrorBody>(dup).await.code, "repo_exists");
+    }
+    let bad = send(
         &app,
         "POST",
         "/v1/repos",
         &alice,
-        Some(serde_json::json!({"starter_policy": false, "name": "mygame"})),
+        Some(serde_json::json!({"starter_policy": false, "name": "no/slash"})),
     )
     .await;
-    assert_eq!(dup.status(), StatusCode::CONFLICT);
-    assert_eq!(body_json::<api::ErrorBody>(dup).await.code, "repo_exists");
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json::<api::ErrorBody>(bad).await.code,
+        "invalid_repo_name"
+    );
 }
 
 #[tokio::test]
