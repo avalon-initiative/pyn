@@ -352,8 +352,12 @@ With the store on, `add`, `commit`, `status` and `branch` work against the store
   the files back to the commit and asks you to type the branch name. `--yes` skips that; without a terminal and without `--yes` it refuses and changes nothing, so a script passes `--yes`. Untracked files are left alone.
 - `pyn tag [<name> [<commit>]]`, `-a`/`-m`, `-f`, `-d` and `-l` keep tags as refs in the store, and `pyn show` and `pyn diff` take a tag
   name for a commit. Tags are local only: they are never pushed, so another clone does not see them; the server's own [immutable tags](branches.md#tags) are a separate list, reached with `pyn tag --server`.
-- `pyn lock <path>` for a path a local commit changed takes the server's head revision as the base, so the lock the pull hint
-  asks for works after another person pushed a newer revision of it; `pyn pull` then keeps your version. A path that
+- `pyn lock <path>` for a path a local commit changed asks for the lock on the newest server revision the local work has
+  seen: the revision the file was last updated to, or the one at the server's tip once the branch (or the pull or merge in
+  progress) has taken it in. A local version based on an older revision than the server's head is refused with
+  `stale_base` and a hint to run `pyn pull`: the pull then stops on the exclusive conflict, and the person chooses a side
+  and takes the lock to conclude it ([conflicts in a pull](commits.md#conflicts-in-a-pull)), so a newer revision is never
+  overwritten unseen. A path that
   exists only in a local commit (the server has no revision of it) is locked with no base, and `pyn status` shows the mode
   the policy gives it, so a new path under an exclusive rule is `exclusive` and `pyn lock <path>` then `pyn push` works.
 
