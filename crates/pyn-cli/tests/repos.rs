@@ -112,6 +112,69 @@ fn the_about_block_is_set_edited_and_shown() {
 }
 
 #[test]
+fn a_repository_is_forked_listed_and_shows_its_source() {
+    let env = start_empty();
+    let home = env.dir("home");
+    env.ok(
+        &home,
+        "alice",
+        &["repo", "create", "alice/tools", "--visibility", "public"],
+    );
+    let out = env.ok(
+        &home,
+        "bob",
+        &["repo", "fork", "alice/tools", "--name", "mytools"],
+    );
+    assert!(out.contains("forked alice/tools to bob/mytools"), "{out}");
+    let shown = env.ok(&home, "bob", &["repo", "show", "bob/mytools"]);
+    assert!(
+        shown
+            .lines()
+            .any(|l| l.starts_with("forked from") && l.ends_with("alice/tools")),
+        "{shown}"
+    );
+    let source = env.ok(&home, "bob", &["repo", "show", "alice/tools"]);
+    assert!(
+        source
+            .lines()
+            .any(|l| l.starts_with("forks") && l.ends_with('1')),
+        "{source}"
+    );
+    let listed = env.ok(&home, "alice", &["repo", "forks", "alice/tools"]);
+    let rows = cell_rows(&listed);
+    assert_eq!(rows[0], ["VISIBILITY", "CREATED", "REPOSITORY"]);
+    assert_eq!(
+        (rows[1][0].as_str(), rows[1][2].as_str()),
+        ("public", "bob/mytools")
+    );
+
+    env.ok(&home, "alice", &["repo", "create", "alice/secret"]);
+    let refused = env.fails(
+        &home,
+        "alice",
+        &["repo", "fork", "alice/secret", "--name", "copy"],
+    );
+    assert!(refused.contains("fork_forbidden"), "{refused}");
+    env.ok(
+        &home,
+        "alice",
+        &[
+            "repo",
+            "edit",
+            "alice/secret",
+            "--allow-private-forks",
+            "true",
+        ],
+    );
+    let out = env.ok(
+        &home,
+        "alice",
+        &["repo", "fork", "alice/secret", "--name", "copy"],
+    );
+    assert!(out.contains("forked alice/secret to alice/copy"), "{out}");
+}
+
+#[test]
 fn stars_are_set_removed_and_listed() {
     let env = start_empty();
     let home = env.dir("home");

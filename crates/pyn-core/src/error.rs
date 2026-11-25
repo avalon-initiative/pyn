@@ -57,6 +57,19 @@ pub enum PynError {
         used: u64,
     },
     #[error(
+        "storage limit reached: the fork needs {needed} bytes, and {owner} uses {used} of the {limit} it may store on this server"
+    )]
+    ForkStorageLimitReached {
+        owner: String,
+        limit: u64,
+        used: u64,
+        needed: u64,
+    },
+    #[error("fork limit reached: {what} may have at most {limit} forks on this server")]
+    ForkLimitReached { what: String, limit: u64 },
+    #[error("forking {0} is not allowed: {1}")]
+    ForkForbidden(String, String),
+    #[error(
         "repository storage limit reached: {repository} may store at most {limit} bytes and uses {used}"
     )]
     RepoStorageLimitReached {
@@ -429,7 +442,11 @@ impl PynError {
             Self::LockLimitReached { .. } => "lock_limit_reached",
             Self::RepoLimitReached { .. } => "repo_limit_reached",
             Self::MemberLimitReached { .. } => "member_limit_reached",
-            Self::StorageLimitReached { .. } => "storage_limit_reached",
+            Self::StorageLimitReached { .. } | Self::ForkStorageLimitReached { .. } => {
+                "storage_limit_reached"
+            }
+            Self::ForkLimitReached { .. } => "fork_limit_reached",
+            Self::ForkForbidden(..) => "fork_forbidden",
             Self::RepoStorageLimitReached { .. } => "repo_storage_limit_reached",
             Self::OwnerFrozen { .. } => "owner_frozen",
             Self::UploadsBusy { .. } => "uploads_busy",

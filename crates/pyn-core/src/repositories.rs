@@ -15,7 +15,8 @@ use crate::limit_events::DomainEvent;
 use crate::limits::{MAX_LIMIT_VALUE, RepoBreakdown, RepoUsage, Usage};
 use crate::object::ObjectStore;
 use crate::repo::{
-    self, DEFAULT_MAX_LOCKS_PER_USER, RepoAbout, RepoRecord, RepoSettings, RepoUpdate, Visibility,
+    self, DEFAULT_MAX_LOCKS_PER_USER, ForkLimits, RepoAbout, RepoRecord, RepoSettings, RepoUpdate,
+    Visibility,
 };
 use crate::rules::{Mode, POLICY_PATH, Rules, starter_policy};
 use crate::service::{DEFAULT_UNREFERENCED_UPLOAD_BYTES, LockLimit, RepoService, ServiceConfig};
@@ -23,6 +24,7 @@ use crate::store::MetadataStore;
 use crate::types::{Lock, RepoPath, UserId};
 use crate::webhook::OutboxEvent;
 
+mod forks;
 mod stars;
 pub use stars::StarState;
 mod visible;
@@ -57,6 +59,13 @@ pub struct OpenRepo {
     pub service: Arc<RepoService>,
 }
 
+/// Where a new repository goes, as `creation_target` found it.
+#[derive(Debug, Clone, Copy)]
+struct CreationTarget {
+    in_org: bool,
+    org_role: Option<OrgRole>,
+}
+
 /// How long a branch may go without a commit before the branch list calls it stale.
 pub const DEFAULT_BRANCH_STALE_DAYS: u32 = 90;
 
@@ -73,6 +82,7 @@ pub struct Repositories {
     uploads: crate::gate::UploadGate,
     merge_slots: Arc<tokio::sync::Semaphore>,
     branch_stale_days: u32,
+    fork_caps: (u64, u64),
     services: Mutex<HashMap<crate::RepoId, (ServiceKey, Arc<RepoService>)>>,
 }
 
@@ -95,6 +105,7 @@ fn absent_record(owner: &str, name: &str) -> RepoRecord {
         initial_policy: None,
         created_at: chrono::DateTime::<chrono::Utc>::default(),
         about: Default::default(),
+        fork_of: None,
     }
 }
 
@@ -165,6 +176,10 @@ impl Repositories {
                 crate::merge::default_concurrent_merges(),
             )),
             branch_stale_days: DEFAULT_BRANCH_STALE_DAYS,
+            fork_caps: (
+                repo::DEFAULT_MAX_FORKS_PER_REPOSITORY,
+                repo::DEFAULT_MAX_FORKS_PER_OWNER,
+            ),
             services: Mutex::new(HashMap::new()),
         }
     }
@@ -203,6 +218,12 @@ impl Repositories {
     /// Days without a commit after which a branch other than the default counts as stale; at least 1.
     pub fn with_branch_stale_days(mut self, days: u32) -> Self {
         self.branch_stale_days = days.max(1);
+        self
+    }
+
+    /// The most forks one repository may have and one owner may own; 0 turns forking off.
+    pub fn with_fork_caps(mut self, per_repository: u64, per_owner: u64) -> Self {
+        self.fork_caps = (per_repository, per_owner);
         self
     }
 
@@ -549,19 +570,7 @@ impl Repositories {
     ) -> Result<RepoRecord> {
         actor.require_namespace_management()?;
         let visibility = visibility.unwrap_or(Visibility::Private);
-        let in_org = owner != &actor.user && self.access.is_org(owner).await?;
-        let mut org_role = None;
-        if in_org {
-            org_role = Some(
-                self.access
-                    .require_repo_creator(owner, &actor.user, visibility)
-                    .await?,
-            );
-            self.access.require_org_open(owner).await?;
-        } else if owner != &actor.user {
-            return Err(PynError::NotNamespaceOwner(owner.to_string()));
-        }
-        self.access.ensure_owner_writable(owner).await?;
+        let target = self.creation_target(actor, owner, visibility).await?;
         let record = RepoRecord {
             id: repo::generate_id()?,
             owner: owner.clone(),
@@ -572,6 +581,7 @@ impl Repositories {
             initial_policy: self.initial_policy.clone(),
             created_at: self.clock.now(),
             about: about.validated()?,
+            fork_of: None,
         };
         let max_repos = self.access.effective_limits(owner).await?.repositories;
         let owner_id = self.access.account_id(owner).await?;
@@ -591,22 +601,6 @@ impl Repositories {
             .access
             .limit_result(owner, result, self.clock.now())
             .await?;
-        let settled = if in_org {
-            self.access.require_org_open(owner).await
-        } else {
-            Ok(())
-        };
-        if let Err(e) = settled.and(self.access.ensure_owner_writable(owner).await) {
-            self.undo_create(&record, &actor.user).await;
-            return Err(e);
-        }
-        if org_role != Some(OrgRole::Owner)
-            && let Err(e) = self.add_creator(&record, owner, in_org, &actor.user).await
-        {
-            self.undo_create(&record, &actor.user).await;
-            let _ = self.access.forget_repo(&record.id).await;
-            return Err(e);
-        }
         let detail = format!(
             "created {} ({}, lease {}h{})",
             record.address(),
@@ -614,9 +608,7 @@ impl Repositories {
             record.settings.lease_hours,
             limit_detail(&record.settings)
         );
-        self.access.watch_by_default(&record.id, &actor.user).await;
-        self.record(&record, actor.into(), AuditAction::RepoCreated, detail)
-            .await?;
+        self.finish_create(actor, &record, target, detail).await?;
         if let Some(default) = starter
             && let Err(e) = self.commit_starter(&record, &actor.user, default).await
         {
@@ -625,6 +617,63 @@ impl Repositories {
             return Err(e);
         }
         Ok(record)
+    }
+
+    /// Checks the actor may create a repository of `visibility` under `owner`: their own namespace, or an organization
+    /// whose creation policy allows it. Returns whether `owner` is an organization and the actor's role there.
+    async fn creation_target(
+        &self,
+        actor: &Identity,
+        owner: &UserId,
+        visibility: Visibility,
+    ) -> Result<CreationTarget> {
+        let in_org = owner != &actor.user && self.access.is_org(owner).await?;
+        let mut org_role = None;
+        if in_org {
+            org_role = Some(
+                self.access
+                    .require_repo_creator(owner, &actor.user, visibility)
+                    .await?,
+            );
+            self.access.require_org_open(owner).await?;
+        } else if owner != &actor.user {
+            return Err(PynError::NotNamespaceOwner(owner.to_string()));
+        }
+        self.access.ensure_owner_writable(owner).await?;
+        Ok(CreationTarget { in_org, org_role })
+    }
+
+    /// After the insert: re-checks the owner, makes the creator admin, starts their watch and records `detail`.
+    /// A failed step removes the repository again.
+    async fn finish_create(
+        &self,
+        actor: &Identity,
+        record: &RepoRecord,
+        target: CreationTarget,
+        detail: String,
+    ) -> Result<()> {
+        let owner = &record.owner;
+        let settled = if target.in_org {
+            self.access.require_org_open(owner).await
+        } else {
+            Ok(())
+        };
+        if let Err(e) = settled.and(self.access.ensure_owner_writable(owner).await) {
+            self.undo_create(record, &actor.user).await;
+            return Err(e);
+        }
+        if target.org_role != Some(OrgRole::Owner)
+            && let Err(e) = self
+                .add_creator(record, owner, target.in_org, &actor.user)
+                .await
+        {
+            self.undo_create(record, &actor.user).await;
+            let _ = self.access.forget_repo(&record.id).await;
+            return Err(e);
+        }
+        self.access.watch_by_default(&record.id, &actor.user).await;
+        self.record(record, actor.into(), AuditAction::RepoCreated, detail)
+            .await
     }
 
     async fn commit_starter(&self, record: &RepoRecord, who: &UserId, default: Mode) -> Result<()> {
@@ -841,6 +890,9 @@ impl Repositories {
         self.access.ensure_owner_writable(&record.owner).await?;
         if let Some(name) = &update.name {
             update.name = Some(repo::validate_name(name)?);
+        }
+        if update.visibility == Some(Visibility::Public) {
+            self.require_public_source(record).await?;
         }
         if let Some(settings) = update.settings {
             let settings = settings.validate()?;

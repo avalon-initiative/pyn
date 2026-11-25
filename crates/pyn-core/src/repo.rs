@@ -64,6 +64,8 @@ pub struct RepoSettings {
     pub lease_hours: u32,
     /// Locks one user may hold here; `None` follows the server default. The policy file overrides it.
     pub max_locks: Option<u32>,
+    /// Whether people who can read this private repository may fork it; a public one can always be forked.
+    pub allow_private_forks: bool,
 }
 
 impl Default for RepoSettings {
@@ -71,6 +73,7 @@ impl Default for RepoSettings {
         Self {
             lease_hours: DEFAULT_LEASE_HOURS,
             max_locks: None,
+            allow_private_forks: false,
         }
     }
 }
@@ -102,7 +105,25 @@ pub struct RepoRecord {
     pub initial_policy: Option<String>,
     pub created_at: DateTime<Utc>,
     pub about: RepoAbout,
+    /// The repository this one was forked from; `None` for an original, or once the source is deleted.
+    pub fork_of: Option<RepoId>,
 }
+
+/// What a fork is checked against, in the same step that creates it; `None` is no limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ForkLimits {
+    /// Repositories the forking owner may own.
+    pub repositories: Option<u64>,
+    /// Bytes the forking owner may store, counting the fork's revision and LFS bytes in full.
+    pub storage_bytes: Option<u64>,
+    /// Forks the source may have.
+    pub per_repository: Option<u64>,
+    /// Forks the forking owner may own.
+    pub per_owner: Option<u64>,
+}
+
+pub const DEFAULT_MAX_FORKS_PER_REPOSITORY: u64 = 1_000;
+pub const DEFAULT_MAX_FORKS_PER_OWNER: u64 = 100;
 
 /// What the repository's About block shows; edited like the repository's settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

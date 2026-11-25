@@ -293,7 +293,10 @@ pub(crate) async fn limit_result<T>(
     let (kind, value) = match &result {
         Err(PynError::RepoLimitReached { limit, .. }) => (LimitKind::Repositories, *limit),
         Err(PynError::MemberLimitReached { limit, .. }) => (LimitKind::Members, *limit),
-        Err(PynError::StorageLimitReached { limit, .. }) => (LimitKind::StorageBytes, *limit),
+        Err(
+            PynError::StorageLimitReached { limit, .. }
+            | PynError::ForkStorageLimitReached { limit, .. },
+        ) => (LimitKind::StorageBytes, *limit),
         Err(PynError::LockLimitReached { limit }) => (LimitKind::Locks, u64::from(*limit)),
         _ => return result,
     };

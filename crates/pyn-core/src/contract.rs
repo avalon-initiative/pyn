@@ -51,6 +51,8 @@ mod commit_filters;
 pub use commit_filters::*;
 mod tags;
 pub use tags::*;
+mod forks;
+pub use forks::*;
 mod branch_policy;
 pub use branch_policy::*;
 mod push;
@@ -1433,6 +1435,7 @@ fn repo_record(id: &str, owner: &str, name: &str) -> RepoRecord {
         initial_policy: None,
         created_at: at(0),
         about: Default::default(),
+        fork_of: None,
     }
 }
 
@@ -3552,6 +3555,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_repository_keeps_its_id);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_lock_limit_and_can_clear_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_about_block_and_can_clear_it);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fork_copies_history_but_not_locks_and_checks_its_limits);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_do_not_share_locks_or_revisions);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_users_live_locks_are_listed_across_repositories);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_repository_removes_only_its_own_data);
@@ -5035,6 +5039,23 @@ impl MetadataStore for HookedMeta {
         within: Option<&ObjectId>,
     ) -> crate::Result<Vec<String>> {
         self.inner.history_authors(repo, within).await
+    }
+
+    async fn fork_repo_with_events(
+        &self,
+        fork: RepoRecord,
+        limits: crate::ForkLimits,
+        events: &[crate::EventDraft],
+    ) -> crate::Result<RepoRecord> {
+        self.inner.fork_repo_with_events(fork, limits, events).await
+    }
+
+    async fn list_forks(&self, source: &RepoId) -> crate::Result<Vec<RepoRecord>> {
+        self.inner.list_forks(source).await
+    }
+
+    async fn count_forks(&self, source: &RepoId) -> crate::Result<u64> {
+        self.inner.count_forks(source).await
     }
 
     async fn create_repo_capped_with_events(

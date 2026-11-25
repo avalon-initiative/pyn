@@ -9,7 +9,7 @@ use crate::history::{HistoryBy, HistoryCursor, HistoryScan};
 use crate::limit_events::LockEventBuilder;
 use crate::limits::{RepoBreakdown, RepoUsage, StorageCap, Usage};
 use crate::merge::{MergeWrite, MergeWritten};
-use crate::repo::{RepoRecord, RepoUpdate};
+use crate::repo::{ForkLimits, RepoRecord, RepoUpdate};
 use crate::tag::Tag;
 use crate::tree::HeadCounts;
 use crate::webhook::EventDraft;
@@ -601,6 +601,22 @@ pub trait MetadataStore: Send + Sync {
         max_repos: Option<u64>,
         events: &[EventDraft],
     ) -> Result<RepoRecord>;
+
+    /// Registers `fork` (whose `fork_of` names the source) with a copy of the source's branches, tags, commits, trees,
+    /// revisions, recorded uploads and LFS objects, never its locks, upload sessions or pull requests. `limits` are
+    /// checked in the same step: `RepoExists`, `RepoLimitReached`, `ForkLimitReached` or `ForkStorageLimitReached`, and
+    /// a refused fork leaves nothing behind and queues nothing.
+    async fn fork_repo_with_events(
+        &self,
+        fork: RepoRecord,
+        limits: ForkLimits,
+        events: &[EventDraft],
+    ) -> Result<RepoRecord>;
+
+    /// The repositories forked from `source`, ordered by owner, then name.
+    async fn list_forks(&self, source: &RepoId) -> Result<Vec<RepoRecord>>;
+
+    async fn count_forks(&self, source: &RepoId) -> Result<u64>;
 
     async fn find_repo(&self, owner: &UserId, name: &str) -> Result<Option<RepoRecord>>;
 

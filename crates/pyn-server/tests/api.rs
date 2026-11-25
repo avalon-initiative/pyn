@@ -58,6 +58,7 @@ async fn state_full(
         initial_policy: None,
         created_at: chrono::Utc::now(),
         about: Default::default(),
+        fork_of: None,
     })
     .await
     .unwrap();

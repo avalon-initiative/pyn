@@ -804,6 +804,26 @@ enum RepoCommand {
         /// Remove every topic.
         #[arg(long)]
         no_topics: bool,
+        /// Whether people who can read the repository may fork it while it is private.
+        #[arg(long)]
+        allow_private_forks: Option<bool>,
+    },
+    /// Fork a repository you can read into your namespace or an organization: a copy of its files, history and policy,
+    /// without its locks, linked to it as its source.
+    Fork {
+        /// `owner/name` of the repository to fork.
+        name: String,
+        /// The fork's name; the source's by default.
+        #[arg(long = "name")]
+        new_name: Option<String>,
+        /// An organization to fork into; you by default.
+        #[arg(long)]
+        owner: Option<String>,
+    },
+    /// List the forks of a repository that you may see.
+    Forks {
+        /// `owner/name`.
+        name: String,
     },
     /// List the repositories you belong to.
     List {
@@ -3780,6 +3800,10 @@ fn show_repo(r: &api::RepoInfo) {
     let updated = r.updated_at.map_or_else(|| "-".to_string(), time::local);
     println!("updated      {updated}");
     println!("visibility   {visibility}");
+    if let Some(src) = &r.fork_of {
+        println!("forked from  {}/{}", src.owner, src.name);
+    }
+    println!("forks        {}", r.fork_count);
     println!("created      {}", time::local(r.created_at));
     println!("stars        {}", r.star_count);
     println!("watchers     {}", r.watcher_count);
@@ -3836,6 +3860,7 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 description,
                 website,
                 topics: (!topics.is_empty()).then_some(topics),
+                allow_private_forks: None,
             };
             let org = body.owner.clone().unwrap_or_default();
             let made: api::RepoInfo = api
@@ -3866,16 +3891,24 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             website,
             topics,
             no_topics,
+            allow_private_forks,
         } => {
             let topics = (no_topics || !topics.is_empty()).then_some(topics);
-            if description.is_none() && website.is_none() && topics.is_none() {
-                bail!("nothing to change: give --description, --website, --topic or --no-topics");
+            if description.is_none()
+                && website.is_none()
+                && topics.is_none()
+                && allow_private_forks.is_none()
+            {
+                bail!(
+                    "nothing to change: give --description, --website, --topic, --no-topics or --allow-private-forks"
+                );
             }
             let (owner, short) = address::split_repo(&name)?;
             let body = api::UpdateRepoRequest {
                 description: description.map(Some),
                 website: website.map(Some),
                 topics,
+                allow_private_forks,
                 ..Default::default()
             };
             let r: api::RepoInfo = api
@@ -3885,6 +3918,50 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 )?
                 .json()?;
             show_repo(&r);
+        }
+        RepoCommand::Fork {
+            name,
+            new_name,
+            owner,
+        } => {
+            let (src_owner, src_name) = address::split_repo(&name)?;
+            let org = owner.clone().unwrap_or_default();
+            let body = api::ForkRepoRequest {
+                owner,
+                name: new_name,
+            };
+            let made: api::RepoInfo = api
+                .send(
+                    api.request(
+                        Method::POST,
+                        &format!("/v1/repos/{src_owner}/{src_name}/forks"),
+                    )
+                    .json(&body),
+                )
+                .map_err(|e| explain_create_refusal(e, &org))?
+                .json()?;
+            println!("forked {name} to {}/{}", made.owner, made.name);
+        }
+        RepoCommand::Forks { name } => {
+            let (owner, short) = address::split_repo(&name)?;
+            let forks: Vec<api::RepoInfo> = api
+                .send(api.get(&format!("/v1/repos/{owner}/{short}/forks")))?
+                .json()?;
+            let rows: Vec<Vec<String>> = forks
+                .into_iter()
+                .map(|r| {
+                    let visibility = match r.visibility {
+                        api::Visibility::Public => "public",
+                        api::Visibility::Private => "private",
+                    };
+                    vec![
+                        visibility.to_string(),
+                        time::local(r.created_at),
+                        format!("{}/{}", r.owner, r.name),
+                    ]
+                })
+                .collect();
+            table::show(&["VISIBILITY", "CREATED", "REPOSITORY"], &rows, "no forks");
         }
         RepoCommand::List { owner } => {
             let mut req = api.get("/v1/repos");

@@ -45,6 +45,15 @@ pub(crate) async fn repo_info(
     let read_only = s.repos.read_only_default(&r).await?;
     let owner_id = s.access.account_id(&r.owner).await?.to_string();
     let code = s.repos.code_facts(&r).await?;
+    let fork_of = s
+        .repos
+        .fork_source(&r, viewer)
+        .await?
+        .map(|src| api::RepoRef {
+            owner: src.owner.to_string(),
+            name: src.name,
+        });
+    let fork_count = s.repos.fork_count(&r).await?;
     let languages: Vec<api::LanguageShare> = code
         .languages
         .iter()
@@ -74,6 +83,9 @@ pub(crate) async fn repo_info(
         language: languages.first().map(|l| l.name.clone()),
         languages,
         updated_at: code.updated_at,
+        fork_of,
+        fork_count,
+        allow_private_forks: r.settings.allow_private_forks,
         visibility: visibility_dto(r.visibility),
         lease_hours: r.settings.lease_hours,
         max_locks_per_user: limit.max,
@@ -202,11 +214,15 @@ pub(crate) async fn create_repo(
     let owner = req
         .owner
         .map_or_else(|| who.user.clone(), crate::owner_path::typed_owner);
-    let settings = (req.lease_hours.is_some() || req.max_locks_per_user.is_some()).then(|| {
+    let settings = (req.lease_hours.is_some()
+        || req.max_locks_per_user.is_some()
+        || req.allow_private_forks.is_some())
+    .then(|| {
         let defaults = RepoSettings::default();
         RepoSettings {
             lease_hours: req.lease_hours.unwrap_or(defaults.lease_hours),
             max_locks: req.max_locks_per_user,
+            allow_private_forks: req.allow_private_forks.unwrap_or_default(),
         }
     });
     let starter = req
@@ -277,11 +293,17 @@ pub(crate) async fn update_repo(
     let update = RepoUpdate {
         name: req.name,
         visibility: req.visibility.map(visibility_from),
-        settings: (req.lease_hours.is_some() || req.max_locks_per_user.is_some()).then(|| {
+        settings: (req.lease_hours.is_some()
+            || req.max_locks_per_user.is_some()
+            || req.allow_private_forks.is_some())
+        .then(|| {
             let current = open.record.settings;
             RepoSettings {
                 lease_hours: req.lease_hours.unwrap_or(current.lease_hours),
                 max_locks: req.max_locks_per_user.unwrap_or(current.max_locks),
+                allow_private_forks: req
+                    .allow_private_forks
+                    .unwrap_or(current.allow_private_forks),
             }
         }),
         description: req.description,
@@ -312,6 +334,55 @@ pub(crate) async fn delete_repo(
 ) -> ApiResult<StatusCode> {
     s.repos.delete(&who, &open.record).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(post, path = "/v1/repos/{owner}/{name}/forks", params(RepoAddress), request_body = api::ForkRepoRequest, responses(
+    (status = 201, body = api::RepoInfo, description = "the fork, with the source's visibility, history and policy and no locks; the caller becomes its admin"),
+    (status = 400, body = api::ErrorBody, description = "invalid_repo_name"),
+    (status = 403, body = api::ErrorBody, description = "fork_forbidden: a private source that does not allow forks; not_namespace_owner, not_org_member or repo_create_forbidden for the target owner; or a token without manage_roles or limited to repositories"),
+    (status = 404, body = api::ErrorBody, description = "repo_not_found: no such repository, or one the caller cannot read"),
+    (status = 409, body = api::ErrorBody, description = "repo_exists, repo_limit_reached, fork_limit_reached, storage_limit_reached (the fork counts in full against the target owner), or org_deleting"),
+))]
+pub(crate) async fn fork_repo(
+    State(s): State<AppState>,
+    NamespaceCaller(who): NamespaceCaller,
+    Path((owner, name)): Path<(String, String)>,
+    Json(req): Json<api::ForkRepoRequest>,
+) -> ApiResult<(StatusCode, Json<api::RepoInfo>)> {
+    let target = req
+        .owner
+        .map_or_else(|| who.user.clone(), crate::owner_path::typed_owner);
+    let record = s
+        .repos
+        .fork(&who, &owner, &name, &target, req.name.as_deref())
+        .await?;
+    let role = s.access.role_in(&record.id, &who.user).await?;
+    let limit = s.repos.lock_limit(&record).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(repo_info(&s, record, role, limit, Some(&who.user)).await?),
+    ))
+}
+
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/forks", params(RepoAddress), responses(
+    (status = 200, body = Vec<api::RepoInfo>, description = "the forks of the repository the caller may see, ordered by owner then name"),
+    (status = 404, body = api::ErrorBody, description = "repo_not_found"),
+))]
+pub(crate) async fn list_forks(
+    State(s): State<AppState>,
+    RepoReader {
+        identity: who,
+        repo: open,
+        ..
+    }: RepoReader,
+) -> ApiResult<Json<Vec<api::RepoInfo>>> {
+    let viewer = who.as_ref().map(|w| &w.user);
+    let mut out = Vec::new();
+    for (record, role) in s.repos.forks_visible(&open.record, who.as_ref()).await? {
+        let limit = s.repos.lock_limit(&record).await?;
+        out.push(repo_info(&s, record, role, limit, viewer).await?);
+    }
+    Ok(Json(out))
 }
 
 fn star_dto(s: pyn_core::StarState) -> api::StarState {

@@ -8889,6 +8889,149 @@
         "x-pyn-reach": "repo_scoped:locks:admin"
       }
     },
+    "/v1/repos/{owner}/{name}/forks": {
+      "get": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "list_forks",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the forks of the repository the caller may see, ordered by owner then name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RepoInfo"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:metadata:read"
+      },
+      "post": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "fork_repo",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForkRepoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "the fork, with the source's visibility, history and policy and no locks; the caller becomes its admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_repo_name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "fork_forbidden: a private source that does not allow forks; not_namespace_owner, not_org_member or repo_create_forbidden for the target owner; or a token without manage_roles or limited to repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found: no such repository, or one the caller cannot read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "repo_exists, repo_limit_reached, fork_limit_reached, storage_limit_reached (the fork counts in full against the target owner), or org_deleting",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "namespace"
+      }
+    },
     "/v1/repos/{owner}/{name}/history": {
       "get": {
         "tags": [],
@@ -15578,6 +15721,13 @@
           "name"
         ],
         "properties": {
+          "allow_private_forks": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether people who can read the repository may fork it while it is private. Defaults to `false`."
+          },
           "description": {
             "type": [
               "string",
@@ -16735,6 +16885,26 @@
           "reason": {
             "type": "string",
             "description": "Why the lock is being removed; required and recorded in the audit log."
+          }
+        }
+      },
+      "ForkRepoRequest": {
+        "type": "object",
+        "description": "Body of `POST /v1/repos/{owner}/{name}/forks`.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Defaults to the source's name."
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The namespace to fork into: the caller, or an organization whose repository-creation policy allows the source's\nvisibility. Defaults to the caller."
           }
         }
       },
@@ -19823,6 +19993,9 @@
           "languages",
           "language",
           "updated_at",
+          "fork_of",
+          "fork_count",
+          "allow_private_forks",
           "visibility",
           "lease_hours",
           "max_locks_per_user",
@@ -19834,6 +20007,10 @@
           "watcher_count"
         ],
         "properties": {
+          "allow_private_forks": {
+            "type": "boolean",
+            "description": "Whether people who can read this private repository may fork it; a public one can always be forked."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -19852,6 +20029,23 @@
           "exclusive_read_only_source": {
             "$ref": "#/components/schemas/ReadOnlySource",
             "description": "Which of the three decided `exclusive_read_only`."
+          },
+          "fork_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many repositories were forked from this one, whoever owns them and whatever their visibility.",
+            "minimum": 0
+          },
+          "fork_of": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RepoRef",
+                "description": "The repository this one was forked from; null for an original, when the source was deleted, and when the\ncaller cannot see the source."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "type": "string",
@@ -20023,6 +20217,22 @@
               "$ref": "#/components/schemas/CreationRuleInfo"
             },
             "description": "Ordered by kind, subject, then effect."
+          }
+        }
+      },
+      "RepoRef": {
+        "type": "object",
+        "description": "A repository's address.",
+        "required": [
+          "owner",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
           }
         }
       },
@@ -22060,6 +22270,13 @@
         "type": "object",
         "description": "Fields left out stay as they are.",
         "properties": {
+          "allow_private_forks": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether people who can read the repository may fork it while it is private."
+          },
           "description": {
             "type": [
               "string",

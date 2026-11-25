@@ -1237,6 +1237,23 @@ impl MetadataStore for BudgetGateStore {
         self.inner.history_authors(repo, within).await
     }
 
+    async fn fork_repo_with_events(
+        &self,
+        fork: RepoRecord,
+        limits: crate::ForkLimits,
+        events: &[crate::EventDraft],
+    ) -> crate::Result<RepoRecord> {
+        self.inner.fork_repo_with_events(fork, limits, events).await
+    }
+
+    async fn list_forks(&self, source: &RepoId) -> crate::Result<Vec<RepoRecord>> {
+        self.inner.list_forks(source).await
+    }
+
+    async fn count_forks(&self, source: &RepoId) -> crate::Result<u64> {
+        self.inner.count_forks(source).await
+    }
+
     async fn create_repo_capped_with_events(
         &self,
         repo: RepoRecord,

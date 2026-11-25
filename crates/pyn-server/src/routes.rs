@@ -828,6 +828,16 @@ fn table() -> Vec<Entry> {
             repo_api::delete_repo,
         ),
         get(
+            "/v1/repos/{owner}/{name}/forks",
+            Reach::PublicRepoRead(need(Metadata, Read)),
+            repo_api::list_forks,
+        ),
+        post(
+            "/v1/repos/{owner}/{name}/forks",
+            Reach::Namespace,
+            repo_api::fork_repo,
+        ),
+        get(
             "/v1/repos/{owner}/{name}/star",
             Reach::FullScope,
             repo_api::get_star,

@@ -62,6 +62,7 @@ fn repo(id: &str, name: &str) -> RepoRecord {
         initial_policy: None,
         created_at: t0(),
         about: Default::default(),
+        fork_of: None,
     }
 }
 
