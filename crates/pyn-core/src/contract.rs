@@ -3556,6 +3556,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_lock_limit_and_can_clear_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_about_block_and_can_clear_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fork_copies_history_but_not_locks_and_checks_its_limits);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_default_branch_fork_copies_only_what_the_default_branch_reaches);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_do_not_share_locks_or_revisions);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_users_live_locks_are_listed_across_repositories);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; deleting_a_repository_removes_only_its_own_data);
@@ -5044,10 +5045,21 @@ impl MetadataStore for HookedMeta {
     async fn fork_repo_with_events(
         &self,
         fork: RepoRecord,
+        copy: &crate::ForkCopy,
         limits: crate::ForkLimits,
         events: &[crate::EventDraft],
     ) -> crate::Result<RepoRecord> {
-        self.inner.fork_repo_with_events(fork, limits, events).await
+        self.inner
+            .fork_repo_with_events(fork, copy, limits, events)
+            .await
+    }
+
+    async fn fork_contents(
+        &self,
+        repo: &RepoId,
+        head: &ObjectId,
+    ) -> crate::Result<Vec<(ObjectId, u64)>> {
+        self.inner.fork_contents(repo, head).await
     }
 
     async fn list_forks(&self, source: &RepoId) -> crate::Result<Vec<RepoRecord>> {

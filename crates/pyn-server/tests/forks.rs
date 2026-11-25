@@ -18,6 +18,7 @@ use pyn_proto as api;
 use pyn_server::auth::{BearerAuth, DevHeaderAuth};
 use pyn_server::{AppState, router};
 use serde_json::json;
+use sha2::Digest;
 use tower::ServiceExt;
 
 const PASSWORD: &str = "correct horse battery";
@@ -162,6 +163,17 @@ async fn patch(app: &Router, who: &str, repo: &str, body: serde_json::Value) -> 
 }
 
 async fn check_in(app: &Router, who: &str, repo: &str, path: &str, content: &[u8]) {
+    check_in_on(app, who, repo, None, path, content).await;
+}
+
+async fn check_in_on(
+    app: &Router,
+    who: &str,
+    repo: &str,
+    branch: Option<&str>,
+    path: &str,
+    content: &[u8],
+) {
     let r = send(
         app,
         who,
@@ -174,7 +186,7 @@ async fn check_in(app: &Router, who: &str, repo: &str, path: &str, content: &[u8
     .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text());
     let blob = r.json::<api::PutObjectResponse>().content;
-    let body = json!({"path": path, "content": blob, "message": path});
+    let body = json!({"path": path, "content": blob, "message": path, "branch": branch});
     let r = call(
         app,
         who,
@@ -448,4 +460,179 @@ async fn a_fork_over_the_storage_or_fork_limits_is_refused_with_a_clear_message(
         "per repository"
     );
     assert!(r.json::<api::ErrorBody>().message.contains("alice/game"));
+}
+
+/// Uploads `bytes` as an LFS object of `repo` and checks in a pointer file to it at `path`.
+async fn lfs_file(
+    app: &Router,
+    who: &str,
+    repo: &str,
+    branch: Option<&str>,
+    path: &str,
+    bytes: &[u8],
+) {
+    let oid = hex::encode(sha2::Sha256::digest(bytes));
+    let len = bytes.len().to_string();
+    let r = send(
+        app,
+        who,
+        "PUT",
+        &format!("/v1/repos/{repo}/info/lfs/objects/{oid}"),
+        "application/octet-stream",
+        bytes.to_vec(),
+        &[("content-length", &len)],
+    )
+    .await;
+    assert!(r.status.is_success(), "{}", r.text());
+    let pointer =
+        format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {len}\n");
+    check_in_on(app, who, repo, branch, path, pointer.as_bytes()).await;
+}
+
+async fn ref_names(app: &Router, who: &str, repo: &str, kind: &str) -> Vec<String> {
+    let r = call(app, who, "GET", &format!("/v1/repos/{repo}/{kind}"), None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let mut names: Vec<String> = r
+        .json::<Vec<serde_json::Value>>()
+        .iter()
+        .map(|b| b["name"].as_str().unwrap().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+async fn usage(app: &Router, who: &str, repo: &str) -> api::RepoUsage {
+    let r = call(app, who, "GET", &format!("/v1/repos/{repo}/usage"), None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    r.json()
+}
+
+#[tokio::test]
+async fn a_fork_copies_the_default_branch_only_unless_asked_for_every_branch() {
+    let app = server().await;
+    let (alice, bob, carol) = (
+        token_for(&app, "alice").await,
+        token_for(&app, "bob").await,
+        token_for(&app, "carol").await,
+    );
+    make_repo(&app, &alice, "game", "public").await;
+    check_in(
+        &app,
+        &alice,
+        "alice/game",
+        "main.txt",
+        b"on the default branch\n",
+    )
+    .await;
+    lfs_file(
+        &app,
+        &alice,
+        "alice/game",
+        None,
+        "art/main.ptr",
+        b"main asset",
+    )
+    .await;
+    let r = call(
+        &app,
+        &alice,
+        "POST",
+        "/v1/repos/alice/game/branches",
+        Some(json!({"name": "feature"})),
+    )
+    .await;
+    assert!(r.status.is_success(), "{}", r.text());
+    let side = b"only on the feature branch\n";
+    check_in_on(
+        &app,
+        &alice,
+        "alice/game",
+        Some("feature"),
+        "side.txt",
+        side,
+    )
+    .await;
+    let side_asset = b"side asset bytes";
+    lfs_file(
+        &app,
+        &alice,
+        "alice/game",
+        Some("feature"),
+        "art/side.ptr",
+        side_asset,
+    )
+    .await;
+    for body in [
+        json!({"name": "v1"}),
+        json!({"name": "f1", "target": "feature"}),
+    ] {
+        let r = call(
+            &app,
+            &alice,
+            "POST",
+            "/v1/repos/alice/game/tags",
+            Some(body),
+        )
+        .await;
+        assert!(r.status.is_success(), "{}", r.text());
+    }
+
+    let r = fork(&app, &bob, "alice/game", json!({})).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    assert_eq!(
+        ref_names(&app, &bob, "bob/game", "branches").await,
+        ["main"]
+    );
+    assert_eq!(ref_names(&app, &bob, "bob/game", "tags").await, ["v1"]);
+    let r = call(
+        &app,
+        &bob,
+        "GET",
+        "/v1/repos/bob/game/content?path=main.txt",
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+
+    let r = fork(
+        &app,
+        &carol,
+        "alice/game",
+        json!({"default_branch_only": false}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    assert_eq!(
+        ref_names(&app, &carol, "carol/game", "branches").await,
+        ["feature", "main"]
+    );
+    assert_eq!(
+        ref_names(&app, &carol, "carol/game", "tags").await,
+        ["f1", "v1"]
+    );
+
+    let (only, all, source) = (
+        usage(&app, &bob, "bob/game").await,
+        usage(&app, &carol, "carol/game").await,
+        usage(&app, &alice, "alice/game").await,
+    );
+    assert_eq!(
+        (all.stored_bytes, all.lfs_bytes),
+        (source.stored_bytes, source.lfs_bytes)
+    );
+    assert_eq!(
+        only.lfs_bytes,
+        b"main asset".len() as u64,
+        "the asset the default branch names"
+    );
+    let side_pointer = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {}\n",
+        hex::encode(sha2::Sha256::digest(side_asset)),
+        side_asset.len()
+    );
+    assert_eq!(
+        only.stored_bytes,
+        all.stored_bytes - side.len() as u64 - side_pointer.len() as u64,
+        "storage counts what was copied"
+    );
 }

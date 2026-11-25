@@ -13,6 +13,7 @@ mod push_merge;
 mod uploads;
 mod verify;
 pub use lfs::is_lfs_oid;
+pub(crate) use lfs::{LFS_POINTER_MAX_BYTES, lfs_pointer_oid};
 pub use lfs_tus::{
     TUS_APPEND_LEASE_MINUTES, TUS_MAX_SESSIONS_PER_USER, TUS_SESSION_TTL_HOURS, TusAppended,
     TusError, TusStatus, sweep_tus_sessions,

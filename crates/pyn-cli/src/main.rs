@@ -808,8 +808,8 @@ enum RepoCommand {
         #[arg(long)]
         allow_private_forks: Option<bool>,
     },
-    /// Fork a repository you can read into your namespace or an organization: a copy of its files, history and policy,
-    /// without its locks, linked to it as its source.
+    /// Fork a repository you can read into your namespace or an organization: a copy of its default branch with its
+    /// history and tags, and its policy, without its locks, linked to it as its source.
     Fork {
         /// `owner/name` of the repository to fork.
         name: String,
@@ -819,6 +819,9 @@ enum RepoCommand {
         /// An organization to fork into; you by default.
         #[arg(long)]
         owner: Option<String>,
+        /// Copy every branch and tag, not only the default branch.
+        #[arg(long)]
+        all_branches: bool,
     },
     /// List the forks of a repository that you may see.
     Forks {
@@ -3923,12 +3926,14 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
             name,
             new_name,
             owner,
+            all_branches,
         } => {
             let (src_owner, src_name) = address::split_repo(&name)?;
             let org = owner.clone().unwrap_or_default();
             let body = api::ForkRepoRequest {
                 owner,
                 name: new_name,
+                default_branch_only: Some(!all_branches),
             };
             let made: api::RepoInfo = api
                 .send(

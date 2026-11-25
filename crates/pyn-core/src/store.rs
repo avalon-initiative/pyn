@@ -9,7 +9,7 @@ use crate::history::{HistoryBy, HistoryCursor, HistoryScan};
 use crate::limit_events::LockEventBuilder;
 use crate::limits::{RepoBreakdown, RepoUsage, StorageCap, Usage};
 use crate::merge::{MergeWrite, MergeWritten};
-use crate::repo::{ForkLimits, RepoRecord, RepoUpdate};
+use crate::repo::{ForkCopy, ForkLimits, RepoRecord, RepoUpdate};
 use crate::tag::Tag;
 use crate::tree::HeadCounts;
 use crate::webhook::EventDraft;
@@ -602,16 +602,21 @@ pub trait MetadataStore: Send + Sync {
         events: &[EventDraft],
     ) -> Result<RepoRecord>;
 
-    /// Registers `fork` (whose `fork_of` names the source) with a copy of the source's branches, tags, commits, trees,
-    /// revisions, recorded uploads and LFS objects, never its locks, upload sessions or pull requests. `limits` are
-    /// checked in the same step: `RepoExists`, `RepoLimitReached`, `ForkLimitReached` or `ForkStorageLimitReached`, and
-    /// a refused fork leaves nothing behind and queues nothing.
+    /// Registers `fork` (whose `fork_of` names the source) with the copy of the source's branches, tags, commits, trees,
+    /// revisions, recorded uploads and LFS objects that `copy` picks, never its locks, upload sessions or pull requests.
+    /// `limits` are checked in the same step: `RepoExists`, `RepoLimitReached`, `ForkLimitReached` or
+    /// `ForkStorageLimitReached` (over the bytes copied), and a refused fork leaves nothing behind and queues nothing.
     async fn fork_repo_with_events(
         &self,
         fork: RepoRecord,
+        copy: &ForkCopy,
         limits: ForkLimits,
         events: &[EventDraft],
     ) -> Result<RepoRecord>;
+
+    /// The distinct contents, with their lengths, of the revisions a `ForkCopy::DefaultBranch` fork of `repo` at `head`
+    /// keeps.
+    async fn fork_contents(&self, repo: &RepoId, head: &ObjectId) -> Result<Vec<(ObjectId, u64)>>;
 
     /// The repositories forked from `source`, ordered by owner, then name.
     async fn list_forks(&self, source: &RepoId) -> Result<Vec<RepoRecord>>;

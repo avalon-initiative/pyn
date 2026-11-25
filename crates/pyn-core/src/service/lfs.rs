@@ -20,6 +20,24 @@ pub fn is_lfs_oid(oid: &str) -> bool {
     oid.len() == 64 && oid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// Git LFS pointer files are shorter than this.
+pub(crate) const LFS_POINTER_MAX_BYTES: u64 = 1024;
+
+/// The oid a Git LFS pointer file names, when `bytes` is one.
+pub(crate) fn lfs_pointer_oid(bytes: &[u8]) -> Option<&str> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text.lines();
+    if !lines
+        .next()?
+        .starts_with("version https://git-lfs.github.com/spec/")
+    {
+        return None;
+    }
+    lines
+        .find_map(|l| l.strip_prefix("oid sha256:"))
+        .filter(|oid| is_lfs_oid(oid))
+}
+
 type Mismatch = Arc<Mutex<Option<String>>>;
 
 /// Hashes what passes through and fails the read at the end of a body of `size` bytes whose sha256 is not `oid`.
@@ -197,5 +215,25 @@ impl RepoService {
             .await?
             .ok_or_else(|| PynError::ObjectMissing(oid.to_string()))?;
         Ok((object, read))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lfs_pointer_oid;
+
+    #[test]
+    fn a_pointer_file_names_its_oid() {
+        let oid = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393";
+        let pointer =
+            format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize 12345\n");
+        assert_eq!(lfs_pointer_oid(pointer.as_bytes()), Some(oid));
+        assert_eq!(
+            lfs_pointer_oid(format!("oid sha256:{oid}\n").as_bytes()),
+            None
+        );
+        let short = "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 1\n";
+        assert_eq!(lfs_pointer_oid(short.as_bytes()), None);
+        assert_eq!(lfs_pointer_oid(b"\xff\xfe"), None);
     }
 }

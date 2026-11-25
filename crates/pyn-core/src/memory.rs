@@ -39,7 +39,7 @@ use crate::profile::{
     Avatar, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
 };
 use crate::ratelimit::{RateLimitStore, RateState};
-use crate::repo::{ForkLimits, RepoRecord, RepoUpdate, Visibility};
+use crate::repo::{ForkCopy, ForkLimits, RepoRecord, RepoUpdate, Visibility, subtree_ids};
 use crate::repo_policy::{
     CreationEffect, CreationRule, CreationScope, CreationSubject, MemberCreation, RepoPolicy,
 };
@@ -93,6 +93,14 @@ struct State {
     /// Old `owner/name` addresses left by a rename of the owner, by lowercase name, to the repository's id.
     redirects: HashMap<(UserId, String), RepoId>,
     pulls: HashMap<RepoId, pulls::PullData>,
+}
+
+/// See `State::branch_pick`; `contents` are those of the revisions kept.
+struct BranchPick {
+    commits: HashSet<ObjectId>,
+    trees: HashSet<ObjectId>,
+    last: HashMap<RepoPath, RevisionId>,
+    contents: HashSet<ObjectId>,
 }
 
 impl State {
@@ -192,6 +200,56 @@ impl State {
             }
         }
         seen
+    }
+
+    /// What a default-branch fork of `repo` at `head` keeps: the commits and trees it reaches, and per path the newest
+    /// revision one of those commits made or points at.
+    fn branch_pick(&self, repo: &RepoId, head: Option<&ObjectId>) -> Result<BranchPick> {
+        let commits = head.map(|h| self.ancestors(repo, h)).unwrap_or_default();
+        let mut trees = HashSet::new();
+        let mut stack: Vec<ObjectId> = commits
+            .iter()
+            .filter_map(|c| self.commit_record(repo, c).map(|c| c.tree))
+            .collect();
+        while let Some(id) = stack.pop() {
+            if !trees.insert(id) {
+                continue;
+            }
+            if let Some(body) = self.trees.get(&(repo.clone(), id)) {
+                stack.extend(subtree_ids(&id, body)?);
+            }
+        }
+        let mut last: HashMap<RepoPath, RevisionId> = HashMap::new();
+        let mut raise = |path: &RepoPath, id: RevisionId| {
+            let at = last.entry(path.clone()).or_insert(id);
+            *at = (*at).max(id);
+        };
+        for ((r, path), revs) in &self.revisions {
+            for v in revs
+                .iter()
+                .filter(|v| r == repo && commits.contains(&v.commit))
+            {
+                raise(path, v.id);
+            }
+        }
+        for c in &commits {
+            for (path, id) in self.pointers.get(&(repo.clone(), *c)).into_iter().flatten() {
+                raise(path, *id);
+            }
+        }
+        let contents = self
+            .revisions
+            .iter()
+            .filter(|((r, path), _)| r == repo && last.contains_key(path))
+            .flat_map(|((_, path), revs)| revs.iter().filter(|v| v.id <= last[path]))
+            .map(|v| v.content)
+            .collect();
+        Ok(BranchPick {
+            commits,
+            trees,
+            last,
+            contents,
+        })
     }
 
     /// Every path's revision number at `commit`: the nearest pointer along the first-parent chain.
@@ -1878,6 +1936,7 @@ impl MetadataStore for MemoryMetadataStore {
     async fn fork_repo_with_events(
         &self,
         fork: RepoRecord,
+        copy: &ForkCopy,
         limits: ForkLimits,
         events: &[EventDraft],
     ) -> Result<RepoRecord> {
@@ -1921,9 +1980,39 @@ impl MetadataStore for MemoryMetadataStore {
             let what = owner.to_string();
             return Err(PynError::ForkLimitReached { what, limit });
         }
+        let pick = match copy {
+            ForkCopy::All => None,
+            ForkCopy::DefaultBranch { head, lfs } => {
+                let lfs: HashSet<&str> = lfs.iter().map(String::as_str).collect();
+                Some((st.branch_pick(&source, head.as_ref())?, *head, lfs))
+            }
+        };
+        let keep_lfs = |oid: &str| pick.as_ref().is_none_or(|(_, _, lfs)| lfs.contains(oid));
+        let lfs_objects: HashSet<ObjectId> = st
+            .lfs
+            .iter()
+            .filter(|((r, oid), _)| r == &source && keep_lfs(oid))
+            .map(|(_, o)| o.object)
+            .collect();
+        let keep_content = |id: &ObjectId| {
+            pick.as_ref()
+                .is_none_or(|(p, _, _)| p.contents.contains(id))
+        };
         if let Some(limit) = limits.storage_bytes {
             let used = st.stored_by(owner) + st.lfs_by(owner);
-            let needed = st.stored_in(&source) + st.lfs_in(&source);
+            let stored: u64 = st
+                .sizes
+                .iter()
+                .filter(|((r, c), _)| r == &source && keep_content(c))
+                .map(|(_, size)| size)
+                .sum();
+            let lfs: u64 = st
+                .lfs
+                .iter()
+                .filter(|((r, oid), _)| r == &source && keep_lfs(oid))
+                .map(|(_, o)| o.size)
+                .sum();
+            let needed = stored + lfs;
             if used + needed > limit {
                 return Err(PynError::ForkStorageLimitReached {
                     owner: owner.to_string(),
@@ -1935,30 +2024,80 @@ impl MetadataStore for MemoryMetadataStore {
         }
         self.outbox.queue(events)?;
         let (from, to) = (&source, &fork.id);
-        fn copy<K: Clone + Eq + std::hash::Hash, V: Clone>(
+        fn copy_rows<K: Clone + Eq + std::hash::Hash, V: Clone>(
             map: &mut HashMap<K, V>,
-            pick: impl Fn(&K) -> Option<K>,
+            pick: impl Fn(&K, &V) -> Option<(K, V)>,
         ) {
-            let copies: Vec<_> = map
-                .iter()
-                .filter_map(|(k, v)| pick(k).map(|k| (k, v.clone())))
-                .collect();
+            let copies: Vec<_> = map.iter().filter_map(|(k, v)| pick(k, v)).collect();
             map.extend(copies);
         }
         let swap = |r: &RepoId| (r == from).then(|| to.clone());
-        copy(&mut st.revisions, |(r, p)| swap(r).map(|r| (r, p.clone())));
-        copy(&mut st.sizes, |(r, c)| swap(r).map(|r| (r, *c)));
-        copy(&mut st.trees, |(r, c)| swap(r).map(|r| (r, *c)));
-        copy(&mut st.pointers, |(r, c)| swap(r).map(|r| (r, *c)));
-        copy(&mut st.uploads, |(r, c)| swap(r).map(|r| (r, *c)));
-        copy(&mut st.lfs, |(r, o)| swap(r).map(|r| (r, o.clone())));
-        copy(&mut st.commits, swap);
-        copy(&mut st.branches, swap);
-        copy(&mut st.tags, swap);
+        let commit = |id: &ObjectId| pick.as_ref().is_none_or(|(p, _, _)| p.commits.contains(id));
+        let tree = |id: &ObjectId| pick.as_ref().is_none_or(|(p, _, _)| p.trees.contains(id));
+        let object = |id: &ObjectId| keep_content(id) || lfs_objects.contains(id);
+        let revision = |path: &RepoPath, v: &Revision| {
+            pick.as_ref()
+                .is_none_or(|(p, _, _)| p.last.get(path).is_some_and(|last| v.id <= *last))
+        };
+        copy_rows(&mut st.revisions, |(r, p), revs| {
+            let kept: Vec<_> = revs.iter().filter(|v| revision(p, v)).cloned().collect();
+            swap(r)
+                .filter(|_| !kept.is_empty())
+                .map(|r| ((r, p.clone()), kept))
+        });
+        copy_rows(&mut st.sizes, |(r, c), v| {
+            swap(r).filter(|_| keep_content(c)).map(|r| ((r, *c), *v))
+        });
+        copy_rows(&mut st.trees, |(r, c), v| {
+            swap(r).filter(|_| tree(c)).map(|r| ((r, *c), v.clone()))
+        });
+        copy_rows(&mut st.pointers, |(r, c), v| {
+            swap(r).filter(|_| commit(c)).map(|r| ((r, *c), v.clone()))
+        });
+        copy_rows(&mut st.uploads, |(r, c), v| {
+            swap(r).filter(|_| object(c)).map(|r| ((r, *c), *v))
+        });
+        copy_rows(&mut st.lfs, |(r, o), v| {
+            swap(r)
+                .filter(|_| keep_lfs(o))
+                .map(|r| ((r, o.clone()), v.clone()))
+        });
+        copy_rows(&mut st.commits, |r, v| {
+            let kept = v.iter().filter(|c| commit(&c.id)).cloned().collect();
+            swap(r).map(|r| (r, kept))
+        });
+        copy_rows(&mut st.branches, |r, v| {
+            let kept = match &pick {
+                None => v.clone(),
+                Some((_, head, _)) => v
+                    .iter()
+                    .filter(|b| b.default)
+                    .map(|b| Branch {
+                        head: *head,
+                        ..b.clone()
+                    })
+                    .collect(),
+            };
+            swap(r).map(|r| (r, kept))
+        });
+        copy_rows(&mut st.tags, |r, v| {
+            let kept = v.iter().filter(|t| commit(&t.commit)).cloned().collect();
+            swap(r).map(|r| (r, kept))
+        });
         st.redirects
             .remove(&(fork.owner.clone(), fork.name.to_lowercase()));
         st.repos.insert(fork.id.clone(), fork.clone());
         Ok(fork)
+    }
+
+    async fn fork_contents(&self, repo: &RepoId, head: &ObjectId) -> Result<Vec<(ObjectId, u64)>> {
+        let st = self.state.lock().unwrap();
+        let pick = st.branch_pick(repo, Some(head))?;
+        Ok(pick
+            .contents
+            .into_iter()
+            .map(|c| (c, st.sizes.get(&(repo.clone(), c)).copied().unwrap_or(0)))
+            .collect())
     }
 
     async fn list_forks(&self, source: &RepoId) -> Result<Vec<RepoRecord>> {
