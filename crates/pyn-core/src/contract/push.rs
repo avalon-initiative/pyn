@@ -420,6 +420,74 @@ pub async fn a_lock_is_consumed_after_the_paths_last_revision_in_the_push(store:
     assert!(matches!(err, PynError::LockRequired(_)), "{err}");
 }
 
+pub async fn a_push_keeps_the_locks_of_paths_it_does_not_change(store: Store) {
+    let h = harness(store);
+    let (map, other) = (path("Content/a.umap"), path("Content/b.umap"));
+    let (one, two, three) = (
+        blob(&h, "one").await,
+        blob(&h, "two").await,
+        blob(&h, "three").await,
+    );
+    h.svc.checkout(&map, &user("alice"), None).await.unwrap();
+    h.svc.checkout(&other, &user("alice"), None).await.unwrap();
+    let mut files = Files::new();
+    set(&mut files, "Content/a.umap", one);
+    set(&mut files, "Content/b.umap", one);
+    set(&mut files, "Source/a.cpp", one);
+    let base = build(&files, None, "base", 1);
+    h.svc
+        .push_commits(&who("alice"), "main", objects(&[&base]))
+        .await
+        .unwrap();
+    let held = h
+        .svc
+        .checkout(&map, &user("alice"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    let mut pushes = Vec::new();
+    let mut parent = base.id;
+    for (n, branch) in [(2, "main"), (3, "feature"), (4, "feature")] {
+        h.clock.advance(Duration::minutes(5));
+        set(
+            &mut files,
+            "Source/a.cpp",
+            if n % 2 == 0 { two } else { three },
+        );
+        let next = build(&files, Some(parent), "shared only", n);
+        h.svc
+            .push_commits(&who("alice"), branch, objects(&[&next]))
+            .await
+            .unwrap();
+        assert_eq!(
+            h.svc.locks().await.unwrap(),
+            vec![held.clone()],
+            "push {n} to {branch} leaves the lock and its lease"
+        );
+        parent = next.id;
+        pushes.push(next);
+    }
+
+    h.svc
+        .checkout_on("feature", &other, &user("alice"), Some(RevisionId(1)))
+        .await
+        .unwrap();
+    set(&mut files, "Content/b.umap", two);
+    let changes_other = build(&files, Some(parent), "other map", 5);
+    h.svc
+        .push_commits(&who("alice"), "feature", objects(&[&changes_other]))
+        .await
+        .unwrap();
+    assert_eq!(h.svc.locks().await.unwrap(), vec![held]);
+
+    set(&mut files, "Content/a.umap", two);
+    let changes_map = build(&files, Some(changes_other.id), "map", 6);
+    h.svc
+        .push_commits(&who("alice"), "feature", objects(&[&changes_map]))
+        .await
+        .unwrap();
+    assert!(h.svc.locks().await.unwrap().is_empty());
+}
+
 pub async fn a_pushed_exclusive_revision_is_based_on_the_branchs_pointer(store: Store) {
     let h = harness(store);
     let map = path("Content/a.umap");

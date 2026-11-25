@@ -3731,6 +3731,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; moving_a_branch_onto_a_known_commit_needs_the_locks_a_new_one_would);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_exclusive_path_needs_the_pushers_live_lock_at_push_time);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_lock_is_consumed_after_the_paths_last_revision_in_the_push);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_keeps_the_locks_of_paths_it_does_not_change);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_exclusive_revision_is_based_on_the_branchs_pointer);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_rejected_push_leaves_nothing_behind);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_refuses_what_it_cannot_record);

@@ -1097,6 +1097,46 @@ fn pull_keeps_the_version_of_a_lock_taken_on_the_current_revision() {
 }
 
 #[test]
+fn a_push_keeps_the_lock_on_an_exclusive_path_it_leaves_unchanged() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    let held = env.ok(&ws, "alice", &["locks"]);
+    assert!(held.contains("Content/m.umap"), "{held}");
+
+    commit_local(&env, &ws, "alice", "Source/b.cpp", "bee2", "main");
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(
+        env.ok(&ws, "alice", &["locks"]),
+        held,
+        "after a push to main"
+    );
+
+    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    commit_local(&env, &ws, "alice", "Source/a.cpp", "feature\n", "feature");
+    env.ok(
+        &ws,
+        "alice",
+        &["push", "--set-upstream", "origin", "feature"],
+    );
+    assert_eq!(
+        env.ok(&ws, "alice", &["locks"]),
+        held,
+        "after creating a branch"
+    );
+    commit_local(&env, &ws, "alice", "Source/b.cpp", "bee3", "more");
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(env.ok(&ws, "alice", &["locks"]), held, "after a push to it");
+
+    commit_local(&env, &ws, "alice", "Content/m.umap", "map2", "map");
+    env.ok(&ws, "alice", &["push"]);
+    let locks = env.ok(&ws, "alice", &["locks"]);
+    assert!(
+        !locks.contains("Content/m.umap"),
+        "a push that changes it releases it: {locks}"
+    );
+}
+
+#[test]
 fn a_merged_push_still_needs_the_lock_for_the_local_exclusive_change() {
     let (env, ws) = seeded();
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
