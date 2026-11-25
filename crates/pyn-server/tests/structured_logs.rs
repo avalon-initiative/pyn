@@ -301,6 +301,7 @@ async fn audit_lines_name_the_event_without_its_detail() {
                 path: None,
                 detail: "secret@example.com".into(),
                 acting_admin: None,
+                times: Default::default(),
             },
         )
         .await
@@ -328,6 +329,7 @@ async fn an_audit_line_names_the_acting_administrator() {
                 action: AuditAction::Checkout,
                 path: None,
                 detail: String::new(),
+                times: Default::default(),
             },
         )
         .await

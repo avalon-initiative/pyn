@@ -715,8 +715,9 @@ pub(crate) async fn download(
     let h = res.headers_mut();
     h.insert(
         CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
+        HeaderValue::from_static(crate::content_type::BINARY),
     );
+    crate::content_type::harden(h);
     h.insert(
         axum::http::header::ACCEPT_RANGES,
         HeaderValue::from_static("bytes"),

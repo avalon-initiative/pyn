@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -402,6 +403,8 @@ pub struct AuditEvent {
     pub action: AuditAction,
     pub path: Option<RepoPath>,
     pub detail: String,
+    /// Times the event names (`expires_at`, ...), kept out of `detail`; covered by the hash.
+    pub times: BTreeMap<String, DateTime<Utc>>,
     /// Hash of the preceding event in the same log; `None` for the first.
     pub previous: Option<String>,
     pub hash: String,
@@ -415,6 +418,30 @@ pub struct NewAuditEvent {
     pub action: AuditAction,
     pub path: Option<RepoPath>,
     pub detail: String,
+    pub times: BTreeMap<String, DateTime<Utc>>,
+}
+
+/// An event's detail text and the times it names, which stay out of the text so clients format them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuditDetail {
+    pub text: String,
+    pub times: BTreeMap<String, DateTime<Utc>>,
+}
+
+impl AuditDetail {
+    pub fn time(mut self, name: &str, at: DateTime<Utc>) -> Self {
+        self.times.insert(name.to_string(), at);
+        self
+    }
+}
+
+impl From<String> for AuditDetail {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            times: BTreeMap::new(),
+        }
+    }
 }
 
 /// Which events to list: all matching filters, newest first, starting below `before`.

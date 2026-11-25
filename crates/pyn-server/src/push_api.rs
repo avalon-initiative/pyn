@@ -186,8 +186,9 @@ pub(crate) async fn get_object(
     let h = res.headers_mut();
     h.insert(
         axum::http::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
+        HeaderValue::from_static(crate::content_type::BINARY),
     );
+    crate::content_type::harden(h);
     h.insert(
         axum::http::HeaderName::from_static(api::CONTENT_HASH_HEADER),
         HeaderValue::from_str(&id.to_hex()).expect("hex is ASCII"),

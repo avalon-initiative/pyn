@@ -89,6 +89,7 @@ pub(crate) async fn backfill(pool: &PgPool) -> Result<()> {
                             .map(RepoPath::from_stored)
                             .transpose()?,
                         detail: r.get("detail"),
+                        times: Default::default(),
                         previous: previous.clone(),
                         hash: String::new(),
                     };

@@ -15,6 +15,7 @@ primitives below are used, so the encoding is unambiguous and needs no escaping.
 | `str(s)` | the length of `s` in UTF-8 bytes as an unsigned 64-bit big-endian integer, then the UTF-8 bytes |
 | `opt_str(s)` | `00` when absent, else `01` followed by `str(s)` |
 | `opt_u64(n)` | `00` when absent, else `01` followed by `n` as 8 big-endian bytes |
+| `u64(n)` | `n` as 8 big-endian bytes |
 | `time(t)` | microseconds since the Unix epoch, as a signed 64-bit big-endian integer (sub-microsecond digits are dropped) |
 
 **Revision**, in this order:
@@ -66,7 +67,7 @@ make it fit.
 **Audit event**, in this order:
 
 ```text
-str("pyn-audit-v1")     or "pyn-audit-v2" with an acting administrator, below
+str("pyn-audit-v1")     or "pyn-audit-v2" / "pyn-audit-v3", below
 str(scope)              the log's storage key: `owner/name`, `@org:<name>` or `@server`
 opt_str(previous)       hash of the preceding event in the same log; absent for the first
 time(at)
@@ -85,10 +86,22 @@ str("pyn-audit-v2")
 str(acting_admin)       the administrator behind the session
 ```
 
-An event without an acting administrator keeps the `pyn-audit-v1` encoding byte for byte, so every event written before the
-field existed still verifies. The tag is the version marker: the stored `acting_admin` (`audit_events.acting_admin`, `acting_admin` in
-the API) decides which encoding is checked, and removing it from a v2 event, adding it to a v1 event or changing it
-makes the hash fail. No `hash_version` column is needed for audit events.
+An event that names [times](access.md#audit) (`times`, a map from name to time) is a third encoding under its own tag:
+
+```text
+str("pyn-audit-v3")
+...                     the v1 fields above, unchanged
+opt_str(acting_admin)   the administrator behind an access session, or absent
+u64(count)              the number of times
+str(name) time(value)   each time, sorted by name (bytewise)
+```
+
+An event without an acting administrator or times keeps the `pyn-audit-v1` encoding byte for byte, and one with an acting
+administrator but no times the `pyn-audit-v2` encoding, so every event written before either field existed still verifies,
+including the older ones whose `detail` text holds a time. The tag is the version marker: the stored `acting_admin`
+(`audit_events.acting_admin`, `acting_admin` in the API) and times (`audit_events.time_names` and `time_values`, `times` in
+the API) decide which encoding is checked, and removing, adding or changing either makes the hash fail. No `hash_version`
+column is needed for audit events.
 
 The first byte string of each encoding is a domain tag, so a revision hash can never equal an audit hash. The encoding is
 part of the contract: a change to any byte needs a new tag (`...-v2`) and a new column, never an edit of these.
@@ -111,12 +124,13 @@ and time `1700000000123456`:
 | the same with previous set to the hash above, message `restore`, restored from 1 | `858c075aa1d8e6e9d624aaf0c3cdc032c3e4a165a809ff4a38d6f49ba84e0790` |
 | audit scope `alice/game`, no previous, actor `alice`, action `checkout`, path `Content/a.umap`, detail `lease 8h` | `4faf45d2108cab101ce1e890a016c314cfde33485307de1eace154d4e0edef8a` |
 | audit scope `alice/game`, previous the hash above, time `1700000001000000`, actor `bob`, action `repo_updated`, no path, empty detail | `ffb456bf011e957ddb3aafa9a4b301b822e22a3029cf8a52ee91c432ddfdc6d9` |
+| the first audit input, with the time `expires_at` = `1700028800123456` (v3) | `301790ac764932125ec69f766e5469541bd5f9bc732b2ec1142e46e22b10dc7d` |
 
 ## What is covered, and what is not
 
 Covered: path, content hash, previous hash, author, time, message and restore source (revisions, v1); v2 adds the git
 file mode, the structured author, the blob id with its algorithm and the commit id; scope, previous hash, time, actor,
-action, path and detail, and the acting administrator when there is one (audit events).
+action, path and detail, the acting administrator when there is one and the named times (audit events).
 
 Not covered by the revision hash, on purpose: the per-path revision number (its position in the chain fixes it), the
 recorded `shared` or `exclusive` mode (`.pyn/pyn.toml` at the commit decides it, and the commit id covers that file) and the
@@ -156,7 +170,7 @@ events leaves a valid chain. A client that remembers a head hash can detect that
 - `pyn verify [<path>]` follows the steps until the server is done, prints the report and exits 1 when anything is broken. It also selects each revision's encoding from
   `hash_version`, recomputes the revision hashes (v1, v2 and v3) and the commit ids it fetches on the client, so a server that reports "ok" cannot hide a mismatch.
 
-Revisions in the API carry `hash`, `hash_version`, `previous` and `base`; audit events carry `hash` and `previous` (and `acting_admin` when an administrator acted in an access session).
+Revisions in the API carry `hash`, `hash_version`, `previous` and `base`; audit events carry `hash` and `previous` (and `acting_admin` when an administrator acted in an access session, `times` when the event names any).
 
 ## Content ids and v1
 
