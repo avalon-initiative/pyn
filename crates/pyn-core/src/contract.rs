@@ -5925,6 +5925,34 @@ fn token_identity_of(name: &str, owner: &str, permissions: &[Permission]) -> Ide
     }
 }
 
+pub async fn a_team_slug_derived_from_its_name_is_unique_in_the_organization(store: Access) {
+    let access = AccessService::new(
+        store.clone(),
+        Arc::new(ManualClock::new(at(0))),
+        Arc::new(crate::MemoryLimitEvents::new()),
+    );
+    let (acme, alice) = (user("acme"), session("alice"));
+    access.create_org(&alice, "acme").await.unwrap();
+    let made = access
+        .create_team(&alice, &acme, " Level  Design ", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (made.team.slug.as_str(), made.team.name.as_str()),
+        ("level-design", "Level  Design")
+    );
+    let stored = store.team(&acme, "level-design").await.unwrap().unwrap();
+    assert_eq!(stored.name, "Level  Design");
+    assert!(matches!(
+        access.create_team(&alice, &acme, "level DESIGN", None, None).await,
+        Err(PynError::TeamExists { team, .. }) if team == "level-design"
+    ));
+    access
+        .create_team(&alice, &acme, "Level Design", Some("ld"), None)
+        .await
+        .unwrap();
+}
+
 pub async fn effective_roles_resolve_across_direct_team_and_owner_grants(store: Access) {
     let meta = Arc::new(MemoryMetadataStore::new());
     let clock = Arc::new(ManualClock::new(at(0)));
@@ -9790,6 +9818,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; organization_invitations_are_recorded_accepted_expired_and_removed_with_the_organization);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; removing_an_organization_member_drops_their_roles_in_the_given_repositories);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; teams_hold_members_and_repository_roles_until_removed);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_team_slug_derived_from_its_name_is_unique_in_the_organization);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; effective_roles_resolve_across_direct_team_and_owner_grants);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_manager_cannot_change_a_member_who_ranks_above_them);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_manager_sees_and_revokes_only_tokens_within_the_repositories_they_manage);

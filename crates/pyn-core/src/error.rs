@@ -342,7 +342,7 @@ pub enum PynError {
     LastOrgOwner(String),
     #[error("{org} has no team {team}")]
     TeamNotFound { org: String, team: String },
-    #[error("{org} already has a team {team}")]
+    #[error("{org} already has a team with the slug {team}")]
     TeamExists { org: String, team: String },
     #[error("{user} is not in team {team}")]
     TeamMemberNotFound { team: String, user: String },

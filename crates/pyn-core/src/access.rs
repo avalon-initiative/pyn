@@ -1490,6 +1490,28 @@ pub mod team {
         }
     }
 
+    /// The slug of a typed team name: the owner-name canonical form (see `account::normalize_name`) with characters a
+    /// slug cannot hold dropped, runs of `-` collapsed and leading or trailing `-` and `_` trimmed.
+    pub fn derive_slug(name: &str) -> Result<String> {
+        let kept: String = super::account::normalize_name(name)
+            .chars()
+            .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+            .collect();
+        let slug = kept
+            .split('-')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        let slug = slug.trim_matches(|c| c == '-' || c == '_');
+        validate_slug(slug).map_err(|_| {
+            PynError::InvalidRequest(format!(
+                "no team slug can be derived from the name {:?} (it gives {slug:?}); pass a slug of 1 to 39 lowercase \
+                 letters, digits, '-' or '_', starting with a letter or digit",
+                name.trim()
+            ))
+        })
+    }
+
     pub fn validate_name(name: &str) -> Result<String> {
         let name = name.trim();
         if name.is_empty() || name.chars().count() > MAX_NAME || name.chars().any(char::is_control)

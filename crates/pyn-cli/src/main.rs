@@ -1010,11 +1010,12 @@ enum OrgMemberCommand {
 enum TeamCommand {
     /// Create a team (organization owners only).
     Create {
-        /// `<org>/<team>`; the team is 1 to 39 lowercase letters, digits, `-` or `_`.
-        team: String,
-        /// Display name; the team name by default.
+        org: String,
+        /// Display name; the slug is derived from it unless `--slug` is given.
+        name: String,
+        /// 1 to 39 lowercase letters, digits, `-` or `_`, starting with a letter or digit.
         #[arg(long)]
-        name: Option<String>,
+        slug: Option<String>,
         #[arg(long)]
         description: Option<String>,
     },
@@ -4183,14 +4184,14 @@ fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
 fn team_command(api: &Api, cmd: TeamCommand) -> Result<()> {
     match cmd {
         TeamCommand::Create {
-            team,
+            org,
             name,
+            slug,
             description,
         } => {
-            let (org, slug) = address::split_team(&team)?;
             let body = api::CreateTeamRequest {
-                slug: slug.into(),
                 name,
+                slug,
                 description,
             };
             let made: api::TeamInfo = api

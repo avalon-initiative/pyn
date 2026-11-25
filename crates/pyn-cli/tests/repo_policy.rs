@@ -10,7 +10,7 @@ fn owners_show_set_and_edit_the_policy() {
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
     env.join_org(&home, "alice", "acme", "bob");
-    env.ok(&home, "alice", &["team", "create", "acme/art"]);
+    env.ok(&home, "alice", &["team", "create", "acme", "art"]);
 
     let shown = env.ok(&home, "alice", &["org", "policy", "show", "acme"]);
     assert!(shown.starts_with("members can create  none"), "{shown}");

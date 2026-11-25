@@ -74,7 +74,7 @@ fn account_and_server_commands_run_inside_a_git_repository() {
     assert!(env.ok(cwd, "-", &["usage"]).contains("alice (user)"));
     env.ok(cwd, "-", &["org", "create", "acme"]);
     assert!(env.ok(cwd, "-", &["org", "list"]).contains("acme"));
-    env.ok(cwd, "-", &["team", "create", "acme/art"]);
+    env.ok(cwd, "-", &["team", "create", "acme", "art"]);
     assert!(env.ok(cwd, "-", &["team", "list", "acme"]).contains("art"));
 
     let ed1 = key("ed1.pub");

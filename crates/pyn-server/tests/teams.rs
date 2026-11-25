@@ -173,7 +173,7 @@ async fn owners_create_update_and_delete_teams_and_members_list_them() {
         app,
         alice,
         url,
-        json!({"slug": "art", "name": "Artists", "description": "pixels"}),
+        json!({"name": "Artists", "slug": "art", "description": "pixels"}),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);
@@ -185,28 +185,45 @@ async fn owners_create_update_and_delete_teams_and_members_list_them() {
     assert!(t.members.is_empty() && t.repos.is_empty());
     let art_id = t.id.clone();
     assert!(art_id.starts_with('t') && art_id.len() == 25);
-    let r = post(app, alice, url, json!({"slug": "eng"})).await;
+    let r = post(app, alice, url, json!({"name": "  Engine  Team "})).await;
     let eng = r.json::<api::TeamInfo>();
-    assert_eq!(eng.name, "eng", "the name defaults to the slug");
-    assert_ne!(eng.id, art_id);
     assert_eq!(
-        code(&post(app, alice, url, json!({"slug": "art"})).await),
+        (eng.slug.as_str(), eng.name.as_str()),
+        ("engine-team", "Engine  Team"),
+        "the slug is derived from the name"
+    );
+    assert_ne!(eng.id, art_id);
+    let clash = post(app, alice, url, json!({"name": "ENGINE team"})).await;
+    assert_eq!(code(&clash), (409, "team_exists".into()));
+    assert!(
+        clash
+            .json::<api::ErrorBody>()
+            .message
+            .contains("engine-team"),
+        "the clash names the slug"
+    );
+    assert_eq!(
+        code(&post(app, alice, url, json!({"name": "Art", "slug": "art"})).await),
         (409, "team_exists".into())
     );
+    for bad in [
+        json!({"name": "Art", "slug": "Bad Slug"}),
+        json!({"name": " ", "slug": "x"}),
+        json!({"name": "&&"}),
+        json!({"slug": "x"}),
+    ] {
+        let r = post(app, alice, url, bad.clone()).await;
+        assert!(
+            r.status == StatusCode::BAD_REQUEST || r.status == StatusCode::UNPROCESSABLE_ENTITY,
+            "{bad}"
+        );
+    }
     assert_eq!(
-        code(&post(app, alice, url, json!({"slug": "Bad Slug"})).await),
-        (400, "invalid_request".into())
-    );
-    assert_eq!(
-        code(&post(app, alice, url, json!({"slug": "x", "name": " "})).await),
-        (400, "invalid_request".into())
-    );
-    assert_eq!(
-        code(&post(app, bob, url, json!({"slug": "ops"})).await),
+        code(&post(app, bob, url, json!({"name": "ops"})).await),
         (403, "not_org_owner".into())
     );
     assert_eq!(
-        code(&post(app, alice, "/v1/orgs/nope/teams", json!({"slug": "ops"})).await),
+        code(&post(app, alice, "/v1/orgs/nope/teams", json!({"name": "ops"})).await),
         (404, "org_not_found".into())
     );
 
@@ -217,7 +234,7 @@ async fn owners_create_update_and_delete_teams_and_members_list_them() {
         .into_iter()
         .map(|t| t.slug)
         .collect();
-    assert_eq!(slugs, ["art", "eng"]);
+    assert_eq!(slugs, ["art", "engine-team"]);
     let stranger = token_for(app, "dave").await;
     assert_eq!(
         code(&call(app, &stranger, "GET", url, None).await),
@@ -270,16 +287,31 @@ async fn owners_create_update_and_delete_teams_and_members_list_them() {
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        call(app, alice, "DELETE", "/v1/orgs/acme/teams/eng", None)
-            .await
-            .status,
+        call(
+            app,
+            alice,
+            "DELETE",
+            "/v1/orgs/acme/teams/engine-team",
+            None
+        )
+        .await
+        .status,
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        code(&call(app, alice, "DELETE", "/v1/orgs/acme/teams/eng", None).await),
+        code(
+            &call(
+                app,
+                alice,
+                "DELETE",
+                "/v1/orgs/acme/teams/engine-team",
+                None
+            )
+            .await
+        ),
         (404, "team_not_found".into())
     );
-    let again = post(app, alice, url, json!({"slug": "eng"})).await;
+    let again = post(app, alice, url, json!({"name": "Engine Team"})).await;
     assert_ne!(
         again.json::<api::TeamInfo>().id,
         eng.id,
@@ -291,7 +323,7 @@ async fn owners_create_update_and_delete_teams_and_members_list_them() {
 async fn team_members_must_be_organization_members() {
     let o = acme().await;
     let (app, alice, bob) = (&o.app, &o.alice, &o.bob);
-    post(app, alice, "/v1/orgs/acme/teams", json!({"slug": "art"})).await;
+    post(app, alice, "/v1/orgs/acme/teams", json!({"name": "art"})).await;
     let member = |u: &str| format!("/v1/orgs/acme/teams/art/members/{u}");
     token_for(app, "dave").await;
 
@@ -350,7 +382,7 @@ async fn team_members_must_be_organization_members() {
 async fn a_team_grant_gives_its_members_access_and_shows_everywhere() {
     let o = acme().await;
     let (app, alice, bob, carol) = (&o.app, &o.alice, &o.bob, &o.carol);
-    post(app, alice, "/v1/orgs/acme/teams", json!({"slug": "art"})).await;
+    post(app, alice, "/v1/orgs/acme/teams", json!({"name": "art"})).await;
     call(
         app,
         alice,
@@ -468,7 +500,7 @@ async fn a_team_grant_gives_its_members_access_and_shows_everywhere() {
 async fn only_someone_who_can_grant_the_role_may_set_a_team_role() {
     let o = acme().await;
     let (app, alice, bob, carol) = (&o.app, &o.alice, &o.bob, &o.carol);
-    post(app, alice, "/v1/orgs/acme/teams", json!({"slug": "art"})).await;
+    post(app, alice, "/v1/orgs/acme/teams", json!({"name": "art"})).await;
     call(
         app,
         alice,
@@ -537,7 +569,7 @@ async fn teams_belong_to_organizations_and_repositories_of_users_have_none() {
 async fn token_access_follows_the_team_role_and_stops_with_it() {
     let o = acme().await;
     let (app, alice, bob) = (&o.app, &o.alice, &o.bob);
-    post(app, alice, "/v1/orgs/acme/teams", json!({"slug": "art"})).await;
+    post(app, alice, "/v1/orgs/acme/teams", json!({"name": "art"})).await;
     call(
         app,
         alice,
@@ -586,7 +618,7 @@ async fn token_access_follows_the_team_role_and_stops_with_it() {
 async fn team_changes_are_in_the_organization_log_and_grants_in_the_repository_log() {
     let o = acme().await;
     let (app, alice) = (&o.app, &o.alice);
-    post(app, alice, "/v1/orgs/acme/teams", json!({"slug": "art"})).await;
+    post(app, alice, "/v1/orgs/acme/teams", json!({"name": "art"})).await;
     call(
         app,
         alice,
