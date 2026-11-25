@@ -219,6 +219,16 @@ impl AccessService {
         self.store.org_profile(org).await
     }
 
+    /// Counts one icon change for `repo` against the avatar change limit.
+    pub async fn limit_icon_changes(&self, repo: &RepoId) -> Result<()> {
+        self.count_limited(
+            &format!("repo-icon:{repo}"),
+            AVATAR_CHANGES_PER_HOUR,
+            Duration::hours(1),
+        )
+        .await
+    }
+
     /// The checks for editing an organization's profile: a credential for the organization, an owner, and not frozen.
     pub async fn require_org_edit(&self, actor: &Identity, org: &UserId) -> Result<()> {
         actor.require_org_grant(org, ORG_ADMINISTRATION_WRITE)?;

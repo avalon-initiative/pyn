@@ -3,8 +3,10 @@
 use std::str::FromStr;
 
 use axum::Json;
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
 use chrono::Duration;
 use pyn_core::{
     AccountStatus, InviteId, InviteRecord, LockLimit, MAX_INVITE_HOURS, Permission, PynError,
@@ -17,7 +19,7 @@ use crate::access_api::names;
 use crate::caller::{
     AnyCaller, FullScopeCaller, NamespaceCaller, OptionalCaller, RepoCaller, RepoReader,
 };
-use crate::{ApiResult, AppState, RepoAddress};
+use crate::{ApiResult, AppState, FileContent, RepoAddress};
 
 pub(crate) fn visibility_dto(v: pyn_core::Visibility) -> api::Visibility {
     match v {
@@ -71,6 +73,7 @@ pub(crate) async fn repo_info(
                 display_name: None,
                 avatar_url: crate::profile_api::org_avatar_url(&r.owner, p.avatar.as_ref()),
             });
+    let icon_url = icon_url(&r);
     Ok(api::RepoInfo {
         id: r.id.to_string(),
         owner_id,
@@ -80,6 +83,7 @@ pub(crate) async fn repo_info(
         description: r.about.description,
         website: r.about.website,
         topics: r.about.topics,
+        icon_url,
         language: languages.first().map(|l| l.name.clone()),
         languages,
         updated_at: code.updated_at,
@@ -104,6 +108,17 @@ pub(crate) async fn repo_info(
         watching: watch.level.map(watch_level_dto),
         watcher_count: watch.watchers,
     })
+}
+
+/// The icon address of a repository, carrying the start of the image's hash so a new image is a new URL.
+fn icon_url(r: &RepoRecord) -> Option<String> {
+    let icon = r.about.icon.as_ref()?;
+    Some(format!(
+        "/v1/repos/{}/{}/icon?v={}",
+        r.owner,
+        r.name,
+        &icon.content.to_hex()[..16]
+    ))
 }
 
 fn watch_level_dto(l: WatchLevel) -> api::WatchLevel {
@@ -245,6 +260,7 @@ pub(crate) async fn create_repo(
                 description: req.description,
                 website: req.website,
                 topics: req.topics.unwrap_or_default(),
+                icon: None,
             },
         )
         .await?;
@@ -317,6 +333,75 @@ pub(crate) async fn update_repo(
     Ok(Json(
         repo_info(&s, record, role, limit, Some(&who.user)).await?,
     ))
+}
+
+#[utoipa::path(put, path = "/v1/repos/{owner}/{name}/icon", params(RepoAddress),
+    request_body(content = inline(FileContent), content_type = "image/png", description = "the image bytes (png, jpeg or webp, at most 1 MiB); the type is judged from the bytes, not the `Content-Type` header"),
+    responses((status = 200, body = api::RepoInfo, description = "the repository with the new `icon_url`"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request: an empty body"),
+              (status = 403, body = api::ErrorBody, description = "only the owner, with admin rights in the repository"),
+              (status = 404, body = api::ErrorBody, description = "repo_not_found"),
+              (status = 409, body = api::ErrorBody, description = "owner_frozen"),
+              (status = 413, body = api::ErrorBody, description = "object_too_large: over 1 MiB"),
+              (status = 415, body = api::ErrorBody, description = "unsupported_image: not a png, jpeg or webp"),
+              (status = 429, body = api::ErrorBody, description = "too_many_attempts: too many icon changes in an hour")))]
+pub(crate) async fn put_icon(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    RepoCaller {
+        identity: who,
+        repo: open,
+        ..
+    }: RepoCaller,
+    body: Body,
+) -> ApiResult<Json<api::RepoInfo>> {
+    let bytes = crate::profile_api::avatar_bytes(&headers, body).await?;
+    let record = s.repos.set_icon(&who, &open.record, Some(bytes)).await?;
+    edited_info(&s, record, &who.user).await
+}
+
+#[utoipa::path(delete, path = "/v1/repos/{owner}/{name}/icon", params(RepoAddress),
+    responses((status = 200, body = api::RepoInfo, description = "the repository without an icon; removing none is not an error"),
+              (status = 403, body = api::ErrorBody, description = "only the owner, with admin rights in the repository"),
+              (status = 404, body = api::ErrorBody, description = "repo_not_found"),
+              (status = 409, body = api::ErrorBody, description = "owner_frozen"),
+              (status = 429, body = api::ErrorBody, description = "too_many_attempts: too many icon changes in an hour")))]
+pub(crate) async fn delete_icon(
+    State(s): State<AppState>,
+    RepoCaller {
+        identity: who,
+        repo: open,
+        ..
+    }: RepoCaller,
+) -> ApiResult<Json<api::RepoInfo>> {
+    let record = s.repos.set_icon(&who, &open.record, None).await?;
+    edited_info(&s, record, &who.user).await
+}
+
+#[utoipa::path(get, path = "/v1/repos/{owner}/{name}/icon",
+    params(RepoAddress,
+           ("v" = Option<String>, Query, description = "the version from `icon_url`; it only keeps caches of different images apart, and every response must be revalidated")),
+    responses((status = 200, content_type = "image/png", body = inline(FileContent), description = "the image, as `image/png`, `image/jpeg` or `image/webp` according to its bytes; readable by whoever can read the repository, with an `ETag` and `Cache-Control`"),
+              (status = 304, description = "`If-None-Match` matches the current image"),
+              (status = 404, body = api::ErrorBody, description = "repo_not_found, or icon_not_found when the repository has none")))]
+pub(crate) async fn get_icon(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    RepoReader { repo: open, .. }: RepoReader,
+) -> ApiResult<Response> {
+    let (icon, bytes) = s.repos.icon(&open.record).await?;
+    Ok(crate::profile_api::avatar_response(&headers, &icon, bytes))
+}
+
+/// The edited repository as its editor sees it.
+async fn edited_info(
+    s: &AppState,
+    record: RepoRecord,
+    user: &UserId,
+) -> ApiResult<Json<api::RepoInfo>> {
+    let role = s.access.role_in(&record.id, user).await?;
+    let limit = s.repos.lock_limit(&record).await?;
+    Ok(Json(repo_info(s, record, role, limit, Some(user)).await?))
 }
 
 #[utoipa::path(delete, path = "/v1/repos/{owner}/{name}", params(RepoAddress), responses(

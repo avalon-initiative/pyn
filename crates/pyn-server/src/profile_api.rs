@@ -219,7 +219,7 @@ where
 }
 
 /// The bytes the client sends as the avatar, refused early when they declare or hold more than the limit.
-async fn avatar_bytes(headers: &HeaderMap, body: Body) -> Result<Vec<u8>, PynError> {
+pub(crate) async fn avatar_bytes(headers: &HeaderMap, body: Body) -> Result<Vec<u8>, PynError> {
     let too_large = || PynError::ObjectTooLarge { limit: AVATAR_MAX };
     let declared = headers
         .get(CONTENT_LENGTH)
@@ -293,7 +293,7 @@ pub(crate) async fn get_avatar(
 
 /// The avatar image with its type, `ETag` and `no-cache`, so every use revalidates and a hidden or removed avatar
 /// stops being served at the next request; a matching `If-None-Match` gets a `304`.
-fn avatar_response(headers: &HeaderMap, avatar: &Avatar, bytes: Vec<u8>) -> Response {
+pub(crate) fn avatar_response(headers: &HeaderMap, avatar: &Avatar, bytes: Vec<u8>) -> Response {
     let etag = format!("\"{}\"", avatar.content.to_hex());
     let unchanged = headers
         .get(IF_NONE_MATCH)

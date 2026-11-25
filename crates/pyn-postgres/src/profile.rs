@@ -142,12 +142,17 @@ impl PgMetadataStore {
 }
 
 fn avatar_of(row: &PgRow) -> Result<Option<Avatar>> {
-    let corrupt = |what: &str| PynError::Storage(format!("stored avatar has a bad {what}"));
-    let Some(content) = row.get::<Option<String>, _>("avatar_content") else {
+    image_of(row, "avatar")
+}
+
+/// The image record in the `{prefix}_content`, `{prefix}_type` and `{prefix}_size` columns.
+pub(crate) fn image_of(row: &PgRow, prefix: &str) -> Result<Option<Avatar>> {
+    let corrupt = |what: &str| PynError::Storage(format!("stored {prefix} has a bad {what}"));
+    let Some(content) = row.get::<Option<String>, _>(format!("{prefix}_content").as_str()) else {
         return Ok(None);
     };
-    let kind: Option<String> = row.get("avatar_type");
-    let size: Option<i64> = row.get("avatar_size");
+    let kind: Option<String> = row.get(format!("{prefix}_type").as_str());
+    let size: Option<i64> = row.get(format!("{prefix}_size").as_str());
     Ok(Some(Avatar {
         content: ObjectId::parse(&content).map_err(|_| corrupt("hash"))?,
         kind: kind

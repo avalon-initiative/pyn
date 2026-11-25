@@ -112,6 +112,48 @@ fn the_about_block_is_set_edited_and_shown() {
 }
 
 #[test]
+fn an_icon_is_set_shown_refused_and_cleared() {
+    let env = start_empty();
+    let home = env.dir("home");
+    env.ok(&home, "alice", &["repo", "create", "alice/tools"]);
+    let good = home.join("icon.png");
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    png.resize(80, 1);
+    std::fs::write(&good, png).unwrap();
+    let bad = home.join("icon.gif");
+    std::fs::write(&bad, b"GIF89a....").unwrap();
+    let icon = |out: &str| {
+        out.lines()
+            .find_map(|l| l.strip_prefix("icon").map(|v| v.trim().to_string()))
+            .unwrap_or_else(|| panic!("no icon in {out}"))
+    };
+    let (good, bad) = (good.to_str().unwrap(), bad.to_str().unwrap());
+
+    let shown = env.ok(&home, "alice", &["repo", "show", "alice/tools"]);
+    assert_eq!(icon(&shown), "-");
+    let err = env.fails(&home, "alice", &["repo", "icon", "set", "alice/tools", bad]);
+    assert!(err.contains("unsupported_image"), "{err}");
+    let out = env.ok(
+        &home,
+        "alice",
+        &["repo", "icon", "set", "alice/tools", good],
+    );
+    assert!(out.contains("icon updated for alice/tools"), "{out}");
+    let shown = env.ok(&home, "alice", &["repo", "show", "alice/tools"]);
+    assert!(
+        icon(&shown).starts_with("/v1/repos/alice/tools/icon?v="),
+        "{shown}"
+    );
+    let err = env.fails(&home, "bob", &["repo", "icon", "set", "alice/tools", good]);
+    assert!(err.contains("not_namespace_owner"), "{err}");
+
+    let out = env.ok(&home, "alice", &["repo", "icon", "clear", "alice/tools"]);
+    assert!(out.contains("icon removed from alice/tools"), "{out}");
+    let shown = env.ok(&home, "alice", &["repo", "show", "alice/tools"]);
+    assert_eq!(icon(&shown), "-");
+}
+
+#[test]
 fn a_repository_is_forked_listed_and_shows_its_source() {
     let env = start_empty();
     let home = env.dir("home");

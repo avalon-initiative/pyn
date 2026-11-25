@@ -9,7 +9,7 @@ use crate::access::{AccountRecord, Identity, OrgRole, Role};
 use crate::access_service::AccessService;
 use crate::error::{PynError, Result};
 use crate::object::ObjectStore;
-use crate::profile::{Avatar, OrgProfile, Profile, check_avatar};
+use crate::profile::{Avatar, OrgProfile, Profile, check_image};
 use crate::repo::RepoRecord;
 use crate::repositories::Repositories;
 use crate::types::{AccountId, UserId};
@@ -118,27 +118,11 @@ impl Profiles<'_> {
     }
 
     async fn avatar_bytes(&self, avatar: &Avatar) -> Result<Option<Vec<u8>>> {
-        let Some(read) = self.objects.read(&avatar.content, None).await? else {
-            return Ok(None);
-        };
-        let mut bytes = Vec::with_capacity(avatar.size as usize);
-        read.reader
-            .take(crate::profile::MAX_AVATAR_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(|e| PynError::Storage(e.to_string()))?;
-        Ok(Some(bytes))
+        image_bytes(self.objects.as_ref(), avatar).await
     }
 
     async fn store_avatar(&self, bytes: Vec<u8>) -> Result<Avatar> {
-        let kind = check_avatar(&bytes)?;
-        let size = bytes.len() as u64;
-        let content = self.objects.put_chunk(bytes).await?;
-        Ok(Avatar {
-            content,
-            kind,
-            size,
-        })
+        store_image(self.objects.as_ref(), bytes, "avatar").await
     }
 
     /// The organization's description and avatar record.
@@ -180,4 +164,37 @@ impl Profiles<'_> {
         let bytes = self.avatar_bytes(&avatar).await?.ok_or_else(none)?;
         Ok((avatar, bytes))
     }
+}
+
+/// Reads a stored image's bytes; `None` when the object store no longer has them.
+pub(crate) async fn image_bytes(
+    objects: &dyn ObjectStore,
+    image: &Avatar,
+) -> Result<Option<Vec<u8>>> {
+    let Some(read) = objects.read(&image.content, None).await? else {
+        return Ok(None);
+    };
+    let mut bytes = Vec::with_capacity(image.size as usize);
+    read.reader
+        .take(crate::profile::MAX_AVATAR_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|e| PynError::Storage(e.to_string()))?;
+    Ok(Some(bytes))
+}
+
+/// Checks an uploaded image like an avatar and stores it under its SHA-256.
+pub(crate) async fn store_image(
+    objects: &dyn ObjectStore,
+    bytes: Vec<u8>,
+    what: &str,
+) -> Result<Avatar> {
+    let kind = check_image(&bytes, what)?;
+    let size = bytes.len() as u64;
+    let content = objects.put_chunk(bytes).await?;
+    Ok(Avatar {
+        content,
+        kind,
+        size,
+    })
 }

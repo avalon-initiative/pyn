@@ -2236,6 +2236,9 @@ impl MetadataStore for MemoryMetadataStore {
         if let Some(topics) = update.topics {
             repo.about.topics = topics;
         }
+        if let Some(icon) = update.icon {
+            repo.about.icon = icon;
+        }
         if st.repos.values().any(|r| {
             &r.id != id && r.owner == repo.owner && r.name.eq_ignore_ascii_case(&repo.name)
         }) {

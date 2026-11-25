@@ -160,6 +160,8 @@ pub struct RepoAbout {
     pub website: Option<String>,
     /// Lowercase labels, in the order given; see `languages::validate_topics`.
     pub topics: Vec<String>,
+    /// An image stored like an avatar; never copied to a fork.
+    pub icon: Option<crate::profile::Avatar>,
 }
 
 impl RepoAbout {
@@ -168,6 +170,7 @@ impl RepoAbout {
             description: validate_description(self.description)?,
             website: validate_website(self.website)?,
             topics: crate::languages::validate_topics(self.topics)?,
+            icon: self.icon,
         })
     }
 }
@@ -192,6 +195,8 @@ pub struct RepoUpdate {
     pub website: Option<Option<String>>,
     /// Replaces every topic; an empty list removes them.
     pub topics: Option<Vec<String>>,
+    /// `Some(None)` removes the icon.
+    pub icon: Option<Option<crate::profile::Avatar>>,
 }
 
 pub const MAX_DESCRIPTION_CHARS: usize = 350;

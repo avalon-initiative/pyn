@@ -205,6 +205,8 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
             Some(json!({"visibility": "public"})),
         ),
         case("delete_repo", "DELETE", repo.clone(), None),
+        case("put_icon", "PUT", format!("{repo}/icon"), None),
+        case("delete_icon", "DELETE", format!("{repo}/icon"), None),
         case(
             "checkout",
             "POST",

@@ -175,8 +175,13 @@ impl OrgProfileFields {
 
 /// Checks avatar bytes (size, then magic numbers) and returns their format.
 pub fn check_avatar(bytes: &[u8]) -> Result<ImageKind> {
+    check_image(bytes, "avatar")
+}
+
+/// The avatar checks for any uploaded image; `what` names it in the messages.
+pub fn check_image(bytes: &[u8], what: &str) -> Result<ImageKind> {
     if bytes.is_empty() {
-        return Err(PynError::InvalidRequest("the avatar is empty".into()));
+        return Err(PynError::InvalidRequest(format!("the {what} is empty")));
     }
     if bytes.len() as u64 > MAX_AVATAR_BYTES {
         return Err(PynError::ObjectTooLarge {
@@ -184,7 +189,7 @@ pub fn check_avatar(bytes: &[u8]) -> Result<ImageKind> {
         });
     }
     ImageKind::sniff(bytes).ok_or_else(|| {
-        PynError::UnsupportedImage("an avatar must be a png, jpeg or webp image".into())
+        PynError::UnsupportedImage(format!("an {what} must be a png, jpeg or webp image"))
     })
 }
 

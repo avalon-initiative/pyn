@@ -25,6 +25,7 @@ use crate::types::{Lock, RepoPath, UserId};
 use crate::webhook::OutboxEvent;
 
 mod forks;
+mod icon;
 mod stars;
 pub use stars::StarState;
 mod visible;
@@ -949,6 +950,7 @@ impl Repositories {
             ),
             ("website", record.about.website != updated.about.website),
             ("topics", record.about.topics != updated.about.topics),
+            ("icon", record.about.icon != updated.about.icon),
         ];
         let changed: Vec<_> = about.iter().filter(|(_, c)| *c).map(|(f, _)| *f).collect();
         if !changed.is_empty() {

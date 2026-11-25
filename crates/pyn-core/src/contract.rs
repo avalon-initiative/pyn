@@ -1818,6 +1818,77 @@ pub async fn a_repository_stores_its_about_block_and_can_clear_it(store: Store) 
     );
 }
 
+pub async fn a_repository_icon_is_stored_kept_by_other_edits_and_cleared(store: Store) {
+    use crate::profile::{Avatar, ImageKind};
+    let icon = |byte: u8, kind| Avatar {
+        content: ObjectId::from_bytes(pyn_object::Algorithm::Sha256, &[byte; 32]).unwrap(),
+        kind,
+        size: u64::from(byte) + 10,
+    };
+    let created = store
+        .create_repo(repo_record("r1", "alice", "game"))
+        .await
+        .unwrap();
+    assert_eq!(created.about.icon, None);
+
+    let set = store
+        .update_repo(
+            &created.id,
+            RepoUpdate {
+                icon: Some(Some(icon(1, ImageKind::Png))),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(set.about.icon, Some(icon(1, ImageKind::Png)));
+    let found = store.get_repo(&created.id).await.unwrap().unwrap();
+    assert_eq!(found.about.icon, Some(icon(1, ImageKind::Png)));
+
+    let renamed = store
+        .update_repo(
+            &created.id,
+            RepoUpdate {
+                name: Some("engine".into()),
+                description: Some(Some("A game".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        renamed.about.icon,
+        Some(icon(1, ImageKind::Png)),
+        "other edits keep it"
+    );
+
+    let replaced = store
+        .update_repo(
+            &created.id,
+            RepoUpdate {
+                icon: Some(Some(icon(2, ImageKind::Webp))),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(replaced.about.icon, Some(icon(2, ImageKind::Webp)));
+
+    let cleared = store
+        .update_repo(
+            &created.id,
+            RepoUpdate {
+                icon: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(cleared.about.icon, None);
+    assert_eq!(cleared.about.description.as_deref(), Some("A game"));
+    assert_eq!(store.list_repos(None).await.unwrap()[0].about.icon, None);
+}
+
 fn service_in(store: &Store, h: &Harness, id: &str) -> RepoService {
     RepoService::new(
         RepoId::new(id),
@@ -3555,6 +3626,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; updating_a_repository_keeps_its_id);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_lock_limit_and_can_clear_it);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_stores_its_about_block_and_can_clear_it);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_repository_icon_is_stored_kept_by_other_edits_and_cleared);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_fork_copies_history_but_not_locks_and_checks_its_limits);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_default_branch_fork_copies_only_what_the_default_branch_reaches);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; repositories_do_not_share_locks_or_revisions);

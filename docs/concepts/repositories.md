@@ -289,11 +289,21 @@ unset), so whoever can see the repository sees them.
   read, and the result is kept per head commit, so it is computed again only after a new commit. `language` is the first entry's name,
   null when the list is empty. Revisions recorded before sizes were kept count as 0 bytes.
 - **Updated:** `updated_at` is the time of the newest commit on the default branch, null for an empty repository.
+- **Icon:** an image shown wherever the repository appears, uploaded with `PUT /v1/repos/{owner}/{name}/icon` (the raw bytes as the
+  body) and removed with `DELETE` on the same address, by whoever may change the repository's settings; both answer the repository.
+  The rules are the [account avatar's](profiles.md#avatars): png, jpeg or webp judged from the bytes, at most 1 MiB (`413
+  object_too_large`, `415 unsupported_image`, `400 invalid_request` for an empty body), and at most 30 changes an hour per repository
+  (`429 too_many_attempts`). Every repository payload carries `icon_url`, `/v1/repos/{owner}/{name}/icon?v=` and the start of the
+  image's hash, null when there is none, and a client then shows the owner's avatar. `GET` on that address serves the image to whoever
+  can read the repository, with an `ETag` and `no-cache` like an avatar; `404 icon_not_found` when there is none. Removing an icon
+  that is not there changes nothing. A change ends the `repo_updated` detail with `changed icon`. A fork starts without an icon.
+  Replaced and removed images stay in the shared object store, as for avatars.
 - **Forks:** `fork_of`, `fork_count` and `allow_private_forks`; see [Forks](#forks).
 
 On the command line: `pyn repo create name --description TEXT --website URL --topic T ...`, `pyn repo edit owner/name [--description TEXT]
 [--website URL] [--topic T ... | --no-topics]` (an empty value clears the field, and `--topic` replaces every topic) and `pyn repo show
-owner/name` (description, website, topics, languages as percentages, updated, visibility, created, stars, watchers and your role).
+owner/name` (description, website, topics, icon address, languages as percentages, updated, visibility, created, stars, watchers and your
+role). `pyn repo icon set owner/name FILE` uploads an icon and `pyn repo icon clear owner/name` removes it.
 
 ## Forks
 
@@ -308,7 +318,7 @@ A fork is a copy of a repository under another owner, to work on without access 
   behind. With `default_branch_only: false` everything is copied: every branch and tag, their commits, trees and revisions, the
   recorded uploads and the LFS objects. The policy
   comes along as part of the content (`.pyn/pyn.toml` at each copied branch head, and the source's initial policy), so the fork has its own
-  copy from then on; its lease and lock limit settings and its description are copied too, its topics, website and storage cap are not.
+  copy from then on; its lease and lock limit settings and its description are copied too, its topics, website, icon and storage cap are not.
   Nothing else is: **no locks** (a lock on the source means nothing to the fork, and the fork's locks mean nothing to the source),
   no members, roles, invitations, tokens, watches, stars, upload sessions or pull requests. The caller becomes the fork's `admin`
   (an organization's owners are already), and its audit log starts with a `repo_created` event whose detail reads `forked
@@ -468,6 +478,7 @@ On the command line: `pyn watch owner/name [--level all|locks|ignore]` (`all` by
 | `GET /v1/repos/{owner}/{name}` | one repository (`role` is null for a reader of a public repository) |
 | `PATCH /v1/repos/{owner}/{name}` | rename or change settings `{name?, visibility?, lease_hours?, max_locks_per_user?}` (`null` clears the lock limit) |
 | `DELETE /v1/repos/{owner}/{name}` | delete |
+| `GET`, `PUT`, `DELETE /v1/repos/{owner}/{name}/icon` | the icon image, upload one (raw bytes), remove it; see [About](#about) |
 | `GET`, `PUT`, `DELETE /v1/repos/{owner}/{name}/star` | whether you starred it, star it, remove your star: each answers `{starred, count}` (full-scope credentials; see [Stars](#stars)) |
 | `GET /v1/users/{user}/starred` | the repositories an account starred that you may see `[{starred_at, repo}]`, newest first |
 | `GET`, `PUT`, `DELETE /v1/repos/{owner}/{name}/watch` | your watch level, set it `{level: all\|locks\|ignore}`, remove it: each answers `{level, watchers}` (full-scope credentials; see [Watching](#watching)) |
