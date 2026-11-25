@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 async-trait = "0.1.92"
 lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "aws-lc-rs", "webpki-roots"] }
-pyn-core = { version = "0.2.2", path = "../pyn-core" }
+pyn-core = { version = "0.3.0", path = "../pyn-core" }
 tokio = { version = "1.53.2", features = ["time"] }
 tracing = "0.1.44"
 
