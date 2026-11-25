@@ -43,13 +43,16 @@ dependency on git.
 
 ## Status
 
-Alpha (the `v0.2.x-alpha` releases): usable and self-hostable, with the interfaces still allowed to change. What works today: a server hosting many repositories, the `pyn` CLI, the web UI
+Alpha (the `v0.3.x-alpha` releases): usable and self-hostable, with the interfaces still allowed to change. What works today: a server hosting many repositories, the `pyn` CLI, the web UI
 ([`pyn-web`](https://github.com/avalon-initiative/pyn-web)), shared and exclusive paths, leased locks, atomic
 multi-path commits, per-path and per-commit history, branches and merge (three-way text merge, whole-file conflicts for
 binaries, `pyn merge --abort`), diff and show, restore, chunked content storage, accounts,
 organizations and teams, roles, API tokens, linking SSH keys (signing in over SSH waits for the SSH transport), optional OpenID Connect sign-in, and an audit log.
 
-Remotes (`push`, `pull`, `fetch`), tags, stash, per-branch policy and git import and export have landed too. A shared file's
+Pull requests (with lock-aware merging), forks, tags, stars, watching a repository, history filters by author and time,
+branch metadata (ahead and behind, stale), and repository descriptions, websites and topics are in place as well.
+
+Remotes (`push`, `pull`, `fetch`), stash, per-branch policy and git import and export have landed too. A shared file's
 commit must be based on the revision its branch has, so a stale edit is rejected rather than silently overwriting someone
 else's work. Rows in the compatibility table marked *planned* are the roadmap.
 

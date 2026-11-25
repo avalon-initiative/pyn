@@ -25,6 +25,7 @@ Markdown, plus the generated OpenAPI document; `make docs-check` verifies relati
 - [The `.pyn/` folder](concepts/workspace.md)
 - [Git compatibility: where the CLI follows git and where it deliberately differs](concepts/git-compatibility.md)
 - [Git LFS API: locks and large files against a pyn server](concepts/lfs.md)
+- [Commits: the commit record, changesets and snapshots](concepts/commits.md)
 - [Branches: branch heads, commits on a branch, exclusive paths across branches](concepts/branches.md)
 - [Merging: merge base, merge commits, conflicts and resolution](concepts/merging.md)
 - [Diffs: line hunks between two revisions, context expansion, lock state per path](concepts/diff.md)
