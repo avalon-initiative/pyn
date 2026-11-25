@@ -1240,10 +1240,21 @@ impl MetadataStore for BudgetGateStore {
     async fn fork_repo_with_events(
         &self,
         fork: RepoRecord,
+        copy: &crate::ForkCopy,
         limits: crate::ForkLimits,
         events: &[crate::EventDraft],
     ) -> crate::Result<RepoRecord> {
-        self.inner.fork_repo_with_events(fork, limits, events).await
+        self.inner
+            .fork_repo_with_events(fork, copy, limits, events)
+            .await
+    }
+
+    async fn fork_contents(
+        &self,
+        repo: &RepoId,
+        head: &ObjectId,
+    ) -> crate::Result<Vec<(ObjectId, u64)>> {
+        self.inner.fork_contents(repo, head).await
     }
 
     async fn list_forks(&self, source: &RepoId) -> crate::Result<Vec<RepoRecord>> {

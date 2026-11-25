@@ -126,6 +126,19 @@ fn a_repository_is_forked_listed_and_shows_its_source() {
         &["repo", "fork", "alice/tools", "--name", "mytools"],
     );
     assert!(out.contains("forked alice/tools to bob/mytools"), "{out}");
+    let out = env.ok(
+        &home,
+        "bob",
+        &[
+            "repo",
+            "fork",
+            "alice/tools",
+            "--name",
+            "every",
+            "--all-branches",
+        ],
+    );
+    assert!(out.contains("forked alice/tools to bob/every"), "{out}");
     let shown = env.ok(&home, "bob", &["repo", "show", "bob/mytools"]);
     assert!(
         shown
@@ -137,7 +150,7 @@ fn a_repository_is_forked_listed_and_shows_its_source() {
     assert!(
         source
             .lines()
-            .any(|l| l.starts_with("forks") && l.ends_with('1')),
+            .any(|l| l.starts_with("forks") && l.ends_with('2')),
         "{source}"
     );
     let listed = env.ok(&home, "alice", &["repo", "forks", "alice/tools"]);
@@ -145,8 +158,9 @@ fn a_repository_is_forked_listed_and_shows_its_source() {
     assert_eq!(rows[0], ["VISIBILITY", "CREATED", "REPOSITORY"]);
     assert_eq!(
         (rows[1][0].as_str(), rows[1][2].as_str()),
-        ("public", "bob/mytools")
+        ("public", "bob/every")
     );
+    assert_eq!(rows[2][2], "bob/mytools");
 
     env.ok(&home, "alice", &["repo", "create", "alice/secret"]);
     let refused = env.fails(

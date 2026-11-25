@@ -1,11 +1,15 @@
 //! Forks: a copy of a repository's content and history under another owner, linked to its source (decision #1282).
 
+use std::collections::BTreeSet;
+
 use super::*;
+use crate::{ForkCopy, RepoId};
 
 impl Repositories {
     /// Forks `source_owner/source_name` into `owner` as `name` (the source's name by default). The caller needs read
     /// access, and a private source must allow forks; the fork takes the source's visibility, a copy of its history
-    /// and policy, no locks, and counts in full against `owner`'s limits.
+    /// (only the default branch's with `default_branch_only`) and policy, no locks, and what it copies counts in full
+    /// against `owner`'s limits.
     pub async fn fork(
         &self,
         actor: &Identity,
@@ -13,6 +17,7 @@ impl Repositories {
         source_name: &str,
         owner: &UserId,
         name: Option<&str>,
+        default_branch_only: bool,
     ) -> Result<RepoRecord> {
         actor.require_namespace_management()?;
         let (open, principal) = self
@@ -64,9 +69,14 @@ impl Repositories {
             visibility: record.visibility,
             actor: actor.user.clone(),
         })?;
+        let copy = if default_branch_only {
+            self.default_branch_copy(&source.id).await?
+        } else {
+            ForkCopy::All
+        };
         let result = self
             .meta
-            .fork_repo_with_events(record, caps, &[created])
+            .fork_repo_with_events(record, &copy, caps, &[created])
             .await;
         let record = self
             .access
@@ -80,6 +90,36 @@ impl Repositories {
         );
         self.finish_create(actor, &record, target, detail).await?;
         Ok(record)
+    }
+
+    /// The default branch of `source` at its head now, with the LFS objects the pointer files in the history kept name.
+    async fn default_branch_copy(&self, source: &RepoId) -> Result<ForkCopy> {
+        let head = self
+            .meta
+            .list_branches(source)
+            .await?
+            .into_iter()
+            .find(|b| b.default)
+            .and_then(|b| b.head);
+        let mut lfs = BTreeSet::new();
+        if let Some(head) = &head
+            && self.meta.lfs_bytes(source).await? > 0
+        {
+            for (content, size) in self.meta.fork_contents(source, head).await? {
+                if size >= crate::service::LFS_POINTER_MAX_BYTES {
+                    continue;
+                }
+                if let Some(bytes) = self.objects.get(&content).await?
+                    && let Some(oid) = crate::service::lfs_pointer_oid(&bytes)
+                {
+                    lfs.insert(oid.to_string());
+                }
+            }
+        }
+        Ok(ForkCopy::DefaultBranch {
+            head,
+            lfs: lfs.into_iter().collect(),
+        })
     }
 
     /// The forks of `source` the viewer may see, by the same rule as `open_visible`, with the viewer's role in each.

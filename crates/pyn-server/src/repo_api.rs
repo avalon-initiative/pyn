@@ -337,11 +337,11 @@ pub(crate) async fn delete_repo(
 }
 
 #[utoipa::path(post, path = "/v1/repos/{owner}/{name}/forks", params(RepoAddress), request_body = api::ForkRepoRequest, responses(
-    (status = 201, body = api::RepoInfo, description = "the fork, with the source's visibility, history and policy and no locks; the caller becomes its admin"),
+    (status = 201, body = api::RepoInfo, description = "the fork, with the source's visibility, history (only the default branch's unless default_branch_only is false) and policy and no locks; the caller becomes its admin"),
     (status = 400, body = api::ErrorBody, description = "invalid_repo_name"),
     (status = 403, body = api::ErrorBody, description = "fork_forbidden: a private source that does not allow forks; not_namespace_owner, not_org_member or repo_create_forbidden for the target owner; or a token without manage_roles or limited to repositories"),
     (status = 404, body = api::ErrorBody, description = "repo_not_found: no such repository, or one the caller cannot read"),
-    (status = 409, body = api::ErrorBody, description = "repo_exists, repo_limit_reached, fork_limit_reached, storage_limit_reached (the fork counts in full against the target owner), or org_deleting"),
+    (status = 409, body = api::ErrorBody, description = "repo_exists, repo_limit_reached, fork_limit_reached, storage_limit_reached (what the fork copies counts in full against the target owner), or org_deleting"),
 ))]
 pub(crate) async fn fork_repo(
     State(s): State<AppState>,
@@ -354,7 +354,14 @@ pub(crate) async fn fork_repo(
         .map_or_else(|| who.user.clone(), crate::owner_path::typed_owner);
     let record = s
         .repos
-        .fork(&who, &owner, &name, &target, req.name.as_deref())
+        .fork(
+            &who,
+            &owner,
+            &name,
+            &target,
+            req.name.as_deref(),
+            req.default_branch_only.unwrap_or(true),
+        )
         .await?;
     let role = s.access.role_in(&record.id, &who.user).await?;
     let limit = s.repos.lock_limit(&record).await?;

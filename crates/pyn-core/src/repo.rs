@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 
 use crate::error::{PynError, Result};
 use crate::types::{RepoId, UserId};
+use pyn_object::ObjectId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Visibility {
@@ -114,12 +115,37 @@ pub struct RepoRecord {
 pub struct ForkLimits {
     /// Repositories the forking owner may own.
     pub repositories: Option<u64>,
-    /// Bytes the forking owner may store, counting the fork's revision and LFS bytes in full.
+    /// Bytes the forking owner may store, counting the revision and LFS bytes the fork copies in full.
     pub storage_bytes: Option<u64>,
     /// Forks the source may have.
     pub per_repository: Option<u64>,
     /// Forks the forking owner may own.
     pub per_owner: Option<u64>,
+}
+
+/// What a fork copies besides the repository record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForkCopy {
+    /// Every branch and tag, the whole history, the recorded uploads and the LFS objects.
+    All,
+    /// The source's default branch at `head`, the commits, trees and tags it reaches, each path's revisions up to the
+    /// newest one it reaches (the revision chain needs the earlier ones), and the uploads those revisions name and the
+    /// LFS objects among `lfs` (oids) with theirs.
+    DefaultBranch {
+        head: Option<ObjectId>,
+        lfs: Vec<String>,
+    },
+}
+
+/// The subtrees that tree `id`, stored as `body`, names.
+pub fn subtree_ids(id: &ObjectId, body: &[u8]) -> Result<Vec<ObjectId>> {
+    let entries = pyn_object::parse_tree(id.algorithm(), body)
+        .map_err(|e| PynError::Storage(format!("tree {id}: {e}")))?;
+    Ok(entries
+        .into_iter()
+        .filter(|e| e.mode.is_tree())
+        .map(|e| e.id)
+        .collect())
 }
 
 pub const DEFAULT_MAX_FORKS_PER_REPOSITORY: u64 = 1_000;

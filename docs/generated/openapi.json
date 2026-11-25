@@ -8979,7 +8979,7 @@
         },
         "responses": {
           "201": {
-            "description": "the fork, with the source's visibility, history and policy and no locks; the caller becomes its admin",
+            "description": "the fork, with the source's visibility, history (only the default branch's unless default_branch_only is false) and policy and no locks; the caller becomes its admin",
             "content": {
               "application/json": {
                 "schema": {
@@ -9019,7 +9019,7 @@
             }
           },
           "409": {
-            "description": "repo_exists, repo_limit_reached, fork_limit_reached, storage_limit_reached (the fork counts in full against the target owner), or org_deleting",
+            "description": "repo_exists, repo_limit_reached, fork_limit_reached, storage_limit_reached (what the fork copies counts in full against the target owner), or org_deleting",
             "content": {
               "application/json": {
                 "schema": {
@@ -16892,6 +16892,13 @@
         "type": "object",
         "description": "Body of `POST /v1/repos/{owner}/{name}/forks`.",
         "properties": {
+          "default_branch_only": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Copy only the default branch: its history, the tags pointing into it, and the uploads and LFS objects that\nhistory names. `false` copies every branch and tag. Defaults to `true`."
+          },
           "name": {
             "type": [
               "string",

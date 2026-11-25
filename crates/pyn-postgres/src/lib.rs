@@ -13,11 +13,12 @@ use pyn_core::commit_record::{CommitDraft, TreeChange, TreeEdit, draft_commit};
 use pyn_core::merge::{MergeWrite, MergeWritten};
 use pyn_core::{
     BREAKDOWN_PATHS, Branch, ChangesetItem, Commit, CommitFilter, EventDraft, FileMode,
-    FolderUsage, ForkLimits, HeadCounts, HistoryBy, HistoryCursor, HistoryScan, LfsObject, Lock,
-    LockChange, LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter, PathUsage, Person,
-    PushedCommit, PynError, REPO_ALGORITHM, RepoAbout, RepoBreakdown, RepoId, RepoPath, RepoRecord,
-    RepoSettings, RepoUpdate, RepoUsage, Result, Revision, RevisionHash, RevisionId, StorageCap,
-    Tag, TusCancel, TusClaim, TusSession, UploadReservation, Usage, UserId, Visibility,
+    FolderUsage, ForkCopy, ForkLimits, HeadCounts, HistoryBy, HistoryCursor, HistoryScan,
+    LfsObject, Lock, LockChange, LockEventBuilder, MetadataStore, Mode, ObjectId, PathFilter,
+    PathUsage, Person, PushedCommit, PynError, REPO_ALGORITHM, RepoAbout, RepoBreakdown, RepoId,
+    RepoPath, RepoRecord, RepoSettings, RepoUpdate, RepoUsage, Result, Revision, RevisionHash,
+    RevisionId, StorageCap, Tag, TusCancel, TusClaim, TusSession, UploadReservation, Usage, UserId,
+    Visibility, subtree_ids,
 };
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -168,6 +169,7 @@ fn mode_from(s: &str) -> Result<Mode> {
 }
 
 /// The per-repository tables a fork copies, keyed by a `repo` column; locks, upload sessions and pull requests stay behind.
+/// `repo_objects` comes after the revisions and LFS objects whose ids it keeps.
 const FORKED_TABLES: [&str; 9] = [
     "revisions",
     "repo_commits",
@@ -176,9 +178,80 @@ const FORKED_TABLES: [&str; 9] = [
     "branches",
     "repo_tags",
     "trees",
-    "repo_objects",
     "lfs_objects",
+    "repo_objects",
 ];
+
+/// Rows of `revisions` (as `src`) in repository `$1` that a default-branch fork keeps: per path, up to the newest
+/// revision that one of the commits `{commits}` (a text array parameter) made or points at.
+fn kept_revisions(commits: &str) -> String {
+    format!(
+        "revisions src JOIN (
+             SELECT path, max(id) AS last FROM (
+                 SELECT path, id FROM revisions WHERE repo = $1 AND commit_id = ANY({commits})
+                 UNION ALL
+                 SELECT path, revision FROM commit_pointers WHERE repo = $1 AND commit_id = ANY({commits})
+             ) k GROUP BY path
+         ) kept ON kept.path = src.path AND src.id <= kept.last
+         WHERE src.repo = $1"
+    )
+}
+
+/// The commits of `repo` reachable from `head`, `head` included.
+async fn reachable_commits(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    repo: &RepoId,
+    head: &ObjectId,
+) -> Result<Vec<String>> {
+    sqlx::query_scalar(
+        "WITH RECURSIVE reach(id) AS (
+             SELECT $2::text
+             UNION
+             SELECT p.id FROM reach r JOIN commits c ON c.repo = $1 AND c.id = r.id
+             CROSS JOIN LATERAL unnest(c.parents) AS p(id)
+         )
+         SELECT r.id FROM reach r JOIN commits c ON c.repo = $1 AND c.id = r.id",
+    )
+    .bind(repo.as_str())
+    .bind(head.to_hex())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(db)
+}
+
+/// Every tree the root trees of `commits` reach in `repo`.
+async fn reachable_trees(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    repo: &RepoId,
+    commits: &[String],
+) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut frontier: Vec<String> =
+        sqlx::query_scalar("SELECT DISTINCT tree FROM commits WHERE repo = $1 AND id = ANY($2)")
+            .bind(repo.as_str())
+            .bind(commits)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(db)?;
+    loop {
+        frontier.retain(|t| seen.insert(t.clone()));
+        if frontier.is_empty() {
+            return Ok(seen.into_iter().collect());
+        }
+        let rows = sqlx::query("SELECT id, body FROM trees WHERE repo = $1 AND id = ANY($2)")
+            .bind(repo.as_str())
+            .bind(&frontier)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(db)?;
+        frontier.clear();
+        for row in rows {
+            let id = object_id(row.get("id"), "tree")?;
+            let body: Vec<u8> = row.get("body");
+            frontier.extend(subtree_ids(&id, &body)?.iter().map(ObjectId::to_hex));
+        }
+    }
+}
 
 fn repo_from(row: &PgRow) -> Result<RepoRecord> {
     Ok(RepoRecord {
@@ -2774,6 +2847,7 @@ impl MetadataStore for PgMetadataStore {
     async fn fork_repo_with_events(
         &self,
         fork: RepoRecord,
+        copy: &ForkCopy,
         limits: ForkLimits,
         events: &[EventDraft],
     ) -> Result<RepoRecord> {
@@ -2833,27 +2907,24 @@ impl MetadataStore for PgMetadataStore {
             let what = owner.to_string();
             return Err(PynError::ForkLimitReached { what, limit });
         }
-        if let Some(limit) = limits.storage_bytes {
-            let used = (owner_stored(&mut tx, &fork.owner).await?
-                + owner_lfs(&mut tx, &fork.owner).await?) as u64;
-            let stored: i64 = sqlx::query_scalar(
-                "SELECT COALESCE(SUM(size), 0)::bigint
-                 FROM (SELECT DISTINCT content, size FROM revisions WHERE repo = $1) d",
-            )
-            .bind(source.as_str())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db)?;
-            let needed = (stored + repo_lfs(&mut *tx, &source).await?) as u64;
-            if used + needed > limit {
-                return Err(PynError::ForkStorageLimitReached {
-                    owner: owner.to_string(),
-                    limit,
-                    used,
-                    needed,
-                });
+        let used = match limits.storage_bytes {
+            Some(_) => Some(
+                (owner_stored(&mut tx, &fork.owner).await?
+                    + owner_lfs(&mut tx, &fork.owner).await?) as u64,
+            ),
+            None => None,
+        };
+        let picked = match copy {
+            ForkCopy::All => None,
+            ForkCopy::DefaultBranch { head, lfs } => {
+                let commits = match head {
+                    Some(h) => reachable_commits(&mut tx, &source, h).await?,
+                    None => Vec::new(),
+                };
+                let trees = reachable_trees(&mut tx, &source, &commits).await?;
+                Some((commits, trees, lfs, head))
             }
-        }
+        };
         sqlx::query(
             "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy,
                  created_at, description, website, topics, allow_private_forks, fork_of)
@@ -2902,19 +2973,68 @@ impl MetadataStore for PgMetadataStore {
                     if c == "repo" {
                         "$2::text".to_string()
                     } else {
-                        format!("\"{c}\"")
+                        format!("src.\"{c}\"")
                     }
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            sqlx::query(AssertSqlSafe(format!(
-                "INSERT INTO {table} ({list}) SELECT {values} FROM {table} WHERE repo = $1"
-            )))
-            .bind(source.as_str())
+            let all = format!("{table} src WHERE src.repo = $1");
+            let (from, array): (String, Option<&[String]>) = match &picked {
+                None => (all, None),
+                Some((commits, trees, lfs, _)) => match table {
+                    "revisions" => (kept_revisions("$3"), Some(commits)),
+                    "commits" => (format!("{all} AND src.id = ANY($3)"), Some(commits)),
+                    "commit_pointers" | "repo_tags" => {
+                        (format!("{all} AND src.commit_id = ANY($3)"), Some(commits))
+                    }
+                    "branches" => (format!("{all} AND src.is_default"), None),
+                    "trees" => (format!("{all} AND src.id = ANY($3)"), Some(trees)),
+                    "lfs_objects" => (format!("{all} AND src.oid = ANY($3)"), Some(lfs)),
+                    "repo_objects" => (
+                        format!(
+                            "{all} AND (src.id IN (SELECT content FROM revisions WHERE repo = $2)
+                                 OR src.id IN (SELECT object FROM lfs_objects WHERE repo = $2))"
+                        ),
+                        None,
+                    ),
+                    _ => (all, None),
+                },
+            };
+            let sql = format!("INSERT INTO {table} ({list}) SELECT {values} FROM {from}");
+            let mut q = sqlx::query(AssertSqlSafe(sql))
+                .bind(source.as_str())
+                .bind(fork.id.as_str());
+            if let Some(array) = array {
+                q = q.bind(array);
+            }
+            q.execute(&mut *tx).await.map_err(db)?;
+        }
+        if let Some((_, _, _, head)) = &picked {
+            sqlx::query("UPDATE branches SET head = $2 WHERE repo = $1")
+                .bind(fork.id.as_str())
+                .bind(head.as_ref().map(ObjectId::to_hex))
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        if let (Some(limit), Some(used)) = (limits.storage_bytes, used) {
+            let stored: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(size), 0)::bigint
+                 FROM (SELECT DISTINCT content, size FROM revisions WHERE repo = $1) d",
+            )
             .bind(fork.id.as_str())
-            .execute(&mut *tx)
+            .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
+            let needed = (stored + repo_lfs(&mut *tx, &fork.id).await?) as u64;
+            if used + needed > limit {
+                return Err(PynError::ForkStorageLimitReached {
+                    owner: owner.to_string(),
+                    limit,
+                    used,
+                    needed,
+                });
+            }
         }
         sqlx::query("DELETE FROM repo_redirects WHERE owner = $1 AND name_lower = lower($2)")
             .bind(owner)
@@ -2925,6 +3045,29 @@ impl MetadataStore for PgMetadataStore {
         self.queue_events(&mut tx, events).await?;
         tx.commit().await.map_err(db)?;
         Ok(fork)
+    }
+
+    async fn fork_contents(&self, repo: &RepoId, head: &ObjectId) -> Result<Vec<(ObjectId, u64)>> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let commits = reachable_commits(&mut tx, repo, head).await?;
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "SELECT DISTINCT src.content, src.size FROM {}",
+            kept_revisions("$2")
+        )))
+        .bind(repo.as_str())
+        .bind(&commits)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    object_id(r.get("content"), "content")?,
+                    r.get::<i64, _>("size") as u64,
+                ))
+            })
+            .collect()
     }
 
     async fn list_forks(&self, source: &RepoId) -> Result<Vec<RepoRecord>> {

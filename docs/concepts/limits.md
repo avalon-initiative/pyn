@@ -72,7 +72,7 @@ overshoot. Each limit has its own error code and answers `409`:
 | `repo_limit_reached` | creating or forking a repository when the owner already has the limit |
 | `member_limit_reached` | adding a member to an organization at its limit |
 | `repo_storage_limit_reached` | a check-in, restore, push or merge that would add content past the repository's own [storage cap](#per-repository-storage-cap) |
-| `storage_limit_reached` | a check-in, changeset, restore, push or merge that would add content past the owner's limit, or an upload past the repository's unreferenced-upload ceiling (LFS objects are exempt), or a [fork](repositories.md#forks) whose bytes would take the forking owner past its limit |
+| `storage_limit_reached` | a check-in, changeset, restore, push or merge that would add content past the owner's limit, or an upload past the repository's unreferenced-upload ceiling (LFS objects are exempt), or a [fork](repositories.md#forks) whose copied bytes would take the forking owner past its limit |
 | `fork_limit_reached` | a fork past the server's cap on forks of one repository or forks one owner owns ([forks](repositories.md#forks)) |
 
 A frozen owner (below) is refused every write with `403 owner_frozen`, whatever its limits are.

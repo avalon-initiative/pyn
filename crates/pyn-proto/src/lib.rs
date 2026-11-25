@@ -1359,6 +1359,10 @@ pub struct ForkRepoRequest {
     /// Defaults to the source's name.
     #[serde(default)]
     pub name: Option<String>,
+    /// Copy only the default branch: its history, the tags pointing into it, and the uploads and LFS objects that
+    /// history names. `false` copies every branch and tag. Defaults to `true`.
+    #[serde(default)]
+    pub default_branch_only: Option<bool>,
 }
 
 /// One programming language's share of a repository, detected from file names.
