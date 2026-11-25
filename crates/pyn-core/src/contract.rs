@@ -9913,6 +9913,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_description_and_an_avatar_apart);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_display_name_and_a_url_and_replace_them_together);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_are_apart_from_user_profiles_and_go_with_the_org);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; owner_profiles_read_each_name_by_its_kind_in_order);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_people_search_lists_active_accounts_and_matches_only_what_is_visible);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; stars_are_one_per_user_and_repository_and_counted);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_users_stars_list_newest_first_and_only_theirs);
