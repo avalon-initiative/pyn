@@ -257,7 +257,8 @@ says there is nothing to push).
   shared file both sides changed is merged line by line, and a file both sides changed that cannot be merged that way, a mode
   change on both sides, or a deletion against an edit is a conflict. An exclusive path both sides changed has no automatic pick:
   the pull stops unless the person holds its lock, in which case their version is kept (`Kept your version of <path>`) and the
-  server accepts it at push as the new revision. Any other conflict stops the pull **in progress**, as `pyn merge` does on a
+  server accepts it at push as the new revision. Such a lock is one taken on the server's current revision, which a local
+  version based on an older one cannot get ([local commits](workspace.md#local-commits)). Any other conflict stops the pull **in progress**, as `pyn merge` does on a
   server ([conflicts in a pull](#conflicts-in-a-pull)). The files the merge changes are written, and `update` brings the rest.
   `pyn pull --rebase` replays the local commits one by one onto the fetched tip with the same per-file rules, stopping at
   the first commit that conflicts; a local merge commit cannot be replayed and is refused. A pull also refuses to

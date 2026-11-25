@@ -35,7 +35,10 @@ repository.
 ## What the server enforces
 
 The server is the only enforcer. Committing an exclusive path is rejected unless the caller holds a live lock and the change is
-based on the current head, whichever client sent it. The read-only bit on disk is a convenience that stops an editor saving the
+based on the current head, whichever client sent it. The base is checked when the lock is taken: the client names the
+revision its copy is based on (for a local commit, the revision that commit changed, not the server's head), and the lock is
+refused with `stale_base` unless it is the head. In a pushed merge, an exclusive path both sides changed is accepted
+only under the pusher's lock, as the person's resolution ([merges pushed from a local store](merging.md#merges-pushed-from-a-local-store)). The read-only bit on disk is a convenience that stops an editor saving the
 file in the first place; deleting it does not skip the lock, it only means the rejection comes at commit time instead of save time.
 A rejected change leaves nothing behind.
 
