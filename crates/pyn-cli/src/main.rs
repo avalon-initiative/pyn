@@ -2738,9 +2738,9 @@ fn run(cli: Cli) -> Result<()> {
                 .as_ref()
                 .and_then(|w| w.load_state().ok())
                 .and_then(|s| s.get(&path).map(|k| k.revision));
-            let base = match base {
-                Some(b) => Some(b),
-                None => local_base(&backend, ws.as_ref(), &path)?.unwrap_or(known),
+            let (base, committed) = match base {
+                Some(b) => (Some(b), false),
+                None => local_base(&backend, ws.as_ref(), &path, known)?,
             };
             let body = api::CheckoutRequest {
                 path: path.clone(),
@@ -2752,7 +2752,13 @@ fn run(cli: Cli) -> Result<()> {
                     api.request(Method::POST, &api.repo_route("/checkout")?)
                         .json(&body),
                 )
-                .map_err(|e| behind_hint(e, ws.is_some()))
+                .map_err(|e| {
+                    if committed {
+                        stale_local_hint(e)
+                    } else {
+                        behind_hint(e, ws.is_some())
+                    }
+                })
                 .map_err(|e| held_by(api, &path, e))?
                 .json()?;
             if let Some(w) = &ws {
@@ -4641,31 +4647,54 @@ fn token_command(api: &Api, cmd: TokenCommand) -> Result<()> {
     Ok(())
 }
 
-/// In a `local_store` workspace, the server's head revision of a path a local commit changed: the lock covers
-/// the merge that brings that revision in, so the stale revision the files were last updated at is not the base.
-/// `None` when the path has no unpublished change; `Some(None)` when the server does not have it (no base).
+/// The base a lock asks for when a local commit changed the path, and whether one did: the newest server revision the
+/// local work has seen, the working file's or the one at the server's tip once the branch or a merge in progress took it.
 fn local_base(
     backend: &PynServer,
     ws: Option<&Workspace>,
     path: &str,
-) -> Result<Option<Option<u64>>> {
-    let Some(store) = ws.and_then(local_store::LocalStore::open) else {
-        return Ok(None);
+    known: Option<u64>,
+) -> Result<(Option<u64>, bool)> {
+    let Some((ws, store)) = ws.and_then(|w| Some((w, local_store::LocalStore::open(w)?))) else {
+        return Ok((known, false));
     };
-    if !store
-        .unpublished(&branch::name(ws))?
-        .paths
-        .contains_key(path)
-    {
-        return Ok(None);
+    let branch = branch::name(Some(ws));
+    if !store.unpublished(&branch)?.paths.contains_key(path) {
+        return Ok((known, false));
     }
-    Ok(Some(
-        backend
-            .list_files()?
-            .into_iter()
-            .find(|e| e.path == path)
-            .and_then(|e| e.revision),
-    ))
+    // Revision 0 is a file the server has never had.
+    let known = known.filter(|&r| r != 0);
+    let (Some(tip), Some(server)) = (store.tip(&branch)?, store.published(&branch)?) else {
+        return Ok((known, true));
+    };
+    let mut heads = vec![tip];
+    if let Some(merge) = merging::load(ws)?
+        && let Ok(id) = local_store::parse_id(&merge.source_commit)
+        && store.has(&id)?
+    {
+        heads.push(id);
+    }
+    if !store.reach(heads)?.contains(&server) {
+        return Ok((known, true));
+    }
+    let taken = backend
+        .snapshot(Some(&server.to_hex()))?
+        .1
+        .into_iter()
+        .find(|e| e.path == path)
+        .map(|e| e.revision);
+    Ok((known.max(taken), true))
+}
+
+/// A stale-base refusal for a path a local commit changed: the newer revision has to be pulled in and resolved first.
+fn stale_local_hint(err: anyhow::Error) -> anyhow::Error {
+    if err.to_string().starts_with("stale_base") {
+        err.context(
+            "your local commit changed an older revision of the file; run `pyn pull` and resolve it first",
+        )
+    } else {
+        err
+    }
 }
 
 /// A stale-base refusal in a workspace means the file moved on: say how to catch up. When the server has no revision

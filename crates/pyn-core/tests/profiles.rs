@@ -9,8 +9,8 @@ use pyn_core::memory::{
 use pyn_core::profiles::Profiles;
 use pyn_core::{
     AccessConfig, AccessService, AccessStore, Credential, Identity, ManualClock, ObjectStore,
-    OrgRole, ProfileFields, ProfileVisibility, PynError, Repositories, Role, Rules, UserId,
-    Visibility,
+    OrgRole, OwnerProfile, ProfileFields, ProfileVisibility, PynError, Repositories, Role, Rules,
+    UserId, Visibility,
 };
 
 struct World {
@@ -403,12 +403,51 @@ async fn only_organization_owners_edit_its_profile() {
         p.org_avatar("acme").await.unwrap_err(),
         PynError::AvatarNotFound(_)
     ));
-    assert!(
-        w.access
-            .org_profile_if_org(&alice.user)
-            .await
-            .unwrap()
-            .is_none()
+    let owners = w
+        .access
+        .owner_profiles(&[alice.user.clone(), acme.clone()])
+        .await
+        .unwrap();
+    assert!(matches!(owners[0], Some(OwnerProfile::User(_))));
+    assert!(matches!(owners[1], Some(OwnerProfile::Org(_))));
+}
+
+#[tokio::test]
+async fn owner_profiles_show_what_a_stranger_sees_and_only_active_users() {
+    let w = world();
+    let alice = w.user("alice").await;
+    w.user("gone").await;
+    w.store
+        .set_disabled(&UserId::new("gone"), Some((Utc::now(), None)))
+        .await
+        .unwrap();
+    let fields = ProfileFields {
+        display_name: Some("Alice".into()),
+        bio: Some("hidden too".into()),
+        ..Default::default()
+    };
+    let hidden = ProfileVisibility {
+        display_name: false,
+        bio: false,
+        ..Default::default()
+    };
+    w.access
+        .update_profile(&alice, fields, Some(hidden))
+        .await
+        .unwrap();
+    w.profiles().set_avatar(&alice, png()).await.unwrap();
+
+    let names = ["alice", "gone", "nobody"].map(UserId::new);
+    let found = w.access.owner_profiles(&names).await.unwrap();
+    let Some(OwnerProfile::User(p)) = &found[0] else {
+        panic!("{found:?}");
+    };
+    assert_eq!(
+        (p.fields.display_name.as_ref(), p.fields.bio.as_ref()),
+        (None, None),
+        "hidden even from its owner"
     );
-    assert!(w.access.org_profile_if_org(&acme).await.unwrap().is_some());
+    assert!(p.avatar.is_some());
+    assert!(found[1].is_none(), "disabled");
+    assert!(found[2].is_none(), "no account");
 }

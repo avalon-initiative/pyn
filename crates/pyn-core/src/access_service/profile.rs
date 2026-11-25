@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::profile::{
-    Avatar, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
+    Avatar, OrgProfile, OrgProfileFields, OwnerProfile, Profile, ProfileFields, ProfileVisibility,
 };
 
 /// The longest people search, in characters.
@@ -149,13 +149,22 @@ impl AccessService {
         self.store.org_profile(org).await
     }
 
-    /// An organization's profile when `owner` is an organization; `None` for a user.
-    pub async fn org_profile_if_org(&self, owner: &UserId) -> Result<Option<OrgProfile>> {
-        match self.org(owner).await {
-            Ok(_) => Ok(Some(self.store.org_profile(owner).await?)),
-            Err(PynError::OrgNotFound(_)) => Ok(None),
-            Err(e) => Err(e),
-        }
+    /// For each repository owner, the profile anyone may see, in one store read: an active user's public view (hidden
+    /// fields absent) or an organization's profile; `None` for any other account or no account.
+    pub async fn owner_profiles(&self, owners: &[UserId]) -> Result<Vec<Option<OwnerProfile>>> {
+        Ok(self
+            .store
+            .owner_profiles(owners)
+            .await?
+            .into_iter()
+            .map(|found| match found? {
+                (a, OwnerProfile::User(p)) if a.status() == AccountStatus::Active => {
+                    Some(OwnerProfile::User(p.public_view()))
+                }
+                (_, OwnerProfile::User(_)) => None,
+                (_, org) => Some(org),
+            })
+            .collect())
     }
 
     /// Replaces the organization's description, display name and url. Owners only, with a full-scope credential.

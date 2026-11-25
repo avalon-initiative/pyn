@@ -298,6 +298,13 @@ unset), so whoever can see the repository sees them.
   can read the repository, with an `ETag` and `no-cache` like an avatar; `404 icon_not_found` when there is none. Removing an icon
   that is not there changes nothing. A change ends the `repo_updated` detail with `changed icon`. A fork starts without an icon.
   Replaced and removed images stay in the shared object store, as for avatars.
+- **Owner:** every repository payload (`RepoInfo`: get, list, explore, a profile's repositories, starred, watched, forks, create,
+  fork and edit) carries `owner_identity`, the owner's [public identity](profiles.md#public-identity-in-lists), so a client shows
+  the owner's avatar and display name without a profile request per row. For a user it is the profile as a stranger sees it,
+  whoever asks, the owner included: a display name or avatar the user [hides](profiles.md#privacy) is null. For an organization
+  it is the organization's avatar with a null display name (an organization's display name is on its
+  [profile](profiles.md#organization-profiles), which needs a sign-in). It is absent when no active account holds the name (a
+  disabled or not yet approved user). A listing reads the owners once for the whole page, not once per row.
 - **Forks:** `fork_of`, `fork_count` and `allow_private_forks`; see [Forks](#forks).
 
 On the command line: `pyn repo create name --description TEXT --website URL --topic T ...`, `pyn repo edit owner/name [--description TEXT]

@@ -2,12 +2,13 @@
 
 use chrono::{DateTime, Utc};
 use pyn_core::{
-    Avatar, ImageKind, ObjectId, OrgProfile, OrgProfileFields, Profile, ProfileFields,
-    ProfileVisibility, PynError, Result, UserId,
+    AccountKind, AccountRecord, Avatar, ImageKind, ObjectId, OrgProfile, OrgProfileFields,
+    OwnerProfile, Profile, ProfileFields, ProfileVisibility, PynError, Result, UserId,
 };
 use sqlx::Row;
 use sqlx::postgres::{PgConnection, PgRow};
 
+use crate::access::account_from;
 use crate::{PgMetadataStore, db};
 
 impl PgMetadataStore {
@@ -21,29 +22,51 @@ impl PgMetadataStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(db)?;
-        let Some(row) = row else {
-            return Ok(Profile::default());
-        };
-        let avatar = avatar_of(&row)?;
-        Ok(Profile {
-            fields: ProfileFields {
-                display_name: row.get("display_name"),
-                bio: row.get("bio"),
-                location: row.get("location"),
-                company: row.get("company"),
-                links: row.get("links"),
-            },
-            avatar,
-            visibility: ProfileVisibility {
-                display_name: row.get("show_display_name"),
-                bio: row.get("show_bio"),
-                location: row.get("show_location"),
-                company: row.get("show_company"),
-                links: row.get("show_links"),
-                avatar: row.get("show_avatar"),
-                starred: row.get("show_starred"),
-            },
-        })
+        row.as_ref()
+            .map_or_else(|| Ok(Profile::default()), profile_from)
+    }
+
+    pub(crate) async fn owner_profile_rows(
+        &self,
+        owners: &[UserId],
+    ) -> Result<Vec<Option<(AccountRecord, OwnerProfile)>>> {
+        let names: Vec<&str> = owners.iter().map(UserId::as_str).collect();
+        let rows = sqlx::query(
+            "SELECT u.id, u.account_id, u.kind, u.email, u.email_verified_at, u.signup, u.disabled_at,
+                    u.disabled_reason, u.is_admin, u.created_at, u.deleting_since, u.frozen_at, u.frozen_reason,
+                    p.user_id IS NOT NULL AS has_profile, o.org_id IS NOT NULL AS has_org_profile,
+                    p.display_name, p.bio, p.location, p.company, p.links,
+                    p.avatar_content, p.avatar_type, p.avatar_size,
+                    p.show_display_name, p.show_bio, p.show_location, p.show_company, p.show_links,
+                    p.show_avatar, p.show_starred,
+                    o.description AS org_description, o.display_name AS org_display_name, o.url AS org_url,
+                    o.avatar_content AS org_avatar_content, o.avatar_type AS org_avatar_type,
+                    o.avatar_size AS org_avatar_size
+             FROM users u
+             LEFT JOIN account_profiles p ON p.user_id = u.id
+             LEFT JOIN org_profiles o ON o.org_id = u.id
+             WHERE u.id = ANY($1)",
+        )
+        .bind(&names)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let mut found = std::collections::HashMap::with_capacity(rows.len());
+        for row in &rows {
+            let account = account_from(row)?;
+            let profile = match account.kind {
+                AccountKind::User if row.get("has_profile") => {
+                    OwnerProfile::User(profile_from(row)?)
+                }
+                AccountKind::User => OwnerProfile::User(Profile::default()),
+                AccountKind::Org if row.get("has_org_profile") => {
+                    OwnerProfile::Org(org_profile_from(row, "org_")?)
+                }
+                AccountKind::Org => OwnerProfile::Org(OrgProfile::default()),
+            };
+            found.insert(account.user.clone(), (account, profile));
+        }
+        Ok(owners.iter().map(|o| found.get(o).cloned()).collect())
     }
 
     /// Writes the text and, when given, the visibility in one transaction.
@@ -141,6 +164,39 @@ impl PgMetadataStore {
     }
 }
 
+fn profile_from(row: &PgRow) -> Result<Profile> {
+    Ok(Profile {
+        fields: ProfileFields {
+            display_name: row.get("display_name"),
+            bio: row.get("bio"),
+            location: row.get("location"),
+            company: row.get("company"),
+            links: row.get("links"),
+        },
+        avatar: avatar_of(row)?,
+        visibility: ProfileVisibility {
+            display_name: row.get("show_display_name"),
+            bio: row.get("show_bio"),
+            location: row.get("show_location"),
+            company: row.get("show_company"),
+            links: row.get("show_links"),
+            avatar: row.get("show_avatar"),
+            starred: row.get("show_starred"),
+        },
+    })
+}
+
+/// An organization profile from columns named with `prefix` (`{prefix}display_name`, `{prefix}avatar_content`, ...).
+fn org_profile_from(row: &PgRow, prefix: &str) -> Result<OrgProfile> {
+    let col = |name: &str| format!("{prefix}{name}");
+    Ok(OrgProfile {
+        description: row.get(col("description").as_str()),
+        display_name: row.get(col("display_name").as_str()),
+        url: row.get(col("url").as_str()),
+        avatar: image_of(row, &col("avatar"))?,
+    })
+}
+
 fn avatar_of(row: &PgRow) -> Result<Option<Avatar>> {
     image_of(row, "avatar")
 }
@@ -174,15 +230,8 @@ impl PgMetadataStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(db)?;
-        let Some(row) = row else {
-            return Ok(OrgProfile::default());
-        };
-        Ok(OrgProfile {
-            description: row.get("description"),
-            display_name: row.get("display_name"),
-            url: row.get("url"),
-            avatar: avatar_of(&row)?,
-        })
+        row.as_ref()
+            .map_or_else(|| Ok(OrgProfile::default()), |r| org_profile_from(r, ""))
     }
 
     pub(crate) async fn put_org_fields(

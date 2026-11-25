@@ -9,8 +9,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use chrono::Duration;
 use pyn_core::{
-    AccountStatus, InviteId, InviteRecord, LockLimit, MAX_INVITE_HOURS, Permission, PynError,
-    ReadOnlySource, RepoAbout, RepoRecord, RepoSettings, RepoUpdate, Role, UserId, WatchLevel,
+    AccountStatus, InviteId, InviteRecord, LockLimit, MAX_INVITE_HOURS, OwnerProfile, Permission,
+    PynError, ReadOnlySource, RepoAbout, RepoRecord, RepoSettings, RepoUpdate, Role, UserId,
+    WatchLevel,
 };
 use pyn_proto as api;
 use serde::Deserialize;
@@ -42,6 +43,75 @@ pub(crate) async fn repo_info(
     limit: LockLimit,
     viewer: Option<&UserId>,
 ) -> ApiResult<api::RepoInfo> {
+    let owner_identity = owner_identities(s, std::slice::from_ref(&r.owner))
+        .await?
+        .pop()
+        .flatten();
+    info_with_owner(s, r, role, limit, viewer, owner_identity).await
+}
+
+/// The infos of a listing, in its order, reading the owners' identities once for the whole list.
+pub(crate) async fn repo_infos(
+    s: &AppState,
+    found: Vec<(RepoRecord, Option<Role>)>,
+    viewer: Option<&UserId>,
+) -> ApiResult<Vec<api::RepoInfo>> {
+    let owners: Vec<UserId> = found.iter().map(|(r, _)| r.owner.clone()).collect();
+    let identities = owner_identities(s, &owners).await?;
+    let mut out = Vec::with_capacity(found.len());
+    for ((record, role), owner_identity) in found.into_iter().zip(identities) {
+        let limit = s.repos.lock_limit(&record).await?;
+        out.push(info_with_owner(s, record, role, limit, viewer, owner_identity).await?);
+    }
+    Ok(out)
+}
+
+/// The public identity of each owner, one read per distinct name: an active user's as a stranger sees it (a hidden
+/// display name or avatar is null), an organization's avatar; `None` for any other account.
+async fn owner_identities(
+    s: &AppState,
+    owners: &[UserId],
+) -> ApiResult<Vec<Option<api::PublicIdentity>>> {
+    let mut distinct: Vec<UserId> = Vec::new();
+    for o in owners {
+        if !distinct.contains(o) {
+            distinct.push(o.clone());
+        }
+    }
+    let found = s.access.owner_profiles(&distinct).await?;
+    let known: std::collections::HashMap<UserId, Option<api::PublicIdentity>> = distinct
+        .into_iter()
+        .zip(found)
+        .map(|(owner, profile)| {
+            let identity = profile.map(|p| match p {
+                OwnerProfile::User(p) => {
+                    let p = crate::profile_api::profile_dto(&owner, p, false);
+                    api::PublicIdentity {
+                        user: owner.to_string(),
+                        display_name: p.display_name,
+                        avatar_url: p.avatar_url,
+                    }
+                }
+                OwnerProfile::Org(p) => api::PublicIdentity {
+                    user: owner.to_string(),
+                    display_name: None,
+                    avatar_url: crate::profile_api::org_avatar_url(&owner, p.avatar.as_ref()),
+                },
+            });
+            (owner, identity)
+        })
+        .collect();
+    Ok(owners.iter().map(|o| known[o].clone()).collect())
+}
+
+async fn info_with_owner(
+    s: &AppState,
+    r: RepoRecord,
+    role: Option<Role>,
+    limit: LockLimit,
+    viewer: Option<&UserId>,
+    owner_identity: Option<api::PublicIdentity>,
+) -> ApiResult<api::RepoInfo> {
     let stars = s.repos.star_state(&r, viewer).await?;
     let watch = s.repos.watch_state(&r, viewer).await?;
     let read_only = s.repos.read_only_default(&r).await?;
@@ -64,15 +134,6 @@ pub(crate) async fn repo_info(
             bytes: l.bytes,
         })
         .collect();
-    let owner_identity =
-        s.access
-            .org_profile_if_org(&r.owner)
-            .await?
-            .map(|p| api::PublicIdentity {
-                user: r.owner.to_string(),
-                display_name: None,
-                avatar_url: crate::profile_api::org_avatar_url(&r.owner, p.avatar.as_ref()),
-            });
     let icon_url = icon_url(&r);
     Ok(api::RepoInfo {
         id: r.id.to_string(),
@@ -153,12 +214,7 @@ pub(crate) async fn list_repos(
 ) -> ApiResult<Json<Vec<api::RepoInfo>>> {
     let owner = q.owner.map(crate::owner_path::typed_owner);
     let repos = s.repos.list(&who, owner.as_ref()).await?;
-    let mut infos = Vec::with_capacity(repos.len());
-    for (record, role) in repos {
-        let limit = s.repos.lock_limit(&record).await?;
-        infos.push(repo_info(&s, record, role, limit, Some(&who.user)).await?);
-    }
-    Ok(Json(infos))
+    Ok(Json(repo_infos(&s, repos, Some(&who.user)).await?))
 }
 
 #[derive(Deserialize)]
@@ -185,11 +241,7 @@ pub(crate) async fn explore_repos(
         .list_public(who.as_ref(), q.after.as_deref(), limit)
         .await?;
     let viewer = who.as_ref().map(|w| &w.user);
-    let mut repos = Vec::with_capacity(found.len());
-    for (record, role) in found {
-        let limit = s.repos.lock_limit(&record).await?;
-        repos.push(repo_info(&s, record, role, limit, viewer).await?);
-    }
+    let repos = repo_infos(&s, found, viewer).await?;
     Ok(Json(api::RepoPage { repos, next_after }))
 }
 
@@ -469,12 +521,8 @@ pub(crate) async fn list_forks(
     }: RepoReader,
 ) -> ApiResult<Json<Vec<api::RepoInfo>>> {
     let viewer = who.as_ref().map(|w| &w.user);
-    let mut out = Vec::new();
-    for (record, role) in s.repos.forks_visible(&open.record, who.as_ref()).await? {
-        let limit = s.repos.lock_limit(&record).await?;
-        out.push(repo_info(&s, record, role, limit, viewer).await?);
-    }
-    Ok(Json(out))
+    let found = s.repos.forks_visible(&open.record, who.as_ref()).await?;
+    Ok(Json(repo_infos(&s, found, viewer).await?))
 }
 
 fn star_dto(s: pyn_core::StarState) -> api::StarState {
@@ -584,16 +632,25 @@ pub(crate) async fn list_watching(
     State(s): State<AppState>,
     FullScopeCaller(who): FullScopeCaller,
 ) -> ApiResult<Json<Vec<api::WatchedRepo>>> {
-    let mut out = Vec::new();
-    for (record, role, level, updated_at) in s.repos.watched_by(&who).await? {
-        let limit = s.repos.lock_limit(&record).await?;
-        out.push(api::WatchedRepo {
-            level: watch_level_dto(level),
-            updated_at,
-            repo: repo_info(&s, record, role, limit, Some(&who.user)).await?,
-        });
-    }
-    Ok(Json(out))
+    let (found, watches): (Vec<_>, Vec<_>) = s
+        .repos
+        .watched_by(&who)
+        .await?
+        .into_iter()
+        .map(|(record, role, level, updated_at)| ((record, role), (level, updated_at)))
+        .unzip();
+    let infos = repo_infos(&s, found, Some(&who.user)).await?;
+    Ok(Json(
+        infos
+            .into_iter()
+            .zip(watches)
+            .map(|(repo, (level, updated_at))| api::WatchedRepo {
+                level: watch_level_dto(level),
+                updated_at,
+                repo,
+            })
+            .collect(),
+    ))
 }
 
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/me", params(RepoAddress), responses(

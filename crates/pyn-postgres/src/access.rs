@@ -15,12 +15,12 @@ use pyn_core::{
     InvitationCreate, InvitationGrant, InviteId, InviteRecord, Limits, LimitsChange, LimitsEvent,
     MemberCreation, NameReservation, NewAccount, NewExternalAccount, NewSecret, OVERFLOW_ROUTE,
     OidcFlow, OrgDeleteMark, OrgInvitation, OrgMemberChange, OrgProfile, OrgProfileFields, OrgRole,
-    OrgSettings, Permission, PrimaryChange, Profile, ProfileFields, ProfileVisibility, PynError,
-    RateLimitStore, RateState, ReachNote, RegistrationMode, RenameOutcome, RepoAccess, RepoId,
-    RepoPolicy, Result, Role, RoleDefinitions, ServerInvitation, ServerSettings,
-    ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage, SshKeyRecord, SubjectKind,
-    TeamId, TeamRecord, TokenId, TokenRecord, TokenResource, UserId, VerificationRecord,
-    WatchLevel,
+    OrgSettings, OwnerProfile, Permission, PrimaryChange, Profile, ProfileFields,
+    ProfileVisibility, PynError, RateLimitStore, RateState, ReachNote, RegistrationMode,
+    RenameOutcome, RepoAccess, RepoId, RepoPolicy, Result, Role, RoleDefinitions, ServerInvitation,
+    ServerSettings, ServiceCredentialRecord, ServiceScope, SessionRecord, SignupStage,
+    SshKeyRecord, SubjectKind, TeamId, TeamRecord, TokenId, TokenRecord, TokenResource, UserId,
+    VerificationRecord, WatchLevel,
 };
 use pyn_core::{Notification, OutboxEvent};
 use sqlx::Row;
@@ -296,7 +296,7 @@ fn session_from(row: &PgRow) -> SessionRecord {
     }
 }
 
-fn account_from(row: &PgRow) -> Result<AccountRecord> {
+pub(crate) fn account_from(row: &PgRow) -> Result<AccountRecord> {
     Ok(AccountRecord {
         id: AccountId::new(row.get::<String, _>("account_id")),
         user: UserId::new(row.get::<String, _>("id")),
@@ -1016,6 +1016,13 @@ impl AccessStore for PgMetadataStore {
 
     async fn org_profile(&self, org: &UserId) -> Result<OrgProfile> {
         self.org_profile_row(org).await
+    }
+
+    async fn owner_profiles(
+        &self,
+        owners: &[UserId],
+    ) -> Result<Vec<Option<(AccountRecord, OwnerProfile)>>> {
+        self.owner_profile_rows(owners).await
     }
 
     async fn set_org_fields(

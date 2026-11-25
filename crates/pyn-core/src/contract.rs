@@ -3731,6 +3731,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; moving_a_branch_onto_a_known_commit_needs_the_locks_a_new_one_would);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; an_exclusive_path_needs_the_pushers_live_lock_at_push_time);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_lock_is_consumed_after_the_paths_last_revision_in_the_push);
+        $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_keeps_the_locks_of_paths_it_does_not_change);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_pushed_exclusive_revision_is_based_on_the_branchs_pointer);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_rejected_push_leaves_nothing_behind);
         $crate::contract_tests!(@one $factory; [$(#[$attr])*]; a_push_refuses_what_it_cannot_record);
@@ -9913,6 +9914,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_description_and_an_avatar_apart);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_display_name_and_a_url_and_replace_them_together);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_are_apart_from_user_profiles_and_go_with_the_org);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; owner_profiles_read_each_name_by_its_kind_in_order);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_people_search_lists_active_accounts_and_matches_only_what_is_visible);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; stars_are_one_per_user_and_repository_and_counted);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_users_stars_list_newest_first_and_only_theirs);

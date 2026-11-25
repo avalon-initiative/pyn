@@ -36,7 +36,7 @@ use crate::object::{KeyHasher, Keying, ObjectRead, ObjectReader, ObjectStore};
 use crate::oidc::{ExternalCreate, ExternalIdentity, IdentityUnlink, NewExternalAccount, OidcFlow};
 use crate::org_settings::OrgSettings;
 use crate::profile::{
-    Avatar, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
+    Avatar, OrgProfile, OrgProfileFields, OwnerProfile, Profile, ProfileFields, ProfileVisibility,
 };
 use crate::ratelimit::{RateLimitStore, RateState};
 use crate::repo::{ForkCopy, ForkLimits, RepoRecord, RepoUpdate, Visibility, subtree_ids};
@@ -2627,6 +2627,28 @@ impl AccessStore for MemoryAccessStore {
     async fn org_profile(&self, org: &UserId) -> Result<OrgProfile> {
         let st = self.state.lock().unwrap();
         Ok(st.org_profiles.get(org).cloned().unwrap_or_default())
+    }
+
+    async fn owner_profiles(
+        &self,
+        owners: &[UserId],
+    ) -> Result<Vec<Option<(AccountRecord, OwnerProfile)>>> {
+        let st = self.state.lock().unwrap();
+        Ok(owners
+            .iter()
+            .map(|o| {
+                let account = st.accounts.get(o)?.clone();
+                let profile = match account.kind {
+                    AccountKind::User => {
+                        OwnerProfile::User(st.profiles.get(o).cloned().unwrap_or_default())
+                    }
+                    AccountKind::Org => {
+                        OwnerProfile::Org(st.org_profiles.get(o).cloned().unwrap_or_default())
+                    }
+                };
+                Some((account, profile))
+            })
+            .collect())
     }
 
     async fn set_org_fields(
