@@ -817,7 +817,7 @@ async fn an_organization_token_acts_with_its_grants_and_its_creators_current_rol
         .await
         .json::<api::CreatedToken>()
         .token;
-    let team = |slug: &str| Some(json!({"slug": slug}));
+    let team = |slug: &str| Some(json!({"name": slug}));
     let r = send(&w.app, &token, "POST", "/v1/orgs/acme/teams", team("ops")).await;
     assert_eq!(r.status, StatusCode::CREATED);
     for uri in ["/v1/orgs/acme/members", "/v1/orgs/acme/teams"] {

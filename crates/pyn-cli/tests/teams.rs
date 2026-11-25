@@ -21,28 +21,30 @@ fn teams_are_created_listed_shown_and_deleted() {
         &[
             "team",
             "create",
-            "acme/art",
-            "--name",
+            "acme",
             "Art Team",
+            "--slug",
+            "art",
             "--description",
             "pixels",
         ],
     );
     assert!(out.contains("created team acme/art"), "{out}");
-    env.ok(&home, "alice", &["team", "create", "acme/code"]);
+    let out = env.ok(&home, "alice", &["team", "create", "acme", "Code"]);
+    assert!(out.contains("created team acme/code"), "{out}");
 
-    let dup = env.fails(&home, "alice", &["team", "create", "acme/art"]);
-    assert!(dup.contains("team_exists"), "{dup}");
-    let denied = env.fails(&home, "bob", &["team", "create", "acme/ops"]);
+    let dup = env.fails(&home, "alice", &["team", "create", "acme", "art"]);
+    assert!(dup.contains("team_exists") && dup.contains("art"), "{dup}");
+    let denied = env.fails(&home, "bob", &["team", "create", "acme", "ops"]);
     assert!(denied.contains("not_org_owner"), "{denied}");
-    let bad = env.fails(&home, "alice", &["team", "create", "acme"]);
-    assert!(bad.contains("org/team"), "{bad}");
+    let bad = env.fails(&home, "alice", &["team", "create", "acme", "&&"]);
+    assert!(bad.contains("invalid_request"), "{bad}");
 
     let listed = cell_rows(&env.ok(&home, "bob", &["team", "list", "acme"]));
     assert_eq!(listed[0], ["MEMBERS", "REPOS", "CREATED", "NAME", "TEAM"]);
     assert_eq!(listed.len(), 3);
     assert_eq!(listed[1][3..], ["Art Team", "art"]);
-    assert_eq!(listed[2][3..], ["code", "code"]);
+    assert_eq!(listed[2][3..], ["Code", "code"]);
 
     let shown = env.ok(&home, "bob", &["team", "show", "acme/art"]);
     assert!(shown.contains("team         acme/art"), "{shown}");
@@ -68,7 +70,7 @@ fn only_organization_members_join_a_team() {
     let home = env.dir("home");
     env.ok(&home, "alice", &["org", "create", "acme"]);
     env.join_org(&home, "alice", "acme", "bob");
-    env.ok(&home, "alice", &["team", "create", "acme/art"]);
+    env.ok(&home, "alice", &["team", "create", "acme", "art"]);
 
     let out = env.ok(
         &home,
@@ -122,7 +124,7 @@ fn a_team_is_granted_and_revoked_a_role_and_member_list_shows_the_source() {
     env.join_org(&home, "alice", "acme", "carol");
     env.ok(&home, "alice", &["repo", "create", "acme/game"]);
     env.ok(&home, "alice", &["repo", "create", "alice/solo"]);
-    env.ok(&home, "alice", &["team", "create", "acme/art"]);
+    env.ok(&home, "alice", &["team", "create", "acme", "art"]);
     env.ok(
         &home,
         "alice",
@@ -190,7 +192,7 @@ fn granting_is_capped_by_the_actors_own_permissions() {
     env.ok(&home, "alice", &["org", "create", "acme"]);
     env.join_org(&home, "alice", "acme", "bob");
     env.ok(&home, "alice", &["repo", "create", "acme/game"]);
-    env.ok(&home, "alice", &["team", "create", "acme/art"]);
+    env.ok(&home, "alice", &["team", "create", "acme", "art"]);
     env.ok(
         &home,
         "alice",

@@ -6340,6 +6340,7 @@
         },
         "responses": {
           "201": {
+            "description": "carries the slug, derived from the name when left out",
             "content": {
               "application/json": {
                 "schema": {
@@ -6349,7 +6350,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: bad slug, name or description",
+            "description": "invalid_request: bad name, slug or description, or no slug can be derived from the name",
             "content": {
               "application/json": {
                 "schema": {
@@ -6379,7 +6380,7 @@
             }
           },
           "409": {
-            "description": "team_exists",
+            "description": "team_exists: the message names the slug",
             "content": {
               "application/json": {
                 "schema": {
@@ -15916,7 +15917,7 @@
       "CreateTeamRequest": {
         "type": "object",
         "required": [
-          "slug"
+          "name"
         ],
         "properties": {
           "description": {
@@ -15927,15 +15928,15 @@
             "description": "At most 500 characters; defaults to empty."
           },
           "name": {
+            "type": "string",
+            "description": "The display name: 1 to 100 characters, trimmed."
+          },
+          "slug": {
             "type": [
               "string",
               "null"
             ],
-            "description": "1 to 100 characters; defaults to the slug."
-          },
-          "slug": {
-            "type": "string",
-            "description": "1 to 39 lowercase letters, digits, `-` or `_`, starting with a letter or digit; unique in the organization."
+            "description": "Unique in the organization: 1 to 39 lowercase letters, digits, `-` or `_`, starting with a letter or digit.\nDerived from the name when left out: trimmed, each run of whitespace one `-`, lowercased, other characters a slug\ncannot hold dropped, runs of `-` collapsed and leading or trailing `-` and `_` trimmed. The response carries it."
           }
         }
       },

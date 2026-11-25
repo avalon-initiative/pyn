@@ -253,6 +253,17 @@ async fn team_slugs_names_and_descriptions_are_validated() {
     for bad in ["", "Art", "-art", "a b", &"x".repeat(40)] {
         assert!(
             matches!(
+                w.access
+                    .create_team(&alice, &acme, "Art", Some(bad), None)
+                    .await,
+                Err(PynError::InvalidRequest(_))
+            ),
+            "{bad:?}"
+        );
+    }
+    for bad in ["", "  ", "&&", "Éé à", &"x".repeat(40), "a\u{7}b"] {
+        assert!(
+            matches!(
                 w.access.create_team(&alice, &acme, bad, None, None).await,
                 Err(PynError::InvalidRequest(_))
             ),
@@ -268,10 +279,45 @@ async fn team_slugs_names_and_descriptions_are_validated() {
     );
     let t = w
         .access
-        .create_team(&alice, &acme, "a", Some(" Art "), None)
+        .create_team(&alice, &acme, " Art ", Some("a"), None)
         .await
         .unwrap();
-    assert_eq!(t.team.name, "Art");
+    assert_eq!((t.team.slug.as_str(), t.team.name.as_str()), ("a", "Art"));
+}
+
+#[tokio::test]
+async fn a_team_slug_is_derived_from_its_name() {
+    let w = setup().await;
+    let (alice, acme) = (session("alice"), user("acme"));
+    for (name, slug) in [
+        ("  Level   Design ", "level-design"),
+        ("Art & Sound", "art-sound"),
+        ("QA_Team 2", "qa_team-2"),
+        ("Équipe Son", "quipe-son"),
+        ("--Ops--", "ops"),
+    ] {
+        let t = w
+            .access
+            .create_team(&alice, &acme, name, None, None)
+            .await
+            .unwrap();
+        assert_eq!(t.team.slug, slug, "{name:?}");
+        assert_eq!(t.team.name, name.trim());
+    }
+    let err = w
+        .access
+        .create_team(&alice, &acme, "LEVEL design", None, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, PynError::TeamExists { team, .. } if team == "level-design"),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("level-design"));
+    w.access
+        .create_team(&alice, &acme, "Level Design", Some("level-design-2"), None)
+        .await
+        .unwrap();
 }
 
 async fn repo_id(w: &World, name: &str) -> pyn_core::RepoId {

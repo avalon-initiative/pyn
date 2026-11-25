@@ -88,21 +88,25 @@ impl AccessService {
         self.ensure_owner_writable(org).await
     }
 
-    /// Creates a team; the name defaults to the slug. Organization owners only.
+    /// Creates a team; the slug is derived from the name when left out. Organization owners only.
     pub async fn create_team(
         &self,
         actor: &Identity,
         org: &UserId,
-        slug: &str,
-        name: Option<&str>,
+        name: &str,
+        slug: Option<&str>,
         description: Option<&str>,
     ) -> Result<TeamDetail> {
         self.require_team_admin(actor, org).await?;
-        let slug = team::validate_slug(slug)?;
+        let name = team::validate_name(name)?;
+        let slug = match slug {
+            Some(slug) => team::validate_slug(slug)?,
+            None => team::derive_slug(&name)?,
+        };
         let record = TeamRecord {
             id: TeamId::generate()?,
             org: org.clone(),
-            name: team::validate_name(name.unwrap_or(&slug))?,
+            name,
             description: team::validate_description(description.unwrap_or_default())?,
             slug,
             created_at: self.clock.now(),
