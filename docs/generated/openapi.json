@@ -9226,6 +9226,270 @@
         "x-pyn-reach": "public_repo_read:contents:read"
       }
     },
+    "/v1/repos/{owner}/{name}/icon": {
+      "get": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "get_icon",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "v",
+            "in": "query",
+            "description": "the version from `icon_url`; it only keeps caches of different images apart, and every response must be revalidated",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the image, as `image/png`, `image/jpeg` or `image/webp` according to its bytes; readable by whoever can read the repository, with an `ETag` and `Cache-Control`",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "`If-None-Match` matches the current image"
+          },
+          "404": {
+            "description": "repo_not_found, or icon_not_found when the repository has none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "public_repo_read:metadata:read"
+      },
+      "put": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "put_icon",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "the image bytes (png, jpeg or webp, at most 1 MiB); the type is judged from the bytes, not the `Content-Type` header",
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "the repository with the new `icon_url`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: an empty body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "only the owner, with admin rights in the repository",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "owner_frozen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "object_too_large: over 1 MiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "unsupported_image: not a png, jpeg or webp",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: too many icon changes in an hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "repo_scoped:administration:write"
+      },
+      "delete": {
+        "tags": [
+          "repo_api"
+        ],
+        "operationId": "delete_icon",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "description": "The namespace that owns the repository.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The repository's name within its owner; spaces (`%20`) read as `-` and case is ignored.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the repository without an icon; removing none is not an error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "only the owner, with admin rights in the repository",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "repo_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "owner_frozen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too_many_attempts: too many icon changes in an hour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-pyn-reach": "repo_scoped:administration:write"
+      }
+    },
     "/v1/repos/{owner}/{name}/invites": {
       "get": {
         "tags": [
@@ -19998,6 +20262,7 @@
           "description",
           "website",
           "topics",
+          "icon_url",
           "languages",
           "language",
           "updated_at",
@@ -20054,6 +20319,13 @@
                 "type": "null"
               }
             ]
+          },
+          "icon_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`/v1/repos/{owner}/{name}/icon?v=` and the start of the image's hash; null when the repository has no icon,\nand a client then shows the owner's avatar."
           },
           "id": {
             "type": "string",

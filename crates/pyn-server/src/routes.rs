@@ -828,6 +828,21 @@ fn table() -> Vec<Entry> {
             repo_api::delete_repo,
         ),
         get(
+            "/v1/repos/{owner}/{name}/icon",
+            Reach::PublicRepoRead(need(Metadata, Read)),
+            repo_api::get_icon,
+        ),
+        put(
+            "/v1/repos/{owner}/{name}/icon",
+            Reach::RepoScoped(need(Administration, Write)),
+            repo_api::put_icon,
+        ),
+        delete(
+            "/v1/repos/{owner}/{name}/icon",
+            Reach::RepoScoped(need(Administration, Write)),
+            repo_api::delete_icon,
+        ),
+        get(
             "/v1/repos/{owner}/{name}/forks",
             Reach::PublicRepoRead(need(Metadata, Read)),
             repo_api::list_forks,

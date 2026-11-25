@@ -276,6 +276,9 @@ struct RepoAddress {
         repo_api::get_repo,
         repo_api::update_repo,
         repo_api::delete_repo,
+        repo_api::put_icon,
+        repo_api::delete_icon,
+        repo_api::get_icon,
         repo_api::get_watch,
         repo_api::put_watch,
         repo_api::delete_watch,
@@ -821,6 +824,7 @@ fn status_for(e: &PynError) -> StatusCode {
         | PynError::UserNotFound(_)
         | PynError::EmailNotFound
         | PynError::AvatarNotFound(_)
+        | PynError::IconNotFound(_)
         | PynError::KeyNotFound(_)
         | PynError::FactorNotFound(_)
         | PynError::PasskeyNotFound(_)

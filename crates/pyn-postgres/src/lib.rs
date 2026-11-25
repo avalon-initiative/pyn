@@ -273,6 +273,7 @@ fn repo_from(row: &PgRow) -> Result<RepoRecord> {
             description: row.get("description"),
             website: row.get("website"),
             topics: row.get("topics"),
+            icon: profile::image_of(row, "icon")?,
         },
         fork_of: row.get::<Option<String>, _>("fork_of").map(RepoId::new),
     })
@@ -2805,8 +2806,8 @@ impl MetadataStore for PgMetadataStore {
         }
         let inserted = sqlx::query(
             "INSERT INTO repositories (id, owner, name, visibility, lease_hours, max_locks, max_storage_bytes, initial_policy,
-                 created_at, description, website, topics, allow_private_forks, fork_of)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+                 created_at, description, website, topics, allow_private_forks, fork_of, icon_content, icon_type, icon_size)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(repo.id.as_str())
         .bind(repo.owner.as_str())
@@ -2822,6 +2823,9 @@ impl MetadataStore for PgMetadataStore {
         .bind(&repo.about.topics)
         .bind(repo.settings.allow_private_forks)
         .bind(repo.fork_of.as_ref().map(RepoId::as_str))
+        .bind(repo.about.icon.as_ref().map(|i| i.content.to_hex()))
+        .bind(repo.about.icon.as_ref().map(|i| i.kind.media_type()))
+        .bind(repo.about.icon.as_ref().map(|i| i.size as i64))
         .execute(&mut *tx)
         .await;
         match inserted {
@@ -3209,6 +3213,7 @@ impl MetadataStore for PgMetadataStore {
             .get_repo(id)
             .await?
             .ok_or_else(|| PynError::RepoNotFound(id.to_string()))?;
+        let icon = update.icon.as_ref().and_then(Option::as_ref);
         let mut tx = self.pool.begin().await.map_err(db)?;
         let updated = sqlx::query(
             "UPDATE repositories SET name = COALESCE($2, name), visibility = COALESCE($3, visibility),
@@ -3218,7 +3223,10 @@ impl MetadataStore for PgMetadataStore {
                  max_storage_bytes = CASE WHEN $7 THEN $8 ELSE max_storage_bytes END,
                  description = CASE WHEN $9 THEN $10 ELSE description END,
                  website = CASE WHEN $11 THEN $12 ELSE website END,
-                 topics = CASE WHEN $13 THEN $14::text[] ELSE topics END
+                 topics = CASE WHEN $13 THEN $14::text[] ELSE topics END,
+                 icon_content = CASE WHEN $16 THEN $17 ELSE icon_content END,
+                 icon_type = CASE WHEN $16 THEN $18 ELSE icon_type END,
+                 icon_size = CASE WHEN $16 THEN $19 ELSE icon_size END
              WHERE id = $1
              RETURNING *",
         )
@@ -3237,6 +3245,10 @@ impl MetadataStore for PgMetadataStore {
         .bind(update.topics.is_some())
         .bind(update.topics.clone().unwrap_or_default())
         .bind(update.settings.is_some_and(|s| s.allow_private_forks))
+        .bind(update.icon.is_some())
+        .bind(icon.map(|i| i.content.to_hex()))
+        .bind(icon.map(|i| i.kind.media_type()))
+        .bind(icon.map(|i| i.size as i64))
         .fetch_optional(&mut *tx)
         .await;
         match updated {
@@ -3414,10 +3426,12 @@ mod tests {
             .execute(&store.pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (8, 11, 42, 46, 72, 73, 74)")
-            .execute(&store.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "DELETE FROM _sqlx_migrations WHERE version IN (8, 11, 42, 46, 72, 73, 74, 75)",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
         store
     }
 

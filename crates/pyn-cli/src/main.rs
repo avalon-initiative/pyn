@@ -808,6 +808,9 @@ enum RepoCommand {
         #[arg(long)]
         allow_private_forks: Option<bool>,
     },
+    /// Set or clear a repository's icon. Owner and admin only.
+    #[command(subcommand)]
+    Icon(RepoIconCommand),
     /// Fork a repository you can read into your namespace or an organization: a copy of its default branch with its
     /// history and tags, and its policy, without its locks, linked to it as its source.
     Fork {
@@ -884,6 +887,21 @@ enum RepoCommand {
         /// Skip the typed confirmation.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RepoIconCommand {
+    /// Upload a png, jpeg or webp image of at most 1 MiB as the icon.
+    Set {
+        /// `owner/name`.
+        name: String,
+        file: PathBuf,
+    },
+    /// Remove the icon; the owner's avatar shows instead.
+    Clear {
+        /// `owner/name`.
+        name: String,
     },
 }
 
@@ -3800,6 +3818,7 @@ fn show_repo(r: &api::RepoInfo) {
         r.topics.join(", ")
     };
     println!("topics       {topics}");
+    println!("icon         {}", r.icon_url.as_deref().unwrap_or("-"));
     println!("languages    {}", language_line(&r.languages));
     let updated = r.updated_at.map_or_else(|| "-".to_string(), time::local);
     println!("updated      {updated}");
@@ -3922,6 +3941,22 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                 )?
                 .json()?;
             show_repo(&r);
+        }
+        RepoCommand::Icon(RepoIconCommand::Set { name, file }) => {
+            let (owner, short) = address::split_repo(&name)?;
+            let bytes =
+                std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+            let req = api
+                .request(Method::PUT, &format!("/v1/repos/{owner}/{short}/icon"))
+                .header("content-type", "application/octet-stream")
+                .body(bytes);
+            api.send(req)?;
+            println!("icon updated for {owner}/{short}");
+        }
+        RepoCommand::Icon(RepoIconCommand::Clear { name }) => {
+            let (owner, short) = address::split_repo(&name)?;
+            api.send(api.request(Method::DELETE, &format!("/v1/repos/{owner}/{short}/icon")))?;
+            println!("icon removed from {owner}/{short}");
         }
         RepoCommand::Fork {
             name,

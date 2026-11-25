@@ -1277,6 +1277,11 @@ pub struct RepoInfo {
     #[serde(default)]
     #[schema(required = true)]
     pub topics: Vec<String>,
+    /// `/v1/repos/{owner}/{name}/icon?v=` and the start of the image's hash; null when the repository has no icon,
+    /// and a client then shows the owner's avatar.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub icon_url: Option<String>,
     /// Bytes of each programming language at the head of the default branch, largest first; empty for an empty
     /// repository or one with no recognised source files. A client computes percentages from `bytes`.
     #[serde(default)]
