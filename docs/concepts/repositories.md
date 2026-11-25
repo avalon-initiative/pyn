@@ -195,8 +195,14 @@ and `pyn org settings set <org> --exclusive-read-only on|off|unset`; a repositor
 
 ### Teams
 
-A **team** is a flat group of an organization's members (teams do not nest) with a `slug` (1 to 39 lowercase letters,
-digits, `-` or `_`; unique in the organization), a `name` (defaults to the slug) and a `description`. Like a repository, a team also has a
+A **team** is a flat group of an organization's members (teams do not nest) with a `name` (1 to 100 characters, the display
+name), a `slug` (1 to 39 lowercase letters, digits, `-` or `_`, starting with a letter or digit; unique in the organization; the
+team's address) and a `description`. Creating a team takes the name; the slug is derived from it unless one is given: the name
+in the canonical form owner and repository names use (trimmed, each run of whitespace one `-`, lowercased), then characters a
+slug cannot hold are dropped, runs of `-` collapse to one and leading or trailing `-` and `_` are trimmed (`Art & Sound` gives
+`art-sound`). A name that leaves no valid slug (nothing left, or more than 39 characters) is refused with `400 invalid_request`
+asking for a slug; a slug the organization already has is `409 team_exists`, whose message names the slug. Renaming a team
+changes only its name, never its slug. Like a repository, a team also has a
 stable `id` (`t` and 24 lowercase hex digits, opaque): generated when the team is created, unchanged by an update and never
 issued again, so a team recreated under a deleted slug has a new id. Key data about a team on the id, not the slug. A team holds **one
 role per repository** the organization owns, from the same four roles as people, and every member gets it. Only
@@ -206,7 +212,7 @@ a user owns has no teams: `400 not_org_repo`).
 | Route | Notes |
 | --- | --- |
 | `GET /v1/orgs/{org}/teams` | any organization member; teams ordered by slug, each `{id, slug, name, description, created_at, members, repos}` |
-| `POST /v1/orgs/{org}/teams` | owners; `{slug, name?, description?}` gives `201` with the team; `409 team_exists` |
+| `POST /v1/orgs/{org}/teams` | owners; `{name, slug?, description?}` gives `201` with the team, carrying the slug (derived from the name when left out); `409 team_exists` |
 | `GET /v1/orgs/{org}/teams/{team}` | any organization member; `404 team_not_found` |
 | `PATCH /v1/orgs/{org}/teams/{team}` | owners; `{name?, description?}` |
 | `DELETE /v1/orgs/{org}/teams/{team}` | owners; removes its members and its roles on repositories |
@@ -216,7 +222,7 @@ a user owns has no teams: `400 not_org_repo`).
 | `PUT /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `{role}` sets or changes the team's role; `204`; `403 not_org_member` for anyone outside the organization who is not a server administrator, before the slug is looked at |
 | `DELETE /v1/repos/{owner}/{name}/teams/{team}` | needs `manage_users`; `204`, also when the team holds no role; `403 not_org_member` as above |
 
-On the command line: `pyn team create <org>/<team> [--name N] [--description D]`, `pyn team list <org>` (members, repos,
+On the command line: `pyn team create <org> <name> [--slug S] [--description D]` (prints the `org/slug` it made), `pyn team list <org>` (members, repos,
 created, name, team), `pyn team show <org>/<team>` (details, members and the repositories it holds roles in),
 `pyn team delete <org>/<team> [--yes]` (asks you to type `org/team`), `pyn team member add|remove <org>/<team> <user>`,
 `pyn team grant <org>/<team> <owner>/<repo> --role R`, `pyn team revoke <org>/<team> <owner>/<repo>` and

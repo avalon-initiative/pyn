@@ -47,11 +47,11 @@ pub(crate) async fn list_teams(
 #[utoipa::path(post, path = "/v1/orgs/{org}/teams",
     params(("org" = String, Path, description = "the organization's name")),
     request_body = api::CreateTeamRequest,
-    responses((status = 201, body = api::TeamInfo),
-              (status = 400, body = api::ErrorBody, description = "invalid_request: bad slug, name or description"),
+    responses((status = 201, body = api::TeamInfo, description = "carries the slug, derived from the name when left out"),
+              (status = 400, body = api::ErrorBody, description = "invalid_request: bad name, slug or description, or no slug can be derived from the name"),
               (status = 403, body = api::ErrorBody, description = "not_org_owner, or a token without the organization grant"),
               (status = 404, body = api::ErrorBody, description = "org_not_found"),
-              (status = 409, body = api::ErrorBody, description = "team_exists")))]
+              (status = 409, body = api::ErrorBody, description = "team_exists: the message names the slug")))]
 pub(crate) async fn create_team(
     State(s): State<AppState>,
     OrgCaller(who): OrgCaller,
@@ -63,8 +63,8 @@ pub(crate) async fn create_team(
         .create_team(
             &who,
             &UserId::new(org),
-            &req.slug,
-            req.name.as_deref(),
+            &req.name,
+            req.slug.as_deref(),
             req.description.as_deref(),
         )
         .await?;

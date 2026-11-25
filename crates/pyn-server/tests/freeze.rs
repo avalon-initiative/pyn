@@ -405,7 +405,7 @@ fn write_cases(owner: &str, org: bool, content: &str) -> Vec<Case> {
                 "create_team",
                 "POST",
                 format!("{base}/teams"),
-                Some(json!({"slug": "code"})),
+                Some(json!({"name": "code"})),
             ),
             case(
                 "update_team",
@@ -652,7 +652,7 @@ async fn fixture() -> Fixture {
         &alice,
         "POST",
         "/v1/orgs/acme/teams",
-        Some(json!({"slug": "art"})),
+        Some(json!({"name": "art"})),
     )
     .await;
     assert_eq!(r.status, StatusCode::CREATED);

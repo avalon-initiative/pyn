@@ -1685,11 +1685,13 @@ pub struct TeamInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateTeamRequest {
-    /// 1 to 39 lowercase letters, digits, `-` or `_`, starting with a letter or digit; unique in the organization.
-    pub slug: String,
-    /// 1 to 100 characters; defaults to the slug.
+    /// The display name: 1 to 100 characters, trimmed.
+    pub name: String,
+    /// Unique in the organization: 1 to 39 lowercase letters, digits, `-` or `_`, starting with a letter or digit.
+    /// Derived from the name when left out: trimmed, each run of whitespace one `-`, lowercased, other characters a slug
+    /// cannot hold dropped, runs of `-` collapsed and leading or trailing `-` and `_` trimmed. The response carries it.
     #[serde(default)]
-    pub name: Option<String>,
+    pub slug: Option<String>,
     /// At most 500 characters; defaults to empty.
     #[serde(default)]
     pub description: Option<String>,
