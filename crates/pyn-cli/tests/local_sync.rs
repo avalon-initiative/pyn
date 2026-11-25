@@ -928,7 +928,7 @@ fn a_pulled_merge_adopts_an_exclusive_path_only_the_server_changed() {
 }
 
 #[test]
-fn a_diverged_exclusive_path_is_refused_until_the_person_holds_its_lock() {
+fn a_diverged_exclusive_path_conflicts_and_its_stale_local_version_cannot_be_locked() {
     let (env, ws) = seeded();
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
     commit_local(
@@ -968,14 +968,171 @@ fn a_diverged_exclusive_path_is_refused_until_the_person_holds_its_lock() {
     assert!(err.contains("Content/m.umap"), "{err}");
     env.ok(&ws, "alice", &["pull", "--abort"]);
 
+    let err = env.fails(&ws, "alice", &["lock", "Content/m.umap"]);
+    assert!(
+        err.contains("stale_base") && err.contains("pyn pull"),
+        "the local version is based on the older revision: {err}"
+    );
+    let err = env.fails(&ws, "alice", &["pull"]);
+    assert!(err.contains("CONFLICT (exclusive)"), "{err}");
+    env.ok(&ws, "alice", &["pull", "--abort"]);
+    assert_eq!(
+        read(&clone_with(&env, "third", &[]), "Content/m.umap"),
+        "map by bob"
+    );
+}
+
+#[test]
+fn a_stale_local_commit_cannot_take_the_lock_or_overwrite_a_newer_revision() {
+    let (env, ws) = seeded();
+    let other = clone_with(&env, "other", &["--local-store"]);
+    env.ok(&other, "bob", &["lock", "Content/m.umap"]);
+    commit_local(
+        &env,
+        &other,
+        "bob",
+        "Content/m.umap",
+        "map by bob",
+        "bob's map",
+    );
+    env.ok(&other, "bob", &["push"]);
+    commit_local(
+        &env,
+        &ws,
+        "alice",
+        "Content/m.umap",
+        "map by alice",
+        "stale",
+    );
+
+    let err = env.fails(&ws, "alice", &["lock", "Content/m.umap"]);
+    assert!(
+        err.contains("stale_base") && err.contains("pyn pull"),
+        "{err}"
+    );
+    env.ok(&ws, "alice", &["fetch"]);
+    let err = env.fails(&ws, "alice", &["lock", "Content/m.umap"]);
+    assert!(err.contains("stale_base"), "after a fetch too: {err}");
+    let err = env.fails(&ws, "alice", &["push"]);
+    assert!(
+        err.contains("non-fast-forward") || err.contains("lock"),
+        "{err}"
+    );
+
+    let err = env.fails(&ws, "alice", &["pull"]);
+    assert!(
+        err.contains("CONFLICT (exclusive): Content/m.umap") && !err.contains("Kept your version"),
+        "{err}"
+    );
+    assert_eq!(
+        read(&clone_with(&env, "third", &[]), "Content/m.umap"),
+        "map by bob",
+        "nothing overwrote the newer revision"
+    );
+
+    env.ok(
+        &ws,
+        "alice",
+        &["checkout", "--ours", "--", "Content/m.umap"],
+    );
+    env.ok(&ws, "alice", &["add", "Content/m.umap"]);
     env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
-    let out = env.ok(&ws, "alice", &["pull"]);
-    assert!(out.contains("Kept your version of Content/m.umap"), "{out}");
-    assert_eq!(parents(&ws, "main").len(), 2);
+    env.ok(&ws, "alice", &["commit"]);
     env.ok(&ws, "alice", &["push"]);
     assert_eq!(
-        std::fs::read_to_string(clone_with(&env, "third", &[]).join("Content/m.umap")).unwrap(),
+        read(&clone_with(&env, "fourth", &[]), "Content/m.umap"),
+        "map by alice",
+        "keeping the local version is a choice made after seeing the newer one"
+    );
+}
+
+#[test]
+fn a_local_commit_based_on_the_current_revision_takes_the_lock() {
+    let (env, ws) = seeded();
+    commit_local(&env, &ws, "alice", "Content/m.umap", "map by alice", "map");
+    let out = env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    assert!(out.contains("locked Content/m.umap"), "{out}");
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(
+        read(&clone_with(&env, "other", &[]), "Content/m.umap"),
         "map by alice"
+    );
+}
+
+#[test]
+fn pull_keeps_the_version_of_a_lock_taken_on_the_current_revision() {
+    let (env, ws) = seeded();
+    commit_local(&env, &ws, "alice", "Source/b.cpp", "bee2", "b");
+    let other = clone_with(&env, "other", &["--local-store"]);
+    env.ok(&other, "bob", &["lock", "Content/m.umap"]);
+    commit_local(
+        &env,
+        &other,
+        "bob",
+        "Content/m.umap",
+        "map by bob",
+        "bob's map",
+    );
+    env.ok(&other, "bob", &["push"]);
+
+    env.ok(&ws, "alice", &["update"]);
+    assert_eq!(read(&ws, "Content/m.umap"), "map by bob");
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    commit_local(
+        &env,
+        &ws,
+        "alice",
+        "Content/m.umap",
+        "bob's map, edited",
+        "on r2",
+    );
+    let out = env.ok(&ws, "alice", &["pull"]);
+    assert!(out.contains("Kept your version of Content/m.umap"), "{out}");
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(
+        read(&clone_with(&env, "third", &[]), "Content/m.umap"),
+        "bob's map, edited"
+    );
+}
+
+#[test]
+fn a_push_keeps_the_lock_on_an_exclusive_path_it_leaves_unchanged() {
+    let (env, ws) = seeded();
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+    let held = env.ok(&ws, "alice", &["locks"]);
+    assert!(held.contains("Content/m.umap"), "{held}");
+
+    commit_local(&env, &ws, "alice", "Source/b.cpp", "bee2", "main");
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(
+        env.ok(&ws, "alice", &["locks"]),
+        held,
+        "after a push to main"
+    );
+
+    env.ok(&ws, "alice", &["switch", "-c", "feature"]);
+    commit_local(&env, &ws, "alice", "Source/a.cpp", "feature\n", "feature");
+    env.ok(
+        &ws,
+        "alice",
+        &["push", "--set-upstream", "origin", "feature"],
+    );
+    assert_eq!(
+        env.ok(&ws, "alice", &["locks"]),
+        held,
+        "after creating a branch"
+    );
+    commit_local(&env, &ws, "alice", "Source/b.cpp", "bee3", "more");
+    env.ok(&ws, "alice", &["push"]);
+    assert_eq!(env.ok(&ws, "alice", &["locks"]), held, "after a push to it");
+
+    commit_local(&env, &ws, "alice", "Content/m.umap", "map2", "map");
+    env.ok(&ws, "alice", &["push"]);
+    let locks = env.ok(&ws, "alice", &["locks"]);
+    assert!(
+        !locks.contains("Content/m.umap"),
+        "a push that changes it releases it: {locks}"
     );
 }
 
