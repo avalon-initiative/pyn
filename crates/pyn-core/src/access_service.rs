@@ -40,7 +40,7 @@ use crate::oidc::{
 use crate::org_settings::OrgSettings;
 use crate::passwords::{InlinePasswords, PasswordWorker};
 use crate::profile::{
-    Avatar, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
+    Avatar, OrgProfile, OrgProfileFields, OwnerProfile, Profile, ProfileFields, ProfileVisibility,
 };
 use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
@@ -469,6 +469,12 @@ pub trait AccessStore: Send + Sync {
 
     /// The organization's profile; empty when none was saved.
     async fn org_profile(&self, org: &UserId) -> Result<OrgProfile>;
+
+    /// For each name, its account and the profile its kind keeps, read together; `None` where no account holds it.
+    async fn owner_profiles(
+        &self,
+        owners: &[UserId],
+    ) -> Result<Vec<Option<(AccountRecord, OwnerProfile)>>>;
 
     /// Replaces the organization's description, display name and url, keeping the avatar. The organization must exist.
     async fn set_org_fields(

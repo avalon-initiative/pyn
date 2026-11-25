@@ -936,9 +936,8 @@ async fn org_owned_repositories_carry_the_organizations_identity() {
     let own = json!({"starter_policy": false, "name": "mine"});
     let r = call(&app, &alice, "POST", "/v1/repos", Some(own)).await;
     assert_eq!(
-        r.json::<api::RepoInfo>().owner_identity,
-        None,
-        "a user owner has none"
+        r.json::<api::RepoInfo>().owner_identity.unwrap().user,
+        "alice"
     );
 
     send(
@@ -968,12 +967,99 @@ async fn org_owned_repositories_carry_the_organizations_identity() {
     let repos = r.json::<Vec<api::RepoInfo>>();
     let acme: Vec<_> = repos.iter().filter(|r| r.owner == "acme").collect();
     assert!(acme.iter().all(|r| r.owner_identity.is_some()));
-    assert!(
-        repos
-            .iter()
-            .filter(|r| r.owner == "alice")
-            .all(|r| r.owner_identity.is_none())
+}
+
+/// Every payload that carries a repository of alice's, read by `viewer`.
+async fn alice_repo_payloads(app: &Router, viewer: &str) -> Vec<(String, api::RepoInfo)> {
+    let mut out = Vec::new();
+    let mut take = |what: &str, infos: Vec<api::RepoInfo>| {
+        let found = infos.into_iter().filter(|r| r.owner == "alice");
+        out.extend(found.map(|r| (what.to_string(), r)));
+    };
+    let r = call(app, viewer, "GET", "/v1/repos/alice/tools", None).await;
+    take("get", vec![r.json()]);
+    let r = call(app, viewer, "GET", "/v1/explore/repos", None).await;
+    take("explore", r.json::<api::RepoPage>().repos);
+    let r = call(app, viewer, "GET", "/v1/users/alice", None).await;
+    take("profile", r.json::<api::PublicProfile>().repositories);
+    let r = call(app, viewer, "GET", "/v1/users/bob/starred", None).await;
+    let starred = r.json::<Vec<api::StarredRepo>>();
+    take("starred", starred.into_iter().map(|s| s.repo).collect());
+    if !viewer.is_empty() {
+        let r = call(app, viewer, "GET", "/v1/repos", None).await;
+        take("list", r.json());
+    }
+    out
+}
+
+#[tokio::test]
+async fn user_owned_repositories_carry_the_owners_public_identity() {
+    let app = server().await;
+    let alice = token_for(&app, "alice").await;
+    let bob = token_for(&app, "bob").await;
+    set_profile(&app, &alice, json!({"display_name": "Alice A."})).await;
+    put_avatar(&app, &alice, "image/png", png()).await;
+    let body = json!({"name": "tools", "visibility": "public", "starter_policy": false});
+    let r = call(&app, &alice, "POST", "/v1/repos", Some(body)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    let created = r.json::<api::RepoInfo>().owner_identity.expect("create");
+    assert_eq!(created.user, "alice");
+    assert_eq!(created.display_name.as_deref(), Some("Alice A."));
+    let avatar = created.avatar_url.clone().unwrap();
+    assert!(avatar.starts_with("/v1/users/alice/avatar?v="), "{avatar}");
+
+    let edit = json!({"description": "hammers"});
+    let r = call(&app, &alice, "PATCH", "/v1/repos/alice/tools", Some(edit)).await;
+    assert_eq!(
+        r.json::<api::RepoInfo>().owner_identity,
+        Some(created.clone())
     );
+    let r = call(&app, &bob, "PUT", "/v1/repos/alice/tools/star", None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let r = call(
+        &app,
+        &bob,
+        "POST",
+        "/v1/repos/alice/tools/forks",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    let fork = r.json::<api::RepoInfo>().owner_identity.expect("fork");
+    assert_eq!((fork.user.as_str(), fork.display_name), ("bob", None));
+    let r = call(&app, &alice, "GET", "/v1/repos/alice/tools/forks", None).await;
+    let forks = r.json::<Vec<api::RepoInfo>>();
+    assert_eq!(forks[0].owner_identity.as_ref().unwrap().user, "bob");
+
+    for viewer in ["", bob.as_str(), alice.as_str()] {
+        let seen = alice_repo_payloads(&app, viewer).await;
+        assert!(seen.len() >= 4, "viewer {viewer:?}: {}", seen.len());
+        for (what, r) in seen {
+            assert_eq!(
+                r.owner_identity,
+                Some(created.clone()),
+                "{what} for {viewer:?}"
+            );
+        }
+    }
+
+    let hide =
+        json!({"display_name": "Alice A.", "visibility": {"display_name": false, "avatar": false}});
+    set_profile(&app, &alice, hide).await;
+    let hidden = api::PublicIdentity {
+        user: "alice".into(),
+        display_name: None,
+        avatar_url: None,
+    };
+    for viewer in ["", bob.as_str(), alice.as_str()] {
+        for (what, r) in alice_repo_payloads(&app, viewer).await {
+            assert_eq!(
+                r.owner_identity,
+                Some(hidden.clone()),
+                "{what} for {viewer:?}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

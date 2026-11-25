@@ -20384,7 +20384,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/PublicIdentity",
-                "description": "The owning organization's public identity (its avatar); absent when a user owns the repository."
+                "description": "The owner's public identity: a user's as a stranger sees it (a hidden display name or avatar is null), an\norganization's avatar with a null display name; absent when no active account holds the name."
               },
               {
                 "type": "null"

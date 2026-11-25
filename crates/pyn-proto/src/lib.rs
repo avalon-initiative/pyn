@@ -1261,7 +1261,8 @@ pub struct RepoInfo {
     /// The id of `owner`, a user or an organization.
     pub owner_id: String,
     pub owner: String,
-    /// The owning organization's public identity (its avatar); absent when a user owns the repository.
+    /// The owner's public identity: a user's as a stranger sees it (a hidden display name or avatar is null), an
+    /// organization's avatar with a null display name; absent when no active account holds the name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_identity: Option<PublicIdentity>,
     pub name: String,
