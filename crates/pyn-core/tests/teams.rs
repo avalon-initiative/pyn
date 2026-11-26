@@ -261,7 +261,15 @@ async fn team_slugs_names_and_descriptions_are_validated() {
             "{bad:?}"
         );
     }
-    for bad in ["", "  ", "&&", "Éé à", &"x".repeat(40), "a\u{7}b"] {
+    for bad in [
+        "",
+        "  ",
+        "&&",
+        "日本",
+        "\u{301}",
+        &"x".repeat(40),
+        "a\u{7}b",
+    ] {
         assert!(
             matches!(
                 w.access.create_team(&alice, &acme, bad, None, None).await,
@@ -293,7 +301,12 @@ async fn a_team_slug_is_derived_from_its_name() {
         ("  Level   Design ", "level-design"),
         ("Art & Sound", "art-sound"),
         ("QA_Team 2", "qa_team-2"),
-        ("Équipe Son", "quipe-son"),
+        ("Équipe Son", "equipe-son"),
+        ("Straße", "strasse"),
+        ("Smørrebrød", "smorrebrod"),
+        ("Łódź Team", "lodz-team"),
+        ("  Ünïcödé  ", "unicode"),
+        ("ÆSIR ÞING", "aesir-thing"),
         ("--Ops--", "ops"),
     ] {
         let t = w
