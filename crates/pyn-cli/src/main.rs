@@ -406,7 +406,7 @@ enum Command {
     /// Take the lock on an exclusive file.
     Lock {
         path: String,
-        /// Revision your copy is at (omit if you have none).
+        /// Revision your copy is at; by default the workspace's, or the server's head outside a workspace.
         #[arg(long)]
         base: Option<u64>,
     },
@@ -2738,9 +2738,10 @@ fn run(cli: Cli) -> Result<()> {
                 .as_ref()
                 .and_then(|w| w.load_state().ok())
                 .and_then(|s| s.get(&path).map(|k| k.revision));
-            let (base, committed) = match base {
-                Some(b) => (Some(b), false),
-                None => local_base(&backend, ws.as_ref(), &path, known)?,
+            let (base, committed) = match (base, &ws) {
+                (Some(b), _) => (Some(b), false),
+                (None, Some(_)) => local_base(&backend, ws.as_ref(), &path, known)?,
+                (None, None) => (server_head(&backend, &path)?, false),
             };
             let body = api::CheckoutRequest {
                 path: path.clone(),
@@ -4110,7 +4111,9 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
         }
         RepoCommand::Delete { name, yes } => {
             let (owner, short) = address::split_repo(&name)?;
+            let route = format!("/v1/repos/{owner}/{short}");
             if !yes {
+                may_delete_repo(api, &route, &name)?;
                 eprintln!(
                     "This removes {name} with its files, history, locks and access. Its audit log is kept."
                 );
@@ -4121,11 +4124,45 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
                     bail!("not confirmed");
                 }
             }
-            api.send(api.request(Method::DELETE, &format!("/v1/repos/{owner}/{short}")))?;
+            api.send(api.request(Method::DELETE, &route)).map_err(|e| {
+                if e.to_string().starts_with("forbidden") {
+                    e.context(delete_needs(&name))
+                } else {
+                    e
+                }
+            })?;
             println!("deleted {name}");
         }
     }
     Ok(())
+}
+
+/// The server's delete rule, checked before asking to confirm: a user's repository only by its owner, and the
+/// caller's permissions there (the role as a token narrows it) must include manage_roles.
+fn may_delete_repo(api: &Api, route: &str, name: &str) -> Result<()> {
+    let info: api::RepoInfo = api.send(api.get(route))?.json()?;
+    let me: api::Me = api.send(api.get(&format!("{route}/me")))?.json()?;
+    if me.user != info.owner && owned_by_user(api, &info.owner) {
+        bail!("only {} can delete {name}", info.owner);
+    }
+    if !me.permissions.iter().any(|p| p == "manage_roles") {
+        bail!("{}", delete_needs(name));
+    }
+    Ok(())
+}
+
+/// A name the organization lookup does not know is a user's; any other failure leaves the decision to the server.
+fn owned_by_user(api: &Api, owner: &str) -> bool {
+    match api.send(api.get(&format!("/v1/orgs/{owner}"))) {
+        Ok(_) => false,
+        Err(e) => e
+            .downcast_ref::<client::ApiError>()
+            .is_some_and(|e| e.code == "org_not_found"),
+    }
+}
+
+fn delete_needs(name: &str) -> String {
+    format!("deleting {name} needs the admin role on it, and a token needs administration:write")
 }
 
 fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
@@ -4686,6 +4723,23 @@ fn local_base(
     Ok((known.max(taken), true))
 }
 
+/// The head revision of `path` on the server's branch: outside a workspace there is no local copy to be stale.
+/// No base when the listing is refused (a missing folder, a locks-only token): the lock request gets the real answer.
+fn server_head(backend: &PynServer, path: &str) -> Result<Option<u64>> {
+    let folder = path.rsplit_once('/').map(|(dir, _)| dir);
+    let listing = match backend.tree(folder) {
+        Ok(listing) => listing,
+        Err(e) if e.downcast_ref::<client::ApiError>().is_some() => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(listing
+        .entries
+        .into_iter()
+        .find(|e| e.path == path && e.kind == api::TreeEntryKind::File)
+        .and_then(|e| e.last_change)
+        .map(|r| r.id))
+}
+
 /// A stale-base refusal for a path a local commit changed: the newer revision has to be pulled in and resolved first.
 fn stale_local_hint(err: anyhow::Error) -> anyhow::Error {
     if err.to_string().starts_with("stale_base") {
@@ -4697,14 +4751,16 @@ fn stale_local_hint(err: anyhow::Error) -> anyhow::Error {
     }
 }
 
-/// A stale-base refusal in a workspace means the file moved on: say how to catch up. When the server has no revision
-/// of the path, an update cannot help.
+/// A stale-base refusal means the file moved on: in a workspace say how to catch up, outside one how to name a base.
+/// When the server has no revision of the path, neither helps.
 fn behind_hint(err: anyhow::Error, in_workspace: bool) -> anyhow::Error {
     let text = err.to_string();
-    if in_workspace && text.starts_with("stale_base") && !text.ends_with("head is none") {
+    if !text.starts_with("stale_base") || text.ends_with("head is none") {
+        err
+    } else if in_workspace {
         err.context("the server has a newer revision; run `pyn update` first")
     } else {
-        err
+        err.context("pass `--base <revision>` with the revision your copy is at, or lock it from a workspace")
     }
 }
 
