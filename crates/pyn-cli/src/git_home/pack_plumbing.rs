@@ -164,7 +164,7 @@ pub(super) fn pack_objects(git: &GitHome, args: PackObjectsArgs) -> Result<()> {
     let mut seen = HashSet::new();
     ids.retain(|id| seen.insert(*id));
     if args.stdout {
-        let mut out = std::io::stdout().lock();
+        let mut out = crate::closed_pipe::stdout();
         write_pack(&db, &ids, &mut out)?;
         out.flush()?;
         return Ok(());

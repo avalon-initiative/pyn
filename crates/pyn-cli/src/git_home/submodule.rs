@@ -888,7 +888,7 @@ fn foreach(scope: &Scope, args: &ForeachArgs, command: &str) -> Result<()> {
         if !scope.quiet {
             println!("Entering '{shown}'");
         }
-        std::io::stdout().flush()?;
+        crate::closed_pipe::stdout().flush()?;
         let status = std::process::Command::new("sh")
             .args(["-c", command])
             .current_dir(&dir)

@@ -12,6 +12,7 @@ mod admin;
 mod backend;
 mod branch;
 mod client;
+mod closed_pipe;
 mod commit_format;
 mod credentials;
 mod date_mode;
@@ -1301,6 +1302,7 @@ fn parse_cli(args: Vec<std::ffi::OsString>) -> Result<Cli, clap::Error> {
 }
 
 fn main() {
+    closed_pipe::install();
     pyn_gittransport::promisor::install();
     git_home::lfs_net::install();
     if let Some(name) = subcommand_refused_on_git() {
@@ -2959,7 +2961,7 @@ fn run(cli: Cli) -> Result<()> {
                         file.display()
                     );
                 }
-                None => backend.read(&path, rev, &mut std::io::stdout())?,
+                None => backend.read(&path, rev, &mut closed_pipe::stdout())?,
             }
         }
         Command::Log {

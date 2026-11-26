@@ -36,6 +36,8 @@ Divergence rules:
 Exit codes follow git: `0` success, `128` for a failure (message prefixed `fatal: `), `129` for a usage error such as
 an unknown flag on a supported command (raised by the argument parser, which names the flag and the command's usage),
 `1` for an unknown or git-only command. `diff --exit-code` and `-q` exit `1` when there are differences, as in git.
+When the reader of standard output goes away early (`pyn log | head -1`), every command stops quietly with `0`, where git
+is killed by `SIGPIPE`.
 Messages that git writes to standard output (for example the nothing-to-commit notice and the unmerged-path listing of a
 conflicted commit) go to standard output, and errors to standard error. `fetch`, `pull` and `push` outside any repository fail
 with `fatal: not a git repository (or any of the parent directories): .git` (`128`). The statuses are checked against git by

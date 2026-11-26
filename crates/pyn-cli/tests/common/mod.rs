@@ -357,6 +357,13 @@ impl Env {
         child.wait_with_output().unwrap()
     }
 
+    /// Runs the CLI with its standard output a pipe whose reader has already gone.
+    pub fn run_into_closed_pipe(&self, cwd: &Path, user: &str, args: &[&str]) -> Output {
+        let mut child = self.spawn(cwd, user, args);
+        drop(child.stdout.take());
+        child.wait_with_output().unwrap()
+    }
+
     /// Runs the CLI authenticated by `token` instead of a development user.
     pub fn run_with_token(&self, cwd: &Path, token: &str, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_pyn"))
