@@ -239,7 +239,7 @@ pub fn print(
         };
         out.push_str(&format!("{}{} {name}\n", r.x, r.y));
     }
-    std::io::stdout().write_all(out.as_bytes())?;
+    crate::closed_pipe::stdout().write_all(out.as_bytes())?;
     Ok(())
 }
 

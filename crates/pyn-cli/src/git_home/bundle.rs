@@ -385,7 +385,7 @@ fn create(git: &GitHome, version: Option<u8>, file: &str, revisions: &[String]) 
         Ok(())
     };
     if file == "-" {
-        return write(&mut std::io::stdout().lock());
+        return write(&mut crate::closed_pipe::stdout());
     }
     let mut out = File::create(file).with_context(|| format!("cannot create '{file}'"))?;
     write(&mut out).inspect_err(|_| {
