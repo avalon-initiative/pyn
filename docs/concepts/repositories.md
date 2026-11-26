@@ -198,9 +198,12 @@ and `pyn org settings set <org> --exclusive-read-only on|off|unset`; a repositor
 A **team** is a flat group of an organization's members (teams do not nest) with a `name` (1 to 100 characters, the display
 name), a `slug` (1 to 39 lowercase letters, digits, `-` or `_`, starting with a letter or digit; unique in the organization; the
 team's address) and a `description`. Creating a team takes the name; the slug is derived from it unless one is given: the name
-in the canonical form owner and repository names use (trimmed, each run of whitespace one `-`, lowercased), then characters a
-slug cannot hold are dropped, runs of `-` collapse to one and leading or trailing `-` and `_` are trimmed (`Art & Sound` gives
-`art-sound`). A name that leaves no valid slug (nothing left, or more than 39 characters) is refused with `400 invalid_request`
+is first transliterated (Unicode NFD decomposition with the combining marks U+0300 to U+036F dropped, lowercased, then `ß` to
+`ss`, `æ` to `ae`, `œ` to `oe`, `ø` to `o`, `ł` to `l`, `đ` to `d` and `þ` to `th`), put in the canonical form owner and
+repository names use (trimmed, each run of whitespace one `-`, lowercased), then characters a slug cannot hold are dropped,
+runs of `-` collapse to one and leading or trailing `-` and `_` are trimmed (`Art & Sound` gives `art-sound`, `Équipe Son`
+gives `equipe-son`, `Straße` gives `strasse`). Owner and repository names are not transliterated. A name that leaves
+no valid slug (nothing left, or more than 39 characters) is refused with `400 invalid_request`
 asking for a slug; a slug the organization already has is `409 team_exists`, whose message names the slug. Renaming a team
 changes only its name, never its slug. Like a repository, a team also has a
 stable `id` (`t` and 24 lowercase hex digits, opaque): generated when the team is created, unchanged by an update and never

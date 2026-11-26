@@ -1466,6 +1466,8 @@ impl fmt::Display for RoleSource {
 
 /// Rules for team names.
 pub mod team {
+    use unicode_normalization::UnicodeNormalization;
+
     use super::*;
 
     const MAX_NAME: usize = 100;
@@ -1490,10 +1492,31 @@ pub mod team {
         }
     }
 
-    /// The slug of a typed team name: the owner-name canonical form (see `account::normalize_name`) with characters a
-    /// slug cannot hold dropped, runs of `-` collapsed and leading or trailing `-` and `_` trimmed.
+    /// Accented Latin letters to their base letters: NFD with combining marks (U+0300 to U+036F) dropped, lowercased,
+    /// then the letters NFD keeps whole spelled out (`ß` to `ss`, `ø` to `o`, ...).
+    fn transliterate(name: &str) -> String {
+        name.nfd()
+            .filter(|c| !('\u{300}'..='\u{36f}').contains(c))
+            .flat_map(char::to_lowercase)
+            .fold(String::with_capacity(name.len()), |mut out, c| {
+                match c {
+                    'ß' => out.push_str("ss"),
+                    'æ' => out.push_str("ae"),
+                    'œ' => out.push_str("oe"),
+                    'ø' => out.push('o'),
+                    'ł' => out.push('l'),
+                    'đ' => out.push('d'),
+                    'þ' => out.push_str("th"),
+                    c => out.push(c),
+                }
+                out
+            })
+    }
+
+    /// The slug of a typed team name: transliterated, in the owner-name canonical form (see `account::normalize_name`),
+    /// with characters a slug cannot hold dropped, runs of `-` collapsed and leading or trailing `-` and `_` trimmed.
     pub fn derive_slug(name: &str) -> Result<String> {
-        let kept: String = super::account::normalize_name(name)
+        let kept: String = super::account::normalize_name(&transliterate(name))
             .chars()
             .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
             .collect();
