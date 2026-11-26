@@ -1,5 +1,7 @@
 //! Wire types for the HTTP API, independent of `pyn-core`. The OpenAPI document is generated from them.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -1261,7 +1263,8 @@ pub struct RepoInfo {
     /// The id of `owner`, a user or an organization.
     pub owner_id: String,
     pub owner: String,
-    /// The owning organization's public identity (its avatar); absent when a user owns the repository.
+    /// The owner's public identity: a user's as a stranger sees it (a hidden display name or avatar is null), an
+    /// organization's avatar with a null display name; absent when no active account holds the name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_identity: Option<PublicIdentity>,
     pub name: String,
@@ -1897,7 +1900,11 @@ pub struct AuditEntry {
     pub acting_admin: Option<String>,
     pub action: String,
     pub path: Option<String>,
+    /// What happened, in words; times the event names are in `times`, not here.
     pub detail: String,
+    /// Times the event names, by name (`expires_at`, `purge_at`, `written_at`), for clients to format; absent when none. Covered by `hash`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub times: BTreeMap<String, DateTime<Utc>>,
     /// SHA-256 hex over the event's canonical encoding, which includes `previous`.
     pub hash: String,
     /// The hash of the preceding event in the same log; absent for the first.

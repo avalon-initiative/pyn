@@ -86,7 +86,7 @@ pub use account_self::{
     AccountEmail, EmailAdd, EmailRemove, NameSpan, PrimaryChange, RenameOutcome,
 };
 pub use audit::{
-    Actor, AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent,
+    Actor, AuditAction, AuditDetail, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent,
 };
 pub use auth::AuthProvider;
 pub use branch::{Branch, DEFAULT_BRANCH, validate_branch_name};
@@ -131,7 +131,8 @@ pub use oidc::{
 pub use org_settings::{OrgSettings, ReadOnlyDefault, ReadOnlySource};
 pub use passwords::{InlinePasswords, PasswordWorker};
 pub use profile::{
-    Avatar, ImageKind, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
+    Avatar, ImageKind, OrgProfile, OrgProfileFields, OwnerProfile, Profile, ProfileFields,
+    ProfileVisibility,
 };
 pub use profiles::{Profiles, PublicProfile};
 pub use pyn_gitattr::lockable::Disagreement;

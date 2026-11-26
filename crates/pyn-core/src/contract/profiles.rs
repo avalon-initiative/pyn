@@ -2,7 +2,9 @@
 
 use super::{Access, at, user};
 use crate::access::SignupStage;
-use crate::profile::{Avatar, ImageKind, OrgProfileFields, ProfileFields, ProfileVisibility};
+use crate::profile::{
+    Avatar, ImageKind, OrgProfileFields, OwnerProfile, ProfileFields, ProfileVisibility,
+};
 use crate::{AccountDeletion, ObjectId};
 
 fn fields(name: &str) -> ProfileFields {
@@ -257,6 +259,66 @@ pub async fn org_profiles_are_apart_from_user_profiles_and_go_with_the_org(store
         Default::default(),
         "a recreated organization starts empty"
     );
+}
+
+pub async fn owner_profiles_read_each_name_by_its_kind_in_order(store: Access) {
+    let (acme, alice, bob, ghost) = (user("acme"), user("alice"), user("bob"), user("ghost"));
+    store.create_user(&alice, at(0)).await.unwrap();
+    store.create_user(&bob, at(0)).await.unwrap();
+    assert!(store.create_org(&acme, &alice, at(1)).await.unwrap());
+    let hidden = ProfileVisibility {
+        avatar: false,
+        ..Default::default()
+    };
+    store
+        .save_profile(&alice, &fields("Alice"), Some(&hidden), at(2))
+        .await
+        .unwrap();
+    store
+        .set_avatar(&alice, Some(&avatar(1)), at(2))
+        .await
+        .unwrap();
+    let org = OrgProfileFields {
+        display_name: Some("Acme Inc".into()),
+        ..org_fields(Some("tools"))
+    };
+    store.set_org_fields(&acme, &org, at(2)).await.unwrap();
+    store
+        .set_org_avatar(&acme, Some(&avatar(2)), at(2))
+        .await
+        .unwrap();
+    store.set_disabled(&bob, Some((at(3), None))).await.unwrap();
+
+    let found = store
+        .owner_profiles(&[
+            acme.clone(),
+            ghost,
+            alice.clone(),
+            bob.clone(),
+            acme.clone(),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 5, "one entry per name asked, repeats included");
+    let (account, profile) = found[0].clone().unwrap();
+    assert_eq!(account.user, acme);
+    assert_eq!(
+        profile,
+        OwnerProfile::Org(store.org_profile(&acme).await.unwrap())
+    );
+    assert!(found[1].is_none(), "no account");
+    let (account, profile) = found[2].clone().unwrap();
+    assert_eq!(account.user, alice);
+    assert_eq!(
+        profile,
+        OwnerProfile::User(store.profile(&alice).await.unwrap()),
+        "the stored profile, hidden fields and visibility included"
+    );
+    let (account, profile) = found[3].clone().unwrap();
+    assert!(account.disabled_at.is_some(), "the store does not filter");
+    assert_eq!(profile, OwnerProfile::User(Default::default()));
+    assert_eq!(found[4], found[0]);
+    assert!(store.owner_profiles(&[]).await.unwrap().is_empty());
 }
 
 pub async fn the_people_search_lists_active_accounts_and_matches_only_what_is_visible(

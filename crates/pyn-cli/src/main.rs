@@ -3212,7 +3212,7 @@ fn run(cli: Cli) -> Result<()> {
                         commit_format::actor_with_admin(e),
                         e.action.clone(),
                         e.path.clone().unwrap_or_else(|| "-".into()),
-                        time::localize(&commit_format::audit_detail_line(&e.detail)),
+                        commit_format::audit_detail(e),
                     ]
                 })
                 .collect();
@@ -4228,7 +4228,7 @@ fn org_command(api: &Api, cmd: OrgCommand) -> Result<()> {
                         time::local(e.at),
                         commit_format::shown_name(&e.actor, e.actor_current.as_deref()),
                         e.action.clone(),
-                        time::localize(&commit_format::audit_detail_line(&e.detail)),
+                        commit_format::audit_detail(e),
                     ]
                 })
                 .collect();

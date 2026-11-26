@@ -22,7 +22,7 @@ use crate::access_session::{
 };
 use crate::account_self::{AccountEmail, EmailAdd, EmailRemove, PrimaryChange, RenameOutcome};
 use crate::audit::{
-    Actor, AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent,
+    Actor, AuditAction, AuditDetail, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent,
 };
 use crate::clock::Clock;
 use crate::deletion::{
@@ -40,7 +40,7 @@ use crate::oidc::{
 use crate::org_settings::OrgSettings;
 use crate::passwords::{InlinePasswords, PasswordWorker};
 use crate::profile::{
-    Avatar, OrgProfile, OrgProfileFields, Profile, ProfileFields, ProfileVisibility,
+    Avatar, OrgProfile, OrgProfileFields, OwnerProfile, Profile, ProfileFields, ProfileVisibility,
 };
 use crate::ratelimit::RateLimitStore;
 use crate::repo_policy::{
@@ -469,6 +469,12 @@ pub trait AccessStore: Send + Sync {
 
     /// The organization's profile; empty when none was saved.
     async fn org_profile(&self, org: &UserId) -> Result<OrgProfile>;
+
+    /// For each name, its account and the profile its kind keeps, read together; `None` where no account holds it.
+    async fn owner_profiles(
+        &self,
+        owners: &[UserId],
+    ) -> Result<Vec<Option<(AccountRecord, OwnerProfile)>>>;
 
     /// Replaces the organization's description, display name and url, keeping the avatar. The organization must exist.
     async fn set_org_fields(
@@ -1485,18 +1491,20 @@ impl AccessService {
         scope: impl Into<AuditScope>,
         actor: Actor<'_>,
         action: AuditAction,
-        detail: String,
+        detail: impl Into<AuditDetail>,
     ) -> Result<()> {
         let Some(store) = &self.audit else {
             return Ok(());
         };
+        let detail = detail.into();
         let event = NewAuditEvent {
             at: self.clock.now(),
             actor: actor.user.clone(),
             acting_admin: actor.acting_admin.cloned(),
             action,
             path: None,
-            detail,
+            detail: detail.text,
+            times: detail.times,
         };
         store.record(&scope.into(), event).await
     }
@@ -1814,7 +1822,7 @@ impl AccessService {
             )
             .await?;
         let detail = format!(
-            "token {} {:?} for {}: owner {}, access {}, grants [{}], repos [{}], expires {}",
+            "token {} {:?} for {}: owner {}, access {}, grants [{}], repos [{}]{}",
             record.id,
             record.name,
             record.user,
@@ -1827,10 +1835,16 @@ impl AccessService {
                     .map(|(r, l)| format!("{}:{}", r.as_str(), l.as_str()))
             ),
             join_bounded(record.repos.iter()),
-            record
-                .expires_at
-                .map_or("never".to_string(), |t| t.to_rfc3339()),
+            if record.expires_at.is_some() {
+                ""
+            } else {
+                ", never expires"
+            },
         );
+        let mut detail = AuditDetail::from(detail);
+        if let Some(t) = record.expires_at {
+            detail = detail.time("expires_at", t);
+        }
         self.record_token_event(&record, actor.into(), AuditAction::TokenCreated, detail)
             .await?;
         Ok((record, full))
@@ -1921,8 +1935,9 @@ impl AccessService {
         record: &TokenRecord,
         actor: Actor<'_>,
         action: AuditAction,
-        detail: String,
+        detail: impl Into<AuditDetail>,
     ) -> Result<()> {
+        let detail = detail.into();
         if record.repo_access == RepoAccess::Selected {
             for repo in &record.repos {
                 self.record(repo, actor, action, detail.clone()).await?;
@@ -3223,12 +3238,8 @@ impl AccessService {
             revoked_at: None,
         };
         self.store.create_invite(record.clone()).await?;
-        let detail = format!(
-            "invitation {} for role {}, expires {}",
-            record.id,
-            record.role.as_str(),
-            record.expires_at.to_rfc3339()
-        );
+        let detail = format!("invitation {} for role {}", record.id, record.role.as_str());
+        let detail = AuditDetail::from(detail).time("expires_at", record.expires_at);
         self.record(repo, actor.into(), AuditAction::InviteCreated, detail)
             .await?;
         Ok((record, code))
@@ -3529,7 +3540,7 @@ impl AccessService {
         &self,
         actor: Actor<'_>,
         action: AuditAction,
-        detail: String,
+        detail: impl Into<AuditDetail>,
     ) -> Result<()> {
         self.record(AuditScope::Server, actor, action, detail).await
     }
@@ -3815,14 +3826,15 @@ impl AccessService {
             record.id,
             join(record.scopes.iter())
         );
-        if let Some(t) = record.expires_at {
-            detail.push_str(&format!(", expires {}", t.to_rfc3339()));
-        }
         if !record.allowed_sources.is_empty() {
             detail.push_str(&format!(", from [{}]", record.allowed_sources.join(", ")));
         }
         if let Some(n) = record.rate_limit_per_minute {
             detail.push_str(&format!(", {n} requests per minute"));
+        }
+        let mut detail = AuditDetail::from(detail);
+        if let Some(t) = record.expires_at {
+            detail = detail.time("expires_at", t);
         }
         self.record_server(actor.into(), AuditAction::ServiceCredentialCreated, detail)
             .await?;

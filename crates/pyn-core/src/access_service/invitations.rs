@@ -62,10 +62,8 @@ impl AccessService {
                 });
             }
         }
-        let detail = format!(
-            "{user} invited as {role}, expires {}",
-            invitation.expires_at.format("%Y-%m-%d")
-        );
+        let detail = AuditDetail::from(format!("{user} invited as {role}"))
+            .time("expires_at", invitation.expires_at);
         self.record(
             AuditScope::Org(org.clone()),
             actor.into(),
