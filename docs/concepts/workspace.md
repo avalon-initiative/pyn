@@ -87,8 +87,9 @@ you are inside the workspace and take paths relative to your current directory.
   courtesy and not the guarantee (anyone can `chmod` the file); the server still publishes an exclusive path only for the
   account that holds its lock. To work offline, `pyn edit <path>...` (files or folders) makes the exclusive files writable
   with no server and no lock, and says the lock is needed to publish; it does not take one.
-- **No base revisions to remember.** `lock` and `commit` use the revision the workspace has, so `--base` is only for
-  working outside a workspace. If the server has moved on, the command tells you to run `pyn update`.
+- **No base revisions to remember.** `lock` and `commit` use the revision the workspace has. If the server has moved on,
+  the command tells you to run `pyn update`. Outside a workspace there is no local copy to be stale, so `pyn lock` takes the
+  lock on the branch's head revision unless `--base` names one.
 - **Branches.** A workspace is on one [branch](branches.md), `main` until `pyn switch` or `pyn checkout` changes it, and every
   command works on that branch. `pyn status` starts with `On branch <name>`.
 - **`pyn status`** prints a table of what differs, one row per file, with the columns `MODE`, `REV`, `STAGED`, `STATE`,

@@ -513,5 +513,5 @@ repositories and permissions it carries), ordered by `owner/name` then path. Eac
 the audit event as usual. A lock in a repository the caller can no longer read is not listed.
 
 On the command line: `pyn repo create [owner/]name [--visibility public|private] [--lease-hours N] [--max-locks N] [--policy FILE | --no-policy] [--description TEXT] [--website URL] [--topic T ...]`, `pyn repo show owner/name`, `pyn repo edit owner/name` (see [About](#about)), `pyn repo list`, `pyn repo explore`,
-`pyn repo visibility owner/name public|private`, `pyn repo delete owner/name`, `pyn locks --mine` (your locks in every repository: repository, acquired, expires, path), and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
+`pyn repo visibility owner/name public|private`, `pyn repo delete owner/name [--yes]` (checks that you may delete it, then asks you to type the name), `pyn locks --mine` (your locks in every repository: repository, acquired, expires, path), and `pyn clone <server>/owner/name [dir]`. A workspace records its repository in
 `.pyn/local_only/config.toml`, so commands inside it need no flag; see [the `.pyn/` folder](workspace.md).
