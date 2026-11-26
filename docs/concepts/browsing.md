@@ -90,6 +90,29 @@ get the revisions strictly older than it. It is absent on the last page. A page 
 last page, even when a filter drops most revisions. Revisions committed after the first page are newer than every cursor
 and never shift later pages. A cursor that does not parse is `400 invalid_request`.
 
+## File content
+
+`GET /v1/repos/{owner}/{name}/content?path=<file>` returns a file's bytes at the branch head, or at one `revision` (`branch` as
+above; a single `Range: bytes=` header is honoured, see [storage](storage.md)). The `Content-Type` is guessed from the file
+name against a fixed allowlist, never from the bytes:
+
+| File | Type |
+| --- | --- |
+| text, source, configuration and markup by extension (`.md`, `.json`, `.rs`, `.cpp`, `.html`, `.svg`, `.xml`, ...), and common names without one (`README`, `LICENSE`, `Makefile`, `Dockerfile`, ...) | `text/plain; charset=utf-8` |
+| `.png`, `.jpg`/`.jpeg`, `.gif`, `.webp`, `.avif`, `.bmp`, `.ico` | the image type |
+| `.mp3`, `.wav`, `.ogg`/`.oga`, `.opus`, `.flac`, `.m4a` | the audio type |
+| `.mp4`/`.m4v`, `.webm`, `.ogv`, `.mov` | the video type |
+| `.pdf` | `application/pdf` |
+| anything else | `application/octet-stream` |
+
+Repository content is never served with an active type: HTML, SVG and XML are plain text, so a browser shows their source
+and runs nothing from them. Every response also carries `X-Content-Type-Options: nosniff` and
+`Content-Security-Policy: default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox`, so a
+browser that opens the URL directly renders text, images, audio, video and PDF but never loads or runs anything else with them.
+With `download` in the query (any value, `download=1` by convention) the response adds `Content-Disposition: attachment` with the
+file's name, so a browser saves it instead of showing it. The blob routes (`GET .../objects/{id}` and the [LFS](lfs.md)
+download) have no file name and stay `application/octet-stream`, with the same two headers.
+
 ## Command line
 
 `pyn log <path>` (alias `pyn history`) lists one path's revisions, oldest first (`REV`, `AUTHOR`, `WHEN`, `MESSAGE`), following the cursor in pages of 200. `pyn log` without a

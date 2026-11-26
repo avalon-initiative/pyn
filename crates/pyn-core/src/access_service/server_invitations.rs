@@ -164,22 +164,17 @@ impl AccessService {
             .create_server_invitation(invitation.clone())
             .await?;
         let detail = match &invitation.grant {
-            None => format!(
-                "invitation {}, expires {}",
-                invitation.id,
-                invitation.expires_at.to_rfc3339()
-            ),
+            None => format!("invitation {}", invitation.id),
             Some(InvitationGrant::Repository { repo, role }) => format!(
-                "invitation {} with role {role} in repository {repo}, expires {}",
-                invitation.id,
-                invitation.expires_at.to_rfc3339()
+                "invitation {} with role {role} in repository {repo}",
+                invitation.id
             ),
             Some(InvitationGrant::Organization { org, role }) => format!(
-                "invitation {} with role {role} in organization {org}, expires {}",
-                invitation.id,
-                invitation.expires_at.to_rfc3339()
+                "invitation {} with role {role} in organization {org}",
+                invitation.id
             ),
         };
+        let detail = AuditDetail::from(detail).time("expires_at", invitation.expires_at);
         self.record_server(actor.into(), AuditAction::ServerInvitationCreated, detail)
             .await?;
         let emailed = match (sends, &email) {

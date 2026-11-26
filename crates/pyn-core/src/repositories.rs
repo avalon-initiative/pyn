@@ -8,7 +8,7 @@ use chrono::Duration;
 
 use crate::access::{AccountKind, Credential, Identity, OrgRole, Permission, Principal, Role};
 use crate::access_service::{AccessService, OwnerLimits};
-use crate::audit::{Actor, AuditAction, AuditScope, AuditStore, NewAuditEvent};
+use crate::audit::{Actor, AuditAction, AuditDetail, AuditScope, AuditStore, NewAuditEvent};
 use crate::clock::Clock;
 use crate::error::{PynError, Result};
 use crate::limit_events::DomainEvent;
@@ -246,15 +246,17 @@ impl Repositories {
         record: &RepoRecord,
         actor: Actor<'_>,
         action: AuditAction,
-        detail: String,
+        detail: impl Into<AuditDetail>,
     ) -> Result<()> {
+        let detail = detail.into();
         let event = NewAuditEvent {
             at: self.clock.now(),
             actor: actor.user.clone(),
             acting_admin: actor.acting_admin.cloned(),
             action,
             path: None,
-            detail,
+            detail: detail.text,
+            times: detail.times,
         };
         self.audit
             .record(&AuditScope::Repo(record.id.clone()), event)
