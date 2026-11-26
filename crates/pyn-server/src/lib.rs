@@ -31,6 +31,7 @@ mod branch_api;
 mod caller;
 pub mod certificate;
 mod client;
+mod content_type;
 mod deletion_api;
 mod diff_api;
 pub mod email;
@@ -994,6 +995,7 @@ pub(crate) fn audit_entry_dto(e: pyn_core::AuditEvent, with_path: bool) -> api::
         action: e.action.to_string(),
         path: e.path.filter(|_| with_path).map(|p| p.to_string()),
         detail: e.detail,
+        times: e.times,
         hash: e.hash,
         previous: e.previous,
     }
@@ -1968,15 +1970,17 @@ struct ContentQuery {
     branch: Option<String>,
     path: String,
     revision: Option<u64>,
+    download: Option<String>,
 }
 
 /// Readable without credentials when the repository is public; otherwise 404 unless the caller has a role.
 #[utoipa::path(get, path = "/v1/repos/{owner}/{name}/content",
     params(RepoAddress, ("path" = String, Query, description = "repo-relative path"),
            ("revision" = Option<u64>, Query, description = "revision number; the path's revision on the branch if omitted"),
-           ("branch" = Option<String>, Query, description = "the branch whose revision is read when no revision is given; the default branch if omitted")),
-    responses((status = 200, content_type = "application/octet-stream", body = inline(FileContent)),
-              (status = 206, content_type = "application/octet-stream", body = inline(FileContent), description = "the part named by a single-range `Range: bytes=` header"),
+           ("branch" = Option<String>, Query, description = "the branch whose revision is read when no revision is given; the default branch if omitted"),
+           ("download" = Option<String>, Query, description = "when present (any value, `download=1` by convention), the response carries `Content-Disposition: attachment` with the file's name")),
+    responses((status = 200, content_type = "application/octet-stream", body = inline(FileContent), description = "the type is guessed from the path (docs/concepts/browsing.md): `text/plain; charset=utf-8` for text, markup and source, an image, audio, video or PDF type for those, `application/octet-stream` otherwise; never an active type such as HTML or SVG. Sent with `X-Content-Type-Options: nosniff` and a sandboxing `Content-Security-Policy`"),
+              (status = 206, content_type = "application/octet-stream", body = inline(FileContent), description = "the part named by a single-range `Range: bytes=` header, typed as for 200"),
               (status = 416, description = "the range lies outside the content; `Content-Range: bytes */<length>`"),
               (status = 404, body = api::ErrorBody, description = "revision_not_found or branch_not_found")))]
 async fn get_content(
@@ -1985,6 +1989,7 @@ async fn get_content(
     Query(q): Query<ContentQuery>,
 ) -> ApiResult<Response> {
     let path = RepoPath::from_stored(q.path)?;
+    let media = content_type::for_path(path.as_str());
     let branch = branch_of(q.branch.as_deref());
     let revision = q.revision.map(RevisionId);
     let wanted = headers
@@ -2016,8 +2021,15 @@ async fn get_content(
     let h = res.headers_mut();
     h.insert(
         axum::http::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
+        HeaderValue::from_static(media),
     );
+    content_type::harden(h);
+    if q.download.is_some() {
+        h.insert(
+            axum::http::header::CONTENT_DISPOSITION,
+            content_type::attachment(path.as_str()),
+        );
+    }
     h.insert(
         axum::http::HeaderName::from_static(api::REVISION_HEADER),
         HeaderValue::from(rev.id.0),

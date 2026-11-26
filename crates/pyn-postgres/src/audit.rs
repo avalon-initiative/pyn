@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use pyn_core::{
     AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent, RepoPath, Result,
     UserId,
@@ -37,7 +38,8 @@ impl AuditStore for PgMetadataStore {
         .flatten();
         let hash = event.hash(scope, previous.as_deref());
         sqlx::query(
-            "INSERT INTO audit_events (repo, at, actor, action, path, detail, hash, previous_hash, acting_admin) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "INSERT INTO audit_events (repo, at, actor, action, path, detail, hash, previous_hash, acting_admin, time_names, time_values)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(scope.key())
         .bind(event.at)
@@ -48,6 +50,8 @@ impl AuditStore for PgMetadataStore {
         .bind(&hash)
         .bind(&previous)
         .bind(event.acting_admin.as_ref().map(UserId::as_str))
+        .bind(event.times.keys().cloned().collect::<Vec<_>>())
+        .bind(event.times.values().copied().collect::<Vec<_>>())
         .execute(&mut *tx)
         .await
         .map_err(db)?;
@@ -57,7 +61,7 @@ impl AuditStore for PgMetadataStore {
 
     async fn list(&self, scope: &AuditScope, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
         let rows = sqlx::query(
-            "SELECT id, at, actor, acting_admin, action, path, detail, hash, previous_hash FROM audit_events
+            "SELECT id, at, actor, acting_admin, action, path, detail, time_names, time_values, hash, previous_hash FROM audit_events
              WHERE repo = $1
                AND ($2::text IS NULL OR path = $2)
                AND ($3::text IS NULL OR actor = $3)
@@ -89,6 +93,11 @@ impl AuditStore for PgMetadataStore {
                         .map(RepoPath::from_stored)
                         .transpose()?,
                     detail: r.get("detail"),
+                    times: r
+                        .get::<Vec<String>, _>("time_names")
+                        .into_iter()
+                        .zip(r.get::<Vec<DateTime<Utc>>, _>("time_values"))
+                        .collect(),
                     hash: r.get::<Option<String>, _>("hash").unwrap_or_default(),
                     previous: r.get("previous_hash"),
                 })

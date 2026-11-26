@@ -9914,6 +9914,7 @@ macro_rules! access_contract_tests {
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_description_and_an_avatar_apart);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_store_a_display_name_and_a_url_and_replace_them_together);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; org_profiles_are_apart_from_user_profiles_and_go_with_the_org);
+        $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; owner_profiles_read_each_name_by_its_kind_in_order);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; the_people_search_lists_active_accounts_and_matches_only_what_is_visible);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; stars_are_one_per_user_and_repository_and_counted);
         $crate::access_contract_tests!(@one $factory; [$(#[$attr])*]; a_users_stars_list_newest_first_and_only_theirs);
@@ -9945,6 +9946,7 @@ fn event(
         path: path.map(|p| RepoPath::new(p).unwrap()),
         detail: format!("{action} by {actor}"),
         acting_admin: None,
+        times: Default::default(),
     }
 }
 
@@ -10219,6 +10221,38 @@ pub async fn audit_events_keep_the_acting_administrator_inside_the_chain(store: 
     assert!(forged.verify(&scope).is_err());
 }
 
+pub async fn audit_events_keep_named_times_inside_the_chain(store: Audit) {
+    let scope = AuditScope::Repo(RepoId::new("game"));
+    let expires = at(90);
+    for minute in 0..3 {
+        let mut e = event("alice", AuditAction::Checkout, None, minute);
+        if minute == 1 {
+            e.times.insert("expires_at".into(), expires);
+            e.times.insert("purge_at".into(), at(120));
+        }
+        store.record(&scope, e).await.unwrap();
+    }
+    let mut events = store
+        .list(
+            &scope,
+            &AuditQuery {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    events.reverse();
+    assert!(events[0].times.is_empty());
+    assert_eq!(events[1].times.get("expires_at"), Some(&expires));
+    assert_eq!(events[1].times.get("purge_at"), Some(&at(120)));
+    assert!(events[2].times.is_empty());
+    assert!(crate::integrity::verify_audit(&scope, &events).is_empty());
+    let mut forged = events[1].clone();
+    forged.times.insert("expires_at".into(), at(91));
+    assert!(forged.verify(&scope).is_err());
+}
+
 pub async fn racing_audit_records_keep_one_unbroken_chain(store: Audit) {
     let scope = AuditScope::Repo(RepoId::new("game"));
     let mut tasks = Vec::new();
@@ -10258,6 +10292,7 @@ macro_rules! audit_contract_tests {
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_scopes_keep_repository_organization_and_server_logs_apart);
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_are_hash_chained_per_scope);
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_keep_the_acting_administrator_inside_the_chain);
+        $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; audit_events_keep_named_times_inside_the_chain);
         $crate::audit_contract_tests!(@one $factory; [$(#[$attr])*]; racing_audit_records_keep_one_unbroken_chain);
     };
     (@one $factory:expr; [$(#[$attr:meta])*]; $name:ident) => {

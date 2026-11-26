@@ -71,11 +71,7 @@ pub(crate) async fn get_profile(
 ) -> ApiResult<Json<api::PublicProfile>> {
     let found = profiles(&s).public(&user, who.as_ref()).await?;
     let viewer = who.as_ref().map(|w| &w.user);
-    let mut repositories = Vec::with_capacity(found.repositories.len());
-    for (record, role) in found.repositories {
-        let limit = s.repos.lock_limit(&record).await?;
-        repositories.push(crate::repo_api::repo_info(&s, record, role, limit, viewer).await?);
-    }
+    let repositories = crate::repo_api::repo_infos(&s, found.repositories, viewer).await?;
     let organizations = found
         .organizations
         .into_iter()
@@ -104,15 +100,18 @@ pub(crate) async fn list_starred(
 ) -> ApiResult<Json<Vec<api::StarredRepo>>> {
     let found = profiles(&s).starred(&user, who.as_ref()).await?;
     let viewer = who.as_ref().map(|w| &w.user);
-    let mut out = Vec::with_capacity(found.len());
-    for (record, role, starred_at) in found {
-        let limit = s.repos.lock_limit(&record).await?;
-        out.push(api::StarredRepo {
-            starred_at,
-            repo: crate::repo_api::repo_info(&s, record, role, limit, viewer).await?,
-        });
-    }
-    Ok(Json(out))
+    let (found, starred): (Vec<_>, Vec<_>) = found
+        .into_iter()
+        .map(|(record, role, starred_at)| ((record, role), starred_at))
+        .unzip();
+    let repos = crate::repo_api::repo_infos(&s, found, viewer).await?;
+    Ok(Json(
+        repos
+            .into_iter()
+            .zip(starred)
+            .map(|(repo, starred_at)| api::StarredRepo { starred_at, repo })
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]

@@ -185,10 +185,8 @@ impl AccessService {
             DeletionSchedule::NoAccount => return Err(PynError::UserNotFound(user.to_string())),
             DeletionSchedule::LastAdmin => return Err(PynError::LastServerAdmin),
         }
-        let detail = format!(
-            "{user} scheduled their own deletion for {}",
-            deletion.purge_at.to_rfc3339()
-        );
+        let detail = AuditDetail::from(format!("{user} scheduled their own deletion"))
+            .time("purge_at", deletion.purge_at);
         self.record_server(user.into(), AuditAction::AccountDeletionScheduled, detail)
             .await?;
         Ok(deletion)
@@ -286,10 +284,8 @@ impl AccessService {
             DeletionSchedule::NoAccount => return Err(PynError::UserNotFound(user.to_string())),
             DeletionSchedule::LastAdmin => return Err(PynError::LastServerAdmin),
         }
-        let detail = format!(
-            "{user} scheduled for deletion on {}: {reason}",
-            deletion.purge_at.to_rfc3339()
-        );
+        let detail = AuditDetail::from(format!("{user} scheduled for deletion: {reason}"))
+            .time("purge_at", deletion.purge_at);
         self.record_server(actor.into(), AuditAction::AccountDeletionScheduled, detail)
             .await?;
         Ok(Some(deletion))

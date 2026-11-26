@@ -1,5 +1,7 @@
 //! Hashes of revisions and audit events and their verification; the encoding is in `pyn-hash`.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use pyn_hash::{
     AuditFields, REVISION_V1, REVISION_V2, REVISION_V3, RevisionFields, RevisionV2Fields,
@@ -203,8 +205,17 @@ pub fn verify_revisions(revisions: &[Revision]) -> Vec<(RevisionId, BreakKind)> 
     breaks
 }
 
+/// Named times as the hash encodes them: microseconds, sorted by name.
+fn time_fields(times: &BTreeMap<String, DateTime<Utc>>) -> Vec<(&str, i64)> {
+    times
+        .iter()
+        .map(|(k, t)| (k.as_str(), micros(*t)))
+        .collect()
+}
+
 impl NewAuditEvent {
     pub fn hash(&self, scope: &AuditScope, previous: Option<&str>) -> String {
+        let times = time_fields(&self.times);
         audit_hash(&AuditFields {
             scope: &scope.key(),
             previous,
@@ -214,12 +225,14 @@ impl NewAuditEvent {
             path: self.path.as_ref().map(RepoPath::as_str),
             detail: &self.detail,
             acting_admin: self.acting_admin.as_ref().map(UserId::as_str),
+            times: &times,
         })
     }
 }
 
 impl AuditEvent {
     pub fn expected_hash(&self, scope: &AuditScope) -> String {
+        let times = time_fields(&self.times);
         audit_hash(&AuditFields {
             scope: &scope.key(),
             previous: self.previous.as_deref(),
@@ -229,6 +242,7 @@ impl AuditEvent {
             path: self.path.as_ref().map(RepoPath::as_str),
             detail: &self.detail,
             acting_admin: self.acting_admin.as_ref().map(UserId::as_str),
+            times: &times,
         })
     }
 

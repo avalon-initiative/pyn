@@ -131,6 +131,13 @@ impl Profile {
     }
 }
 
+/// The profile of a repository owner: a user's or an organization's, by the account's kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnerProfile {
+    User(Profile),
+    Org(OrgProfile),
+}
+
 /// What an organization shows about itself. Nothing in it is hidden from viewers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OrgProfile {

@@ -153,7 +153,8 @@ otherwise it answers `422` (`digest_mismatch`, `length_mismatch`) and keeps noth
 
 ### `GET .../objects/{oid}`
 
-Streams the content with `Content-Length`, `Accept-Ranges: bytes` and `Content-Type: application/octet-stream`. A single
+Streams the content with `Content-Length`, `Accept-Ranges: bytes`, `Content-Type: application/octet-stream`, and the
+`X-Content-Type-Options` and `Content-Security-Policy` headers of [file content](browsing.md#file-content). A single
 `Range: bytes=` header is honoured (`206` with `Content-Range`, `416` outside the content). `404` for an `oid` this repository
 has no LFS object for (an object another repository holds is not visible), `422` for a malformed `oid`. Needs `read`.
 

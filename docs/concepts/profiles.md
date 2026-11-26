@@ -118,10 +118,10 @@ profile as a stranger sees it, so a field its owner hid is null.
 | `identity` | repository members, organization members, and lock owners (`GET .../locks`, the summary's `locks`, the lock on file and tree entries) |
 | `author_public` | revisions, stranded versions and commits (every response that carries `author_current`) |
 | `actor_public` | activity and audit entries, the organization's included |
-| `owner_identity` | repositories owned by an organization (see [Organization profiles](#organization-profiles)) |
+| `owner_identity` | every repository response, for its owner, a user or an organization (see [Repositories](repositories.md#about)) |
 
 For history the identity is that of the account's current name when it was renamed, else the name as written. The field is
-absent when no active account holds the name (deleted, disabled, not yet approved, or an organization). It is additive:
+absent when no active account holds the name (deleted, disabled, not yet approved, or an organization, which only `owner_identity` names). It is additive:
 `author`, `actor` and `owner` are unchanged. The lock responses of checkout and force-unlock and the caller's own
 `GET /v1/me/locks` carry none.
 
@@ -148,9 +148,9 @@ the organization is [frozen](limits.md#freezing-an-owner). An organization may c
 profile. Edits are written to the organization's audit log as `org_profile_updated` (written only when something changed; the detail lists the changed fields, `description`, `display_name` and `url`), `org_avatar_set` and
 `org_avatar_removed`, with the acting owner; the detail names the field, never the text or the image.
 
-Every repository response (`RepoInfo`) carries `owner_identity` when an organization owns the repository: a `PublicIdentity`
+Every repository response (`RepoInfo`) carries `owner_identity`. When an organization owns the repository it is a `PublicIdentity`
 whose `user` is the organization's name, `display_name` is null (an organization's display name is on its profile) and `avatar_url` is its avatar.
-It is absent for a repository a user owns, whose profile is on `GET /v1/users/{user}`.
+When a user owns it, it is the user's public identity as in the lists above, hidden fields null.
 
 ## Avatars
 

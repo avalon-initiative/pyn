@@ -61,7 +61,7 @@ impl AccessService {
         if let Some(n) = &record.notes {
             detail.push_str(&format!(" ({})", crate::audit::brief(n)));
         }
-        detail.push_str(&format!("; ends {}", record.expires_at.to_rfc3339()));
+        let detail = AuditDetail::from(detail).time("expires_at", record.expires_at);
         self.record_session_event(&record, AuditAction::AccessSessionStarted, detail)
             .await?;
         Ok((record, full))
@@ -286,7 +286,7 @@ impl AccessService {
         &self,
         record: &AccessSessionRecord,
         action: AuditAction,
-        detail: String,
+        detail: impl Into<AuditDetail>,
     ) -> Result<()> {
         self.record_session_event_at(record, action, detail, self.clock.now())
             .await
@@ -297,12 +297,13 @@ impl AccessService {
         &self,
         record: &AccessSessionRecord,
         action: AuditAction,
-        detail: String,
+        detail: impl Into<AuditDetail>,
         at: DateTime<Utc>,
     ) -> Result<()> {
         let Some(store) = &self.audit else {
             return Ok(());
         };
+        let detail = detail.into();
         for scope in [
             AuditScope::Server,
             AuditScope::Account(record.account_id.clone()),
@@ -313,7 +314,8 @@ impl AccessService {
                 acting_admin: None,
                 action,
                 path: None,
-                detail: detail.clone(),
+                detail: detail.text.clone(),
+                times: detail.times.clone(),
             };
             store.record(&scope, event).await?;
         }
