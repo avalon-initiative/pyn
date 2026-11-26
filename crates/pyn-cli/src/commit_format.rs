@@ -596,6 +596,17 @@ pub(crate) fn audit_detail_line(detail: &str) -> String {
     line
 }
 
+/// An audit entry's detail on one line, with the times it names in local time (`expires_at` reads `expires ...`).
+pub(crate) fn audit_detail(e: &api::AuditEntry) -> String {
+    let mut line = time::localize(&audit_detail_line(&e.detail));
+    for (name, at) in &e.times {
+        let label = name.strip_suffix("_at").unwrap_or(name).replace('_', " ");
+        let sep = if line.is_empty() { "" } else { "; " };
+        line.push_str(&format!("{sep}{label} {}", time::local(*at)));
+    }
+    line
+}
+
 /// The message indented by four spaces, as `medium` prints it; `first_paragraph` stops at the first blank line.
 fn expand_tabs(line: &str, width: usize) -> String {
     if width == 0 || !line.contains('\t') {
@@ -826,6 +837,7 @@ mod tests {
             action: "checkout".into(),
             path: None,
             detail: String::new(),
+            times: Default::default(),
             hash: String::new(),
             previous: None,
         };
@@ -875,6 +887,32 @@ mod tests {
             shown_name("alice", Some("alicia")),
             "alicia (written as alice)"
         );
+    }
+
+    #[test]
+    fn an_audit_detail_shows_its_named_times() {
+        let at = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let mut e = api::AuditEntry {
+            id: 1,
+            at,
+            actor: "alice".into(),
+            actor_current: None,
+            actor_public: None,
+            acting_admin: None,
+            action: "checkout".into(),
+            path: None,
+            detail: "locked".into(),
+            times: [("expires_at".to_string(), at)].into(),
+            hash: String::new(),
+            previous: None,
+        };
+        assert_eq!(
+            audit_detail(&e),
+            format!("locked; expires {}", time::local(at))
+        );
+        e.detail.clear();
+        e.times = [("written_at".to_string(), at)].into();
+        assert_eq!(audit_detail(&e), format!("written {}", time::local(at)));
     }
 
     #[test]

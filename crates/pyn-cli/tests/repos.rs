@@ -683,3 +683,91 @@ fn the_owner_changes_a_repositorys_visibility() {
     );
     assert_eq!(visibility(), "private");
 }
+
+#[test]
+fn lock_outside_a_workspace_takes_the_servers_head() {
+    let env = start();
+    env.seed("alice", "Content/m.umap", "one", None);
+    env.seed("alice", "Content/m.umap", "two", Some(1));
+    let home = env.dir("home");
+    let out = env.ok(&home, "alice", &["lock", "Content/m.umap"]);
+    assert!(out.contains("locked Content/m.umap"), "{out}");
+    env.ok(&home, "alice", &["unlock", "Content/m.umap"]);
+
+    env.ok(&home, "alice", &["lock", "Content/maps/new.umap"]);
+
+    let stale = env.fails(&home, "alice", &["lock", "Content/m.umap", "--base", "1"]);
+    assert!(stale.contains("stale_base"), "{stale}");
+    assert!(stale.contains("--base"), "{stale}");
+}
+
+#[test]
+fn repo_delete_checks_the_role_before_asking() {
+    let env = common::start_with_repo_and_accounts(&["bob"]);
+    let home = env.dir("home");
+    env.ok(
+        &home,
+        "alice",
+        &["member", "set", "bob", "writer", "--repo", "alice/game"],
+    );
+    let out = env.run_stdin(
+        &home,
+        "bob",
+        &["repo", "delete", "alice/game"],
+        "alice/game\n",
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("only alice can delete"), "{err}");
+    assert!(!err.contains("Type the repository name"), "{err}");
+
+    env.ok(
+        &home,
+        "alice",
+        &["member", "set", "bob", "admin", "--repo", "alice/game"],
+    );
+    let out = env.run_stdin(
+        &home,
+        "bob",
+        &["repo", "delete", "alice/game"],
+        "alice/game\n",
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("only alice can delete"), "{err}");
+    assert!(!err.contains("Type the repository name"), "{err}");
+
+    let out = env.run_stdin(
+        &home,
+        "alice",
+        &["repo", "delete", "alice/game"],
+        "alice/game\n",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("deleted alice/game"));
+
+    let env = start_empty();
+    let home = env.dir("home");
+    env.ok(&home, "alice", &["repo", "create", "notes", "--no-policy"]);
+    let token = env.ok(
+        &home,
+        "alice",
+        &[
+            "token",
+            "create",
+            "ci",
+            "--permissions",
+            "contents:read",
+            "--repos",
+            "alice/notes",
+        ],
+    );
+    let narrow = env.run_with_token(&home, token.trim(), &["repo", "delete", "alice/notes"]);
+    let err = String::from_utf8_lossy(&narrow.stderr);
+    assert!(!narrow.status.success(), "{err}");
+    assert!(err.contains("needs the admin role"), "{err}");
+    assert!(!err.contains("Type the repository name"), "{err}");
+}

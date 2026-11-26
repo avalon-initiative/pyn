@@ -222,7 +222,7 @@ impl AccessService {
         };
         if let Some(action) = action {
             let scope = AuditScope::Org(org.clone());
-            self.record(scope, actor.into(), action, "avatar".into())
+            self.record(scope, actor.into(), action, "avatar".to_string())
                 .await?;
         }
         self.store.org_profile(org).await

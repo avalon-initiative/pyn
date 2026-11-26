@@ -277,12 +277,73 @@ fn an_event_from_before_acting_admin_still_verifies_against_its_frozen_hash() {
         action: AuditAction::Checkout,
         path: Some(path("Content/a.umap")),
         detail: "lease 8h".into(),
+        times: Default::default(),
         previous: None,
         hash: "4faf45d2108cab101ce1e890a016c314cfde33485307de1eace154d4e0edef8a".into(),
     };
     assert!(e.verify(&scope).is_ok());
     e.acting_admin = Some(UserId::new("bob"));
     assert!(e.verify(&scope).is_err());
+    e.acting_admin = None;
+    e.times.insert("expires_at".into(), e.at);
+    assert!(e.verify(&scope).is_err(), "adding a time to an old event");
+}
+
+#[test]
+fn an_event_with_named_times_verifies_against_its_frozen_v3_hash() {
+    let scope = AuditScope::Repo(RepoId::new("alice/game"));
+    let mut e = AuditEvent {
+        id: 1,
+        at: Utc.timestamp_micros(1_700_000_000_123_456).unwrap(),
+        actor: UserId::new("alice"),
+        acting_admin: None,
+        action: AuditAction::Checkout,
+        path: Some(path("Content/a.umap")),
+        detail: "lease 8h".into(),
+        times: [(
+            "expires_at".to_string(),
+            Utc.timestamp_micros(1_700_028_800_123_456).unwrap(),
+        )]
+        .into(),
+        previous: None,
+        hash: "301790ac764932125ec69f766e5469541bd5f9bc732b2ec1142e46e22b10dc7d".into(),
+    };
+    assert!(e.verify(&scope).is_ok());
+    e.times.clear();
+    assert!(e.verify(&scope).is_err(), "removing the time");
+}
+
+#[tokio::test]
+async fn a_checkout_names_its_expiry_as_a_covered_time() {
+    let w = world();
+    let p = path("Content/a.umap");
+    let lock = w.svc.checkout(&p, &alice(), None).await.unwrap();
+    let events = w
+        .svc
+        .audit(&AuditQuery {
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(events[0].action, AuditAction::Checkout);
+    assert_eq!(events[0].times.get("expires_at"), Some(&lock.expires_at));
+    assert!(!events[0].detail.contains("2026"), "{}", events[0].detail);
+    assert!(w.svc.verify(None, true).await.unwrap().problems.is_empty());
+    let id = events[0].id;
+    w.audit.tamper(id, |e| {
+        e.times
+            .insert("expires_at".into(), Utc.timestamp_micros(0).unwrap());
+    });
+    let report = w.svc.verify(None, true).await.unwrap();
+    assert_eq!(
+        report
+            .problems
+            .iter()
+            .map(|p| (p.kind, p.event))
+            .collect::<Vec<_>>(),
+        vec![(BreakKind::Hash, Some(id))]
+    );
 }
 
 #[tokio::test]

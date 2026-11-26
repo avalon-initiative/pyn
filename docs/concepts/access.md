@@ -1145,3 +1145,10 @@ role grants, giving a team a role or taking it away, creating or revoking a toke
 repository's audit log with the actor and what changed, and are visible to `view_audit`. Server-wide account actions and service credential changes go to
 the [server audit log](#protecting-open-registration), and so do [administrator access sessions](#administrator-access-sessions), which are also written to a security log of the affected account. A token's events go to the log of
 each repository it is limited to. Token secrets are never recorded, and neither are sign-in sessions.
+
+An entry's `detail` says what happened in words. Times it names are not written into the text but carried in `times`, a map
+from name to an RFC 3339 time that clients format for the reader (`pyn audit` shows them after the detail in local time);
+it is absent when there are none. The names: `expires_at` (a lock's lease on `checkout`, a token, a service credential,
+an invitation of any kind, an administrator access session), `purge_at` (`account_deletion_scheduled`) and `written_at` (the
+stranded revision of `version_stranded`). `times` is covered by the entry's [hash](integrity.md). Entries written before the
+field existed keep their times in `detail` (for example `until 2026-11-26 02:53:07.796343 UTC`) and are never rewritten.
