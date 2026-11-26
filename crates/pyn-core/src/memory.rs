@@ -4891,6 +4891,7 @@ impl AuditStore for MemoryAuditStore {
                 action: event.action,
                 path: event.path,
                 detail: event.detail,
+                times: event.times,
                 previous,
                 hash,
             },

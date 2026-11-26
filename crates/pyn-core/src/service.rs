@@ -41,7 +41,8 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::access::{Permission, Principal};
 use crate::audit::{
-    Actor, AuditAction, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent, brief,
+    Actor, AuditAction, AuditDetail, AuditEvent, AuditQuery, AuditScope, AuditStore, NewAuditEvent,
+    brief,
 };
 use crate::branch::{Branch, DEFAULT_BRANCH, conflicts, validate_branch_name};
 use crate::clock::Clock;
@@ -348,15 +349,17 @@ impl RepoService {
         actor: Actor<'_>,
         action: AuditAction,
         path: &RepoPath,
-        detail: String,
+        detail: impl Into<AuditDetail>,
     ) -> Result<()> {
+        let detail = detail.into();
         let event = NewAuditEvent {
             at: self.clock.now(),
             actor: actor.user.clone(),
             acting_admin: actor.acting_admin.cloned(),
             action,
             path: Some(path.clone()),
-            detail,
+            detail: detail.text,
+            times: detail.times,
         };
         self.audit
             .record(&AuditScope::Repo(self.repo.clone()), event)
@@ -367,15 +370,17 @@ impl RepoService {
         &self,
         actor: Actor<'_>,
         action: AuditAction,
-        detail: String,
+        detail: impl Into<AuditDetail>,
     ) -> Result<()> {
+        let detail = detail.into();
         let event = NewAuditEvent {
             at: self.clock.now(),
             actor: actor.user.clone(),
             acting_admin: actor.acting_admin.cloned(),
             action,
             path: None,
-            detail,
+            detail: detail.text,
+            times: detail.times,
         };
         self.audit
             .record(&AuditScope::Repo(self.repo.clone()), event)
@@ -585,17 +590,17 @@ impl RepoService {
             .await?;
         for v in &stranded {
             let detail = format!(
-                "branch {} (created by {}): r{} by {} on {} is stranded by policy r{}{}",
+                "branch {} (created by {}): r{} by {} is stranded by policy r{}{}",
                 v.branch,
                 v.branch_owner,
                 v.revision,
                 v.author,
-                v.created_at.format("%Y-%m-%d %H:%M:%S UTC"),
                 rev.id,
                 v.conversion
                     .map(|c| format!("; the path converted to exclusive at r{c}"))
                     .unwrap_or_default()
             );
+            let detail = AuditDetail::from(detail).time("written_at", v.created_at);
             self.record(who.into(), AuditAction::VersionStranded, &v.path, detail)
                 .await?;
         }
@@ -900,13 +905,9 @@ impl RepoService {
                     .await,
             )
             .await?;
-        self.record(
-            who,
-            AuditAction::Checkout,
-            path,
-            format!("until {}", lock.expires_at),
-        )
-        .await?;
+        let detail = AuditDetail::from("locked".to_string()).time("expires_at", lock.expires_at);
+        self.record(who, AuditAction::Checkout, path, detail)
+            .await?;
         Ok(lock)
     }
 
@@ -939,7 +940,7 @@ impl RepoService {
                 events.as_deref(),
             )
             .await?;
-        self.record(user, AuditAction::Release, path, "released".into())
+        self.record(user, AuditAction::Release, path, "released".to_string())
             .await
     }
 

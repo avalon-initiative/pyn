@@ -14,6 +14,8 @@ pub const REVISION_V3: u32 = 3;
 pub const AUDIT_TAG: &str = "pyn-audit-v1";
 /// An event recorded by an administrator acting as `actor` in an access session: the v1 fields plus `acting_admin`.
 pub const AUDIT_V2_TAG: &str = "pyn-audit-v2";
+/// An event that names times: the v1 fields, the optional acting administrator, then the times sorted by name.
+pub const AUDIT_V3_TAG: &str = "pyn-audit-v3";
 
 /// The fields a revision hash covers. `previous` is the hash of the path's previous revision, `None` for the first.
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +62,8 @@ pub struct AuditFields<'a> {
     pub detail: &'a str,
     /// The administrator acting as `actor`; `None` hashes under the v1 tag exactly as before the field existed.
     pub acting_admin: Option<&'a str>,
+    /// Named times in microseconds, sorted by name; empty keeps the v1 or v2 encoding.
+    pub times: &'a [(&'a str, i64)],
 }
 
 struct Encoder(Sha256);
@@ -149,11 +153,12 @@ fn v2_fields(mut e: Encoder, f: &RevisionV2Fields<'_>) -> String {
 }
 
 pub fn audit_hash(f: &AuditFields<'_>) -> String {
-    let mut e = Encoder::new(if f.acting_admin.is_some() {
-        AUDIT_V2_TAG
-    } else {
-        AUDIT_TAG
-    });
+    let tag = match (f.times.is_empty(), f.acting_admin) {
+        (false, _) => AUDIT_V3_TAG,
+        (true, Some(_)) => AUDIT_V2_TAG,
+        (true, None) => AUDIT_TAG,
+    };
+    let mut e = Encoder::new(tag);
     e.str(f.scope);
     e.opt_str(f.previous);
     e.i64(f.created_micros);
@@ -161,8 +166,17 @@ pub fn audit_hash(f: &AuditFields<'_>) -> String {
     e.str(f.action);
     e.opt_str(f.path);
     e.str(f.detail);
-    if let Some(admin) = f.acting_admin {
-        e.str(admin);
+    if f.times.is_empty() {
+        if let Some(admin) = f.acting_admin {
+            e.str(admin);
+        }
+        return e.finish();
+    }
+    e.opt_str(f.acting_admin);
+    e.0.update((f.times.len() as u64).to_be_bytes());
+    for (name, micros) in f.times {
+        e.str(name);
+        e.i64(*micros);
     }
     e.finish()
 }
@@ -323,6 +337,7 @@ mod tests {
             path: Some("Content/a.umap"),
             detail: "lease 8h",
             acting_admin: None,
+            times: &[],
         });
         assert_eq!(a, VECTOR_AUDIT_1);
         let b = audit_hash(&AuditFields {
@@ -334,6 +349,7 @@ mod tests {
             path: None,
             detail: "",
             acting_admin: None,
+            times: &[],
         });
         assert_eq!(b, VECTOR_AUDIT_2);
     }
@@ -349,6 +365,7 @@ mod tests {
             path: Some("Content/a.umap"),
             detail: "lease 8h",
             acting_admin: None,
+            times: &[],
         };
         assert_eq!(audit_hash(&plain), VECTOR_AUDIT_1);
         let acted = audit_hash(&AuditFields {
@@ -369,6 +386,60 @@ mod tests {
                 ..plain
             }),
             VECTOR_AUDIT_1
+        );
+    }
+
+    #[test]
+    fn named_times_are_covered_and_leave_older_encodings_alone() {
+        let plain = AuditFields {
+            scope: "alice/game",
+            previous: None,
+            created_micros: 1_700_000_000_123_456,
+            actor: "alice",
+            action: "checkout",
+            path: Some("Content/a.umap"),
+            detail: "lease 8h",
+            acting_admin: None,
+            times: &[],
+        };
+        let timed = audit_hash(&AuditFields {
+            times: &[("expires_at", 1_700_028_800_123_456)],
+            ..plain
+        });
+        assert_eq!(timed, VECTOR_AUDIT_3);
+        assert_ne!(timed, VECTOR_AUDIT_1);
+        let variants = [
+            AuditFields {
+                times: &[("expires_at", 1_700_028_800_123_457)],
+                ..plain
+            },
+            AuditFields {
+                times: &[("ends_at", 1_700_028_800_123_456)],
+                ..plain
+            },
+            AuditFields {
+                times: &[("expires_at", 1_700_028_800_123_456), ("purge_at", 0)],
+                ..plain
+            },
+            AuditFields {
+                times: &[("expires_at", 1_700_028_800_123_456)],
+                acting_admin: Some("bob"),
+                ..plain
+            },
+        ];
+        for v in variants {
+            assert_ne!(audit_hash(&v), timed);
+        }
+        let acted = AuditFields {
+            acting_admin: Some("bob"),
+            ..plain
+        };
+        assert_ne!(
+            audit_hash(&AuditFields {
+                times: &[("expires_at", 0)],
+                ..acted
+            }),
+            audit_hash(&acted)
         );
     }
 
@@ -437,4 +508,5 @@ mod tests {
         "3d2323ad77d4713b6667982fe3f18a4613bdd068a56c023af00a61caa7e5bbe8";
     const VECTOR_AUDIT_1: &str = "4faf45d2108cab101ce1e890a016c314cfde33485307de1eace154d4e0edef8a";
     const VECTOR_AUDIT_2: &str = "ffb456bf011e957ddb3aafa9a4b301b822e22a3029cf8a52ee91c432ddfdc6d9";
+    const VECTOR_AUDIT_3: &str = "301790ac764932125ec69f766e5469541bd5f9bc732b2ec1142e46e22b10dc7d";
 }

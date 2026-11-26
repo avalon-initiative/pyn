@@ -1150,6 +1150,27 @@ async fn force_unlock_needs_the_permission_and_a_reason_and_is_audited() {
     )
     .await;
     assert_eq!(only.entries.len(), 1);
+    let checkout = &only.entries[0];
+    assert!(checkout.times.contains_key("expires_at"), "{checkout:?}");
+    assert!(
+        !checkout
+            .detail
+            .contains(&checkout.at.format("%Y").to_string()),
+        "the time stays out of the text: {}",
+        checkout.detail
+    );
+    let wire = serde_json::to_value(checkout).unwrap();
+    let expires = wire["times"]["expires_at"].as_str().unwrap();
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(expires).is_ok(),
+        "{expires}"
+    );
+    assert!(
+        serde_json::to_value(&page.entries[0])
+            .unwrap()
+            .get("times")
+            .is_none()
+    );
     assert_eq!(
         status(
             &app,
@@ -3035,6 +3056,74 @@ async fn visible_world() -> Visible {
         checkin_text(&app, name, &alice, "readme.txt").await;
     }
     Visible { app, alice, bob }
+}
+
+#[tokio::test]
+async fn content_is_served_with_a_safe_type_from_its_path() {
+    let v = visible_world().await;
+    let cases = [
+        ("readme.txt", "text/plain; charset=utf-8"),
+        ("docs/Guide.md", "text/plain; charset=utf-8"),
+        ("src/main.rs", "text/plain; charset=utf-8"),
+        ("web/index.html", "text/plain; charset=utf-8"),
+        ("art/logo.svg", "text/plain; charset=utf-8"),
+        ("feed.xml", "text/plain; charset=utf-8"),
+        ("Makefile", "text/plain; charset=utf-8"),
+        ("art/rock.PNG", "image/png"),
+        ("sfx/hit.wav", "audio/wav"),
+        ("intro.webm", "video/webm"),
+        ("spec.pdf", "application/pdf"),
+        ("Source/Map.umap", "application/octet-stream"),
+    ];
+    for (path, _) in &cases[1..] {
+        checkin_text(&v.app, "open", &v.alice, path).await;
+    }
+    for (path, want) in cases {
+        let uri = format!("/v1/repos/alice/open/content?path={path}");
+        let r = v.app.clone().oneshot(anonymous_get(&uri)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{path}");
+        let h = r.headers();
+        assert_eq!(h["content-type"], want, "{path}");
+        let t = h["content-type"].to_str().unwrap();
+        assert!(
+            !t.contains("html")
+                && !t.contains("xml")
+                && !t.contains("svg")
+                && !t.contains("script"),
+            "{path}: {t}"
+        );
+        assert_eq!(h["x-content-type-options"], "nosniff", "{path}");
+        assert!(
+            h["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("sandbox"),
+            "{path}"
+        );
+        assert!(h.get("content-disposition").is_none(), "{path}");
+    }
+
+    let r = v
+        .app
+        .clone()
+        .oneshot(anonymous_get(
+            "/v1/repos/alice/open/content?path=web/index.html&download=1",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.headers()["content-type"], "text/plain; charset=utf-8");
+    assert_eq!(
+        r.headers()["content-disposition"],
+        "attachment; filename=\"index.html\"; filename*=UTF-8''index.html"
+    );
+    let ranged = Request::get("/v1/repos/alice/open/content?path=art/rock.PNG")
+        .header("range", "bytes=0-1")
+        .body(Body::empty())
+        .unwrap();
+    let r = v.app.clone().oneshot(ranged).await.unwrap();
+    assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(r.headers()["content-type"], "image/png");
+    assert_eq!(r.headers()["x-content-type-options"], "nosniff");
 }
 
 #[tokio::test]
