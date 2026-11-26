@@ -4142,13 +4142,23 @@ fn repo_command(api: &Api, cmd: RepoCommand) -> Result<()> {
 fn may_delete_repo(api: &Api, route: &str, name: &str) -> Result<()> {
     let info: api::RepoInfo = api.send(api.get(route))?.json()?;
     let me: api::Me = api.send(api.get(&format!("{route}/me")))?.json()?;
-    if info.owner_identity.is_none() && me.user != info.owner {
+    if me.user != info.owner && owned_by_user(api, &info.owner) {
         bail!("only {} can delete {name}", info.owner);
     }
     if !me.permissions.iter().any(|p| p == "manage_roles") {
         bail!("{}", delete_needs(name));
     }
     Ok(())
+}
+
+/// A name the organization lookup does not know is a user's; any other failure leaves the decision to the server.
+fn owned_by_user(api: &Api, owner: &str) -> bool {
+    match api.send(api.get(&format!("/v1/orgs/{owner}"))) {
+        Ok(_) => false,
+        Err(e) => e
+            .downcast_ref::<client::ApiError>()
+            .is_some_and(|e| e.code == "org_not_found"),
+    }
 }
 
 fn delete_needs(name: &str) -> String {
