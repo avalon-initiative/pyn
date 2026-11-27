@@ -408,7 +408,7 @@ enum Command {
     Lock {
         path: String,
         /// Revision your copy is at; by default the workspace's, or the server's head outside a workspace.
-        #[arg(long)]
+        #[arg(long, value_parser = revision_number)]
         base: Option<u64>,
     },
     /// Give up your lock without committing; with --force, remove someone else's (needs force_unlock and a reason).
@@ -471,7 +471,7 @@ enum Command {
         /// repository it is the commit message file, as `-F`.
         #[arg(long)]
         file: Option<std::path::PathBuf>,
-        #[arg(long)]
+        #[arg(long, value_parser = revision_number)]
         base: Option<u64>,
         /// The commit message; repeat for more paragraphs. A merge in progress has its own.
         #[arg(short, long)]
@@ -488,7 +488,7 @@ enum Command {
     /// Fetch a file's content at a revision (the head if omitted).
     Get {
         path: String,
-        #[arg(long)]
+        #[arg(long, value_parser = revision_number)]
         rev: Option<u64>,
         /// Write to this file instead of stdout.
         #[arg(short, long)]
@@ -3138,7 +3138,14 @@ fn run(cli: Cli) -> Result<()> {
             ..
         } => {
             let (path, revision) = restore_target(&args, source.as_deref());
-            restore(&backend, rp(&path)?, revision, message, yes)?
+            let path = rp(&path)?;
+            restore(&backend, path.clone(), revision, message, yes)?;
+            if let Some(w) = &ws
+                && !merging::in_progress(w)
+                && branch::require_published(w, "restore").is_ok()
+            {
+                sync::update(&backend, w, &[path], None)?;
+            }
         }
         Command::Unlock {
             path, force: false, ..
@@ -3674,12 +3681,18 @@ fn usage_error(message: &str) -> ! {
     std::process::exit(129);
 }
 
+/// A file revision as listings print it, `r3`, or as the bare number.
+fn revision_number(text: &str) -> std::result::Result<u64, String> {
+    text.strip_prefix('r')
+        .unwrap_or(text)
+        .parse()
+        .map_err(|_| format!("'{text}' is not a revision: use r<N> or <N>"))
+}
+
 /// The path and the older revision a `restore` names, as `<path> <revision>` or `<path> --source <revision>`.
 fn restore_target(args: &[String], source: Option<&str>) -> (String, u64) {
-    let revision = |text: &str| -> u64 {
-        text.parse()
-            .unwrap_or_else(|_| usage_error(&format!("'{text}' is not a revision number")))
-    };
+    let revision =
+        |text: &str| -> u64 { revision_number(text).unwrap_or_else(|e| usage_error(&e)) };
     match (args, source) {
         ([path], Some(source)) => (path.clone(), revision(source)),
         ([path, rev], None) => (path.clone(), revision(rev)),
