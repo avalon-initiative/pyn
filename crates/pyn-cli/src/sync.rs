@@ -536,6 +536,7 @@ pub fn update(
         Some(store) => store.unpublished(&crate::branch::name(Some(ws)))?.paths,
         None => BTreeMap::new(),
     };
+    let merged_in = merged_revisions(backend, ws, &held)?;
     if commit.is_none() {
         let listed: BTreeSet<&str> = entries.iter().map(|e| e.path.as_str()).collect();
         let gone: Vec<String> = state
@@ -568,6 +569,13 @@ pub fn update(
             continue;
         }
         if held.contains_key(&entry.path) {
+            let merged = merged_in.get(&entry.path).copied().unwrap_or(0);
+            if let (Some(head), Some(known)) = (entry.revision, state.get_mut(&entry.path))
+                && known.revision.max(merged) >= head
+            {
+                known.revision = known.revision.max(head);
+                continue;
+            }
             skipped.push(format!(
                 "{}: committed locally and not yet published",
                 entry.path
@@ -638,6 +646,27 @@ pub fn update(
         println!("skipped {line}");
     }
     Ok(())
+}
+
+/// Each path's server revision as of the published commit, when the local branch has merged that commit in: a path
+/// local commits changed builds on that revision, so it is not behind it.
+fn merged_revisions(
+    backend: &dyn Backend,
+    ws: &Workspace,
+    held: &BTreeMap<String, Change>,
+) -> Result<BTreeMap<String, u64>> {
+    let Some(store) = LocalStore::open(ws).filter(|_| !held.is_empty()) else {
+        return Ok(BTreeMap::new());
+    };
+    let branch = crate::branch::name(Some(ws));
+    let (Some(tip), Some(published)) = (store.tip(&branch)?, store.published(&branch)?) else {
+        return Ok(BTreeMap::new());
+    };
+    if !store.ancestors(Some(tip))?.contains(&published) {
+        return Ok(BTreeMap::new());
+    }
+    let (_, snap) = backend.snapshot(Some(&published.to_hex()))?;
+    Ok(snap.into_iter().map(|e| (e.path, e.revision)).collect())
 }
 
 fn local_changes(known: &FileState, path: &Path) -> Result<bool> {

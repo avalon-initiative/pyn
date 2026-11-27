@@ -332,7 +332,8 @@ With the store on, `add`, `commit`, `status` and `branch` work against the store
 - `pyn status` adds `added|modified|deleted in a local commit` to the paths the unpublished commits changed, and a
   closing line with the number of local commits the server lacks.
 - `pyn update` brings the server's tip and its history into the store but leaves the local branch and the files that
-  local commits changed alone (it reports them as skipped).
+  local commits changed alone. It reports such a file as skipped only when the server has a newer revision than the local
+  work builds on; after a pull merged or rebased onto the server's commits, the file is recorded at the server's revision.
 - `pyn log --commits` lists the unpublished commits above the server's (the hash is marked `(local)`), and `pyn show [<commit>]`
   shows one (`HEAD` or a hash of an unpublished commit; anything else is read from the server). `pyn log` and
   `pyn log <path>` list the unpublished commits first, newest first, one row per changed path with `local` as the `REV`
