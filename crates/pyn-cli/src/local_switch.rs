@@ -319,7 +319,7 @@ pub(crate) fn find_target(
 
 /// The files of `tip` as snapshot entries: revisions and modes come from the server for what it knows; unpublished
 /// content has revision `0` and the mode the policy file at `tip` gives it.
-fn entries_at(
+pub(crate) fn entries_at(
     backend: &dyn Backend,
     store: &LocalStore,
     tip: &ObjectId,

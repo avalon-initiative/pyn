@@ -350,7 +350,7 @@ With the store on, `add`, `commit`, `status` and `branch` work against the store
   moves to it, dropping the merge and the local commits from the branch (they stay in the store; `pyn branch <name> <hash>` keeps
   them). Any other name, or a commit older than the last published one, is refused. `--soft` keeps the
   dropped changes staged, `--mixed` (the default) keeps them in the files unstaged and clears the staging area, `--hard` puts
-  the files back to the commit and asks you to type the branch name. `--yes` skips that; without a terminal and without `--yes` it refuses and changes nothing, so a script passes `--yes`. Untracked files are left alone.
+  the files back to the commit and asks you to type the branch name. A file whose content at the commit is a server revision is recorded at that revision, so `pyn status` and `pyn lock` agree with the file. `--yes` skips that; without a terminal and without `--yes` it refuses and changes nothing, so a script passes `--yes`. Untracked files are left alone.
 - `pyn tag [<name> [<commit>]]`, `-a`/`-m`, `-f`, `-d` and `-l` keep tags as refs in the store, and `pyn show` and `pyn diff` take a tag
   name for a commit. Tags are local only: they are never pushed, so another clone does not see them; the server's own [immutable tags](branches.md#tags) are a separate list, reached with `pyn tag --server`.
 - `pyn lock <path>` for a path a local commit changed asks for the lock on the newest server revision the local work has

@@ -276,9 +276,17 @@ pub fn reset(backend: &dyn Backend, ws: &Workspace, args: ResetArgs) -> Result<(
     }
     let files = backend.list_files()?;
     let me = backend.whoami()?;
+    let served: BTreeMap<String, u64> = crate::local_switch::entries_at(backend, &store, &target)?
+        .into_iter()
+        .filter(|e| e.revision > 0)
+        .map(|e| (e.path, e.revision))
+        .collect();
     for (path, (old, new)) in paths {
         let previous = state.remove(&path);
-        let revision = previous.as_ref().map_or(0, |k| k.revision);
+        let revision = served
+            .get(&path)
+            .copied()
+            .unwrap_or_else(|| previous.as_ref().map_or(0, |k| k.revision));
         let mode = previous.as_ref().map_or_else(
             || {
                 files
