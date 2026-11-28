@@ -1,7 +1,9 @@
 # Troubleshooting
 
 Errors from the server arrive as `{code, message}`; the CLI prints the message and the code is what scripts match. Codes are API
-surface: they are added, never renamed. The usual ones, with what to do.
+surface: they are added, never renamed. A request body that is not valid JSON, lacks a field or has one of the wrong type is
+`invalid_request` with the status that names the problem (`400` for syntax, `415` without `Content-Type: application/json`, `422`
+for a missing or mistyped field), and the message names the field. The usual ones, with what to do.
 
 ## Locks and commits
 

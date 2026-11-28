@@ -1,6 +1,6 @@
 //! Per-owner limits and usage. Limits are opt-in: with none set nothing is enforced.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, State};
 use pyn_core::{AccountKind, LimitsChange, UserId};
 use pyn_proto as api;

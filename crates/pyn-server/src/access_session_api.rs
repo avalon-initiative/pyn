@@ -1,7 +1,7 @@
 //! Administrator access sessions (decision #1024): an administrator acts as an account for at most an hour, and the
 //! account lists the sessions on it.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use pyn_core::{AccessSessionRecord, AccessSessionView, TokenId, UserId};

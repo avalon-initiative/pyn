@@ -1,7 +1,7 @@
 //! Required second factors (#1106): the server's and an organization's requirement, the administrator's reset and
 //! the account's notices.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use pyn_core::{NoticeRecord, RequiredBy, Requirement, TwoFactorPolicy, UserId};

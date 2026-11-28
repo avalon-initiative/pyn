@@ -1,6 +1,6 @@
 //! Branches: listing, creating, renaming and deleting them.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use pyn_core::repositories::OpenRepo;

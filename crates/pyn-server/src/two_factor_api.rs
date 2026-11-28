@@ -1,6 +1,6 @@
 //! Second factors (#1104): enrolment, recovery codes and the fresh check behind sensitive actions.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use pyn_core::{FactorRecord, Identity};

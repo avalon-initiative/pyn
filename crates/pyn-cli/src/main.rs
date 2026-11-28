@@ -1125,6 +1125,7 @@ enum TeamCommand {
         team: String,
         /// `owner/name` of a repository the organization owns.
         repo: String,
+        /// `reader`, `writer`, `maintainer` or `admin`.
         #[arg(long)]
         role: String,
     },
@@ -1262,6 +1263,7 @@ enum KeyCommand {
 enum InviteCommand {
     /// Create a one-time invitation code. It is shown once.
     Create {
+        /// `reader`, `writer`, `maintainer` or `admin`.
         #[arg(long, default_value = "reader")]
         role: String,
         /// How long the invitation can be used.
@@ -1279,6 +1281,7 @@ enum UserCommand {
     /// Add an account with an initial password and a role.
     Add {
         username: String,
+        /// `reader`, `writer`, `maintainer` or `admin`.
         #[arg(long, default_value = "reader")]
         role: String,
         #[arg(long)]
@@ -1292,6 +1295,7 @@ enum MemberCommand {
     /// Give an existing account a role; register new people with `pyn user add` or an invitation.
     Set {
         user: String,
+        /// `reader`, `writer`, `maintainer` or `admin`.
         role: String,
     },
 }
@@ -1301,6 +1305,7 @@ enum RoleCommand {
     List,
     /// Replace what a role grants.
     Set {
+        /// `reader`, `writer`, `maintainer` or `admin`.
         role: String,
         #[arg(long, value_delimiter = ',', required = true)]
         permissions: Vec<String>,

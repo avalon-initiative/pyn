@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, Query, State};
 use pyn_core::merge::{ConflictKind, FastForward, MergeOutcome};
 use pyn_core::pull::{PullEdit, PullEvent, PullEventKind, PullFilter, PullRequest, PullState};

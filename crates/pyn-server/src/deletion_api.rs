@@ -1,6 +1,6 @@
 //! Account deletion routes: the signed-in user's own request, restore and status, and an administrator's deletion.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use pyn_core::{AccountDeletion, MailerKind, UserId};

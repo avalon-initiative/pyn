@@ -1,6 +1,6 @@
 //! Account profiles: the public page of a user, the signed-in user's own edits, and avatars.
 
-use axum::Json;
+use crate::json::Json;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_NONE_MATCH};

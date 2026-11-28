@@ -1,6 +1,6 @@
 //! The caller's own email addresses and username (#982), the moved-address header and current author names.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;

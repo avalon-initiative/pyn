@@ -136,6 +136,21 @@ pub fn ok(resp: Reply) -> Result<Reply> {
     }
     let status = resp.status;
     let retry_after = resp.header("retry-after").map(str::to_string);
+    if resp
+        .header("content-type")
+        .is_some_and(|t| t.starts_with("text/plain"))
+    {
+        // An older server or a proxy: its first line still says what was wrong.
+        let text = resp.text_prefix(1024)?;
+        match text.lines().next().map(str::trim) {
+            Some(line) if !line.is_empty() => bail!(
+                "server returned {}: {}",
+                status_line(status),
+                crate::sanitize::text(line)
+            ),
+            _ => bail!("server returned {}", status_line(status)),
+        }
+    }
     match resp.json::<api::ErrorBody>() {
         Ok(e) => {
             let mut message =
@@ -182,5 +197,19 @@ mod tests {
         let err = ok(reply).err().unwrap();
         let e = err.downcast_ref::<ApiError>().unwrap();
         assert_eq!((e.code.as_str(), e.message.as_str()), ("bad", "no[2J way"));
+    }
+
+    #[test]
+    fn a_plain_text_rejection_is_shown_after_the_status() {
+        let body = "Failed to deserialize the JSON body: missing field `slug`\u{1b}[2J\nmore";
+        let reply = Reply::new(
+            422,
+            vec![("content-type".into(), "text/plain; charset=utf-8".into())],
+            Box::new(std::io::Cursor::new(body.as_bytes().to_vec())),
+        );
+        assert_eq!(
+            ok(reply).err().unwrap().to_string(),
+            "server returned 422 Unprocessable Entity: Failed to deserialize the JSON body: missing field `slug`[2J"
+        );
     }
 }
