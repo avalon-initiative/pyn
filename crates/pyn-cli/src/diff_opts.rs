@@ -6,8 +6,18 @@ use crate::diff_color::Choice;
 use crate::word_diff::{Mode, Request};
 
 /// The options that shape a patch, taken by every command that prints one.
+/// Two flattened halves keep each clap-generated function's frame small in unoptimized builds.
 #[derive(Args, Debug, Default, Clone)]
 pub struct PatchFlags {
+    #[command(flatten)]
+    compare: PatchCompare,
+    #[command(flatten)]
+    display: PatchDisplay,
+}
+
+/// How lines are compared and how the patch names and lays out its hunks.
+#[derive(Args, Debug, Default, Clone)]
+struct PatchCompare {
     /// Ignore whitespace when comparing lines.
     #[arg(short = 'w', long = "ignore-all-space")]
     all_space: bool,
@@ -80,6 +90,11 @@ pub struct PatchFlags {
     /// Keep only the files changed in these ways: `A` added, `C` copied, `D` deleted, `M` modified, `R` renamed, `T` type changed; lower case leaves them out.
     #[arg(long = "diff-filter", value_name = "KINDS")]
     diff_filter: Option<String>,
+}
+
+/// Color, word diff, and the diffstat and dirstat layouts.
+#[derive(Args, Debug, Default, Clone)]
+struct PatchDisplay {
     /// Color the output: `always`, `never` or `auto` (a terminal); `always` without a value.
     #[arg(long, value_name = "WHEN", num_args = 0..=1, require_equals = true, default_missing_value = "always", overrides_with = "no_color")]
     color: Option<String>,
@@ -303,13 +318,13 @@ fn parse_filter(text: &str) -> (String, String) {
 
 impl PatchFlags {
     fn algorithm(&self) -> Option<(pyn_diff::Algorithm, bool)> {
-        if self.patience {
+        if self.compare.patience {
             return Some((pyn_diff::Algorithm::Patience, false));
         }
-        if self.histogram {
+        if self.compare.histogram {
             return Some((pyn_diff::Algorithm::Histogram, false));
         }
-        let name = self.diff_algorithm.as_deref()?;
+        let name = self.compare.diff_algorithm.as_deref()?;
         match pyn_diff::Algorithm::parse(name) {
             Some(found) => Some(found),
             None => crate::usage_error(&format!("option diff-algorithm does not accept `{name}`")),
@@ -318,10 +333,11 @@ impl PatchFlags {
 
     fn word_request(&self) -> Option<Request> {
         let regex = self
+            .display
             .word_diff_regex
             .clone()
-            .or_else(|| self.color_words.clone().filter(|r| !r.is_empty()));
-        let mode = match self.word_diff.as_deref() {
+            .or_else(|| self.display.color_words.clone().filter(|r| !r.is_empty()));
+        let mode = match self.display.word_diff.as_deref() {
             Some("plain") => Some(Mode::Plain),
             Some("color") => Some(Mode::Color),
             Some("porcelain") => Some(Mode::Porcelain),
@@ -329,7 +345,7 @@ impl PatchFlags {
             Some(other) => crate::usage_error(&format!(
                 "option `word-diff' expects one of `plain', `color', `porcelain' or `none', not '{other}'"
             )),
-            None if self.color_words.is_some() => Some(Mode::Color),
+            None if self.display.color_words.is_some() => Some(Mode::Color),
             None => None,
         };
         // `--word-diff-regex` alone turns plain word diff on.
@@ -363,35 +379,42 @@ impl PatchFlags {
 
     /// Whether `--diff-filter` was given.
     pub fn filters(&self) -> bool {
-        self.diff_filter.is_some()
+        self.compare.diff_filter.is_some()
     }
 
     pub fn all_space(&self) -> bool {
-        self.all_space
+        self.compare.all_space
     }
 
     /// Whether an option that implies `--stat` was given.
     pub fn stat_implied(&self) -> bool {
-        self.compact_summary
-            || self.stat_width.is_some()
-            || self.stat_name_width.is_some()
-            || self.stat_graph_width.is_some()
-            || self.stat_count.is_some()
+        self.display.compact_summary
+            || self.display.stat_width.is_some()
+            || self.display.stat_name_width.is_some()
+            || self.display.stat_graph_width.is_some()
+            || self.display.stat_count.is_some()
     }
 
     fn dirstat_spec(&self) -> Option<crate::dirstat::Spec> {
         use crate::dirstat::{Measure, Spec};
-        if self.dirstat.is_none() && self.dirstat_by_file.is_none() && !self.cumulative {
+        if self.display.dirstat.is_none()
+            && self.display.dirstat_by_file.is_none()
+            && !self.display.cumulative
+        {
             return None;
         }
         let mut spec = Spec::default();
-        if self.dirstat_by_file.is_some() {
+        if self.display.dirstat_by_file.is_some() {
             spec.measure = Measure::Files;
         }
-        if self.cumulative {
+        if self.display.cumulative {
             spec.cumulative = true;
         }
-        let params = self.dirstat.as_deref().or(self.dirstat_by_file.as_deref());
+        let params = self
+            .display
+            .dirstat
+            .as_deref()
+            .or(self.display.dirstat_by_file.as_deref());
         Some(
             spec.with_params(params.unwrap_or(""))
                 .unwrap_or_else(|e| crate::usage_error(&e)),
@@ -400,49 +423,57 @@ impl PatchFlags {
 
     /// Whether `--dirstat` or an option that implies it was given.
     pub fn dirstat_given(&self) -> bool {
-        self.dirstat.is_some() || self.dirstat_by_file.is_some() || self.cumulative
+        self.display.dirstat.is_some()
+            || self.display.dirstat_by_file.is_some()
+            || self.display.cumulative
     }
 
     /// The first flag given other than `-w`, for a command that cannot honor any.
     pub fn given(&self) -> Option<&'static str> {
         [
-            ("-b", self.space_change),
-            ("--ignore-space-at-eol", self.space_at_eol),
-            ("--ignore-cr-at-eol", self.cr_at_eol),
-            ("--ignore-blank-lines", self.blank_lines),
-            ("-W", self.function_context),
-            ("--inter-hunk-context", self.inter_hunk.is_some()),
-            ("--full-index", self.full_index),
-            ("--src-prefix", self.src_prefix.is_some()),
-            ("--dst-prefix", self.dst_prefix.is_some()),
-            ("--no-prefix", self.no_prefix),
-            ("-a", self.text),
-            ("--minimal", self.minimal),
-            ("--diff-algorithm", self.diff_algorithm.is_some()),
-            ("--patience", self.patience),
-            ("--histogram", self.histogram),
-            ("--indent-heuristic", self.indent_heuristic),
-            ("--no-indent-heuristic", self.no_indent_heuristic),
-            ("--ext-diff", self.ext_diff),
-            ("--no-ext-diff", self.no_ext_diff),
-            ("--no-textconv", self.no_textconv),
-            ("--textconv", self.textconv),
-            ("-R", self.swap_sides),
-            ("--stat-width", self.stat_width.is_some()),
-            ("--stat-name-width", self.stat_name_width.is_some()),
-            ("--stat-graph-width", self.stat_graph_width.is_some()),
-            ("--stat-count", self.stat_count.is_some()),
-            ("--compact-summary", self.compact_summary),
-            ("--dirstat", self.dirstat.is_some()),
-            ("--dirstat-by-file", self.dirstat_by_file.is_some()),
-            ("--cumulative", self.cumulative),
-            ("--diff-filter", self.diff_filter.is_some()),
-            ("--color", self.color.is_some()),
-            ("--no-color", self.no_color),
-            ("--ws-error-highlight", self.ws_error_highlight.is_some()),
-            ("--word-diff", self.word_diff.is_some()),
-            ("--word-diff-regex", self.word_diff_regex.is_some()),
-            ("--color-words", self.color_words.is_some()),
+            ("-b", self.compare.space_change),
+            ("--ignore-space-at-eol", self.compare.space_at_eol),
+            ("--ignore-cr-at-eol", self.compare.cr_at_eol),
+            ("--ignore-blank-lines", self.compare.blank_lines),
+            ("-W", self.compare.function_context),
+            ("--inter-hunk-context", self.compare.inter_hunk.is_some()),
+            ("--full-index", self.compare.full_index),
+            ("--src-prefix", self.compare.src_prefix.is_some()),
+            ("--dst-prefix", self.compare.dst_prefix.is_some()),
+            ("--no-prefix", self.compare.no_prefix),
+            ("-a", self.compare.text),
+            ("--minimal", self.compare.minimal),
+            ("--diff-algorithm", self.compare.diff_algorithm.is_some()),
+            ("--patience", self.compare.patience),
+            ("--histogram", self.compare.histogram),
+            ("--indent-heuristic", self.compare.indent_heuristic),
+            ("--no-indent-heuristic", self.compare.no_indent_heuristic),
+            ("--ext-diff", self.compare.ext_diff),
+            ("--no-ext-diff", self.compare.no_ext_diff),
+            ("--no-textconv", self.compare.no_textconv),
+            ("--textconv", self.compare.textconv),
+            ("-R", self.compare.swap_sides),
+            ("--stat-width", self.display.stat_width.is_some()),
+            ("--stat-name-width", self.display.stat_name_width.is_some()),
+            (
+                "--stat-graph-width",
+                self.display.stat_graph_width.is_some(),
+            ),
+            ("--stat-count", self.display.stat_count.is_some()),
+            ("--compact-summary", self.display.compact_summary),
+            ("--dirstat", self.display.dirstat.is_some()),
+            ("--dirstat-by-file", self.display.dirstat_by_file.is_some()),
+            ("--cumulative", self.display.cumulative),
+            ("--diff-filter", self.compare.diff_filter.is_some()),
+            ("--color", self.display.color.is_some()),
+            ("--no-color", self.display.no_color),
+            (
+                "--ws-error-highlight",
+                self.display.ws_error_highlight.is_some(),
+            ),
+            ("--word-diff", self.display.word_diff.is_some()),
+            ("--word-diff-regex", self.display.word_diff_regex.is_some()),
+            ("--color-words", self.display.color_words.is_some()),
         ]
         .into_iter()
         .find(|(_, on)| *on)
@@ -452,50 +483,51 @@ impl PatchFlags {
     pub fn opts(&self) -> Opts {
         let mut o = Opts {
             ws: pyn_diff::Ws {
-                all: self.all_space,
-                change: self.space_change,
-                eol: self.space_at_eol,
-                cr: self.cr_at_eol,
-                blank_lines: self.blank_lines,
-                minimal: self.minimal || self.algorithm().is_some_and(|(_, minimal)| minimal),
+                all: self.compare.all_space,
+                change: self.compare.space_change,
+                eol: self.compare.space_at_eol,
+                cr: self.compare.cr_at_eol,
+                blank_lines: self.compare.blank_lines,
+                minimal: self.compare.minimal
+                    || self.algorithm().is_some_and(|(_, minimal)| minimal),
                 algorithm: self.algorithm().map_or_else(Default::default, |(a, _)| a),
-                no_indent_heuristic: self.no_indent_heuristic,
+                no_indent_heuristic: self.compare.no_indent_heuristic,
             },
-            compact_summary: self.compact_summary,
+            compact_summary: self.display.compact_summary,
             stat: StatSpec::from_args(std::env::args()).unwrap_or_else(|e| crate::usage_error(&e)),
             dirstat: self.dirstat_spec(),
             chosen: Chosen {
-                src_prefix: if self.swap_sides {
-                    self.no_prefix || self.dst_prefix.is_some()
+                src_prefix: if self.compare.swap_sides {
+                    self.compare.no_prefix || self.compare.dst_prefix.is_some()
                 } else {
-                    self.no_prefix || self.src_prefix.is_some()
+                    self.compare.no_prefix || self.compare.src_prefix.is_some()
                 },
-                dst_prefix: if self.swap_sides {
-                    self.no_prefix || self.src_prefix.is_some()
+                dst_prefix: if self.compare.swap_sides {
+                    self.compare.no_prefix || self.compare.src_prefix.is_some()
                 } else {
-                    self.no_prefix || self.dst_prefix.is_some()
+                    self.compare.no_prefix || self.compare.dst_prefix.is_some()
                 },
-                indent_heuristic: self.indent_heuristic || self.no_indent_heuristic,
-                algorithm: self.minimal
-                    || self.diff_algorithm.is_some()
-                    || self.patience
-                    || self.histogram,
+                indent_heuristic: self.compare.indent_heuristic || self.compare.no_indent_heuristic,
+                algorithm: self.compare.minimal
+                    || self.compare.diff_algorithm.is_some()
+                    || self.compare.patience
+                    || self.compare.histogram,
             },
-            reverse: self.swap_sides,
-            filter: self.diff_filter.as_deref().map(parse_filter),
-            inter_hunk: self.inter_hunk.unwrap_or(0),
-            function: self.function_context,
-            full_index: self.full_index,
-            text: self.text,
-            no_textconv: self.no_textconv,
-            ext_diff: match (self.ext_diff, self.no_ext_diff) {
+            reverse: self.compare.swap_sides,
+            filter: self.compare.diff_filter.as_deref().map(parse_filter),
+            inter_hunk: self.compare.inter_hunk.unwrap_or(0),
+            function: self.compare.function_context,
+            full_index: self.compare.full_index,
+            text: self.compare.text,
+            no_textconv: self.compare.no_textconv,
+            ext_diff: match (self.compare.ext_diff, self.compare.no_ext_diff) {
                 (true, _) => Some(true),
                 (_, true) => Some(false),
                 _ => None,
             },
             ..Opts::default()
         };
-        o.color = match (self.no_color, self.color.as_deref()) {
+        o.color = match (self.display.no_color, self.display.color.as_deref()) {
             (true, _) => Choice::Never,
             (_, None) => Choice::Config,
             (_, Some("always" | "true")) => Choice::Always,
@@ -509,7 +541,7 @@ impl PatchFlags {
         if o.word.as_ref().is_some_and(|w| w.mode == Mode::Color) && Self::color_forced() {
             o.color = Choice::Always;
         }
-        if let Some(spec) = &self.ws_error_highlight {
+        if let Some(spec) = &self.display.ws_error_highlight {
             match crate::diff_color::parse_highlight(spec) {
                 Some(bits) => o.ws_highlight = Some(bits),
                 None => {
@@ -517,20 +549,22 @@ impl PatchFlags {
                 }
             }
         }
-        if self.no_prefix && (self.src_prefix.is_some() || self.dst_prefix.is_some()) {
+        if self.compare.no_prefix
+            && (self.compare.src_prefix.is_some() || self.compare.dst_prefix.is_some())
+        {
             crate::usage_error("`--no-prefix` with `--src-prefix` or `--dst-prefix` is not built");
         }
-        if self.no_prefix {
+        if self.compare.no_prefix {
             o.src_prefix.clear();
             o.dst_prefix.clear();
         }
-        if let Some(p) = &self.src_prefix {
+        if let Some(p) = &self.compare.src_prefix {
             o.src_prefix = p.clone();
         }
-        if let Some(p) = &self.dst_prefix {
+        if let Some(p) = &self.compare.dst_prefix {
             o.dst_prefix = p.clone();
         }
-        if self.swap_sides {
+        if self.compare.swap_sides {
             std::mem::swap(&mut o.src_prefix, &mut o.dst_prefix);
         }
         o
