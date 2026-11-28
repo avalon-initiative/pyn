@@ -243,6 +243,36 @@ fn restore_of_an_exclusive_path_needs_the_lock() {
 }
 
 #[test]
+fn restore_takes_revisions_as_listings_print_them_and_updates_the_workspace() {
+    let env = start();
+    env.seed("alice", MAP, "map one", None);
+    env.seed("alice", MAP, "map two", Some(1));
+    let workspaces: [(&str, &[&str]); 2] = [("store", &[]), ("plain", &["--no-local-store"])];
+    for (head, (name, extra)) in (2u64..).zip(workspaces) {
+        let ws = clone_with(&env, name, extra);
+        assert_eq!(
+            env.ok(&ws, "alice", &["get", MAP, "--rev", "r1"]),
+            "map one"
+        );
+        env.ok(&ws, "alice", &["lock", MAP, "--base", &format!("r{head}")]);
+        let (code, _) = refused(&env, &ws, "alice", &["restore", MAP, "rx", "--yes"]);
+        assert_eq!(code, 129);
+
+        env.ok(&ws, "alice", &["restore", MAP, "--source", "r1", "--yes"]);
+        assert_eq!(read(&ws, MAP), "map one", "{name}");
+        let status: serde_json::Value =
+            serde_json::from_str(&env.ok(&ws, "alice", &["--json", "status", MAP])).unwrap();
+        assert_eq!(status["counts"]["behind"], 0, "{name}: {status}");
+        assert_eq!(status["counts"]["modified"], 0, "{name}: {status}");
+        let row = &status["files"][0];
+        assert!(
+            row.is_null() || row["revision"] == head + 1,
+            "{name}: {status}"
+        );
+    }
+}
+
+#[test]
 fn restore_of_a_path_locked_by_another_user_names_the_holder() {
     let (env, ws) = edited_unlocked();
     env.ok(&ws, "bob", &["lock", MAP]);

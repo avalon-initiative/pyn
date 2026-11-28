@@ -894,6 +894,23 @@ fn reset_takes_origin_main_and_leaves_the_merge_recoverable() {
 }
 
 #[test]
+fn reset_hard_to_origin_records_the_revisions_of_the_files_it_writes() {
+    let (env, ws) = seeded();
+    commit_local(&env, &ws, "alice", "Source/a.cpp", "local\n", "local");
+    env.seed("bob", "Content/m.umap", "map2", Some(1));
+    env.ok(&ws, "alice", &["fetch"]);
+
+    env.ok(&ws, "alice", &["reset", "--hard", "--yes", "origin/main"]);
+    assert_eq!(read(&ws, "Content/m.umap"), "map2");
+    assert_eq!(read(&ws, "Source/a.cpp"), "one\ntwo\nthree\n");
+    let status: serde_json::Value =
+        serde_json::from_str(&env.ok(&ws, "alice", &["--json", "status"])).unwrap();
+    assert_eq!(status["counts"]["behind"], 0, "{status}");
+    assert_eq!(status["counts"]["modified"], 0, "{status}");
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
+}
+
+#[test]
 fn show_picks_a_parent_of_a_merge_and_diffs_against_each() {
     let (env, ws) = seeded();
     diverge(&env, &ws);
