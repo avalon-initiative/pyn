@@ -842,6 +842,34 @@ fn a_non_fast_forward_pull_makes_a_merge_commit_and_push_sends_it() {
 }
 
 #[test]
+fn a_pulled_merge_reports_no_merged_path_as_skipped_or_behind() {
+    let (env, ws) = seeded();
+    diverge(&env, &ws);
+    let out = env.ok(&ws, "alice", &["pull"]);
+    assert!(out.contains("Merge made"), "{out}");
+    assert!(!out.lines().any(|l| l.starts_with("skipped ")), "{out}");
+    let status: serde_json::Value =
+        serde_json::from_str(&env.ok(&ws, "alice", &["--json", "status"])).unwrap();
+    assert_eq!(status["counts"]["behind"], 0, "{status}");
+    assert_eq!(status["unpublished_commits"], 3, "{status}");
+    let update = env.ok(&ws, "alice", &["update"]);
+    assert!(
+        !update.lines().any(|l| l.starts_with("skipped ")),
+        "{update}"
+    );
+
+    commit_local(&env, &ws, "alice", "Source/b.cpp", "bee3", "b again");
+    env.seed("bob", "Source/b.cpp", "server bee", Some(1));
+    let update = env.ok(&ws, "alice", &["update"]);
+    assert!(
+        update
+            .lines()
+            .any(|l| l.starts_with("skipped Source/b.cpp")),
+        "{update}"
+    );
+}
+
+#[test]
 fn reset_takes_origin_main_and_leaves_the_merge_recoverable() {
     let (env, ws) = seeded();
     diverge(&env, &ws);
