@@ -117,8 +117,38 @@ struct Cli {
     command: Command,
 }
 
+/// Contiguous groups in `pyn --help` order; each gets its own clap-generated function, which keeps
+/// unoptimized builds within a normal thread's stack.
 #[derive(Subcommand)]
 enum Command {
+    #[command(flatten)]
+    Accounts(Accounts),
+    #[command(flatten)]
+    Branching(Branching),
+    #[command(flatten)]
+    Syncing(Syncing),
+    #[command(flatten)]
+    Workspaces(Workspaces),
+    #[command(flatten)]
+    Inspection(Inspection),
+    #[command(flatten)]
+    Plumbing(Plumbing),
+    #[command(flatten)]
+    Identity(Identity),
+    #[command(flatten)]
+    Locking(Locking),
+    #[command(flatten)]
+    Editing(Editing),
+    #[command(flatten)]
+    History(History),
+    #[command(flatten)]
+    Administration(Administration),
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
+}
+
+#[derive(Subcommand)]
+enum Accounts {
     /// Sign in with a user name and password and remember it for this server.
     Login {
         username: String,
@@ -177,6 +207,10 @@ enum Command {
     /// Create and manage an organization's teams, and grant them roles on its repositories.
     #[command(subcommand)]
     Team(TeamCommand),
+}
+
+#[derive(Subcommand)]
+enum Branching {
     /// List, create, rename or delete branches.
     Branch(branch::BranchArgs),
     /// Switch the workspace to another branch.
@@ -210,6 +244,10 @@ enum Command {
     Reflog(git_home::ReflogArgs),
     /// Track paths with Git LFS, and fetch, pull, push, list and prune its objects (a git repository only).
     Lfs(git_home::LfsArgs),
+}
+
+#[derive(Subcommand)]
+enum Syncing {
     /// Reapply the current branch's commits on top of another base (a git repository only).
     Rebase(git_home::RebaseArgs),
     /// Convert a workspace made before local commits to one that keeps them (a pyn server only).
@@ -229,6 +267,10 @@ enum Command {
     Pull(git_home::PullArgs),
     /// Upload commits and refs to a git remote, or publish local commits to the pyn server.
     Push(git_home::PushArgs),
+}
+
+#[derive(Subcommand)]
+enum Workspaces {
     /// List the references in a remote git repository (ssh or smart HTTP; works anywhere).
     LsRemote(ls_remote::LsRemoteArgs),
     /// Create, verify and unpack git bundle files (works anywhere; creating needs a git repository).
@@ -249,6 +291,10 @@ enum Command {
         #[arg(long)]
         revision: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum Inspection {
     /// Show changes between the workspace and a commit, between two commits, or since the last update.
     Diff {
         /// Up to two commits (`HEAD`, `HEAD~2`, `HEAD^`, a commit hash, or `a1b2c3d4..HEAD`), then paths.
@@ -301,6 +347,10 @@ enum Command {
     ShowRef(git_home::ShowRefArgs),
     /// Choose which tracked files the work tree holds (a git repository only).
     SparseCheckout(git_home::SparseCheckoutArgs),
+}
+
+#[derive(Subcommand)]
+enum Plumbing {
     /// Count loose objects and packs and the space they take (a git repository only).
     CountObjects(git_home::CountObjectsArgs),
     /// Check the connectivity and validity of the objects (a git repository only).
@@ -360,10 +410,12 @@ enum Command {
         #[command(flatten)]
         format: Box<DiffFormat>,
     },
+}
+
+#[derive(Subcommand)]
+enum Identity {
     /// Read and write settings, per workspace or for your user; on a git repository also git's `config` flag forms.
     Config(ConfigArgs),
-    #[command(external_subcommand)]
-    External(Vec<OsString>),
     /// Show who you are signed in as and, in a repository, what you may do there.
     Whoami,
     /// Show the pyn version; with --check, ask the server you are signed in to whether a newer release exists.
@@ -384,6 +436,10 @@ enum Command {
     /// Add accounts to the current repository (needs manage_users).
     #[command(subcommand)]
     User(UserCommand),
+}
+
+#[derive(Subcommand)]
+enum Locking {
     /// List live locks in the repository, or with --mine yours in every repository.
     Locks {
         #[arg(long)]
@@ -408,7 +464,7 @@ enum Command {
     Lock {
         path: String,
         /// Revision your copy is at; by default the workspace's, or the server's head outside a workspace.
-        #[arg(long)]
+        #[arg(long, value_parser = revision_number)]
         base: Option<u64>,
     },
     /// Give up your lock without committing; with --force, remove someone else's (needs force_unlock and a reason).
@@ -426,6 +482,10 @@ enum Command {
         #[arg(required = true)]
         paths: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum Editing {
     /// Stage changes for the next commit: paths, folders or `.`. An exclusive path needs your lock only to publish.
     Add {
         paths: Vec<String>,
@@ -471,7 +531,7 @@ enum Command {
         /// repository it is the commit message file, as `-F`.
         #[arg(long)]
         file: Option<std::path::PathBuf>,
-        #[arg(long)]
+        #[arg(long, value_parser = revision_number)]
         base: Option<u64>,
         /// The commit message; repeat for more paragraphs. A merge in progress has its own.
         #[arg(short, long)]
@@ -483,12 +543,12 @@ enum Command {
         #[arg(short = 'u', long)]
         untracked: bool,
         #[command(flatten)]
-        git: git_home::GitCommitArgs,
+        git: Box<git_home::GitCommitArgs>,
     },
     /// Fetch a file's content at a revision (the head if omitted).
     Get {
         path: String,
-        #[arg(long)]
+        #[arg(long, value_parser = revision_number)]
         rev: Option<u64>,
         /// Write to this file instead of stdout.
         #[arg(short, long)]
@@ -497,6 +557,10 @@ enum Command {
     /// Inspect policy changes before committing them.
     #[command(subcommand)]
     Policy(PolicyCommand),
+}
+
+#[derive(Subcommand)]
+enum History {
     /// Make an older revision the new head (needs the lock and the restore permission, asks for confirmation), or
     /// with --staged take paths out of the staged changes.
     Restore {
@@ -580,6 +644,10 @@ enum Command {
     /// Manage your API tokens.
     #[command(subcommand)]
     Token(TokenCommand),
+}
+
+#[derive(Subcommand)]
+enum Administration {
     /// Run first-run setup on a new server: creates the first administrator and records the essentials.
     Setup {
         /// The first administrator's user name.
@@ -1298,7 +1366,7 @@ fn parse_cli(args: Vec<std::ffi::OsString>) -> Result<Cli, clap::Error> {
     use clap::FromArgMatches;
     let matches = Cli::command().try_get_matches_from(args)?;
     let mut cli = Cli::from_arg_matches(&matches)?;
-    if let Command::Merge(merge) = &mut cli.command
+    if let Command::Branching(Branching::Merge(merge)) = &mut cli.command
         && let Some(("merge", sub)) = matches.subcommand()
     {
         merge.order_message_parts(sub);
@@ -1352,14 +1420,14 @@ fn main() {
         eprintln!("fatal: {e}");
         std::process::exit(128);
     }
-    if let Command::Add {
+    if let Command::Editing(Editing::Add {
         paths,
         update: false,
         all: false,
         patch: false,
         interactive: false,
         ..
-    } = &cli.command
+    }) = &cli.command
         && paths.is_empty()
         && (in_git_home() || in_pyn_workspace())
         && !in_bare_git_home()
@@ -1370,7 +1438,7 @@ fn main() {
         eprintln!("hint: \"git config advice.addEmptyPathspec false\"");
         std::process::exit(0);
     }
-    if let Command::Config(args) = &cli.command
+    if let Command::Identity(Identity::Config(args)) = &cli.command
         && args.cmd.is_none()
         && !args.git.is_empty()
     {
@@ -1383,7 +1451,7 @@ fn main() {
         }
         return;
     }
-    if let Command::Shortlog(args) = &cli.command
+    if let Command::Plumbing(Plumbing::Shortlog(args)) = &cli.command
         && !in_git_home()
         && !in_pyn_workspace()
     {
@@ -1393,13 +1461,13 @@ fn main() {
         }
         return;
     }
-    if let Command::Status(args) = &cli.command
+    if let Command::Workspaces(Workspaces::Status(args)) = &cli.command
         && let Err((code, message)) = args.check_porcelain()
     {
         eprintln!("{message}");
         std::process::exit(code);
     }
-    if let Command::Rm(args) = &cli.command
+    if let Command::Editing(Editing::Rm(args)) = &cli.command
         && args.paths.is_empty()
     {
         eprintln!("fatal: No pathspec was given. Which files should I remove?");
@@ -1449,47 +1517,47 @@ fn main() {
 fn json_supported(command: &Command) -> bool {
     matches!(
         command,
-        Command::Whoami
-            | Command::Version { check: true }
-            | Command::Status(_)
-            | Command::Locks { .. }
-            | Command::Lock { .. }
-            | Command::Unlock { .. }
-            | Command::Files
-            | Command::Ls { .. }
-            | Command::Summary
-            | Command::Admin(admin::AdminCommand::AccessSession(_))
+        Command::Identity(Identity::Whoami)
+            | Command::Identity(Identity::Version { check: true })
+            | Command::Workspaces(Workspaces::Status(_))
+            | Command::Locking(Locking::Locks { .. })
+            | Command::Locking(Locking::Lock { .. })
+            | Command::Locking(Locking::Unlock { .. })
+            | Command::Locking(Locking::Files)
+            | Command::Locking(Locking::Ls { .. })
+            | Command::Locking(Locking::Summary)
+            | Command::Administration(Administration::Admin(admin::AdminCommand::AccessSession(_)))
     )
 }
 
 fn expand_pathspec_files(command: &mut Command) -> Result<()> {
     match command {
-        Command::Add {
+        Command::Editing(Editing::Add {
             paths,
             pathspec_file,
             patch,
             interactive,
             ..
-        } => pathspec_file.expand(
+        }) => pathspec_file.expand(
             paths,
             (*patch || *interactive).then_some("--interactive/--patch"),
         ),
-        Command::Restore {
+        Command::History(History::Restore {
             args,
             pathspec_file,
             patch,
             ..
-        } => {
+        }) => {
             pathspec_file.expand(args, patch.then_some("--patch"))?;
             if pathspec_file.pathspec_from_file.is_some() && args.is_empty() {
                 bail!("you must specify path(s) to restore");
             }
             Ok(())
         }
-        Command::Rm(a) => a.pathspec_file.expand(&mut a.paths, None),
-        Command::Reset(a) => a.expand_pathspec_file(),
-        Command::Checkout(a) => a.expand_pathspec_file(),
-        Command::Stash(a) => a.expand_pathspec_file(),
+        Command::Editing(Editing::Rm(a)) => a.pathspec_file.expand(&mut a.paths, None),
+        Command::Syncing(Syncing::Reset(a)) => a.expand_pathspec_file(),
+        Command::Branching(Branching::Checkout(a)) => a.expand_pathspec_file(),
+        Command::Branching(Branching::Stash(a)) => a.expand_pathspec_file(),
         _ => Ok(()),
     }
 }
@@ -1723,45 +1791,45 @@ fn subcommand_refused_on_git() -> Option<String> {
 fn runs_anywhere(command: &Command) -> bool {
     matches!(
         command,
-        Command::Login { .. }
-            | Command::Logout
-            | Command::Register { .. }
-            | Command::Password { .. }
-            | Command::Account(_)
-            | Command::Key(_)
-            | Command::Profile(_)
-            | Command::Token(_)
-            | Command::User(_)
-            | Command::Org(_)
-            | Command::Invitation(_)
-            | Command::Team(_)
-            | Command::Repo(_)
-            | Command::Watch { .. }
-            | Command::Unwatch { .. }
-            | Command::Watching
-            | Command::Usage { .. }
-            | Command::Setup { .. }
-            | Command::Admin(_)
-            | Command::Whoami
-            | Command::Version { .. }
-            | Command::Member(_)
-            | Command::Role(_)
-            | Command::Invite(_)
-            | Command::LsRemote(_)
-            | Command::Bundle(_)
+        Command::Accounts(Accounts::Login { .. })
+            | Command::Accounts(Accounts::Logout)
+            | Command::Accounts(Accounts::Register { .. })
+            | Command::Accounts(Accounts::Password { .. })
+            | Command::Accounts(Accounts::Account(_))
+            | Command::Identity(Identity::Key(_))
+            | Command::Identity(Identity::Profile(_))
+            | Command::History(History::Token(_))
+            | Command::Identity(Identity::User(_))
+            | Command::Accounts(Accounts::Org(_))
+            | Command::Accounts(Accounts::Invitation(_))
+            | Command::Accounts(Accounts::Team(_))
+            | Command::Accounts(Accounts::Repo(_))
+            | Command::Administration(Administration::Watch { .. })
+            | Command::Administration(Administration::Unwatch { .. })
+            | Command::Administration(Administration::Watching)
+            | Command::Administration(Administration::Usage { .. })
+            | Command::Administration(Administration::Setup { .. })
+            | Command::Administration(Administration::Admin(_))
+            | Command::Identity(Identity::Whoami)
+            | Command::Identity(Identity::Version { .. })
+            | Command::Administration(Administration::Member(_))
+            | Command::Administration(Administration::Role(_))
+            | Command::Identity(Identity::Invite(_))
+            | Command::Workspaces(Workspaces::LsRemote(_))
+            | Command::Workspaces(Workspaces::Bundle(_))
     )
 }
 
 /// Clones from a git remote when the address is one; `None` leaves it to the pyn server clone.
 fn clone_from_git(cli: &Cli, cwd: &std::path::Path) -> Result<Option<()>> {
-    let Command::Clone {
+    let Command::Accounts(Accounts::Clone {
         source,
         dir,
         revision,
         local_store,
         no_local_store,
         git,
-    } = &cli.command
+    }) = &cli.command
     else {
         return Ok(None);
     };
@@ -1798,10 +1866,10 @@ fn run(cli: Cli) -> Result<()> {
     if clone_from_git(&cli, &cwd)?.is_some() {
         return Ok(());
     }
-    if let Command::InitGit(args) = &cli.command {
+    if let Command::Workspaces(Workspaces::InitGit(args)) = &cli.command {
         return git_home::init_git(args, &cwd);
     }
-    if let Command::Convert(args) = &cli.command
+    if let Command::Workspaces(Workspaces::Convert(args)) = &cli.command
         && args.home == Some(git_home::Home::Pyn)
     {
         let remote = init_pyn::Remote {
@@ -1812,7 +1880,7 @@ fn run(cli: Cli) -> Result<()> {
         };
         return git_home::to_pyn(args, &cwd, remote);
     }
-    if let Command::Init(args) = &cli.command {
+    if let Command::Workspaces(Workspaces::Init(args)) = &cli.command {
         let remote = init_pyn::Remote {
             server: cli.server.clone(),
             repo: cli.repo.clone(),
@@ -1821,25 +1889,28 @@ fn run(cli: Cli) -> Result<()> {
         };
         return init_pyn::init(args, &cwd, remote);
     }
-    if let Command::Clone { git, .. } = &cli.command
+    if let Command::Accounts(Accounts::Clone { git, .. }) = &cli.command
         && let Some(flag) = git.first_given()
     {
         usage_error(&format!(
             "`{flag}` applies to a git remote, not a pyn server"
         ));
     }
-    let git = if matches!(cli.command, Command::Clone { .. } | Command::Config(_)) {
+    let git = if matches!(
+        cli.command,
+        Command::Accounts(Accounts::Clone { .. }) | Command::Identity(Identity::Config(_))
+    ) {
         None
     } else {
         git_home::detect(&cwd)?
     };
-    if let Command::LsRemote(args) = &cli.command {
+    if let Command::Workspaces(Workspaces::LsRemote(args)) = &cli.command {
         return ls_remote::run(args, git.as_ref());
     }
-    if let Command::Bundle(args) = cli.command {
+    if let Command::Workspaces(Workspaces::Bundle(args)) = cli.command {
         return git_home::bundle(args, git.as_ref());
     }
-    if let Command::Diff {
+    if let Command::Inspection(Inspection::Diff {
         args,
         paths,
         format,
@@ -1848,7 +1919,7 @@ fn run(cli: Cli) -> Result<()> {
         no_index,
         no_patch,
         ..
-    } = &cli.command
+    }) = &cli.command
         && (*no_index
             || (!cached
                 && git.is_none()
@@ -1860,7 +1931,7 @@ fn run(cli: Cli) -> Result<()> {
         diff::exit_for_diff(no_index::run(&operands, &shown, *quiet, git.as_ref())?);
         return Ok(());
     }
-    if let Command::Commit { git: opts, .. } = &cli.command
+    if let Command::Editing(Editing::Commit { git: opts, .. }) = &cli.command
         && git.is_none()
         && let Some(flag) = opts.first_given()
     {
@@ -1876,9 +1947,9 @@ fn run(cli: Cli) -> Result<()> {
         ));
     }
     if git.is_none()
-        && let Command::Commit {
+        && let Command::Editing(Editing::Commit {
             git: opts, paths, ..
-        } = &cli.command
+        }) = &cli.command
         && !paths.is_empty()
         && let Some(flag) = opts.author_flag()
     {
@@ -1887,37 +1958,37 @@ fn run(cli: Cli) -> Result<()> {
         ));
     }
     if git.is_none()
-        && let Command::Commit { git: opts, .. } = &cli.command
+        && let Command::Editing(Editing::Commit { git: opts, .. }) = &cli.command
         && opts.quiet
     {
         quiet::set();
     }
     let mut cli = cli;
     if git.is_none()
-        && let Command::Commit {
+        && let Command::Editing(Editing::Commit {
             git: opts, message, ..
-        } = &mut cli.command
+        }) = &mut cli.command
         && let Some(text) = opts.server_message(message)?
     {
         *message = vec![text];
     }
     if git.is_none()
-        && let Command::Commit { message, .. } = &cli.command
+        && let Command::Editing(Editing::Commit { message, .. }) = &cli.command
         && !message.is_empty()
         && git_home::editor::edited_message(message.join("\n\n").as_bytes()).is_none()
     {
         eprintln!("Aborting commit due to empty commit message.");
         std::process::exit(1);
     }
-    if let Command::Log { git: opts, .. } = &cli.command
+    if let Command::History(History::Log { git: opts, .. }) = &cli.command
         && git.is_some()
         && let Some(why) = opts.refused()
     {
         usage_error(&format!("`pyn log {why}"));
     }
-    if let Command::Log {
+    if let Command::History(History::Log {
         git: opts, path, ..
-    } = &cli.command
+    }) = &cli.command
         && git.is_none()
         && let Some(flag) = opts.server_unsupported().or_else(|| {
             log_filter::too_many_paths(path.as_deref(), opts, &cwd).then(|| "<path>".to_string())
@@ -1927,7 +1998,7 @@ fn run(cli: Cli) -> Result<()> {
             "`pyn log {flag}` applies to a git repository, not a pyn server"
         ));
     }
-    if let Command::Commit { message, paths, .. } = &cli.command
+    if let Command::Editing(Editing::Commit { message, paths, .. }) = &cli.command
         && message.is_empty()
         && !paths.is_empty()
         && git.is_none()
@@ -1945,7 +2016,7 @@ fn run(cli: Cli) -> Result<()> {
         return git_home::run(cli.command, git, &cwd);
     }
     let on_git = git.is_some();
-    if let Command::Convert(args) = &cli.command {
+    if let Command::Workspaces(Workspaces::Convert(args)) = &cli.command {
         let server_workspace = Workspace::discover(&cwd).is_some();
         if args.home != Some(git_home::Home::Git) || !server_workspace {
             if args.home == Some(git_home::Home::Git) {
@@ -1962,7 +2033,7 @@ fn run(cli: Cli) -> Result<()> {
     }
     let ws = if on_git {
         None
-    } else if matches!(cli.command, Command::Config(_)) {
+    } else if matches!(cli.command, Command::Identity(Identity::Config(_))) {
         match git_home::workspace_at(&cwd)? {
             Some(ws) => Some(ws),
             None => Workspace::discover(&cwd),
@@ -1976,10 +2047,10 @@ fn run(cli: Cli) -> Result<()> {
         Settings::load(&user_config).unwrap_or_default(),
     );
     let source = match &cli.command {
-        Command::Clone { source, .. } => Some(address::parse_source(source)?),
+        Command::Accounts(Accounts::Clone { source, .. }) => Some(address::parse_source(source)?),
         _ => None,
     };
-    let needs_server = !matches!(cli.command, Command::Config(_))
+    let needs_server = !matches!(cli.command, Command::Identity(Identity::Config(_)))
         && source.as_ref().is_none_or(|s| s.server.is_none());
     if needs_server
         && cli.server.is_none()
@@ -2012,12 +2083,14 @@ fn run(cli: Cli) -> Result<()> {
     };
     let base = server.trim_end_matches('/').to_string();
     let token = credentials::token_for(cli.token, &base)?;
-    if matches!(cli.command, Command::Login { .. }) {
+    if matches!(cli.command, Command::Accounts(Accounts::Login { .. })) {
         credentials::warn_cleartext(&base, true);
     } else if token.is_some()
         || matches!(
             cli.command,
-            Command::Setup { .. } | Command::Register { .. } | Command::Password { .. }
+            Command::Administration(Administration::Setup { .. })
+                | Command::Accounts(Accounts::Register { .. })
+                | Command::Accounts(Accounts::Password { .. })
         )
     {
         credentials::warn_cleartext(&base, false);
@@ -2047,7 +2120,7 @@ fn run(cli: Cli) -> Result<()> {
         })
     };
 
-    if let (Command::Commit { paths, .. }, Some(w)) = (&cli.command, &ws)
+    if let (Command::Editing(Editing::Commit { paths, .. }), Some(w)) = (&cli.command, &ws)
         && !paths.is_empty()
         && merging::in_progress(w)
     {
@@ -2059,8 +2132,10 @@ fn run(cli: Cli) -> Result<()> {
 
     if let Some(w) = &ws {
         match &cli.command {
-            Command::Update { .. } => branch::require_published(w, "update")?,
-            Command::Commit { paths, .. } if !paths.is_empty() => {
+            Command::Workspaces(Workspaces::Update { .. }) => {
+                branch::require_published(w, "update")?
+            }
+            Command::Editing(Editing::Commit { paths, .. }) if !paths.is_empty() => {
                 branch::require_published(w, "commit <path>")?
             }
             _ => {}
@@ -2069,17 +2144,25 @@ fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::External(_) => unreachable!("handled before run"),
-        Command::Init(_) => {
+        Command::Workspaces(Workspaces::Init(_)) => {
             unreachable!("handled before the server is consulted")
         }
-        Command::InitGit(_) => unreachable!("handled before the server is consulted"),
-        Command::Convert(args) => git_home::to_git(&backend, in_workspace("convert")?, &args)?,
-        Command::LsRemote(_) => unreachable!("handled before the server is consulted"),
-        Command::Bundle(_) => unreachable!("handled before the server is consulted"),
-        Command::Login {
+        Command::Workspaces(Workspaces::InitGit(_)) => {
+            unreachable!("handled before the server is consulted")
+        }
+        Command::Workspaces(Workspaces::Convert(args)) => {
+            git_home::to_git(&backend, in_workspace("convert")?, &args)?
+        }
+        Command::Workspaces(Workspaces::LsRemote(_)) => {
+            unreachable!("handled before the server is consulted")
+        }
+        Command::Workspaces(Workspaces::Bundle(_)) => {
+            unreachable!("handled before the server is consulted")
+        }
+        Command::Accounts(Accounts::Login {
             username,
             password_stdin,
-        } => {
+        }) => {
             let api = backend.pyn_server("login")?;
             let password = credentials::read_password("Password: ", password_stdin)?;
             let made = two_factor::login(api, &username, &password)?;
@@ -2099,7 +2182,7 @@ fn run(cli: Cli) -> Result<()> {
                 api.base
             );
         }
-        Command::Logout => {
+        Command::Accounts(Accounts::Logout) => {
             let api = backend.pyn_server("logout")?;
             let Some(saved) = credentials::load(&api.base)? else {
                 println!("not signed in on {}", api.base);
@@ -2114,12 +2197,12 @@ fn run(cli: Cli) -> Result<()> {
             credentials::remove(&api.base)?;
             println!("signed out {} from {}", saved.user, api.base);
         }
-        Command::Register {
+        Command::Accounts(Accounts::Register {
             username,
             invite,
             email,
             password_stdin,
-        } => {
+        }) => {
             let api = backend.pyn_server("register")?;
             let password = credentials::read_new_password(password_stdin)?;
             let body = api::RegisterRequest {
@@ -2143,7 +2226,7 @@ fn run(cli: Cli) -> Result<()> {
                 _ => println!("created {username}; sign in with `pyn login {username}`"),
             }
         }
-        Command::Password { password_stdin } => {
+        Command::Accounts(Accounts::Password { password_stdin }) => {
             let api = backend.pyn_server("password")?;
             let current = credentials::read_password("Current password: ", password_stdin)?;
             let new = credentials::read_new_password(password_stdin)?;
@@ -2155,8 +2238,10 @@ fn run(cli: Cli) -> Result<()> {
             println!("password changed");
             report_ended_sign_in(api)?;
         }
-        Command::Account(cmd) => account::run(backend.pyn_server("account")?, cmd)?,
-        Command::Key(KeyCommand::Add { file, title }) => {
+        Command::Accounts(Accounts::Account(cmd)) => {
+            account::run(backend.pyn_server("account")?, cmd)?
+        }
+        Command::Identity(Identity::Key(KeyCommand::Add { file, title })) => {
             let api = backend.pyn_server("key")?;
             let file = file.map_or_else(default_public_key, Ok)?;
             let key = std::fs::read_to_string(&file)
@@ -2170,7 +2255,7 @@ fn run(cli: Cli) -> Result<()> {
                 added.title, added.fingerprint, added.id
             );
         }
-        Command::Key(KeyCommand::List { for_user }) => {
+        Command::Identity(Identity::Key(KeyCommand::List { for_user })) => {
             let api = backend.pyn_server("key")?;
             let mut req = api.get("/v1/keys");
             if let Some(user) = &for_user {
@@ -2190,7 +2275,7 @@ fn run(cli: Cli) -> Result<()> {
                 "no keys",
             );
         }
-        Command::Key(KeyCommand::Remove { id, for_user }) => {
+        Command::Identity(Identity::Key(KeyCommand::Remove { id, for_user })) => {
             let api = backend.pyn_server("key")?;
             let mut req = api.request(Method::DELETE, &format!("/v1/keys/{id}"));
             if let Some(user) = &for_user {
@@ -2199,7 +2284,7 @@ fn run(cli: Cli) -> Result<()> {
             api.send_sensitive(req)?;
             println!("removed {id}");
         }
-        Command::Invite(InviteCommand::Create { role, hours }) => {
+        Command::Identity(Identity::Invite(InviteCommand::Create { role, hours })) => {
             let api = backend.pyn_server("invite")?;
             let body = api::CreateInviteRequest { role, hours };
             let made: api::CreatedInvite = api
@@ -2216,7 +2301,7 @@ fn run(cli: Cli) -> Result<()> {
                 time::local(made.info.expires_at)
             );
         }
-        Command::Invite(InviteCommand::List) => {
+        Command::Identity(Identity::Invite(InviteCommand::List)) => {
             let api = backend.pyn_server("invite")?;
             let invites: Vec<api::InviteInfo> =
                 api.send(api.get(&api.repo_route("/invites")?))?.json()?;
@@ -2235,16 +2320,16 @@ fn run(cli: Cli) -> Result<()> {
                 .collect();
             table::show(&["ID", "ROLE", "EXPIRES", "STATE"], &rows, "no invitations");
         }
-        Command::Invite(InviteCommand::Revoke { id }) => {
+        Command::Identity(Identity::Invite(InviteCommand::Revoke { id })) => {
             let api = backend.pyn_server("invite")?;
             api.send(api.request(Method::DELETE, &api.repo_route(&format!("/invites/{id}"))?))?;
             println!("revoked {id}");
         }
-        Command::User(UserCommand::Add {
+        Command::Identity(Identity::User(UserCommand::Add {
             username,
             role,
             password_stdin,
-        }) => {
+        })) => {
             let api = backend.pyn_server("user")?;
             let password = credentials::read_new_password(password_stdin)?;
             let body = api::AddUserRequest {
@@ -2258,7 +2343,7 @@ fn run(cli: Cli) -> Result<()> {
             )?;
             println!("added {username} as {role}");
         }
-        Command::Whoami => {
+        Command::Identity(Identity::Whoami) => {
             let api = backend.pyn_server("whoami")?;
             if api.repo.is_some() {
                 let me: api::Me = api.send(api.get(&api.repo_route("/me")?))?.json()?;
@@ -2289,12 +2374,18 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Command::Version { check: false } => println!("pyn {}", env!("CARGO_PKG_VERSION")),
-        Command::Version { check: true } => update::check(backend.pyn_server("version")?)?,
-        Command::Repo(cmd) => repo_command(backend.pyn_server("repo")?, cmd)?,
-        Command::Org(cmd) => org_command(backend.pyn_server("org")?, cmd)?,
-        Command::Invitation(cmd) => invitation_command(backend.pyn_server("invitation")?, cmd)?,
-        Command::Setup {
+        Command::Identity(Identity::Version { check: false }) => {
+            println!("pyn {}", env!("CARGO_PKG_VERSION"))
+        }
+        Command::Identity(Identity::Version { check: true }) => {
+            update::check(backend.pyn_server("version")?)?
+        }
+        Command::Accounts(Accounts::Repo(cmd)) => repo_command(backend.pyn_server("repo")?, cmd)?,
+        Command::Accounts(Accounts::Org(cmd)) => org_command(backend.pyn_server("org")?, cmd)?,
+        Command::Accounts(Accounts::Invitation(cmd)) => {
+            invitation_command(backend.pyn_server("invitation")?, cmd)?
+        }
+        Command::Administration(Administration::Setup {
             username,
             setup_token,
             email,
@@ -2302,7 +2393,7 @@ fn run(cli: Cli) -> Result<()> {
             public_url,
             registration,
             password_stdin,
-        } => admin::setup(
+        }) => admin::setup(
             backend.pyn_server("setup")?,
             admin::SetupArgs {
                 username,
@@ -2315,13 +2406,23 @@ fn run(cli: Cli) -> Result<()> {
             },
             interactive(),
         )?,
-        Command::Admin(cmd) => admin::run(backend.pyn_server("admin")?, cmd)?,
-        Command::Watch { name, level } => watch::watch(backend.pyn_server("watch")?, &name, level)?,
-        Command::Unwatch { name } => watch::unwatch(backend.pyn_server("unwatch")?, &name)?,
-        Command::Watching => watch::watching(backend.pyn_server("watching")?)?,
-        Command::Usage { owner } => limits::usage(backend.pyn_server("usage")?, owner)?,
-        Command::Team(cmd) => team_command(backend.pyn_server("team")?, cmd)?,
-        Command::Locks { mine: true, .. } => {
+        Command::Administration(Administration::Admin(cmd)) => {
+            admin::run(backend.pyn_server("admin")?, cmd)?
+        }
+        Command::Administration(Administration::Watch { name, level }) => {
+            watch::watch(backend.pyn_server("watch")?, &name, level)?
+        }
+        Command::Administration(Administration::Unwatch { name }) => {
+            watch::unwatch(backend.pyn_server("unwatch")?, &name)?
+        }
+        Command::Administration(Administration::Watching) => {
+            watch::watching(backend.pyn_server("watching")?)?
+        }
+        Command::Administration(Administration::Usage { owner }) => {
+            limits::usage(backend.pyn_server("usage")?, owner)?
+        }
+        Command::Accounts(Accounts::Team(cmd)) => team_command(backend.pyn_server("team")?, cmd)?,
+        Command::Locking(Locking::Locks { mine: true, .. }) => {
             let api = backend.pyn_server("locks")?;
             let locks: Vec<api::MyLock> = api.send(api.get("/v1/me/locks"))?.json()?;
             if json_out::on() {
@@ -2345,16 +2446,16 @@ fn run(cli: Cli) -> Result<()> {
                 "no locks",
             );
         }
-        Command::Locks {
+        Command::Locking(Locking::Locks {
             watch: true,
             after,
             interval,
             ..
-        } => {
+        }) => {
             let api = backend.pyn_server("locks")?;
             watch_locks(api, after, interval)?;
         }
-        Command::Locks { mine: false, .. } => {
+        Command::Locking(Locking::Locks { mine: false, .. }) => {
             let api = backend.pyn_server("locks")?;
             let locks: Vec<api::Lock> = api.send(api.get(&api.repo_route("/locks")?))?.json()?;
             if json_out::on() {
@@ -2367,9 +2468,9 @@ fn run(cli: Cli) -> Result<()> {
                 .collect();
             table::show(&["OWNER", "EXPIRES", "PATH"], &rows, "no locks");
         }
-        Command::Files => files_command(&backend)?,
-        Command::Ls { path } => ls_command(&backend, path.as_deref())?,
-        Command::Summary => {
+        Command::Locking(Locking::Files) => files_command(&backend)?,
+        Command::Locking(Locking::Ls { path }) => ls_command(&backend, path.as_deref())?,
+        Command::Locking(Locking::Summary) => {
             let api = backend.pyn_server("summary")?;
             let s: api::RepoSummary = api.send(api.get(&api.repo_route("/summary")?))?.json()?;
             if json_out::on() {
@@ -2409,13 +2510,13 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
         }
-        Command::Clone {
+        Command::Accounts(Accounts::Clone {
             dir,
             revision,
             local_store,
             no_local_store,
             ..
-        } => {
+        }) => {
             let repo = repo_name.expect("clone names a repository");
             let dir = dir.unwrap_or_else(|| {
                 address::split_repo(&repo)
@@ -2441,7 +2542,7 @@ fn run(cli: Cli) -> Result<()> {
                 local_store,
             )?;
         }
-        Command::Fetch(args) => {
+        Command::Syncing(Syncing::Fetch(args)) => {
             require_bare(&args, "fetch");
             let w = in_workspace("fetch")?;
             if w.settings().local_store_on() {
@@ -2450,7 +2551,7 @@ fn run(cli: Cli) -> Result<()> {
                 update_as_remote(&backend, w, ws.as_ref())?;
             }
         }
-        Command::Pull(mut args) => {
+        Command::Syncing(Syncing::Pull(mut args)) => {
             let local = ws.as_ref().is_some_and(|w| w.settings().local_store_on());
             let rebase = local && args.take_rebase();
             let control = args.take_control();
@@ -2464,7 +2565,7 @@ fn run(cli: Cli) -> Result<()> {
                 update_as_remote(&backend, w, ws.as_ref())?;
             }
         }
-        Command::Push(mut args) => {
+        Command::Syncing(Syncing::Push(mut args)) => {
             let request = args.take_server();
             require_bare(&args, "push");
             match ws.as_ref().filter(|w| w.settings().local_store_on()) {
@@ -2488,84 +2589,84 @@ fn run(cli: Cli) -> Result<()> {
                 ),
             }
         }
-        Command::Migrate => migrate::run(&backend, in_workspace("migrate")?)?,
-        Command::Reset(args) => {
+        Command::Syncing(Syncing::Migrate) => migrate::run(&backend, in_workspace("migrate")?)?,
+        Command::Syncing(Syncing::Reset(args)) => {
             local_reset::reset(&backend, in_workspace("reset")?, args)?;
         }
-        Command::CherryPick(args) => {
+        Command::Syncing(Syncing::CherryPick(args)) => {
             local_pick::pick(&backend, in_workspace("cherry-pick")?, args)?;
         }
-        Command::Revert(args) => {
+        Command::Syncing(Syncing::Revert(args)) => {
             local_pick::revert(&backend, in_workspace("revert")?, args)?;
         }
-        Command::Tag(args) => local_tags::run(&backend, ws.as_ref(), args)?,
-        Command::Stash(_) => {
+        Command::Branching(Branching::Tag(args)) => local_tags::run(&backend, ws.as_ref(), args)?,
+        Command::Branching(Branching::Stash(_)) => {
             eprintln!("{}", unsupported::message("stash"));
             std::process::exit(1);
         }
-        Command::Worktree(_) => {
+        Command::Branching(Branching::Worktree(_)) => {
             eprintln!("{}", unsupported::message("worktree"));
             std::process::exit(1);
         }
-        Command::Submodule(_) => {
+        Command::Branching(Branching::Submodule(_)) => {
             eprintln!("{}", unsupported::message("submodule"));
             std::process::exit(1);
         }
-        Command::Clean(_) => {
+        Command::Branching(Branching::Clean(_)) => {
             eprintln!("{}", unsupported::message("clean"));
             std::process::exit(1);
         }
-        Command::Grep(_) => {
+        Command::Branching(Branching::Grep(_)) => {
             eprintln!("{}", unsupported::message("grep"));
             std::process::exit(1);
         }
-        Command::Blame(_) => {
+        Command::Branching(Branching::Blame(_)) => {
             eprintln!("{}", unsupported::message("blame"));
             std::process::exit(1);
         }
-        Command::Annotate(_) => {
+        Command::Branching(Branching::Annotate(_)) => {
             eprintln!("{}", unsupported::message("annotate"));
             std::process::exit(1);
         }
-        Command::Reflog(_) => {
+        Command::Branching(Branching::Reflog(_)) => {
             eprintln!("{}", unsupported::message("reflog"));
             std::process::exit(1);
         }
-        Command::Lfs(_) => {
+        Command::Branching(Branching::Lfs(_)) => {
             eprintln!("{}", unsupported::message("lfs"));
             std::process::exit(1);
         }
-        Command::RevParse(_)
-        | Command::CheckAttr(_)
-        | Command::LsFiles(_)
-        | Command::LsTree(_)
-        | Command::CatFile(_)
-        | Command::VerifyCommit(_)
-        | Command::VerifyTag(_)
-        | Command::ShowRef(_)
-        | Command::SparseCheckout(_)
-        | Command::CountObjects(_)
-        | Command::Fsck(_)
-        | Command::Prune(_)
-        | Command::Gc(_)
-        | Command::PackRefs(_)
-        | Command::PrunePacked(_)
-        | Command::PackObjects(_)
-        | Command::UnpackObjects(_)
-        | Command::Maintenance(_)
-        | Command::Repack(_)
-        | Command::Shortlog(_)
-        | Command::CheckMailmap(_)
-        | Command::Describe(_)
-        | Command::NameRev(_)
-        | Command::Bisect(_)
-        | Command::FormatPatch(_)
-        | Command::Apply(_)
-        | Command::Am(_) => {
+        Command::Inspection(Inspection::RevParse(_))
+        | Command::Inspection(Inspection::CheckAttr(_))
+        | Command::Inspection(Inspection::LsFiles(_))
+        | Command::Inspection(Inspection::LsTree(_))
+        | Command::Inspection(Inspection::CatFile(_))
+        | Command::Inspection(Inspection::VerifyCommit(_))
+        | Command::Inspection(Inspection::VerifyTag(_))
+        | Command::Inspection(Inspection::ShowRef(_))
+        | Command::Inspection(Inspection::SparseCheckout(_))
+        | Command::Plumbing(Plumbing::CountObjects(_))
+        | Command::Plumbing(Plumbing::Fsck(_))
+        | Command::Plumbing(Plumbing::Prune(_))
+        | Command::Plumbing(Plumbing::Gc(_))
+        | Command::Plumbing(Plumbing::PackRefs(_))
+        | Command::Plumbing(Plumbing::PrunePacked(_))
+        | Command::Plumbing(Plumbing::PackObjects(_))
+        | Command::Plumbing(Plumbing::UnpackObjects(_))
+        | Command::Plumbing(Plumbing::Maintenance(_))
+        | Command::Plumbing(Plumbing::Repack(_))
+        | Command::Plumbing(Plumbing::Shortlog(_))
+        | Command::Plumbing(Plumbing::CheckMailmap(_))
+        | Command::Plumbing(Plumbing::Describe(_))
+        | Command::Plumbing(Plumbing::NameRev(_))
+        | Command::Branching(Branching::Bisect(_))
+        | Command::Plumbing(Plumbing::FormatPatch(_))
+        | Command::Plumbing(Plumbing::Apply(_))
+        | Command::Plumbing(Plumbing::Am(_)) => {
             eprintln!("fatal: not a git repository (or any of the parent directories): .git");
             std::process::exit(128);
         }
-        Command::Rebase(args) => {
+        Command::Syncing(Syncing::Rebase(args)) => {
             if ws.as_ref().is_some_and(|w| w.settings().local_store_on()) {
                 local_rebase::rebase(&backend, in_workspace("rebase")?, &args)?;
             } else {
@@ -2573,17 +2674,23 @@ fn run(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Remote(args) => {
+        Command::Syncing(Syncing::Remote(args)) => {
             git_home::remote_on_server(&args, &server_url, repo_name.as_deref())?
         }
-        Command::Merge(args) => merging::merge_command(&backend, ws.as_ref(), args)?,
-        Command::Pr(cmd) => pr::pr_command(&backend, cmd)?,
-        Command::Branch(args) => branch::branch_command(&backend, ws.as_ref(), args)?,
-        Command::Switch(args) => branch::switch_command(&backend, ws.as_ref(), args)?,
-        Command::Checkout(args) => {
+        Command::Branching(Branching::Merge(args)) => {
+            merging::merge_command(&backend, ws.as_ref(), args)?
+        }
+        Command::Branching(Branching::Pr(cmd)) => pr::pr_command(&backend, cmd)?,
+        Command::Branching(Branching::Branch(args)) => {
+            branch::branch_command(&backend, ws.as_ref(), args)?
+        }
+        Command::Branching(Branching::Switch(args)) => {
+            branch::switch_command(&backend, ws.as_ref(), args)?
+        }
+        Command::Branching(Branching::Checkout(args)) => {
             branch::checkout_command(&backend, ws.as_ref(), &cwd, args, &rp)?
         }
-        Command::Status(args) => {
+        Command::Workspaces(Workspaces::Status(args)) => {
             if args.ignore_submodules.is_some() {
                 usage_error("`pyn status --ignore-submodules` needs a git repository");
             }
@@ -2619,7 +2726,7 @@ fn run(cli: Cli) -> Result<()> {
                 },
             )?
         }
-        Command::Update { paths, revision } => {
+        Command::Workspaces(Workspaces::Update { paths, revision }) => {
             let only = paths.iter().map(|p| rp(p)).collect::<Result<Vec<_>>>()?;
             if let Some(w) = &ws {
                 merging::refuse_during_merge(w, "update")?;
@@ -2629,7 +2736,7 @@ fn run(cli: Cli) -> Result<()> {
                 .transpose()?;
             sync::update(&backend, in_workspace("update")?, &only, commit.as_deref())?;
         }
-        Command::Diff {
+        Command::Inspection(Inspection::Diff {
             args,
             paths,
             format,
@@ -2639,7 +2746,7 @@ fn run(cli: Cli) -> Result<()> {
             no_patch,
             ignore_submodules,
             ..
-        } => {
+        }) => {
             if ignore_submodules.is_some() {
                 usage_error("`pyn diff --ignore-submodules` needs a git repository");
             }
@@ -2661,7 +2768,7 @@ fn run(cli: Cli) -> Result<()> {
             )?;
             diff::exit_for_diff(differs && (exit_code || quiet));
         }
-        Command::Show {
+        Command::Plumbing(Plumbing::Show {
             args,
             paths,
             no_patch,
@@ -2671,7 +2778,7 @@ fn run(cli: Cli) -> Result<()> {
             format,
             first_parent,
             merges,
-        } => {
+        }) => {
             if show_signature {
                 usage_error("`pyn show --show-signature` needs a git repository");
             }
@@ -2697,10 +2804,10 @@ fn run(cli: Cli) -> Result<()> {
             };
             show_command(&backend, ws.as_ref(), commit.map(String::as_str), &shown)?
         }
-        Command::Policy(PolicyCommand::Lint { .. }) => {
+        Command::Editing(Editing::Policy(PolicyCommand::Lint { .. })) => {
             bail!("`pyn policy lint` checks a git repository's `.gitattributes`; this is not one")
         }
-        Command::Policy(PolicyCommand::Preview { file }) => {
+        Command::Editing(Editing::Policy(PolicyCommand::Preview { file })) => {
             let api = backend.pyn_server("policy")?;
             let content = std::fs::read_to_string(&file)
                 .with_context(|| format!("reading {}", file.display()))?;
@@ -2732,13 +2839,13 @@ fn run(cli: Cli) -> Result<()> {
                 &found.stranded,
             );
         }
-        Command::Config(args) => match args.cmd {
+        Command::Identity(Identity::Config(args)) => match args.cmd {
             Some(cmd) => config_command(cmd, ws.as_ref(), &mine, &yours, &user_config)?,
             None => {
                 usage_error("`pyn config` needs a subcommand (list, get, set, init) or a git flag")
             }
         },
-        Command::Lock { path, base } => {
+        Command::Locking(Locking::Lock { path, base }) => {
             let api = backend.pyn_server("lock")?;
             let path = rp(&path)?;
             let known = ws
@@ -2778,7 +2885,7 @@ fn run(cli: Cli) -> Result<()> {
                 println!("locked {} until {}", l.path, time::local(l.expires_at));
             }
         }
-        Command::Edit { paths } => {
+        Command::Locking(Locking::Edit { paths }) => {
             let w = in_workspace("edit")?;
             let paths = paths
                 .iter()
@@ -2786,29 +2893,29 @@ fn run(cli: Cli) -> Result<()> {
                 .collect::<Result<Vec<_>>>()?;
             sync::edit(w, &paths)?;
         }
-        Command::Add { patch: true, .. } => {
+        Command::Editing(Editing::Add { patch: true, .. }) => {
             usage_error("`add --patch` needs a git repository; a pyn server stages whole files")
         }
-        Command::Add {
+        Command::Editing(Editing::Add {
             interactive: true, ..
-        } => usage_error(
+        }) => usage_error(
             "`add --interactive` needs a git repository; a pyn server stages whole files",
         ),
-        Command::Add {
+        Command::Editing(Editing::Add {
             intent_to_add: true,
             ..
-        } => usage_error("`add --intent-to-add` needs a git repository"),
-        Command::Add {
+        }) => usage_error("`add --intent-to-add` needs a git repository"),
+        Command::Editing(Editing::Add {
             renormalize: true, ..
-        } => usage_error("`add --renormalize` needs a git repository"),
-        Command::Add {
+        }) => usage_error("`add --renormalize` needs a git repository"),
+        Command::Editing(Editing::Add {
             paths,
             update,
             dry_run,
             verbose,
             force,
             ..
-        } => {
+        }) => {
             let args = staging::AddArgs {
                 paths,
                 update,
@@ -2821,9 +2928,13 @@ fn run(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Rm(args) => rm_mv::rm(&backend, in_workspace("rm")?, &cwd, &args)?,
-        Command::Mv(args) => rm_mv::mv(&backend, in_workspace("mv")?, &cwd, &args)?,
-        Command::Commit {
+        Command::Editing(Editing::Rm(args)) => {
+            rm_mv::rm(&backend, in_workspace("rm")?, &cwd, &args)?
+        }
+        Command::Editing(Editing::Mv(args)) => {
+            rm_mv::mv(&backend, in_workspace("mv")?, &cwd, &args)?
+        }
+        Command::Editing(Editing::Commit {
             paths,
             file,
             base,
@@ -2831,7 +2942,7 @@ fn run(cli: Cli) -> Result<()> {
             all,
             untracked,
             git: flags,
-        } if paths.is_empty() => {
+        }) if paths.is_empty() => {
             if file.is_some() || base.is_some() {
                 bail!("--file and --base need a path");
             }
@@ -2852,16 +2963,16 @@ fn run(cli: Cli) -> Result<()> {
                 staging::commit(&backend, w, message.as_deref(), (all, untracked), &flags)?;
             }
         }
-        Command::Commit { all, untracked, .. } if all || untracked => {
+        Command::Editing(Editing::Commit { all, untracked, .. }) if all || untracked => {
             bail!("`commit -a` and `-u` stage what changed; name no paths with them")
         }
-        Command::Commit {
+        Command::Editing(Editing::Commit {
             paths,
             file,
             base,
             message,
             ..
-        } if paths.len() > 1 => {
+        }) if paths.len() > 1 => {
             if file.is_some() || base.is_some() {
                 bail!("--file and --base need a single path");
             }
@@ -2900,13 +3011,13 @@ fn run(cli: Cli) -> Result<()> {
             }
             staging::Index::forget(w, &done)?;
         }
-        Command::Commit {
+        Command::Editing(Editing::Commit {
             paths,
             file,
             base,
             message,
             ..
-        } => {
+        }) => {
             let message = message.join("\n\n");
             let path = rp(&paths[0])?;
             let explicit_file = file.is_some();
@@ -2955,7 +3066,7 @@ fn run(cli: Cli) -> Result<()> {
                 &r.stranded,
             );
         }
-        Command::Get { path, rev, output } => {
+        Command::Editing(Editing::Get { path, rev, output }) => {
             let path = rp(&path)?;
             match output {
                 Some(file) => {
@@ -2969,13 +3080,13 @@ fn run(cli: Cli) -> Result<()> {
                 None => backend.read(&path, rev, &mut closed_pipe::stdout())?,
             }
         }
-        Command::Log {
+        Command::History(History::Log {
             path,
             filter,
             commits,
             limit,
             git: log_args,
-        } if commits
+        }) if commits
             || log_args.format().first_given().is_some()
             || log_args.diff_given()
             || log_filter::selects(path.as_deref(), &log_args, &cwd, false) =>
@@ -3043,13 +3154,13 @@ fn run(cli: Cli) -> Result<()> {
                 "no commits",
             );
         }
-        Command::Log {
+        Command::History(History::Log {
             path,
             filter,
             limit,
             git: log_args,
             ..
-        } => {
+        }) => {
             branch::note_branch(ws.as_ref());
             let path = path.or_else(|| log_args.sole_dashed().map(str::to_string));
             let path = path.map(|p| rp(&p)).transpose()?;
@@ -3104,30 +3215,30 @@ fn run(cli: Cli) -> Result<()> {
             };
             table::show_notes(header, &rows, "no history");
         }
-        Command::Verify { path, verbose } => {
+        Command::History(History::Verify { path, verbose }) => {
             let api = backend.pyn_server("verify")?;
             let path = path.map(|p| rp(&p)).transpose()?;
             if !verify::run(api, path.as_deref(), verbose)? {
                 std::process::exit(1);
             }
         }
-        Command::Restore { patch: true, .. } => usage_error(
+        Command::History(History::Restore { patch: true, .. }) => usage_error(
             "`restore --patch` needs a git repository; a pyn server restores whole files",
         ),
-        Command::Restore { ours: true, .. }
-        | Command::Restore { theirs: true, .. }
-        | Command::Restore { merge: true, .. } => usage_error(
+        Command::History(History::Restore { ours: true, .. })
+        | Command::History(History::Restore { theirs: true, .. })
+        | Command::History(History::Restore { merge: true, .. }) => usage_error(
             "`restore --ours`, `--theirs` and `--merge` need a git repository; a pyn server has no merge to take a side of",
         ),
-        Command::Restore { worktree: true, .. } => usage_error(
+        Command::History(History::Restore { worktree: true, .. }) => usage_error(
             "`restore --worktree` needs a git repository; on a pyn server a restore makes an older revision the new head",
         ),
-        Command::Restore {
+        Command::History(History::Restore {
             args,
             source,
             staged: true,
             ..
-        } => {
+        }) => {
             if source.is_some() {
                 usage_error(
                     "`restore --staged --source` needs a git repository; a pyn server has no commit to restore the index from",
@@ -3135,19 +3246,26 @@ fn run(cli: Cli) -> Result<()> {
             }
             staging::unstage(in_workspace("restore --staged")?, &cwd, &args)?;
         }
-        Command::Restore {
+        Command::History(History::Restore {
             args,
             source,
             message,
             yes,
             ..
-        } => {
+        }) => {
             let (path, revision) = restore_target(&args, source.as_deref());
-            restore(&backend, rp(&path)?, revision, message, yes)?
+            let path = rp(&path)?;
+            restore(&backend, path.clone(), revision, message, yes)?;
+            if let Some(w) = &ws
+                && !merging::in_progress(w)
+                && branch::require_published(w, "restore").is_ok()
+            {
+                sync::update(&backend, w, &[path], None)?;
+            }
         }
-        Command::Unlock {
+        Command::Locking(Locking::Unlock {
             path, force: false, ..
-        } => {
+        }) => {
             let api = backend.pyn_server("unlock")?;
             let path = rp(&path)?;
             let body = api::ReleaseRequest { path: path.clone() };
@@ -3164,11 +3282,11 @@ fn run(cli: Cli) -> Result<()> {
                 println!("unlocked {path}");
             }
         }
-        Command::Unlock {
+        Command::Locking(Locking::Unlock {
             path,
             reason: Some(reason),
             ..
-        } => {
+        }) => {
             let api = backend.pyn_server("unlock")?;
             let path = rp(&path)?;
             let body = api::ForceUnlockRequest {
@@ -3187,14 +3305,16 @@ fn run(cli: Cli) -> Result<()> {
                 println!("removed {}'s lock on {path}", lock.owner);
             }
         }
-        Command::Unlock { .. } => unreachable!("clap requires a reason with --force"),
-        Command::Audit {
+        Command::Locking(Locking::Unlock { .. }) => {
+            unreachable!("clap requires a reason with --force")
+        }
+        Command::History(History::Audit {
             path,
             actor,
             action,
             before,
             limit,
-        } => {
+        }) => {
             let api = backend.pyn_server("audit")?;
             let path = path.map(|p| rp(&p)).transpose()?;
             let mut req = api
@@ -3232,9 +3352,11 @@ fn run(cli: Cli) -> Result<()> {
                 eprintln!("more: --before {next}");
             }
         }
-        Command::Profile(cmd) => profile::run(backend.pyn_server("profile")?, cmd)?,
-        Command::Token(cmd) => token_command(backend.pyn_server("token")?, cmd)?,
-        Command::Member(MemberCommand::List) => {
+        Command::Identity(Identity::Profile(cmd)) => {
+            profile::run(backend.pyn_server("profile")?, cmd)?
+        }
+        Command::History(History::Token(cmd)) => token_command(backend.pyn_server("token")?, cmd)?,
+        Command::Administration(Administration::Member(MemberCommand::List)) => {
             let api = backend.pyn_server("member")?;
             let members: Vec<api::Member> =
                 api.send(api.get(&api.repo_route("/members")?))?.json()?;
@@ -3244,7 +3366,7 @@ fn run(cli: Cli) -> Result<()> {
                 .collect();
             table::show(&["ROLE", "SOURCE", "USER"], &rows, "no members");
         }
-        Command::Member(MemberCommand::Set { user, role }) => {
+        Command::Administration(Administration::Member(MemberCommand::Set { user, role })) => {
             let api = backend.pyn_server("member")?;
             let body = api::SetMemberRequest { role: role.clone() };
             api.send(
@@ -3253,7 +3375,7 @@ fn run(cli: Cli) -> Result<()> {
             )?;
             println!("{user} is now {role}");
         }
-        Command::Role(RoleCommand::List) => {
+        Command::Administration(Administration::Role(RoleCommand::List)) => {
             let api = backend.pyn_server("role")?;
             let grants: Vec<api::RoleGrant> =
                 api.send(api.get(&api.repo_route("/roles")?))?.json()?;
@@ -3263,7 +3385,7 @@ fn run(cli: Cli) -> Result<()> {
                 .collect();
             table::show(&["ROLE", "PERMISSIONS"], &rows, "no roles");
         }
-        Command::Role(RoleCommand::Set { role, permissions }) => {
+        Command::Administration(Administration::Role(RoleCommand::Set { role, permissions })) => {
             let api = backend.pyn_server("role")?;
             let body = api::SetRoleRequest { permissions };
             api.send(
@@ -3653,9 +3775,9 @@ fn require_bare<T: std::fmt::Debug>(given: &T, name: &str) {
     let bare = Cli::try_parse_from(["pyn", name])
         .ok()
         .map(|c| match c.command {
-            Command::Fetch(a) => format!("{a:?}"),
-            Command::Pull(a) => format!("{a:?}"),
-            Command::Push(a) => format!("{a:?}"),
+            Command::Syncing(Syncing::Fetch(a)) => format!("{a:?}"),
+            Command::Syncing(Syncing::Pull(a)) => format!("{a:?}"),
+            Command::Syncing(Syncing::Push(a)) => format!("{a:?}"),
             _ => String::new(),
         });
     if bare.as_deref() != Some(&format!("{given:?}")) {
@@ -3679,12 +3801,18 @@ fn usage_error(message: &str) -> ! {
     std::process::exit(129);
 }
 
+/// A file revision as listings print it, `r3`, or as the bare number.
+fn revision_number(text: &str) -> std::result::Result<u64, String> {
+    text.strip_prefix('r')
+        .unwrap_or(text)
+        .parse()
+        .map_err(|_| format!("'{text}' is not a revision: use r<N> or <N>"))
+}
+
 /// The path and the older revision a `restore` names, as `<path> <revision>` or `<path> --source <revision>`.
 fn restore_target(args: &[String], source: Option<&str>) -> (String, u64) {
-    let revision = |text: &str| -> u64 {
-        text.parse()
-            .unwrap_or_else(|_| usage_error(&format!("'{text}' is not a revision number")))
-    };
+    let revision =
+        |text: &str| -> u64 { revision_number(text).unwrap_or_else(|e| usage_error(&e)) };
     match (args, source) {
         ([path], Some(source)) => (path.clone(), revision(source)),
         ([path, rev], None) => (path.clone(), revision(rev)),

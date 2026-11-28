@@ -842,6 +842,34 @@ fn a_non_fast_forward_pull_makes_a_merge_commit_and_push_sends_it() {
 }
 
 #[test]
+fn a_pulled_merge_reports_no_merged_path_as_skipped_or_behind() {
+    let (env, ws) = seeded();
+    diverge(&env, &ws);
+    let out = env.ok(&ws, "alice", &["pull"]);
+    assert!(out.contains("Merge made"), "{out}");
+    assert!(!out.lines().any(|l| l.starts_with("skipped ")), "{out}");
+    let status: serde_json::Value =
+        serde_json::from_str(&env.ok(&ws, "alice", &["--json", "status"])).unwrap();
+    assert_eq!(status["counts"]["behind"], 0, "{status}");
+    assert_eq!(status["unpublished_commits"], 3, "{status}");
+    let update = env.ok(&ws, "alice", &["update"]);
+    assert!(
+        !update.lines().any(|l| l.starts_with("skipped ")),
+        "{update}"
+    );
+
+    commit_local(&env, &ws, "alice", "Source/b.cpp", "bee3", "b again");
+    env.seed("bob", "Source/b.cpp", "server bee", Some(1));
+    let update = env.ok(&ws, "alice", &["update"]);
+    assert!(
+        update
+            .lines()
+            .any(|l| l.starts_with("skipped Source/b.cpp")),
+        "{update}"
+    );
+}
+
+#[test]
 fn reset_takes_origin_main_and_leaves_the_merge_recoverable() {
     let (env, ws) = seeded();
     diverge(&env, &ws);
@@ -863,6 +891,23 @@ fn reset_takes_origin_main_and_leaves_the_merge_recoverable() {
     assert_eq!(git(&ws, &["cat-file", "-t", merge.trim()]), "commit\n");
     let status = env.ok(&ws, "alice", &["status"]);
     assert!(!status.contains("local commit"), "{status}");
+}
+
+#[test]
+fn reset_hard_to_origin_records_the_revisions_of_the_files_it_writes() {
+    let (env, ws) = seeded();
+    commit_local(&env, &ws, "alice", "Source/a.cpp", "local\n", "local");
+    env.seed("bob", "Content/m.umap", "map2", Some(1));
+    env.ok(&ws, "alice", &["fetch"]);
+
+    env.ok(&ws, "alice", &["reset", "--hard", "--yes", "origin/main"]);
+    assert_eq!(read(&ws, "Content/m.umap"), "map2");
+    assert_eq!(read(&ws, "Source/a.cpp"), "one\ntwo\nthree\n");
+    let status: serde_json::Value =
+        serde_json::from_str(&env.ok(&ws, "alice", &["--json", "status"])).unwrap();
+    assert_eq!(status["counts"]["behind"], 0, "{status}");
+    assert_eq!(status["counts"]["modified"], 0, "{status}");
+    env.ok(&ws, "alice", &["lock", "Content/m.umap"]);
 }
 
 #[test]

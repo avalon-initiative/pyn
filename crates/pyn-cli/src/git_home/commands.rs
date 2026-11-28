@@ -22,7 +22,10 @@ use crate::commit_format::{Context, FormatArgs, Pretty, Rendering, render};
 use crate::diff::{self, Blob, Source, Tree};
 use crate::rename;
 use crate::short_status::{self, Format, Row, StatusArgs};
-use crate::{Command, PolicyCommand, table, unsupported};
+use crate::{
+    Accounts, Administration, Branching, Command, Editing, History, Identity, Inspection, Locking,
+    Plumbing, PolicyCommand, Syncing, Workspaces, table, unsupported,
+};
 
 const EXCLUDE_LINE: &str = ".pyn/";
 
@@ -42,7 +45,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
         git.need_work_tree()?;
     }
     match command {
-        Command::Status(args) => {
+        Command::Workspaces(Workspaces::Status(args)) => {
             if args.revision.is_some() {
                 bail!(
                     "`pyn status --revision` compares with a pyn commit; a git repository has none"
@@ -50,7 +53,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             status(git, cwd, &args)
         }
-        Command::Diff {
+        Command::Inspection(Inspection::Diff {
             args,
             paths,
             format,
@@ -60,7 +63,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             no_patch,
             ignore_submodules,
             ..
-        } => {
+        }) => {
             if let Some(when) = &ignore_submodules {
                 git.repo.force_submodule_ignore(when)?;
             }
@@ -69,7 +72,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             diff::exit_for_diff(differs && (exit_code || quiet));
             Ok(())
         }
-        Command::Show {
+        Command::Plumbing(Plumbing::Show {
             args,
             paths,
             no_patch,
@@ -79,7 +82,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             format,
             first_parent,
             merges,
-        } => show(
+        }) => show(
             git,
             cwd,
             (&args, &paths),
@@ -87,13 +90,13 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             (&fmt, &decorate),
             &format.format(),
         ),
-        Command::Log {
+        Command::History(History::Log {
             path,
             filter,
             limit,
             commits,
             git: args,
-        } => {
+        }) => {
             if filter.is_some() {
                 bail!(
                     "`pyn log --filter` is not available on a git repository; name a path instead"
@@ -111,103 +114,133 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             super::log::log(git, cwd, path, limit, *args)
         }
-        Command::Bundle(_) => unreachable!("handled before a repository is detected"),
-        Command::Convert(_) => init(git),
-        Command::Init(_) => unreachable!("handled before a repository is detected"),
-        Command::InitGit(_) => unreachable!("handled before a repository is detected"),
-        Command::Files => crate::files_command(git),
-        Command::Ls { path } => crate::ls_command(git, path.as_deref()),
-        Command::Merge(args) => {
+        Command::Workspaces(Workspaces::Bundle(_)) => {
+            unreachable!("handled before a repository is detected")
+        }
+        Command::Workspaces(Workspaces::Convert(_)) => init(git),
+        Command::Workspaces(Workspaces::Init(_)) => {
+            unreachable!("handled before a repository is detected")
+        }
+        Command::Workspaces(Workspaces::InitGit(_)) => {
+            unreachable!("handled before a repository is detected")
+        }
+        Command::Locking(Locking::Files) => crate::files_command(git),
+        Command::Locking(Locking::Ls { path }) => crate::ls_command(git, path.as_deref()),
+        Command::Branching(Branching::Merge(args)) => {
             super::merge::merge(git, args)?;
             super::gc::auto(git);
             Ok(())
         }
-        Command::Branch(args) => super::branches::branch(git, args),
-        Command::Switch(args) => super::switch::switch(git, args),
-        Command::Checkout(args) => super::switch::checkout(git, cwd, args),
-        Command::Tag(args) => super::tags::tag(git, args),
-        Command::Stash(args) => super::stash::stash(git, cwd, args),
-        Command::Worktree(args) => super::worktrees::worktree(git, cwd, args),
-        Command::Submodule(args) => super::submodule::submodule(git, cwd, args),
-        Command::Clean(args) => {
+        Command::Branching(Branching::Branch(args)) => super::branches::branch(git, args),
+        Command::Branching(Branching::Switch(args)) => super::switch::switch(git, args),
+        Command::Branching(Branching::Checkout(args)) => super::switch::checkout(git, cwd, args),
+        Command::Branching(Branching::Tag(args)) => super::tags::tag(git, args),
+        Command::Branching(Branching::Stash(args)) => super::stash::stash(git, cwd, args),
+        Command::Branching(Branching::Worktree(args)) => super::worktrees::worktree(git, cwd, args),
+        Command::Branching(Branching::Submodule(args)) => {
+            super::submodule::submodule(git, cwd, args)
+        }
+        Command::Branching(Branching::Clean(args)) => {
             if super::clean::clean(git, cwd, &args)? {
                 std::process::exit(1);
             }
             Ok(())
         }
-        Command::Grep(_) => {
+        Command::Branching(Branching::Grep(_)) => {
             if !super::grep::grep(git, cwd)? {
                 std::process::exit(1);
             }
             Ok(())
         }
-        Command::Bisect(args) => super::bisect::bisect(git, cwd, args),
-        Command::Blame(args) => super::blame::blame(git, cwd, args, false),
-        Command::Annotate(args) => super::blame::blame(git, cwd, args, true),
-        Command::Reflog(args) => super::reflog::reflog(git, args),
-        Command::Lfs(args) => super::lfs_cmd::lfs(git, args),
-        Command::RevParse(args) => super::rev_parse::rev_parse(git, cwd, args),
-        Command::CheckAttr(args) => super::check_attr::check_attr(git, cwd, args),
-        Command::LsFiles(args) => super::ls_files::ls_files(git, cwd, args),
-        Command::LsTree(args) => super::ls_tree::ls_tree(git, cwd, args),
-        Command::CatFile(args) => super::cat_file::cat_file(git, cwd, args),
-        Command::VerifyCommit(args) => super::verify_sig::verify_commit(git, cwd, args),
-        Command::VerifyTag(args) => super::verify_sig::verify_tag(git, cwd, args),
-        Command::ShowRef(args) => super::show_ref::show_ref(git, args),
-        Command::SparseCheckout(args) => super::sparse::sparse_checkout(git, args),
-        Command::CountObjects(args) => super::count_objects::count_objects(git, args),
-        Command::Fsck(args) => super::fsck::fsck(git, args),
-        Command::Prune(args) => super::prune::prune(git, args),
-        Command::Gc(args) => super::gc::gc(git, args),
-        Command::PackRefs(args) => super::pack_refs::pack_refs(git, args),
-        Command::PrunePacked(args) => super::pack_plumbing::prune_packed(git, args),
-        Command::PackObjects(args) => super::pack_plumbing::pack_objects(git, args),
-        Command::UnpackObjects(args) => super::pack_plumbing::unpack_objects(git, args),
-        Command::Maintenance(args) => super::maintenance::maintenance(git, args),
-        Command::Repack(args) => super::repack::repack(git, args),
-        Command::Shortlog(args) => super::shortlog::shortlog(git, cwd, args),
-        Command::CheckMailmap(args) => super::mailmap::check_mailmap(git, args),
-        Command::Describe(args) => super::describe::describe(git, cwd, args),
-        Command::NameRev(args) => super::name_rev::name_rev(git, cwd, args),
-        Command::Am(args) => {
+        Command::Branching(Branching::Bisect(args)) => super::bisect::bisect(git, cwd, args),
+        Command::Branching(Branching::Blame(args)) => super::blame::blame(git, cwd, args, false),
+        Command::Branching(Branching::Annotate(args)) => super::blame::blame(git, cwd, args, true),
+        Command::Branching(Branching::Reflog(args)) => super::reflog::reflog(git, args),
+        Command::Branching(Branching::Lfs(args)) => super::lfs_cmd::lfs(git, args),
+        Command::Inspection(Inspection::RevParse(args)) => {
+            super::rev_parse::rev_parse(git, cwd, args)
+        }
+        Command::Inspection(Inspection::CheckAttr(args)) => {
+            super::check_attr::check_attr(git, cwd, args)
+        }
+        Command::Inspection(Inspection::LsFiles(args)) => super::ls_files::ls_files(git, cwd, args),
+        Command::Inspection(Inspection::LsTree(args)) => super::ls_tree::ls_tree(git, cwd, args),
+        Command::Inspection(Inspection::CatFile(args)) => super::cat_file::cat_file(git, cwd, args),
+        Command::Inspection(Inspection::VerifyCommit(args)) => {
+            super::verify_sig::verify_commit(git, cwd, args)
+        }
+        Command::Inspection(Inspection::VerifyTag(args)) => {
+            super::verify_sig::verify_tag(git, cwd, args)
+        }
+        Command::Inspection(Inspection::ShowRef(args)) => super::show_ref::show_ref(git, args),
+        Command::Inspection(Inspection::SparseCheckout(args)) => {
+            super::sparse::sparse_checkout(git, args)
+        }
+        Command::Plumbing(Plumbing::CountObjects(args)) => {
+            super::count_objects::count_objects(git, args)
+        }
+        Command::Plumbing(Plumbing::Fsck(args)) => super::fsck::fsck(git, args),
+        Command::Plumbing(Plumbing::Prune(args)) => super::prune::prune(git, args),
+        Command::Plumbing(Plumbing::Gc(args)) => super::gc::gc(git, args),
+        Command::Plumbing(Plumbing::PackRefs(args)) => super::pack_refs::pack_refs(git, args),
+        Command::Plumbing(Plumbing::PrunePacked(args)) => {
+            super::pack_plumbing::prune_packed(git, args)
+        }
+        Command::Plumbing(Plumbing::PackObjects(args)) => {
+            super::pack_plumbing::pack_objects(git, args)
+        }
+        Command::Plumbing(Plumbing::UnpackObjects(args)) => {
+            super::pack_plumbing::unpack_objects(git, args)
+        }
+        Command::Plumbing(Plumbing::Maintenance(args)) => {
+            super::maintenance::maintenance(git, args)
+        }
+        Command::Plumbing(Plumbing::Repack(args)) => super::repack::repack(git, args),
+        Command::Plumbing(Plumbing::Shortlog(args)) => super::shortlog::shortlog(git, cwd, args),
+        Command::Plumbing(Plumbing::CheckMailmap(args)) => super::mailmap::check_mailmap(git, args),
+        Command::Plumbing(Plumbing::Describe(args)) => super::describe::describe(git, cwd, args),
+        Command::Plumbing(Plumbing::NameRev(args)) => super::name_rev::name_rev(git, cwd, args),
+        Command::Plumbing(Plumbing::Am(args)) => {
             super::am::am(git, cwd, args)?;
             super::gc::auto(git);
             Ok(())
         }
-        Command::Apply(args) => super::apply::apply(git, cwd, args),
-        Command::FormatPatch(args) => super::format_patch::format_patch(git, cwd, args),
-        Command::Rebase(args) => {
+        Command::Plumbing(Plumbing::Apply(args)) => super::apply::apply(git, cwd, args),
+        Command::Plumbing(Plumbing::FormatPatch(args)) => {
+            super::format_patch::format_patch(git, cwd, args)
+        }
+        Command::Syncing(Syncing::Rebase(args)) => {
             super::rebase::rebase(git, &args)?;
             super::gc::auto(git);
             Ok(())
         }
-        Command::Remote(args) => super::remote::remote(git, args),
-        Command::Fetch(args) => super::fetch::fetch(git, args),
-        Command::Pull(args) => {
+        Command::Syncing(Syncing::Remote(args)) => super::remote::remote(git, args),
+        Command::Syncing(Syncing::Fetch(args)) => super::fetch::fetch(git, args),
+        Command::Syncing(Syncing::Pull(args)) => {
             super::pull::pull(git, args)?;
             super::gc::auto(git);
             Ok(())
         }
-        Command::Push(args) => super::push::push(git, args),
-        Command::Add {
+        Command::Syncing(Syncing::Push(args)) => super::push::push(git, args),
+        Command::Editing(Editing::Add {
             dry_run: true,
             patch: true,
             ..
-        }
-        | Command::Add {
+        })
+        | Command::Editing(Editing::Add {
             dry_run: true,
             interactive: true,
             ..
-        } => bail!("options '--dry-run' and '--interactive/--patch' cannot be used together"),
-        Command::Add {
+        }) => bail!("options '--dry-run' and '--interactive/--patch' cannot be used together"),
+        Command::Editing(Editing::Add {
             paths, patch: true, ..
-        } => super::patch_mode::add(git, cwd, &paths),
-        Command::Add {
+        }) => super::patch_mode::add(git, cwd, &paths),
+        Command::Editing(Editing::Add {
             paths,
             interactive: true,
             ..
-        } => super::add_interactive::add_interactive(git, cwd, &paths),
-        Command::Add {
+        }) => super::add_interactive::add_interactive(git, cwd, &paths),
+        Command::Editing(Editing::Add {
             paths,
             update,
             dry_run,
@@ -216,7 +249,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             intent_to_add,
             renormalize,
             ..
-        } => {
+        }) => {
             let options = stage::AddOptions {
                 paths,
                 update,
@@ -231,9 +264,9 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             }
             Ok(())
         }
-        Command::Rm(args) => super::remove::rm(git, cwd, &args),
-        Command::Mv(args) => super::remove::mv(git, cwd, &args),
-        Command::Commit {
+        Command::Editing(Editing::Rm(args)) => super::remove::rm(git, cwd, &args),
+        Command::Editing(Editing::Mv(args)) => super::remove::mv(git, cwd, &args),
+        Command::Editing(Editing::Commit {
             paths,
             file,
             base,
@@ -241,7 +274,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             all,
             untracked,
             git: flags,
-        } => {
+        }) => {
             if !paths.is_empty() {
                 bail!(
                     "`pyn commit <path>` is not available on a git repository; \
@@ -258,21 +291,21 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                     all,
                     untracked,
                     file,
-                    flags,
+                    flags: *flags,
                 },
             )?;
             super::gc::auto(git);
             Ok(())
         }
-        Command::Restore {
+        Command::History(History::Restore {
             args,
             source,
             staged,
             worktree,
             patch: true,
             ..
-        } => super::patch_mode::restore(git, cwd, &args, source.as_deref(), staged, worktree),
-        Command::Restore {
+        }) => super::patch_mode::restore(git, cwd, &args, source.as_deref(), staged, worktree),
+        Command::History(History::Restore {
             args,
             source,
             staged,
@@ -281,7 +314,7 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             merge,
             ignore_skip_worktree_bits,
             ..
-        } if ours || theirs || merge => super::switch::restore_sides(
+        }) if ours || theirs || merge => super::switch::restore_sides(
             git,
             cwd,
             &args,
@@ -299,24 +332,24 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
                 ignore_skip: ignore_skip_worktree_bits,
             },
         ),
-        Command::Restore {
+        Command::History(History::Restore {
             args,
             source,
             staged: true,
             worktree: false,
             ..
-        } => {
+        }) => {
             stage::restore_staged(git, cwd, &args, source.as_deref())?;
             super::switch::post_checkout_files(git)
         }
-        Command::Restore {
+        Command::History(History::Restore {
             args,
             source,
             staged,
             worktree,
             ignore_skip_worktree_bits,
             ..
-        } => super::switch::restore(
+        }) => super::switch::restore(
             git,
             cwd,
             &args,
@@ -325,56 +358,62 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
             worktree,
             ignore_skip_worktree_bits,
         ),
-        Command::Reset(args) => super::reset::reset(git, cwd, &args),
-        Command::CherryPick(args) => super::pick::cherry_pick(git, &args),
-        Command::Revert(args) => super::pick::revert(git, &args.into()),
-        Command::Migrate => {
+        Command::Syncing(Syncing::Reset(args)) => super::reset::reset(git, cwd, &args),
+        Command::Syncing(Syncing::CherryPick(args)) => super::pick::cherry_pick(git, &args),
+        Command::Syncing(Syncing::Revert(args)) => super::pick::revert(git, &args.into()),
+        Command::Syncing(Syncing::Migrate) => {
             bail!("`pyn migrate` converts a pyn server workspace; this is a git repository")
         }
-        Command::Update { .. } => refuse("update"),
-        Command::Get { .. } => refuse("get"),
-        Command::Locks { watch: true, .. } => refuse("locks --watch"),
-        Command::Locks { mine, .. } => super::lfs_lock::locks(git, mine),
-        Command::Lock { base: Some(_), .. } => {
+        Command::Workspaces(Workspaces::Update { .. }) => refuse("update"),
+        Command::Editing(Editing::Get { .. }) => refuse("get"),
+        Command::Locking(Locking::Locks { watch: true, .. }) => refuse("locks --watch"),
+        Command::Locking(Locking::Locks { mine, .. }) => super::lfs_lock::locks(git, mine),
+        Command::Locking(Locking::Lock { base: Some(_), .. }) => {
             bail!("`pyn lock --base` compares revisions, which a git repository does not have")
         }
-        Command::Lock { path, .. } => super::lfs_lock::lock(git, cwd, &path),
-        Command::Edit { paths } => super::lfs_lock::edit(git, cwd, &paths),
-        Command::Unlock { path, force, .. } => super::lfs_lock::unlock(git, cwd, &path, force),
-        Command::Policy(PolicyCommand::Lint { policy }) => {
+        Command::Locking(Locking::Lock { path, .. }) => super::lfs_lock::lock(git, cwd, &path),
+        Command::Locking(Locking::Edit { paths }) => super::lfs_lock::edit(git, cwd, &paths),
+        Command::Locking(Locking::Unlock { path, force, .. }) => {
+            super::lfs_lock::unlock(git, cwd, &path, force)
+        }
+        Command::Editing(Editing::Policy(PolicyCommand::Lint { policy })) => {
             super::lfs_lock::lint_lockable(git, policy.as_deref())
         }
-        Command::Policy(_) => server_only("policy"),
-        Command::Audit { .. } => server_only("audit"),
-        Command::Pr(_) => server_only("pr"),
-        Command::Verify { .. } => server_only("verify"),
-        Command::Summary => server_only("summary"),
-        Command::Login { .. }
-        | Command::Logout
-        | Command::Register { .. }
-        | Command::Password { .. }
-        | Command::Account(_)
-        | Command::Key(_)
-        | Command::Profile(_)
-        | Command::Invite(_)
-        | Command::User(_)
-        | Command::Whoami
-        | Command::Version { .. }
-        | Command::Repo(_)
-        | Command::Watch { .. }
-        | Command::Unwatch { .. }
-        | Command::Watching
-        | Command::Org(_)
-        | Command::Invitation(_)
-        | Command::Team(_)
-        | Command::Setup { .. }
-        | Command::Admin(_)
-        | Command::Usage { .. }
-        | Command::Token(_)
-        | Command::Member(_)
-        | Command::Role(_)
-        | Command::LsRemote(_) => unreachable!("run from anywhere, not through a git home"),
-        Command::Clone { .. } | Command::Config(_) | Command::External(_) => {
+        Command::Editing(Editing::Policy(_)) => server_only("policy"),
+        Command::History(History::Audit { .. }) => server_only("audit"),
+        Command::Branching(Branching::Pr(_)) => server_only("pr"),
+        Command::History(History::Verify { .. }) => server_only("verify"),
+        Command::Locking(Locking::Summary) => server_only("summary"),
+        Command::Accounts(Accounts::Login { .. })
+        | Command::Accounts(Accounts::Logout)
+        | Command::Accounts(Accounts::Register { .. })
+        | Command::Accounts(Accounts::Password { .. })
+        | Command::Accounts(Accounts::Account(_))
+        | Command::Identity(Identity::Key(_))
+        | Command::Identity(Identity::Profile(_))
+        | Command::Identity(Identity::Invite(_))
+        | Command::Identity(Identity::User(_))
+        | Command::Identity(Identity::Whoami)
+        | Command::Identity(Identity::Version { .. })
+        | Command::Accounts(Accounts::Repo(_))
+        | Command::Administration(Administration::Watch { .. })
+        | Command::Administration(Administration::Unwatch { .. })
+        | Command::Administration(Administration::Watching)
+        | Command::Accounts(Accounts::Org(_))
+        | Command::Accounts(Accounts::Invitation(_))
+        | Command::Accounts(Accounts::Team(_))
+        | Command::Administration(Administration::Setup { .. })
+        | Command::Administration(Administration::Admin(_))
+        | Command::Administration(Administration::Usage { .. })
+        | Command::History(History::Token(_))
+        | Command::Administration(Administration::Member(_))
+        | Command::Administration(Administration::Role(_))
+        | Command::Workspaces(Workspaces::LsRemote(_)) => {
+            unreachable!("run from anywhere, not through a git home")
+        }
+        Command::Accounts(Accounts::Clone { .. })
+        | Command::Identity(Identity::Config(_))
+        | Command::External(_) => {
             unreachable!("handled before a git home is consulted")
         }
     }
@@ -383,8 +422,10 @@ pub fn run(command: Command, git: &GitHome, cwd: &Path) -> Result<()> {
 /// Whether git reads `core.abbrev` for the command: `remote` without a fetch, `prune` and `prune-packed` do not.
 fn reads_core_abbrev(command: &Command) -> bool {
     match command {
-        Command::Remote(args) => args.fetches(),
-        Command::Prune(_) | Command::PrunePacked(_) => false,
+        Command::Syncing(Syncing::Remote(args)) => args.fetches(),
+        Command::Plumbing(Plumbing::Prune(_)) | Command::Plumbing(Plumbing::PrunePacked(_)) => {
+            false
+        }
         _ => true,
     }
 }
@@ -392,24 +433,24 @@ fn reads_core_abbrev(command: &Command) -> bool {
 /// The commands git runs only with a work tree; it checks before reading their options.
 fn needs_work_tree(command: &Command) -> bool {
     match command {
-        Command::Rm(args) => !args.cached,
-        Command::Status(_)
-        | Command::Merge(_)
-        | Command::Switch(_)
-        | Command::Checkout(_)
-        | Command::Stash(_)
-        | Command::Submodule(_)
-        | Command::Clean(_)
-        | Command::Add { .. }
-        | Command::Mv(_)
-        | Command::Commit { .. }
-        | Command::Restore { .. }
-        | Command::CherryPick(_)
-        | Command::Revert(_)
-        | Command::Rebase(_)
-        | Command::Pull(_)
-        | Command::SparseCheckout(_)
-        | Command::Am(_) => true,
+        Command::Editing(Editing::Rm(args)) => !args.cached,
+        Command::Workspaces(Workspaces::Status(_))
+        | Command::Branching(Branching::Merge(_))
+        | Command::Branching(Branching::Switch(_))
+        | Command::Branching(Branching::Checkout(_))
+        | Command::Branching(Branching::Stash(_))
+        | Command::Branching(Branching::Submodule(_))
+        | Command::Branching(Branching::Clean(_))
+        | Command::Editing(Editing::Add { .. })
+        | Command::Editing(Editing::Mv(_))
+        | Command::Editing(Editing::Commit { .. })
+        | Command::History(History::Restore { .. })
+        | Command::Syncing(Syncing::CherryPick(_))
+        | Command::Syncing(Syncing::Revert(_))
+        | Command::Syncing(Syncing::Rebase(_))
+        | Command::Syncing(Syncing::Pull(_))
+        | Command::Inspection(Inspection::SparseCheckout(_))
+        | Command::Plumbing(Plumbing::Am(_)) => true,
         _ => false,
     }
 }
