@@ -1,6 +1,6 @@
 //! An organization's repository defaults.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, State};
 use pyn_core::{OrgSettings, UserId};
 use pyn_proto as api;

@@ -1,6 +1,6 @@
 //! Line diffs between two revisions, and the lines of a file for the context controls.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Query, State};
 use pyn_core::{
     DIFF_DEFAULT_CONTEXT, Diff, DiffLineKind, DiffOptions, DiffStatus, FileDiff, FileLines,

@@ -1,6 +1,6 @@
 //! Tags: listing, creating and deleting immutable names that point at a commit.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::Path;
 use axum::http::StatusCode;
 use pyn_core::Tag;

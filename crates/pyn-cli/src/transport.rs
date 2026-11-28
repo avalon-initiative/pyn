@@ -161,6 +161,16 @@ impl Reply {
         serde_json::from_slice(&bytes).context("error decoding response body")
     }
 
+    /// The body as text, cut after `max` bytes.
+    pub fn text_prefix(mut self, max: u64) -> Result<String> {
+        let mut bytes = Vec::new();
+        (&mut self.body)
+            .take(max)
+            .read_to_end(&mut bytes)
+            .context("reading the response body")?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     pub fn copy_to(&mut self, out: &mut dyn Write) -> Result<u64> {
         Ok(std::io::copy(&mut self.body, out)?)
     }

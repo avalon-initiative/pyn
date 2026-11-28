@@ -1,6 +1,6 @@
 //! Merging a branch or commit into a branch: a preview, and the write.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::State;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;

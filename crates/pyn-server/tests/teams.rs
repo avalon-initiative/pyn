@@ -217,6 +217,7 @@ async fn owners_create_update_and_delete_teams_and_members_list_them() {
             r.status == StatusCode::BAD_REQUEST || r.status == StatusCode::UNPROCESSABLE_ENTITY,
             "{bad}"
         );
+        assert_eq!(r.code(), "invalid_request", "{bad}");
     }
     assert_eq!(
         code(&post(app, bob, url, json!({"name": "ops"})).await),
@@ -317,6 +318,61 @@ async fn owners_create_update_and_delete_teams_and_members_list_them() {
         eng.id,
         "a reused slug gets a new id"
     );
+}
+
+#[tokio::test]
+async fn a_rejected_request_body_carries_an_error_body_naming_the_problem() {
+    let Org { app, alice, .. } = acme().await;
+    let send = |content_type: Option<&'static str>, body: &'static str| {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/v1/orgs/acme/teams")
+            .cred(&Cred::who(&alice));
+        if let Some(t) = content_type {
+            req = req.header("content-type", t);
+        }
+        let req = req.body(Body::from(body)).unwrap();
+        let app = app.clone();
+        async move {
+            let r = app.oneshot(req).await.unwrap();
+            Reply {
+                status: r.status(),
+                body: r.into_body().collect().await.unwrap().to_bytes().to_vec(),
+            }
+        }
+    };
+    for (content_type, body, status, names) in [
+        (
+            Some("application/json"),
+            r#"{"slug": "x"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "`name`",
+        ),
+        (
+            Some("application/json"),
+            r#"{"name": 5}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid type",
+        ),
+        (
+            Some("application/json"),
+            "{",
+            StatusCode::BAD_REQUEST,
+            "EOF",
+        ),
+        (
+            None,
+            r#"{"name": "Art"}"#,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Content-Type",
+        ),
+    ] {
+        let r = send(content_type, body).await;
+        assert_eq!(r.status, status, "{body}");
+        let e = r.json::<api::ErrorBody>();
+        assert_eq!(e.code, "invalid_request", "{body}");
+        assert!(e.message.contains(names), "{body}: {}", e.message);
+    }
 }
 
 #[tokio::test]
@@ -469,6 +525,12 @@ async fn a_team_grant_gives_its_members_access_and_shows_everywhere() {
 
     let r = call(app, alice, "PUT", grant, Some(json!({"role": "boss"}))).await;
     assert_eq!(code(&r), (400, "invalid_request".into()));
+    assert!(
+        r.json::<api::ErrorBody>()
+            .message
+            .contains("reader, writer, maintainer, admin"),
+        "the rejection names the valid roles"
+    );
     let r = call(
         app,
         alice,

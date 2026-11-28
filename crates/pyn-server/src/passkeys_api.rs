@@ -1,6 +1,6 @@
 //! Passkeys and security keys (#1105): registration, passkey sign-in, the fresh check, and managing the account's own.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;

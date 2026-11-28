@@ -1,6 +1,6 @@
 //! Owner freeze: every write under a frozen user or organization is refused, reads continue.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, State};
 use pyn_core::{AccountKind, UserId};
 use pyn_proto as api;

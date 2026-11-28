@@ -102,7 +102,10 @@ impl FromStr for Role {
         Self::ALL
             .into_iter()
             .find(|r| r.as_str() == s)
-            .ok_or_else(|| PynError::InvalidRequest(format!("unknown role {s:?}")))
+            .ok_or_else(|| {
+                let names: Vec<_> = Self::ALL.iter().map(|r| r.as_str()).collect();
+                PynError::InvalidRequest(format!("unknown role {s:?}; use {}", names.join(", ")))
+            })
     }
 }
 
@@ -1876,6 +1879,16 @@ pub mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_role_names_the_valid_ones() {
+        let err = Role::from_str("write").unwrap_err();
+        assert_eq!(err.code(), "invalid_request");
+        assert_eq!(
+            err.to_string(),
+            r#"unknown role "write"; use reader, writer, maintainer, admin"#
+        );
+    }
 
     #[test]
     fn a_need_maps_to_a_permission_its_level_adds() {

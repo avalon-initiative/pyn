@@ -1,6 +1,6 @@
 //! Web sessions: an HttpOnly cookie plus a CSRF header on state-changing requests.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Request, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};

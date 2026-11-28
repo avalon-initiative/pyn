@@ -1,6 +1,6 @@
 //! Webhook subscriptions: administrators and service credentials with `manage_webhooks`.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use pyn_core::{

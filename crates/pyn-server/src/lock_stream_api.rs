@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Query, State};
 use pyn_core::{OutboxEvent, PynError, Repositories};
 use pyn_proto as api;

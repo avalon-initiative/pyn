@@ -100,7 +100,7 @@ fn refusal(code: &str, message: &str) -> Response {
         message: message.into(),
         blockers: None,
     };
-    let mut res = (StatusCode::SERVICE_UNAVAILABLE, axum::Json(body)).into_response();
+    let mut res = (StatusCode::SERVICE_UNAVAILABLE, crate::json::Json(body)).into_response();
     res.headers_mut().insert(RETRY_AFTER, HeaderValue::from(1));
     res
 }

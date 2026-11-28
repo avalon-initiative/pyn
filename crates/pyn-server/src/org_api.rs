@@ -1,6 +1,6 @@
 //! Organizations: namespaces that own repositories.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

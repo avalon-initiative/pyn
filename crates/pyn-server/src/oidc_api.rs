@@ -1,7 +1,7 @@
 //! Sign-in with an external OpenID Connect provider. The browser is sent to the provider and comes back to
 //! `/v1/oidc/callback`, which ends in the same session cookie as a password sign-in.
 
-use axum::Json;
+use crate::json::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::header::{LOCATION, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
